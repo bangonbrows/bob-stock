@@ -640,17 +640,9 @@ const SEED = {
     ...['ardross','booragoon','bunbury','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'TNT_10',minQty:3,leadDays:2}))
   ],
   // Demo cost history (variable cost pricing per shipment)
-  costHistory: [
-    { id:'ch_1', productId:'MKU_1', date:'2025-10-01', costPrice:3.80, notes:'Oct 2025 shipment' },
-    { id:'ch_2', productId:'MKU_1', date:'2026-01-10', costPrice:4.00, notes:'Jan 2026 shipment - slight increase' },
-    { id:'ch_3', productId:'MKU_1', date:'2026-03-01', costPrice:4.20, notes:'Mar 2026 shipment - further increase' },
-    { id:'ch_4', productId:'EXT_1', date:'2025-12-01', costPrice:7.50, notes:'Dec 2025 bulk order' },
-    { id:'ch_5', productId:'EXT_1', date:'2026-02-15', costPrice:8.00, notes:'Feb 2026 standard order' },
-    { id:'ch_6', productId:'LAL_1', date:'2026-01-01', costPrice:17.50, notes:'Jan batch' },
-    { id:'ch_7', productId:'LAL_1', date:'2026-02-20', costPrice:18.00, notes:'Feb batch - new supplier price' }
-  ],
+  costHistory: [],
   deliveries: [],
-  transactions: generateDemoTransactions()
+  transactions: []
 };
 
 function generateDemoTransactions() {
@@ -857,7 +849,7 @@ function generateDemoTransactions() {
 
 // ── DB Layer ─────────────────────────────────────
 const DB = {
-  KEY: 'bob_stock_v3',
+  KEY: 'bob_stock_v4',
   load() {
     const raw = localStorage.getItem(this.KEY);
     if (raw) return JSON.parse(raw);
@@ -914,14 +906,14 @@ const Auth = {
     const u = DB.get().users.find(u=>u.username===username && u.password===password);
     if (!u) return false;
     this._user = u;
-    sessionStorage.setItem('bob_session_v3', JSON.stringify(u));
+    sessionStorage.setItem('bob_session_v4', JSON.stringify(u));
     return true;
   },
   restore() {
-    const s = sessionStorage.getItem('bob_session_v3');
+    const s = sessionStorage.getItem('bob_session_v4');
     if (s) this._user = JSON.parse(s);
   },
-  logout() { this._user=null; sessionStorage.removeItem('bob_session_v3'); },
+  logout() { this._user=null; sessionStorage.removeItem('bob_session_v4'); },
   user()    { return this._user; },
   is(role)  { return this._user && this._user.role === role; },
   isAtLeast(role) {
@@ -4749,7 +4741,7 @@ document.addEventListener('DOMContentLoaded',()=>App.launch());
 <script>
 // ── Device Fingerprint ────────────────────────────────────────────────────────
 const DeviceID = {
-  _key: 'bob_device_id_v3',
+  _key: 'bob_device_id_v4',
   get() {
     let id = localStorage.getItem(this._key);
     if (!id) {
@@ -4781,8 +4773,8 @@ const DeviceID = {
 
 // ── Login Audit ───────────────────────────────────────────────────────────────
 const LoginAudit = {
-  _key: 'bob_login_audit_v3',
-  _knownKey: 'bob_known_devices_v3',
+  _key: 'bob_login_audit_v4',
+  _knownKey: 'bob_known_devices_v4',
 
   getLog() {
     try { return JSON.parse(localStorage.getItem(this._key) || '[]'); } catch { return []; }
