@@ -203,6 +203,40 @@ tbody tr:last-child td { border-bottom: none; }
   .main-wrap { padding-bottom: 70px; }
 }
 @media (min-width: 769px) { .mobile-nav { display: none; } }
+
+/* ── Additional mobile fixes ─────────────────────────────────────────────── */
+/* Stats grid was missing from the 768px breakpoint */
+@media (max-width: 768px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  #modal-box { padding: 24px; max-height: 90vh; }
+  #modal-overlay { padding: 12px; }
+  .modal-footer { flex-wrap: wrap; gap: 8px; }
+  .modal-footer .btn { flex: 1; min-width: 120px; }
+  #toast-container { bottom: 80px; right: 12px; left: auto; max-width: calc(100vw - 24px); }
+  .tab-bar { gap: 2px; }
+  .tab-btn { padding: 8px 12px; font-size: .75rem; }
+}
+/* Small phones <= 480px */
+@media (max-width: 480px) {
+  .page { padding: 12px; }
+  .page-title { font-size: 1.2rem; }
+  .page-sub { font-size: .775rem; }
+  .stat-card { padding: 12px 14px; }
+  .stat-val { font-size: 1.3rem; }
+  .stat-lbl { font-size: .65rem; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .grid-4, .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .card-body { padding: 14px; }
+  .inout-btn { min-width: 0 !important; width: 100% !important; padding: 14px 16px !important; font-size: 1rem !important; box-sizing: border-box; }
+  #modal-box { padding: 16px; border-radius: 12px; }
+  .modal-footer { flex-direction: column; }
+  .modal-footer .btn { width: 100%; text-align: center; min-width: unset; }
+  .page-header { margin-bottom: 16px; }
+  [style*="grid-template-columns:1fr 1fr"] { grid-template-columns: 1fr !important; }
+  [style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
+  .step-indicator { margin-bottom: 16px; }
+}
   </style>
 </head>
 <body>
