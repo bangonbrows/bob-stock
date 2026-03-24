@@ -1816,11 +1816,11 @@ const Pages = {
   // ── HO: All Stock ──
   hoStock() {
     const d=DB.get();
-    const isFran=Auth.isFranchisee(); const isHO=Auth.isHO();
-    const storeIds=isFran?Auth.storeIds():null;
-    // For franchisee: show all their assigned locations (including franchise office warehouse)
+    const isFran=Auth.isFranchisee(); const isHO=Auth.isHO(); const isSL=Auth.isStoreLevel();
+    const storeIds=(isFran||isSL)?Auth.storeIds():null;
+    // For franchisee/store-level: show their assigned locations only
     // For HO: show all stores including franchise offices, but HO warehouse shown separately
-    const visibleStores=isFran
+    const visibleStores=(isFran||isSL)
       ? d.stores.filter(s=>s.active&&storeIds.includes(s.id))
       : d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
     const inStoreTotal=visibleStores.reduce((sum,s)=>sum+Stock.totalValue(s.id),0);
@@ -1865,15 +1865,15 @@ const Pages = {
     this._renderHOStockTable();
   },
   _renderHOStockTable() {
-    const d=DB.get(); const isFran=Auth.isFranchisee(); const isHO=Auth.isHO();
-    const storeIds=isFran?Auth.storeIds():null;
+    const d=DB.get(); const isFran=Auth.isFranchisee(); const isHO=Auth.isHO(); const isSL=Auth.isStoreLevel();
+    const storeIds=(isFran||isSL)?Auth.storeIds():null;
     const storeFilter=document.getElementById('hs-store')?.value;
     const mgmtStoreIds=this._hsStoreIds&&this._hsStoreIds.length?this._hsStoreIds:null;
     const ptFilter=document.getElementById('hs-pt')?.value;
     const catFilter=document.getElementById('hs-cat')?.value;
     const search=document.getElementById('hs-search')?.value.toLowerCase()||'';
-    // visibleStores: for franchisee = their locations only (incl franchise office); for HO = all stores + franchise offices + head_office
-    const _allVisibleForFilter = isFran
+    // visibleStores: for franchisee/store-level = their locations only; for HO = all stores + franchise offices + head_office
+    const _allVisibleForFilter = (isFran||isSL)
       ? d.stores.filter(s=>s.active&&storeIds.includes(s.id))
       : d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.id==='head_office'||s.isFranchiseOffice));
     const allStores=storeFilter?[d.stores.find(s=>s.id===storeFilter)||{id:'head_office',name:'Head Office (Warehouse)',type:'warehouse'}].filter(s=>s.id):
@@ -1938,7 +1938,7 @@ const Pages = {
 
   // ── HO: Movements ──
   hoMovements() {
-    const d=DB.get(); const isFran=Auth.isFranchisee(); const storeIds=isFran?Auth.storeIds():null;
+    const d=DB.get(); const isFran=Auth.isFranchisee(); const isSL=Auth.isStoreLevel(); const storeIds=(isFran||isSL)?Auth.storeIds():null;
     const el=document.getElementById('page-all-movements');
     el.innerHTML=`
       <div class="page-header"><div class="page-title">All Movements</div><div class="page-sub">Complete transaction log</div></div>
@@ -1967,7 +1967,7 @@ const Pages = {
     const storeF=document.getElementById('am-store')?.value; const typeF=document.getElementById('am-type')?.value;
     const from=document.getElementById('am-from')?.value; const to=document.getElementById('am-to')?.value;
     const search=document.getElementById('am-search')?.value.toLowerCase()||'';
-    const isFran=Auth.isFranchisee(); const storeIds=isFran?Auth.storeIds():null;
+    const isFran=Auth.isFranchisee(); const isSL2=Auth.isStoreLevel(); const storeIds=(isFran||isSL2)?Auth.storeIds():null;
     let txns=DB.get().transactions;
     if(storeIds&&!storeF) txns=txns.filter(t=>storeIds.includes(t.storeId));
     if(storeF)  txns=txns.filter(t=>t.storeId===storeF);
@@ -2892,7 +2892,7 @@ const Pages = {
       <div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-sub">Welcome back, ${u?.name||'User'} · ${new Date().toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'})}</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px">${quickActions.join('')}</div>
       <div class="grid-4" style="margin-bottom:24px">
-        ${!isStaff?`<div class="stat-card"><div class="stat-val">$${stockVal.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">${isHO?'Total Stock Value':'My Stock Value'}</div></div>`:''}
+        ${(isHO||isFran)?`<div class="stat-card"><div class="stat-val">$${stockVal.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">${isHO?'Total Stock Value':'My Stock Value'}</div></div>`:''}
         <div class="stat-card"><div class="stat-val ${alerts.length?'text-red':''}">${alerts.length}</div><div class="stat-lbl">Low Stock Alerts</div></div>
         <div class="stat-card"><div class="stat-val">${todayTxns.length}</div><div class="stat-lbl">Movements Today</div></div>
         ${isDir?`<div class="stat-card"><div class="stat-val ${reorderCount?'text-amber':''}">${reorderCount}</div><div class="stat-lbl">Products to Reorder</div></div>`:
@@ -3345,7 +3345,7 @@ const Pages = {
       <div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-sub">Welcome back, ${u?.name||'User'} · ${new Date().toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'})}</div></div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px">${quickActions.join('')}</div>
       <div class="grid-4" style="margin-bottom:24px">
-        <div class="stat-card"><div class="stat-val">$${stockVal.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">${isHO?'Total Stock Value':'My Stock Value'}</div></div>
+        ${(isHO||isFran)?`<div class="stat-card"><div class="stat-val">${stockVal.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">${isHO?'Total Stock Value':'My Stock Value'}</div></div>`:''}
         <div class="stat-card"><div class="stat-val ${alerts.length?'text-red':''}">${alerts.length}</div><div class="stat-lbl">Low Stock Alerts</div></div>
         <div class="stat-card"><div class="stat-val">${todayTxns.length}</div><div class="stat-lbl">Movements Today</div></div>
         ${isDir?`<div class="stat-card"><div class="stat-val ${reorderCount?'text-amber':''}">${reorderCount}</div><div class="stat-lbl">Products to Reorder</div></div>`:
@@ -4570,12 +4570,26 @@ function buildMobileNav() {
   const el=document.getElementById('mobile-nav'); if(!el) return;
 
   let items=[];
-  if(isStoreLevel){
+  if(isFran){
     items=[
       {page:'log-movement',icon:iconArrows(),label:'Log'},
       {page:'ho-stock',icon:iconBox(),label:'Stock'},
       {page:'ho-alerts',icon:iconBell(),label:'Alerts'},
       {page:'ho-movements',icon:iconList(),label:'Moves'},
+      {page:'stock-take',icon:iconClipboard(),label:'Take'},
+    ];
+  } else if(role==='store_manager'){
+    items=[
+      {page:'log-movement',icon:iconArrows(),label:'Log'},
+      {page:'store-stock',icon:iconBox(),label:'Stock'},
+      {page:'store-alerts',icon:iconBell(),label:'Alerts'},
+      {page:'store-history',icon:iconList(),label:'Moves'},
+      {page:'stock-take',icon:iconClipboard(),label:'Take'},
+    ];
+  } else if(isStaff){
+    items=[
+      {page:'log-movement',icon:iconArrows(),label:'Log'},
+      {page:'store-stock',icon:iconBox(),label:'Stock'},
       {page:'stock-take',icon:iconClipboard(),label:'Take'},
     ];
   } else if(isHO){
