@@ -100,7 +100,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--bla
 .step.done { background: #d1fae5; color: #059669; }
 .step.active { background: var(--rose); color: white; }
 .step-line { flex: 1; height: 1px; background: #e5e7eb; max-width: 32px; }
-.tbl-wrap { overflow-x: auto; border-radius: 12px; }
+.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 12px; }
 table { width: 100%; border-collapse: collapse; background: white; }
 thead th { background: #f9fafb; padding: 11px 14px; text-align: left; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
 tbody td { padding: 10px 14px; border-bottom: 1px solid #f3f4f6; font-size: .825rem; }
@@ -1355,7 +1355,7 @@ const Pages = {
       <div class="card" style="max-width:640px;margin-top:20px">
         <div class="card-body">
           <div style="font-weight:600;margin-bottom:12px;font-size:.875rem">Today's Movements</div>
-          <div id="today-movements"></div>
+          <div id="today-movements" class="tbl-wrap"></div>
         </div>
       </div>`;
     this._logStep = 1;
@@ -3102,14 +3102,14 @@ const Pages = {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
         <div class="card card-body">
           <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Recent Movements</div>
-          ${recentTxns.length?`<table style="width:100%;font-size:.8rem"><tbody>
+          ${recentTxns.length?`<div class="tbl-wrap"><table style="width:100%;font-size:.8rem"><tbody>
             ${recentTxns.map(t=>`<tr style="border-bottom:1px solid #f3f4f6">
               <td style="padding:6px 4px">${txnBadge(t)}</td>
               <td style="padding:6px 4px"><strong>${UI.productName(t.productId)}</strong></td>
               <td style="padding:6px 4px;color:#6b7280">${t.qty} units</td>
               <td style="padding:6px 4px;color:#9ca3af;font-size:.75rem">${t.date}</td>
             </tr>`).join('')}
-          </tbody></table>`:'<div style="color:#9ca3af;font-size:.825rem">No movements yet.</div>'}
+          </tbody></table></div>`:'<div style="color:#9ca3af;font-size:.825rem">No movements yet.</div>'}
         </div>
         <div class="card card-body">
           <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Top Alerts ${alerts.length>5?`<span style="color:#6b7280;font-weight:400;font-size:.75rem">(showing 5 of ${alerts.length})</span>`:''}</div>
@@ -3555,14 +3555,14 @@ const Pages = {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
         <div class="card card-body">
           <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Recent Movements</div>
-          ${recentTxns.length?`<table style="width:100%;font-size:.8rem"><tbody>
+          ${recentTxns.length?`<div class="tbl-wrap"><table style="width:100%;font-size:.8rem"><tbody>
             ${recentTxns.map(t=>`<tr style="border-bottom:1px solid #f3f4f6">
               <td style="padding:6px 4px">${txnBadge(t)}</td>
               <td style="padding:6px 4px"><strong>${UI.productName(t.productId)}</strong></td>
               <td style="padding:6px 4px;color:#6b7280">${t.qty} units</td>
               <td style="padding:6px 4px;color:#9ca3af;font-size:.75rem">${t.date}</td>
             </tr>`).join('')}
-          </tbody></table>`:'<div style="color:#9ca3af;font-size:.825rem">No movements yet.</div>'}
+          </tbody></table></div>`:'<div style="color:#9ca3af;font-size:.825rem">No movements yet.</div>'}
         </div>
         <div class="card card-body">
           <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Top Alerts ${alerts.length>5?`<span style="color:#6b7280;font-weight:400;font-size:.75rem">(showing 5 of ${alerts.length})</span>`:''}</div>
@@ -4028,7 +4028,7 @@ const Pages = {
           </select>
           <input class="form-input" id="dc-search" placeholder="Search product..." style="max-width:220px" oninput="Pages._renderCostTable()">
         </div>
-        <div class="card" id="dc-table"></div>
+        <div class="tbl-wrap card" id="dc-table"></div>
       </div>`;
     this._cmTab='products';
     this._renderCostTable();
@@ -4050,7 +4050,7 @@ const Pages = {
         </select>
         <input class="form-input" id="dc-search" placeholder="Search product..." style="max-width:220px" oninput="Pages._renderCostTable()">
       </div>
-      <div class="card" id="dc-table"></div>`;
+      <div class="tbl-wrap card" id="dc-table"></div>`;
       this._renderCostTable();
     } else {
       this._renderDeliveryHistory();
@@ -4177,7 +4177,7 @@ const Pages = {
         </div>
       </div>
       <div style="font-weight:600;font-size:.85rem;margin-bottom:10px;color:var(--rose)">📦 PRODUCT LINES</div>
-      <div id="del-lines-wrap" style="margin-bottom:12px"></div>
+      <div id="del-lines-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px"></div>
       <button class="btn btn-secondary btn-sm" onclick="Pages._addDeliveryLine()" style="margin-bottom:20px">+ Add Product Line</button>
       <div id="del-summary" style="background:#f9fafb;border-radius:10px;padding:16px;margin-bottom:20px;display:none">
         <div style="font-weight:600;margin-bottom:8px;font-size:.85rem">📊 Landed Cost Summary</div>
@@ -4388,7 +4388,7 @@ const Pages = {
         <span>Customs: <strong>$${del.headerCosts.customs||0}</strong></span>
         <span style="margin-left:auto;font-weight:700">Total header: $${totalHeader.toFixed(2)}</span>
       </div>
-      <table style="width:100%;font-size:.82rem;border-collapse:collapse">
+      <div class="tbl-wrap"><table style="width:100%;font-size:.82rem;border-collapse:collapse">
         <thead><tr style="border-bottom:1px solid #e5e7eb;color:#6b7280;font-size:.72rem">
           <th style="text-align:left;padding:4px 8px">Product</th><th style="padding:4px 8px;text-align:center">Qty</th>
           <th style="padding:4px 8px;text-align:center">Unit Cost</th><th style="padding:4px 8px;text-align:center">Packaging</th>
@@ -4409,7 +4409,7 @@ const Pages = {
             <td style="padding:4px 8px;text-align:center">${ln.costUpdated?'<span style="color:#16a34a;font-weight:600">↑ Yes</span>':'<span style="color:#9ca3af">→ No (kept existing)</span>'}</td>
           </tr>`;
         }).join('')}</tbody>
-      </table>`,
+      </table></div>`,
     '<button class="btn btn-secondary" onclick="UI.closeModal()">Close</button>');
   },
   _editDeliveryPackaging(deliveryId){
