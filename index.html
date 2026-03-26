@@ -48,7 +48,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--bla
 .sidebar-section { padding: 16px 8px 4px; font-size: .65rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.35); padding-left: 20px; }
 .nav-section { padding: 0; }
 .nav-section-title { padding: 12px 20px 4px; font-size: .62rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: rgba(255,255,255,.35); }
-.nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 14px; cursor: pointer; border-radius: 8px; margin: 1px 8px; transition: background .15s; color: rgba(255,255,255,.7); font-size: .825rem; font-weight: 500; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; border-radius: 8px; margin: 1px 8px; min-height: 44px; transition: background .15s; color: rgba(255,255,255,.7); font-size: .825rem; font-weight: 500; }
 .nav-item:hover { background: rgba(216,131,139,.18); color: white; }
 .nav-item.active { background: var(--rose); color: white; }
 .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
@@ -92,7 +92,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--bla
 .btn-out:hover, .btn-out.sel { background: #dc2626; color: white; border-color: #dc2626; }
 .form-group { margin-bottom: 16px; }
 .form-label { display: block; font-size: .7rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; }
-.form-input, .form-select, .form-textarea { width: 100%; padding: 10px 14px; border: 1.5px solid #e5e7eb; border-radius: 8px; font-size: .875rem; font-family: 'Inter', sans-serif; outline: none; transition: border-color .2s; background: white; color: var(--black); }
+.form-input, .form-select, .form-textarea { width: 100%; padding: 10px 14px; border: 1.5px solid #e5e7eb; border-radius: 8px; font-size: 1rem; min-height: 44px; font-family: 'Inter', sans-serif; outline: none; transition: border-color .2s; background: white; color: var(--black); }
 .form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--rose); }
 .form-textarea { resize: vertical; min-height: 72px; }
 .step-indicator { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; }
@@ -131,7 +131,7 @@ tbody tr:last-child td { border-bottom: none; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 .filter-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
-.filter-chip { padding: 6px 14px; border-radius: 20px; border: 1.5px solid #e5e7eb; background: white; cursor: pointer; font-size: .75rem; font-weight: 500; transition: all .15s; }
+.filter-chip { padding: 8px 14px; border-radius: 20px; border: 1.5px solid #e5e7eb; background: white; cursor: pointer; font-size: .8rem; min-height: 36px; font-weight: 500; transition: all .15s; }
 .filter-chip:hover { border-color: var(--rose); color: var(--rose); }
 .filter-chip.active { background: var(--rose); color: white; border-color: var(--rose); }
 #pin-overlay { position: fixed; inset: 0; background: rgba(35,31,32,.96); z-index: 9999; display: none; align-items: center; justify-content: center; }
@@ -171,7 +171,7 @@ tbody tr:last-child td { border-bottom: none; }
 .search-input input { padding-left: 36px; }
 .search-input svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: #9ca3af; width: 16px; height: 16px; }
 .product-select-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; max-height: 320px; overflow-y: auto; }
-.product-card-sel { padding: 12px; border: 2px solid #e5e7eb; border-radius: 10px; cursor: pointer; transition: all .15s; }
+.product-card-sel { padding: 14px; border: 2px solid #e5e7eb; border-radius: 10px; cursor: pointer; min-height: 44px; transition: all .15s; }
 .product-card-sel:hover { border-color: var(--rose); background: var(--rose-light); }
 .product-card-sel.selected { border-color: var(--rose); background: var(--rose-light); }
 .product-card-sel .pname { font-weight: 600; font-size: .8rem; }
@@ -894,7 +894,7 @@ const Sync = {
   FILE:  'data/bob-stock-data.json',
   // Token split to avoid secret-scanner false positives in repo
   TOKEN: ['github_pat_','11CARCLKI063eF','DsFbhKAu_JMNYi53OdsKvTy6s4SAtul4YUdymifTCWZLPFUmgSbpYYHVHXEIc71D5MGc'].join(''),
-  _sha: null, _syncing: false, _pendingSync: false, _retryCount: 0,
+  _sha: null, _pushLock: false, _pendingData: null, _retryCount: 0,
   _debounceTimer: null, _pollInterval: null, _statusEl: null, _hideTimer: null,
 
   get _url(){ return `https://api.github.com/repos/${this.REPO}/contents/${this.FILE}`; },
@@ -940,8 +940,8 @@ const Sync = {
   },
 
   async push(data){
-    if(this._syncing){ this._pendingSync=true; return; }
-    this._syncing=true;
+    if(this._pushLock){ this._pendingData=data; return; }
+    this._pushLock=true;
     this._showStatus('☁ Syncing…');
     try{
       const content = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
@@ -956,7 +956,7 @@ const Sync = {
       });clearTimeout(tid2);
       if(res.status===409){
         // SHA conflict – re-read, merge, retry (max 3 times)
-        this._syncing=false;
+        this._pushLock=false;
         this._retryCount=(this._retryCount||0)+1;
         if(this._retryCount>3){
           this._retryCount=0;
@@ -979,25 +979,32 @@ const Sync = {
       localStorage.setItem('bob_sync_pending','1');
       this._showStatus('○ Offline – will sync when back online');
     }
-    this._syncing=false;
-    if(this._pendingSync){ this._pendingSync=false; this.push(DB.get()); }
+    this._pushLock=false;
+    if(this._pendingData){ const pd=this._pendingData; this._pendingData=null; this.push(pd); }
   },
 
   _merge(remote, local){
-    const txById={};
-    (remote.transactions||[]).forEach(t=>{txById[t.id]=t;});
-    (local.transactions||[]).forEach(t=>{txById[t.id]=t;});
-    const delById={};
-    (remote.deletedTransactions||[]).forEach(t=>{delById[t.id]=t;});
-    (local.deletedTransactions||[]).forEach(t=>{delById[t.id]=t;});
-    const deliv={};
-    (remote.deliveries||[]).forEach(d=>{deliv[d.id]=d;});
-    (local.deliveries||[]).forEach(d=>{deliv[d.id]=d;});
-    const deletedIds=new Set(Object.keys(delById));
-    return {...remote,...local,
-      transactions:Object.values(txById).filter(t=>!deletedIds.has(t.id)),
-      deletedTransactions:Object.values(delById),
-      deliveries:Object.values(deliv)};
+    // Merge arrays by ID (last-write-wins per item)
+    const mergeById=(rArr,lArr)=>{const m={};(rArr||[]).forEach(x=>{m[x.id]=x;});(lArr||[]).forEach(x=>{m[x.id]=x;});return Object.values(m);};
+    const txs=mergeById(remote.transactions,local.transactions);
+    const dels=mergeById(remote.deletedTransactions,local.deletedTransactions);
+    const delivs=mergeById(remote.deliveries,local.deliveries);
+    const costH=mergeById(remote.costHistory,local.costHistory);
+    const stTakes=mergeById(remote.stockTakes,local.stockTakes);
+    // Filter out deleted transactions
+    const deletedIds=new Set(dels.map(d=>d.id));
+    // For non-array keys: prefer local (most recent editor wins), but include remote-only keys
+    const merged={};
+    for(const k of new Set([...Object.keys(remote),...Object.keys(local)])){
+      if(['transactions','deletedTransactions','deliveries','costHistory','stockTakes'].includes(k)) continue;
+      merged[k]=(k in local)?local[k]:remote[k];
+    }
+    merged.transactions=txs.filter(t=>!deletedIds.has(t.id));
+    merged.deletedTransactions=dels;
+    merged.deliveries=delivs;
+    merged.costHistory=costH;
+    merged.stockTakes=stTakes;
+    return merged;
   },
 
   _rerender(){
@@ -1010,10 +1017,10 @@ const Sync = {
   },
 
   async poll(){
-    if(!navigator.onLine) return;
+    if(!navigator.onLine||this._pushLock) return;
     const remote=await this.pull();
     if(!remote) return;
-    const local=DB.get();
+    const local=DB.get(); // Fresh read after async pull
     const rSig=JSON.stringify([
       (remote.transactions||[]).map(t=>t.id).sort(),
       (remote.deletedTransactions||[]).map(t=>t.id).sort(),
@@ -1026,6 +1033,9 @@ const Sync = {
     ]);
     if(rSig!==lSig){
       const merged=this._merge(remote,local);
+      // Re-check: if local was modified during our async merge, skip
+      const fresh=DB.get();
+      if(fresh._v!==local._v){ console.warn('[Sync] local changed during poll, skipping merge'); return; }
       DB._cache=merged; DB.save(merged);
       this._rerender();
     }
@@ -1084,6 +1094,7 @@ const DB = {
   save(d) {
     try{
       localStorage.setItem(this.KEY, JSON.stringify(d));
+      return true;
     }catch(e){
       if(e.name==='QuotaExceededError'||e.code===22){
         let banner=document.getElementById('storage-full-banner');
@@ -1095,6 +1106,7 @@ const DB = {
           document.body.prepend(banner);
         }
         console.error('[DB] QuotaExceededError — localStorage full');
+        return false;
       }
     }
   },
@@ -1127,7 +1139,7 @@ const DB = {
     }
     if(changed)this.commit();
   },
-  commit(){ this.save(this._cache); if(typeof Sync!=='undefined') Sync.scheduleSync(); },
+  commit(){ this._cache._v=(this._cache._v||0)+1; const ok=this.save(this._cache); if(ok&&typeof Sync!=='undefined') Sync.scheduleSync(); return ok; },
   reset() { localStorage.removeItem(this.KEY); this._cache = null; location.reload(); }
 };
 
@@ -1145,7 +1157,7 @@ const Auth = {
     const s = sessionStorage.getItem('bob_session_v4');
     if (s) this._user = JSON.parse(s);
   },
-  logout() { this._user=null; sessionStorage.removeItem('bob_session_v4'); },
+  logout() { this._user=null; sessionStorage.removeItem('bob_session_v4'); if(typeof Sync!=='undefined'&&Sync._pollInterval){clearInterval(Sync._pollInterval);Sync._pollInterval=null;} },
   user()    { return this._user; },
   is(role)  { return this._user && this._user.role === role; },
   isAtLeast(role) {
@@ -1304,7 +1316,8 @@ const PIN = {
   },
   verify() {
     const user=Auth.user(); const fresh=DB.get().users.find(u=>u.id===user.id);
-    if(this._entry===(fresh?.pin||'1234')){
+    if(!fresh?.pin){document.getElementById('pin-error').textContent='No PIN set. Contact admin.';this._entry='';setTimeout(()=>this.renderDots(),300);return;}
+    if(this._entry===fresh.pin){
       document.getElementById('pin-overlay').classList.remove('show'); this._entry=''; this.reset();
     } else {
       document.getElementById('pin-error').textContent='Incorrect PIN. Try again.';
@@ -1314,8 +1327,11 @@ const PIN = {
 };
 
 // Idle activity tracking — reset PIN timer on user interaction
+// Idle activity tracking — use AbortController to prevent duplicate listeners
+if(window._idleAC) window._idleAC.abort();
+window._idleAC=new AbortController();
 ['click','keydown','touchstart','mousemove','scroll'].forEach(ev=>{
-  window.addEventListener(ev,()=>{ if(Auth.user()&&!document.getElementById('pin-overlay')?.classList.contains('show')) PIN.reset(); },{passive:true});
+  window.addEventListener(ev,()=>{ if(Auth.user()&&!document.getElementById('pin-overlay')?.classList.contains('show')) PIN.reset(); },{passive:true,signal:window._idleAC.signal});
 });
 
 // Reason options
@@ -1452,7 +1468,7 @@ const Pages = {
         <div style="margin-bottom:8px;font-weight:600;font-size:.85rem">Category</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px" id="cat-chips">
           <span class="filter-chip ${!this._logData.catId?'active':''}" onclick="Pages._selectCat(null)">All</span>
-          ${(this._logData.ptId?cats.filter(c=>c.ptId===this._logData.ptId):cats).map(c=>`<span class="filter-chip ${this._logData.catId===c.id?'active':''}" onclick="Pages._selectCat('${c.id}')">${c.name}</span>`).join('')}
+          ${(this._logData.ptId?cats.filter(c=>c.ptId===this._logData.ptId):cats).map(c=>`<span class="filter-chip ${this._logData.catId===c.id?'active':''}" onclick="Pages._selectCat(this.dataset.cid)" data-cid="${UI.esc(c.id)}">${UI.esc(c.name)}</span>`).join('')}
         </div>
         <div style="margin-bottom:10px;font-weight:600;font-size:.85rem">Search & Select Product</div>
         <div class="search-input" style="margin-bottom:12px">
@@ -1644,7 +1660,7 @@ const Pages = {
     if(this._logData.catId) cats=[this._logData.catId];
     const prods=d.products.filter(p=>p.active&&cats.includes(p.catId)&&(!search||p.name.toLowerCase().includes(search)||p.id.toLowerCase().includes(search)));
     const grid=document.getElementById('prod-grid'); if(!grid)return;
-    grid.innerHTML=prods.map(p=>`<div class="product-card-sel ${this._logData.productId===p.id?'selected':''}" onclick="Pages._selectProduct('${p.id}')"><div class="pname">${p.name}</div><div class="pref">${p.id}</div></div>`).join('')||'<div style="color:#9ca3af;font-size:.8rem;grid-column:1/-1;padding:12px 0">No products found</div>';
+    grid.innerHTML=prods.map(p=>`<div class="product-card-sel ${this._logData.productId===p.id?'selected':''}" onclick="Pages._selectProduct(this.dataset.pid)" data-pid="${UI.esc(p.id)}"><div class="pname">${UI.esc(p.name)}</div><div class="pref">${UI.esc(p.id)}</div></div>`).join('')||'<div style="color:#9ca3af;font-size:.8rem;grid-column:1/-1;padding:12px 0">No products found</div>';
     const btn=document.getElementById('step2-next'); if(btn)btn.disabled=!this._logData.productId;
   },
   _selectProduct(id) {
@@ -1668,7 +1684,7 @@ const Pages = {
       const fromOpts=FROM_OPTIONS[this._logData.type]||[];
       const toOpts=TO_OPTIONS[this._logData.type]||[];
       const isReturn=this._logData.type==='return_in';
-      if(!qty||qty<1){UI.toast('Please enter a valid quantity','error');return;}
+      if(Number.isNaN(qty)||!qty||qty<1){UI.toast('Please enter a valid quantity','error');return;}
       if(!name){UI.toast('Please enter your name','error');return;}
       if(!reasonSel){UI.toast('Please select a reason','error');return;}
       if(fromOpts.length&&!fromSel){UI.toast('Please select where stock is coming from','error');return;}
@@ -1792,7 +1808,7 @@ const Pages = {
     if(ageMs>300000){UI.toast('Undo window expired — movements can only be undone within 5 minutes.','error');this._renderTodayMovements();return;}
     const icon=t.type==='in'?'▲':t.type==='return_in'?'↩':'▼';
     const prodName=UI.productName(t.productId);
-    UI.confirm('Undo Movement',`Undo ${icon} ${t.qty}× ${prodName}? This will reverse the stock movement.`,()=>{
+    UI.confirm('Undo Movement',`Undo ${icon} ${t.qty}× ${UI.esc(prodName)}? This will reverse the stock movement.`,()=>{
       const d2=DB.get();const t2=d2.transactions.find(tx=>tx.id===id);
       if(!t2){UI.toast('Movement not found','error');return;}
       const idx=d2.transactions.findIndex(tx=>tx.id===id);
@@ -1920,7 +1936,7 @@ const Pages = {
             <div style="font-size:.7rem;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Category</div>
             <div id="st-cat-chips" style="display:flex;gap:6px;flex-wrap:wrap">
               <span class="filter-chip active" onclick="Pages._stSelectCat(null)">All</span>
-              ${(this._stPtId?d.categories.filter(c=>c.ptId===this._stPtId):d.categories).map(c=>`<span class="filter-chip ${this._stCatId===c.id?'active':''}" onclick="Pages._stSelectCat('${c.id}')">${c.name}</span>`).join('')}
+              ${(this._stPtId?d.categories.filter(c=>c.ptId===this._stPtId):d.categories).map(c=>`<span class="filter-chip ${this._stCatId===c.id?'active':''}" onclick="Pages._stSelectCat(this.dataset.cid)" data-cid="${UI.esc(c.id)}">${UI.esc(c.name)}</span>`).join('')}
             </div>
           </div>
           <div id="st-store-label" style="margin-bottom:10px;font-size:.85rem;color:#6b7280;font-weight:600">
@@ -2700,7 +2716,7 @@ const Pages = {
     const d=DB.get(); if(d.products.find(p=>p.id===id)){UI.toast('Product ID exists','error');return;}
     const _nameLower=name.toLowerCase();
     const _dup=d.products.find(p=>p.active&&p.name.toLowerCase()===_nameLower);
-    if(_dup){UI.confirm('Duplicate Product',`A product named "${_dup.name}" already exists. Add anyway?`,()=>Pages._doAddProduct(id,name,catId,price,franDisc),'Add Anyway',false);return;}
+    if(_dup){UI.confirm('Duplicate Product',`A product named "${UI.esc(_dup.name)}" already exists. Add anyway?`,()=>Pages._doAddProduct(id,name,catId,price,franDisc),'Add Anyway',false);return;}
     Pages._doAddProduct(id,name,catId,price,franDisc);
   },
   _doAddProduct(id,name,catId,price,franDisc){
@@ -2724,9 +2740,9 @@ const Pages = {
     DB.commit(); UI.closeModal(); UI.toast('Updated','success'); this._refreshSettings('products');
   },
   _deleteProduct(productId) {
-    UI.confirm('Remove Product',`Remove "${UI.productName(productId)}"? This will deactivate the product.`,()=>{
+    UI.confirm('Remove Product',`Remove "${UI.esc(UI.productName(productId))}"? This will deactivate the product.`,()=>{
       const d=DB.get(); const p=d.products.find(pr=>pr.id===productId);
-      if(p){p.active=false;d.thresholds=d.thresholds.filter(t=>t.productId!==productId);DB.commit();UI.toast('Removed','info');Pages._refreshSettings('products');}
+      if(p){p.active=false;d.thresholds=d.thresholds.filter(t=>t.productId!==productId);d.costHistory=(d.costHistory||[]).filter(h=>h.productId!==productId);d.stockTakes=(d.stockTakes||[]).filter(s=>!s.lines||!s.lines.some(l=>l.productId===productId)||Object.assign(s,{lines:s.lines.filter(l=>l.productId!==productId)}));DB.commit();UI.toast('Removed','info');Pages._refreshSettings('products');}
     },'Remove');
   },
 
@@ -2798,7 +2814,7 @@ const Pages = {
       return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty||''}" min="0" placeholder="Not set" style="max-width:100px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays||''}" min="0" placeholder="—" style="max-width:80px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
     }).join('')}</tbody></table>`;
   },
-  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty)return;const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,leadDays});DB.commit();UI.toast('Saved','success');},
+  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty||minQty<0){UI.toast('Min quantity must be a positive number','error');return;}if(leadDays!==null&&leadDays<0){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,leadDays});DB.commit();UI.toast('Saved','success');},
   _removeThr(productId,storeId){const d=DB.get();d.thresholds=d.thresholds.filter(t=>!(t.productId===productId&&t.storeId===storeId));DB.commit();this._renderThresholds();UI.toast('Cleared','info');},
 
 
@@ -2867,7 +2883,7 @@ const Pages = {
       <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="eu-name" value="${u.name}"></div>
       <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="eu-user" value="${u.username}"></div>
       <div class="form-group"><label class="form-label">New Password (leave blank to keep)</label><input type="password" class="form-input" id="eu-pass"></div>
-      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="${u.pin||'1234'}" style="max-width:100px"></div>
+      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="${u.pin||''}" placeholder="Set PIN" style="max-width:100px"></div>
       <div class="form-group"><label class="form-label">Role</label>
         <select class="form-select" id="eu-role" onchange="Pages._toggleUserStoreField('eu-stores-grp','eu-role')">
           ${['staff','franchisee','store_manager','territory_manager','head_office','director'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r.replace(/_/g,' ')}</option>`).join('')}
@@ -2965,18 +2981,23 @@ const Pages = {
   _importBackup() {
     const file=document.getElementById('backup-file-input')?.files?.[0];
     if(!file){UI.toast('Please select a backup file','error');return;}
-    if(!confirm('⚠️ This will REPLACE all current app data with the backup.\nThis cannot be undone. Continue?'))return;
+    
+    UI.confirm('Restore Backup','⚠ This will REPLACE all current app data with the backup. This cannot be undone.',()=>{
     const reader=new FileReader();
     reader.onload=e=>{
       try{
         const data=JSON.parse(e.target.result);
-        if(!data.products||!data.stores||!data.transactions){throw new Error('File does not appear to be a valid BOB backup.');}
+        if(!data.products||!data.stores||!data.transactions||!data.users||!data.categories){throw new Error('Missing required data fields (products, stores, transactions, users, categories).');}
+      if(!Array.isArray(data.products)||!Array.isArray(data.stores)||!Array.isArray(data.transactions)||!Array.isArray(data.users)||!Array.isArray(data.categories)){throw new Error('Data fields must be arrays.');}
+      if(!data.products.every(p=>p.id&&p.name)){throw new Error('Invalid product data: each product needs id and name.');}
+      if(!data.stores.every(s=>s.id&&s.name)){throw new Error('Invalid store data: each store needs id and name.');}
         localStorage.setItem(DB.KEY,e.target.result);DB._cache=null;
         UI.toast('Data restored — reloading in 2 seconds...','success');
         setTimeout(()=>location.reload(),2000);
       }catch(err){UI.toast('Restore failed: '+err.message,'error');}
     };
     reader.readAsText(file);
+    },'Restore');
   },
   _dirDataBackup(elId) {
     const el=elId?document.getElementById(elId):null;if(!el)return;
@@ -4207,7 +4228,7 @@ const Pages = {
     '<button class="btn btn-secondary" onclick="UI.closeModal()">Close</button>');
   },
   _deleteCostEntry(entryId, productId){
-    if(!confirm('Remove this cost entry?'))return;
+    UI.confirm('Remove Cost Entry','Remove this cost entry? This cannot be undone.',()=>{
     const d=DB.get();
     d.costHistory=(d.costHistory||[]).filter(h=>h.id!==entryId);
     // Recalculate product.costPrice to most recent remaining
@@ -4218,6 +4239,7 @@ const Pages = {
     UI.closeModal();
     UI.toast('Entry removed','info');
     this.directorCosts();
+    },'Remove');
   },
 
   // ── Stock Take PIN management (Director/Manager only) ──
@@ -4623,7 +4645,7 @@ const Pages = {
     DB.commit(); UI.toast(`PIN set: ${pin} (valid 24h)`,'success'); this._refreshSettings('users');
   },
   _clearStockTakePin(){
-    if(!confirm('Clear the Stock Take PIN? Staff will be locked out.'))return;
+    
     const d=DB.get(); d.stockTakePin={pin:null,expiresAt:null};
     DB.commit(); UI.toast('PIN cleared','info'); this._refreshSettings('users');
   },
