@@ -25,6 +25,7 @@
   --sidebar-w: 240px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--black); font-size: 14px; }
 .bob-logo { text-align: center; line-height: 1.1; }
 .logo-bang, .logo-brows { font-family: 'Playfair Display', serif; font-weight: 700; letter-spacing: .18em; color: var(--black); }
@@ -203,6 +204,11 @@ tbody tr:last-child td { border-bottom: none; }
   .main-wrap { padding-bottom: 70px; }
 }
 @media (min-width: 901px) { .mobile-nav { display: none; } }
+
+/* iOS zoom: inputs ≥16px prevents Safari auto-zoom on focus */
+@media (max-width: 900px) {
+  .form-input, .form-select, .form-textarea, input, select, textarea { font-size: 16px !important; }
+}
 
 /* ── Additional mobile fixes ─────────────────────────────────────────────── */
 /* Stats grid was missing from the 768px breakpoint */
