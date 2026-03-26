@@ -187,7 +187,7 @@ tbody tr:last-child td { border-bottom: none; }
 .warehouse-tag { display: inline-flex; align-items: center; background: #f0f9ff; color: #0369a1; padding: 3px 10px; border-radius: 20px; font-size: .65rem; font-weight: 700; border: 1px solid #bae6fd; }
 .cost-history-item { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 10px 14px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
 @media (max-width: 900px) {
-  #sidebar { position: fixed; left: -100%; top: 0; height: 100vh; z-index: 100; transition: left .25s; }
+  #sidebar { position: fixed; left: -100%; top: 0; height: 100vh; z-index: 200; transition: left .25s; }
   #sidebar.open { left: 0; display: flex; }
   .mobile-topbar { display: flex !important; }
 
@@ -894,7 +894,7 @@ const Sync = {
   FILE:  'data/bob-stock-data.json',
   // Token split to avoid secret-scanner false positives in repo
   TOKEN: ['github_pat_','11CARCLKI063eF','DsFbhKAu_JMNYi53OdsKvTy6s4SAtul4YUdymifTCWZLPFUmgSbpYYHVHXEIc71D5MGc'].join(''),
-  _sha: null, _syncing: false, _pendingSync: false,
+  _sha: null, _syncing: false, _pendingSync: false, _retryCount: 0,
   _debounceTimer: null, _pollInterval: null, _statusEl: null, _hideTimer: null,
 
   get _url(){ return `https://api.github.com/repos/${this.REPO}/contents/${this.FILE}`; },
@@ -929,7 +929,8 @@ const Sync = {
 
   async pull(){
     try{
-      const res = await fetch(this._url, {headers:this._hdrs()});
+      const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),15000);
+      const res = await fetch(this._url, {headers:this._hdrs(),signal:ac.signal});clearTimeout(tid);
       if(res.status===404) return null;
       if(!res.ok) throw new Error(res.status);
       const j = await res.json();
@@ -946,13 +947,23 @@ const Sync = {
       const content = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
       const body = {message:`sync ${new Date().toISOString()}`,content,
                     ...(this._sha?{sha:this._sha}:{})};
+      const ac2=new AbortController();const tid2=setTimeout(()=>ac2.abort(),15000);
       const res = await fetch(`https://api.github.com/repos/${this.REPO}/contents/${this.FILE}`,{
         method:'PUT',
         headers:{...this._hdrs(),'Content-Type':'application/json'},
-        body:JSON.stringify(body)
-      });
+        body:JSON.stringify(body),
+        signal:ac2.signal
+      });clearTimeout(tid2);
       if(res.status===409){
+        // SHA conflict – re-read, merge, retry (max 3 times)
         this._syncing=false;
+        this._retryCount=(this._retryCount||0)+1;
+        if(this._retryCount>3){
+          this._retryCount=0;
+          localStorage.setItem('bob_sync_pending','1');
+          this._showStatus('⚠ Sync conflict — will retry on next save');
+          return;
+        }
         const remote=await this.pull();
         if(remote) return this.push(this._merge(remote,data));
         return;
@@ -960,6 +971,7 @@ const Sync = {
       if(!res.ok) throw new Error(res.status);
       const r=await res.json();
       this._sha=r.content.sha;
+      this._retryCount=0;
       localStorage.removeItem('bob_sync_pending');
       this._showStatus('✓ Synced', true);
     }catch(e){
@@ -1002,9 +1014,17 @@ const Sync = {
     const remote=await this.pull();
     if(!remote) return;
     const local=DB.get();
-    const rIds=JSON.stringify((remote.transactions||[]).map(t=>t.id).sort());
-    const lIds=JSON.stringify((local.transactions||[]).map(t=>t.id).sort());
-    if(rIds!==lIds){
+    const rSig=JSON.stringify([
+      (remote.transactions||[]).map(t=>t.id).sort(),
+      (remote.deletedTransactions||[]).map(t=>t.id).sort(),
+      (remote.deliveries||[]).map(d=>d.id).sort()
+    ]);
+    const lSig=JSON.stringify([
+      (local.transactions||[]).map(t=>t.id).sort(),
+      (local.deletedTransactions||[]).map(t=>t.id).sort(),
+      (local.deliveries||[]).map(d=>d.id).sort()
+    ]);
+    if(rSig!==lSig){
       const merged=this._merge(remote,local);
       DB._cache=merged; DB.save(merged);
       this._rerender();
@@ -1061,7 +1081,23 @@ const DB = {
     };
     this.save(d); return d;
   },
-  save(d) { localStorage.setItem(this.KEY, JSON.stringify(d)); },
+  save(d) {
+    try{
+      localStorage.setItem(this.KEY, JSON.stringify(d));
+    }catch(e){
+      if(e.name==='QuotaExceededError'||e.code===22){
+        let banner=document.getElementById('storage-full-banner');
+        if(!banner){
+          banner=document.createElement('div');
+          banner.id='storage-full-banner';
+          banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:white;text-align:center;padding:10px 16px;font-weight:600;font-size:.875rem';
+          banner.innerHTML='⚠ Storage Full — App data cannot be saved. Please export a backup and clear old data.';
+          document.body.prepend(banner);
+        }
+        console.error('[DB] QuotaExceededError — localStorage full');
+      }
+    }
+  },
   get()   {
     if(!this._cache){ this._cache=this.load(); this._migrate(); }
     return this._cache;
@@ -1077,6 +1113,8 @@ const DB = {
     this._cache.products.forEach(p=>{if(p.franchiseMarkup!==undefined&&p.franchiseDiscount===undefined){p.franchiseDiscount=p.franchiseMarkup;delete p.franchiseMarkup;changed=true;}});
     // Add weightGrams to products if missing
     this._cache.products.forEach(p=>{if(p.weightGrams===undefined){p.weightGrams=null;changed=true;}});
+    // Add internalUse to products if missing
+    this._cache.products.forEach(p=>{if(p.internalUse===undefined){p.internalUse=false;changed=true;}});
     // Add cockburn_office franchise store if missing
     if(!this._cache.stores.find(s=>s.id==='cockburn_office')){
       this._cache.stores.push({id:'cockburn_office',name:'Cockburn Franchise Office',type:'warehouse',active:true,isFranchise:true,isFranchiseOffice:true,franchiseDiscount:null});
@@ -1219,6 +1257,15 @@ const UI = {
   },
   closeModal() { document.getElementById('modal-overlay').classList.remove('show'); },
   fmt(n)     { return n==null?'—':'$'+parseFloat(n).toFixed(2); },
+  esc(s){ const _d=document.createElement('div');_d.textContent=String(s??'');return _d.innerHTML; },
+  confirm(title,msg,onOk,okLabel,danger){
+    okLabel=okLabel||'Confirm'; danger=danger!==false;
+    this._confirmCb=onOk;
+    this.modal(title,`<p style="color:#374151;margin:0;font-size:.95rem">${msg}</p>`,
+      `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button>`+
+      `<button class="btn ${danger?'btn-danger':'btn-primary'}" onclick="UI.closeModal();UI._confirmCb&&UI._confirmCb();">${okLabel}</button>`);
+  },
+  _confirmCb:null,
   fmtDate(d) { return d?new Date(d).toLocaleDateString('en-AU',{day:'2-digit',month:'short',year:'numeric'}):'—'; },
   catName(catId)  { return DB.get().categories.find(c=>c.id===catId)?.name||catId; },
   ptName(ptId)    { return DB.get().productTypes.find(p=>p.id===ptId)?.name||ptId; },
@@ -1265,6 +1312,11 @@ const PIN = {
     }
   }
 };
+
+// Idle activity tracking — reset PIN timer on user interaction
+['click','keydown','touchstart','mousemove','scroll'].forEach(ev=>{
+  window.addEventListener(ev,()=>{ if(Auth.user()&&!document.getElementById('pin-overlay')?.classList.contains('show')) PIN.reset(); },{passive:true});
+});
 
 // Reason options
 const REASONS = {
@@ -1432,7 +1484,7 @@ const Pages = {
         </div>
         <div class="form-group">
           <label class="form-label">Quantity *</label>
-          <input type="number" class="form-input" id="inp-qty" min="1" value="${this._logData.qty||''}" placeholder="Enter quantity" style="max-width:180px">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="inp-qty" min="1" step="1" value="${this._logData.qty||''}" placeholder="Enter quantity" style="max-width:180px">
         </div>
         ${fromOpts.length?`<div class="form-group">
           <label class="form-label">${isReturn?'Returned From *':'Stock Coming From *'}</label>
@@ -1641,7 +1693,7 @@ const Pages = {
     const d=DB.get();
     const isReturnSub=this._logData.type==='return_in';
     const txn={
-      id:'txn_'+Date.now(), date:new Date().toISOString().slice(0,10),
+      id:'txn_'+Date.now()+'_'+Math.random().toString(36).slice(2,8), date:new Date().toISOString().slice(0,10),
       storeId:this._getLogStoreId(), productId:this._logData.productId,
       type:this._logData.type, qty:this._logData.qty,
       staffName:this._logData.staffName, reason:this._logData.reason||'',
@@ -1652,6 +1704,10 @@ const Pages = {
       returnCondition:isReturnSub?(this._logData.returnCondition||null):null,
       editLog:[], createdAt:new Date().toISOString()
     };
+    if(txn.type==='out'||txn.type==='move_out'){
+      const avail=Stock.qty(txn.productId,txn.storeId);
+      if(avail<txn.qty){UI.toast(`⚠ Insufficient stock — only ${avail} unit${avail!==1?'s':''} available`,'error');return;}
+    }
     d.transactions.push(txn); DB.commit();
     const icon=this._logData.type==='in'?'▲':isReturnSub?'↩':'▼';
     UI.toast(`Movement logged — ${icon} ${this._logData.qty} × ${UI.productName(this._logData.productId)}`,'success');
@@ -1736,9 +1792,19 @@ const Pages = {
     if(ageMs>300000){UI.toast('Undo window expired — movements can only be undone within 5 minutes.','error');this._renderTodayMovements();return;}
     const icon=t.type==='in'?'▲':t.type==='return_in'?'↩':'▼';
     const prodName=UI.productName(t.productId);
-    if(!confirm(`Undo ${icon} ${t.qty}× ${prodName}?\nThis will reverse the stock movement.`))return;
-    const idx=d.transactions.findIndex(tx=>tx.id===id);
-    if(idx>=0){d.transactions.splice(idx,1);DB.commit();UI.toast(`Movement undone — ${icon} ${t.qty}× ${prodName}`,'success');this._renderTodayMovements();}
+    UI.confirm('Undo Movement',`Undo ${icon} ${t.qty}× ${prodName}? This will reverse the stock movement.`,()=>{
+      const d2=DB.get();const t2=d2.transactions.find(tx=>tx.id===id);
+      if(!t2){UI.toast('Movement not found','error');return;}
+      const idx=d2.transactions.findIndex(tx=>tx.id===id);
+      if(idx>=0){
+        if(!d2.deletedTransactions)d2.deletedTransactions=[];
+        d2.deletedTransactions.push({...t2,_deletedAt:new Date().toISOString(),_deletedBy:Auth.user()?.name||Auth.user()?.username||'unknown',_deleteReason:'Undo — reversed within 5 min window'});
+        d2.transactions.splice(idx,1);
+        DB.commit();
+        UI.toast(`Movement undone — ${icon} ${t2.qty}× ${prodName}`,'success');
+        Pages._renderTodayMovements();
+      }
+    },'Undo');
   },
 
   // ── Store Stock (Manager/Franchisee) ──
@@ -2349,7 +2415,7 @@ const Pages = {
       const uChg=pctChg(aD.units,bD.units); const vChg=pctChg(aD.val,bD.val);
       let dirCols='';
       if(isDir){
-        const calcProfit=(from,to)=>d.transactions.filter(t=>t.storeId===s.id&&t.type==='out'&&(!from||t.date>=from)&&(!to||t.date<=to)).reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);const c=Stock.costAtDate(t.productId,t.date);return p&&c!=null?a+(p.price-c)*t.qty:a;},0);
+        const calcProfit=(from,to)=>d.transactions.filter(t=>t.storeId===s.id&&t.type==='out'&&(!from||t.date>=from)&&(!to||t.date<=to)).reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);const c=Stock.costAtDate(t.productId,t.date);return p&&c!=null&&p.price!=null?a+(p.price-c)*t.qty:a;},0);
         const aP=calcProfit(aFrom,aTo); const bP=calcProfit(bFrom,bTo); const pChg=pctChg(aP,bP);
         dirCols=`<td>${UI.fmt(aP)}</td><td>${UI.fmt(bP)}</td><td style="color:${chgColor(pChg)};font-weight:700">${chgTxt(pChg)}</td>`;
       }
@@ -2613,10 +2679,11 @@ const Pages = {
       const franStore=d.stores.find(s=>s.isFranchise&&s.active);
       const discPct=p.franchiseDiscount??franStore?.franchiseDiscount??null;
       const franPrice=p.price&&discPct!=null?p.price*(1-discPct/100):null;
-      return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td><td>${p.price?UI.fmt(p.price):'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>'}</td>${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
+      return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td><td>${p.price?UI.fmt(p.price):(p.internalUse?'<span style="color:#9ca3af;font-size:.75rem">Internal use</span>':'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>')}</td>${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
     }).join('')}</tbody></table>`;
   },
   _setProductFranDisc(productId, val) {
+    val=String(Math.max(0,Math.min(100,parseFloat(val)||0)));
     const d=DB.get(); const p=d.products.find(pr=>pr.id===productId);
     if(p){ p.franchiseDiscount=val?parseFloat(val):null; DB.commit(); UI.toast('Discount updated','success'); this._renderProductsTable(); }
   },
@@ -2633,13 +2700,18 @@ const Pages = {
     const d=DB.get(); if(d.products.find(p=>p.id===id)){UI.toast('Product ID exists','error');return;}
     const _nameLower=name.toLowerCase();
     const _dup=d.products.find(p=>p.active&&p.name.toLowerCase()===_nameLower);
-    if(_dup&&!confirm(`A product named "${_dup.name}" already exists.\nAdd anyway?`))return;
-    d.products.push({id,name,catId,price,weightGrams:null,franchiseDiscount:franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null}); DB.commit();
-    UI.closeModal(); UI.toast(`"${name}" added`,'success'); this._refreshSettings('products');
+    if(_dup){UI.confirm('Duplicate Product',`A product named "${_dup.name}" already exists. Add anyway?`,()=>Pages._doAddProduct(id,name,catId,price,franDisc),'Add Anyway',false);return;}
+    Pages._doAddProduct(id,name,catId,price,franDisc);
+  },
+  _doAddProduct(id,name,catId,price,franDisc){
+    const d=DB.get();
+    d.products.push({id,name,catId,price,internalUse:false,weightGrams:null,franchiseDiscount:franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null});
+    DB.commit();
+    UI.closeModal(); UI.toast(`"${name}" added`,'success'); Pages._refreshSettings('products');
   },
   _editProductModal(productId) {
     const p=DB.get().products.find(p=>p.id===productId); const d=DB.get();
-    UI.modal('Edit Product',`<div class="form-group"><label class="form-label">Product Name *</label><input class="form-input" id="ep-name" value="${p.name}"></div><div class="form-group"><label class="form-label">Category</label><select class="form-select" id="ep-cat">${d.categories.map(c=>`<option value="${c.id}" ${c.id===p.catId?'selected':''}>${c.name}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">Sell Price (AUD)</label><input type="number" class="form-input" id="ep-price" value="${p.price||''}" step="0.01" style="max-width:160px"></div>`,
+    UI.modal('Edit Product',`<div class="form-group"><label class="form-label">Product Name *</label><input class="form-input" id="ep-name" value="${p.name}"></div><div class="form-group"><label class="form-label">Category</label><select class="form-select" id="ep-cat">${d.categories.map(c=>`<option value="${c.id}" ${c.id===p.catId?'selected':''}>${c.name}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">Sell Price (AUD)</label><input type="number" class="form-input" id="ep-price" value="${p.price||''}" step="0.01" style="max-width:160px"></div><div class="form-group" style="display:flex;align-items:center;gap:10px;margin-top:8px"><input type="checkbox" id="ep-internal" ${p.internalUse?'checked':''} style="width:16px;height:16px;cursor:pointer"><label for="ep-internal" class="form-label" style="margin:0;cursor:pointer">Internal use only (hides sell price warning)</label></div>`,
       `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._saveEditProduct('${productId}')">Save</button>`);
   },
   _saveEditProduct(productId) {
@@ -2647,13 +2719,15 @@ const Pages = {
     p.name=document.getElementById('ep-name')?.value.trim()||p.name;
     p.catId=document.getElementById('ep-cat')?.value||p.catId;
     p.price=parseFloat(document.getElementById('ep-price')?.value)||null;
+    p.internalUse=document.getElementById('ep-internal')?.checked||false;
 
     DB.commit(); UI.closeModal(); UI.toast('Updated','success'); this._refreshSettings('products');
   },
   _deleteProduct(productId) {
-    if(!confirm(`Remove "${UI.productName(productId)}"?`))return;
-    const d=DB.get(); const p=d.products.find(p=>p.id===productId);
-    if(p){p.active=false;DB.commit();UI.toast('Removed','info');this._refreshSettings('products');}
+    UI.confirm('Remove Product',`Remove "${UI.productName(productId)}"? This will deactivate the product.`,()=>{
+      const d=DB.get(); const p=d.products.find(pr=>pr.id===productId);
+      if(p){p.active=false;d.thresholds=d.thresholds.filter(t=>t.productId!==productId);DB.commit();UI.toast('Removed','info');Pages._refreshSettings('products');}
+    },'Remove');
   },
 
   // ── Settings: Categories ──
@@ -2668,12 +2742,12 @@ const Pages = {
   _savePT(){const name=document.getElementById('npt-name')?.value.trim();if(!name)return;const d=DB.get();d.productTypes.push({id:'pt_'+Date.now(),name});DB.commit();UI.closeModal();UI.toast('Added','success');this._refreshSettings('categories');},
   _editPTModal(id){const pt=DB.get().productTypes.find(p=>p.id===id);UI.modal('Edit Product Type',`<div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="ept-name" value="${pt.name}"></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._updatePT(\''+id+'\')">Save</button>');},
   _updatePT(id){const name=document.getElementById('ept-name')?.value.trim();if(!name)return;const d=DB.get();const pt=d.productTypes.find(p=>p.id===id);pt.name=name;DB.commit();UI.closeModal();UI.toast('Updated','success');this._refreshSettings('categories');},
-  _deletePT(id){if(!confirm('Remove?'))return;const d=DB.get();d.productTypes=d.productTypes.filter(p=>p.id!==id);DB.commit();UI.toast('Removed','info');this._refreshSettings('categories');},
+  _deletePT(id){UI.confirm('Remove Product Type','Remove this product type?',()=>{const d=DB.get();d.productTypes=d.productTypes.filter(p=>p.id!==id);DB.commit();UI.toast('Removed','info');Pages._refreshSettings('categories');},'Remove');},
   _addCatModal(){const d=DB.get();UI.modal('Add Category',`<div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="nc-name"></div><div class="form-group"><label class="form-label">Product Type *</label><select class="form-select" id="nc-pt">${d.productTypes.map(pt=>`<option value="${pt.id}">${pt.name}</option>`).join('')}</select></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._saveCat()">Add</button>');},
   _saveCat(){const name=document.getElementById('nc-name')?.value.trim();const ptId=document.getElementById('nc-pt')?.value;if(!name)return;const d=DB.get();d.categories.push({id:'cat_'+Date.now(),name,ptId});DB.commit();UI.closeModal();UI.toast('Added','success');this._refreshSettings('categories');},
   _editCatModal(id){const c=DB.get().categories.find(c=>c.id===id);const d=DB.get();UI.modal('Edit Category',`<div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="ec-name" value="${c.name}"></div><div class="form-group"><label class="form-label">Product Type</label><select class="form-select" id="ec-pt">${d.productTypes.map(pt=>`<option value="${pt.id}" ${pt.id===c.ptId?'selected':''}>${pt.name}</option>`).join('')}</select></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._updateCat(\''+id+'\')">Save</button>');},
   _updateCat(id){const d=DB.get();const c=d.categories.find(c=>c.id===id);c.name=document.getElementById('ec-name')?.value.trim()||c.name;c.ptId=document.getElementById('ec-pt')?.value||c.ptId;DB.commit();UI.closeModal();UI.toast('Updated','success');this._refreshSettings('categories');},
-  _deleteCat(id){if(!confirm('Remove?'))return;const d=DB.get();d.categories=d.categories.filter(c=>c.id!==id);DB.commit();UI.toast('Removed','info');this._refreshSettings('categories');},
+  _deleteCat(id){UI.confirm('Remove Category','Remove this category?',()=>{const d=DB.get();d.categories=d.categories.filter(c=>c.id!==id);DB.commit();UI.toast('Removed','info');Pages._refreshSettings('categories');},'Remove');},
 
   // ── Settings: Stores ──
   settingsStores(elId) {
@@ -2749,7 +2823,7 @@ const Pages = {
       <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="nu-name"></div>
       <div class="form-group"><label class="form-label">Username *</label><input class="form-input" id="nu-user"></div>
       <div class="form-group"><label class="form-label">Password *</label><input type="password" class="form-input" id="nu-pass"></div>
-      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="number" class="form-input" id="nu-pin" placeholder="1234" maxlength="4" style="max-width:100px"></div>
+      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="nu-pin" placeholder="1234" maxlength="4" style="max-width:100px"></div>
       <div class="form-group"><label class="form-label">Role *</label>
         <select class="form-select" id="nu-role" onchange="Pages._toggleUserStoreField('nu-stores-grp','nu-role')">
           <option value="staff">Staff</option>
@@ -2793,7 +2867,7 @@ const Pages = {
       <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="eu-name" value="${u.name}"></div>
       <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="eu-user" value="${u.username}"></div>
       <div class="form-group"><label class="form-label">New Password (leave blank to keep)</label><input type="password" class="form-input" id="eu-pass"></div>
-      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="number" class="form-input" id="eu-pin" value="${u.pin||'1234'}" style="max-width:100px"></div>
+      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="${u.pin||'1234'}" style="max-width:100px"></div>
       <div class="form-group"><label class="form-label">Role</label>
         <select class="form-select" id="eu-role" onchange="Pages._toggleUserStoreField('eu-stores-grp','eu-role')">
           ${['staff','franchisee','store_manager','territory_manager','head_office','director'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r.replace(/_/g,' ')}</option>`).join('')}
@@ -2819,9 +2893,10 @@ const Pages = {
   },
   _deleteUser(id){
     const u=DB.get().users.find(u=>u.id===id);
-    if(!confirm(`Delete user "${u?.name}"? This cannot be undone.`))return;
-    const d=DB.get();d.users=d.users.filter(u=>u.id!==id);
-    DB.commit();UI.toast('Deleted','info');this._refreshSettings('users');
+    UI.confirm('Delete User',`Delete user "${u?.name}"? This cannot be undone.`,()=>{
+      const d=DB.get();d.users=d.users.filter(u2=>u2.id!==id);
+      DB.commit();UI.toast('Deleted','info');Pages._refreshSettings('users');
+    },'Delete');
   },
 
   // ── Director: Settings Hub (consolidated tab) ──
@@ -3165,7 +3240,7 @@ const Pages = {
             <div style="font-weight:700">🚚 ${sup}</div>
             ${sitems[0].contact?`<div style="font-size:.8rem;color:#6b7280">${sitems[0].contact}</div>`:''}
           </div>
-          <div style="overflow-x:auto"><table class="data-table">
+          <div class="tbl-wrap"><table class="data-table">
             <thead><tr><th>Product</th><th>Store</th><th>Current</th><th>Min</th><th>Reorder Qty</th><th>Lead Days</th></tr></thead>
             <tbody>${sitems.map(it=>`<tr>
               <td><strong>${it.product.name}</strong></td>
@@ -3197,7 +3272,7 @@ const Pages = {
         <span style="color:#6b7280;font-size:.8rem;align-self:center">${filtered.length} deleted movement${filtered.length!==1?'s':''}</span>
       </div>
       ${!filtered.length?'<div class="card card-body empty-state"><p>No deleted movements on record.</p></div>':
-      `<div style="overflow-x:auto"><table class="data-table">
+      `<div class="tbl-wrap card"><table class="data-table">
         <thead><tr><th>Deleted At</th><th>Deleted By</th><th>Reason</th><th>Original Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>Staff</th></tr></thead>
         <tbody>${filtered.map(t=>{
           const store=d.stores.find(s=>s.id===t.storeId);
@@ -3618,7 +3693,7 @@ const Pages = {
             <div style="font-weight:700">🚚 ${sup}</div>
             ${sitems[0].contact?`<div style="font-size:.8rem;color:#6b7280">${sitems[0].contact}</div>`:''}
           </div>
-          <div style="overflow-x:auto"><table class="data-table">
+          <div class="tbl-wrap"><table class="data-table">
             <thead><tr><th>Product</th><th>Store</th><th>Current</th><th>Min</th><th>Reorder Qty</th><th>Lead Days</th></tr></thead>
             <tbody>${sitems.map(it=>`<tr>
               <td><strong>${it.product.name}</strong></td>
@@ -3650,7 +3725,7 @@ const Pages = {
         <span style="color:#6b7280;font-size:.8rem;align-self:center">${filtered.length} deleted movement${filtered.length!==1?'s':''}</span>
       </div>
       ${!filtered.length?'<div class="card card-body empty-state"><p>No deleted movements on record.</p></div>':
-      `<div style="overflow-x:auto"><table class="data-table">
+      `<div class="tbl-wrap card"><table class="data-table">
         <thead><tr><th>Deleted At</th><th>Deleted By</th><th>Reason</th><th>Original Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>Staff</th></tr></thead>
         <tbody>${filtered.map(t=>{
           const store=d.stores.find(s=>s.id===t.storeId);
@@ -4305,6 +4380,7 @@ const Pages = {
     const lines=this._delLines||[];
     const validLines=lines.filter(ln=>ln.productId&&ln.qty&&ln.unitCost);
     if(!validLines.length){UI.toast('Add at least one complete product line','error');return;}
+    if(lines.some(ln=>ln.productId&&ln.qty<=0)){UI.toast('All product quantities must be greater than zero','error');return;}
     const freight=parseFloat(document.getElementById('del-freight')?.value)||0;
     const tax=parseFloat(document.getElementById('del-tax')?.value)||0;
     const customs=parseFloat(document.getElementById('del-customs')?.value)||0;
