@@ -1491,7 +1491,7 @@ const Pages = {
       const discountPct=isHOOut?(prod?.franchiseDiscount||destStore?.franchiseDiscount||null):null;
       const sellPrice=isHOOut?(prod?.price||null):null;
       const transferUnit=discountPct&&sellPrice?sellPrice*(1-discountPct/100):null;
-      const transferTotal=transferUnit?transferUnit*parseInt(this._logData.qty||0):null;
+      const transferTotal=transferUnit?transferUnit*parseInt(this._logData.qty||0, 10):null;
       const markupBanner=isHOOut?`<div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:10px;padding:14px 16px;margin-bottom:16px">
         <div style="font-weight:700;color:#7c3aed;margin-bottom:6px;font-size:.85rem">🔗 Franchise Transfer Pricing</div>
         ${transferUnit?`<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:.85rem;color:#6b7280">
@@ -1604,7 +1604,7 @@ const Pages = {
   _logNext() {
     if(this._logStep===2&&!this._logData.productId){UI.toast('Please select a product','error');return;}
     if(this._logStep===3){
-      const qty=parseInt(document.getElementById('inp-qty')?.value);
+      const qty=parseInt(document.getElementById('inp-qty')?.value, 10);
       const name=document.getElementById('inp-name')?.value.trim();
       const reasonSel=document.getElementById('inp-reason-sel')?.value;
       const reasonOther=document.getElementById('inp-reason-other')?.value.trim();
@@ -1899,7 +1899,7 @@ const Pages = {
     document.getElementById('st-rows').innerHTML=`<table><thead><tr><th>Product</th><th>System Qty</th><th>Physical Count</th><th>Difference</th></tr></thead><tbody>
       ${prods.map(p=>{
         const sys=Stock.qty(p.id,storeId); const val=this._stData[p.id]??'';
-        const diff=val!==''?(parseInt(val)-sys):'';
+        const diff=val!==''?(parseInt(val, 10)-sys):'';
         // Red=system>physical (diff<0), Green=match (diff=0), Yellow=physical>system (diff>0)
         const diffHtml=diff!==''?(diff===0?'<span class="badge badge-green">✓ Match</span>':diff>0?`<span class="badge badge-amber">+${diff} surplus</span>`:`<span class="badge badge-red">${diff} shortage</span>`):'';
         return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td><strong>${sys}</strong></td><td><input type="number" class="form-input" value="${val}" min="0" style="max-width:100px" oninput="Pages._updateSTRow('${p.id}',this.value,${sys})" placeholder="Count"></td><td id="st-diff-${p.id}">${diffHtml}</td></tr>`;
@@ -1907,7 +1907,7 @@ const Pages = {
   },
   _updateSTRow(productId,val,sys) {
     this._stData[productId]=val;
-    const diff=val!==''?(parseInt(val)-sys):'';
+    const diff=val!==''?(parseInt(val, 10)-sys):'';
     const el=document.getElementById('st-diff-'+productId);
     if(el)el.innerHTML=diff!==''?(diff===0?'<span class="badge badge-green">✓ Match</span>':diff>0?`<span class="badge badge-amber">+${diff} surplus</span>`:`<span class="badge badge-red">${diff} shortage</span>`):'';
   },
@@ -1916,7 +1916,7 @@ const Pages = {
     if(!entries.length){UI.toast('Please enter at least one count','error');return;}
     const storeId=this._stSelectedStoreId||Auth.storeId(); const d=DB.get();
     const take={ id:'st_'+Date.now(), date:new Date().toISOString().slice(0,10), storeId, completedBy:Auth.user().name,
-      items:entries.map(([productId,physical])=>({productId,systemCount:Stock.qty(productId,storeId),physicalCount:parseInt(physical),difference:parseInt(physical)-Stock.qty(productId,storeId)}))
+      items:entries.map(([productId,physical])=>({productId,systemCount:Stock.qty(productId,storeId),physicalCount:parseInt(physical, 10),difference:parseInt(physical, 10)-Stock.qty(productId,storeId)}))
     };
     d.stockTakes.push(take); DB.commit();
     const disc=take.items.filter(i=>i.difference!==0).length;
@@ -2724,7 +2724,7 @@ const Pages = {
       return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty||''}" min="0" placeholder="Not set" style="max-width:100px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays||''}" min="0" placeholder="—" style="max-width:80px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
     }).join('')}</tbody></table>`;
   },
-  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value)||null;if(!minQty)return;const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,leadDays});DB.commit();UI.toast('Saved','success');},
+  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty)return;const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,leadDays});DB.commit();UI.toast('Saved','success');},
   _removeThr(productId,storeId){const d=DB.get();d.thresholds=d.thresholds.filter(t=>!(t.productId===productId&&t.storeId===storeId));DB.commit();this._renderThresholds();UI.toast('Cleared','info');},
 
 
@@ -2960,7 +2960,7 @@ const Pages = {
     const d=DB.get();const p=d.products.find(pr=>pr.id===productId);if(!p)return;
     p.supplierName=document.getElementById('sup-name-'+productId)?.value.trim()||'';
     p.supplierContact=document.getElementById('sup-contact-'+productId)?.value.trim()||'';
-    p.leadDays=parseInt(document.getElementById('sup-lead-'+productId)?.value)||null;
+    p.leadDays=parseInt(document.getElementById('sup-lead-'+productId)?.value, 10)||null;
     DB.commit();UI.toast('Supplier info saved','success');
   },
   _dirMargins(elId) {
@@ -3225,7 +3225,7 @@ const Pages = {
     const visibleStores=isHO
       ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const days=parseInt(document.getElementById('ds-days')?.value)||30;
+    const days=parseInt(document.getElementById('ds-days')?.value, 10)||30;
     const storeFilter=document.getElementById('ds-store-filter')?.value||'';
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
     const cutoffStr=cutoff.toISOString().slice(0,10);
@@ -3289,7 +3289,7 @@ const Pages = {
     const visibleStores=isHO
       ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const days=parseInt(document.getElementById('str-days')?.value)||30;
+    const days=parseInt(document.getElementById('str-days')?.value, 10)||30;
     const storeFilter=document.getElementById('str-store')?.value||'';
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
     const cutoffStr=cutoff.toISOString().slice(0,10);
@@ -3678,7 +3678,7 @@ const Pages = {
     const visibleStores=isHO
       ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const days=parseInt(document.getElementById('ds-days')?.value)||30;
+    const days=parseInt(document.getElementById('ds-days')?.value, 10)||30;
     const storeFilter=document.getElementById('ds-store-filter')?.value||'';
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
     const cutoffStr=cutoff.toISOString().slice(0,10);
@@ -3742,7 +3742,7 @@ const Pages = {
     const visibleStores=isHO
       ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const days=parseInt(document.getElementById('str-days')?.value)||30;
+    const days=parseInt(document.getElementById('str-days')?.value, 10)||30;
     const storeFilter=document.getElementById('str-store')?.value||'';
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
     const cutoffStr=cutoff.toISOString().slice(0,10);
@@ -4218,9 +4218,9 @@ const Pages = {
           <td style="padding:6px 8px"><select class="form-select" style="width:100%" onchange="Pages._delLines[${i}].productId=this.value;Pages._updateDeliveryCalc()">
             <option value="">— select product —</option>${po}
           </select></td>
-          <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.qty}" min="1" style="width:70px;text-align:center" onchange="Pages._delLines[${i}].qty=parseInt(this.value)||1;Pages._updateDeliveryCalc()"></td>
+          <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.qty}" min="1" style="width:70px;text-align:center" onchange="Pages._delLines[${i}].qty=parseInt(this.value, 10)||1;Pages._updateDeliveryCalc()"></td>
           <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.unitCost}" min="0" step="0.01" style="width:100px;text-align:center" onchange="Pages._delLines[${i}].unitCost=parseFloat(this.value)||0;Pages._updateDeliveryCalc()"></td>
-          <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.weightGrams||''}" min="0" step="1" placeholder="g" style="width:80px;text-align:center" onchange="Pages._delLines[${i}].weightGrams=parseInt(this.value)||0;Pages._updateDeliveryCalc()"></td>
+          <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.weightGrams||''}" min="0" step="1" placeholder="g" style="width:80px;text-align:center" onchange="Pages._delLines[${i}].weightGrams=parseInt(this.value, 10)||0;Pages._updateDeliveryCalc()"></td>
           <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.packaging||0}" min="0" step="0.01" style="width:100px;text-align:center" onchange="Pages._delLines[${i}].packaging=parseFloat(this.value)||0;Pages._updateDeliveryCalc()"></td>
           <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.labelling||0}" min="0" step="0.01" style="width:100px;text-align:center" onchange="Pages._delLines[${i}].labelling=parseFloat(this.value)||0;Pages._updateDeliveryCalc()"></td>
           <td style="padding:6px 8px;text-align:center" id="del-landed-${i}"><span style="color:#9ca3af;font-size:.8rem">—</span></td>
@@ -4841,13 +4841,6 @@ function navigateTo(page) {
     'dir-users':          {id:'page-users',          fn:()=>{Pages._dsTab=null;Pages.directorUsers();}},
     'dir-costs':          {id:'page-costs',          fn:()=>Pages.directorCosts()},
     'dir-wastage':        {id:'page-wastage',        fn:()=>Pages.dirWastage()},
-    'dashboard':          {id:'page-dashboard',      fn:()=>Pages.dashboard()},
-    'reorder':            {id:'page-reorder',        fn:()=>Pages.reorderList()},
-    'audit-log':          {id:'page-audit-log',      fn:()=>Pages.auditLog()},
-    'dead-stock':         {id:'page-dead-stock',     fn:()=>Pages.deadStock()},
-    'sell-through':       {id:'page-sell-through',   fn:()=>Pages.sellThrough()},
-    'reconciliation':     {id:'page-reconciliation', fn:()=>Pages.stockReconciliation()},
-    'franchise-invoice':  {id:'page-franchise-invoice',fn:()=>Pages.franchiseInvoice()},
     'dashboard':          {id:'page-dashboard',      fn:()=>Pages.dashboard()},
     'reorder':            {id:'page-reorder',        fn:()=>Pages.reorderList()},
     'audit-log':          {id:'page-audit-log',      fn:()=>Pages.auditLog()},
