@@ -185,7 +185,7 @@ tbody tr:last-child td { border-bottom: none; }
 .franchise-badge { display: inline-flex; align-items: center; gap: 4px; background: #f5f3ff; color: #7c3aed; padding: 3px 10px; border-radius: 20px; font-size: .65rem; font-weight: 700; border: 1px solid #c4b5fd; }
 .warehouse-tag { display: inline-flex; align-items: center; background: #f0f9ff; color: #0369a1; padding: 3px 10px; border-radius: 20px; font-size: .65rem; font-weight: 700; border: 1px solid #bae6fd; }
 .cost-history-item { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 10px 14px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   #sidebar { position: fixed; left: -100%; top: 0; height: 100vh; z-index: 100; transition: left .25s; }
   #sidebar.open { left: 0; display: flex; }
   .mobile-topbar { display: flex !important; }
@@ -202,11 +202,11 @@ tbody tr:last-child td { border-bottom: none; }
   .mobile-nav-item svg { width: 20px; height: 20px; }
   .main-wrap { padding-bottom: 70px; }
 }
-@media (min-width: 769px) { .mobile-nav { display: none; } }
+@media (min-width: 901px) { .mobile-nav { display: none; } }
 
 /* ── Additional mobile fixes ─────────────────────────────────────────────── */
 /* Stats grid was missing from the 768px breakpoint */
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
   #modal-box { padding: 24px; max-height: 90vh; }
   #modal-overlay { padding: 12px; }
@@ -4863,6 +4863,7 @@ function navigateTo(page) {
 
   // Close mobile sidebar if open
   document.getElementById('sidebar')?.classList.remove('open');
+  const _ov=document.getElementById('sidebar-overlay'); if(_ov) _ov.style.display='none';
 
   // Scroll to top
   window.scrollTo(0,0);
