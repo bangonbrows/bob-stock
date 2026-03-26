@@ -159,13 +159,13 @@ tbody tr:last-child td { border-bottom: none; }
 .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; padding-top: 16px; border-top: 1px solid #f3f4f6; }
 .divider { border: none; border-top: 1px solid #f3f4f6; margin: 20px 0; }
 .text-rose  { color: var(--rose); }
-.text-muted { color: #9ca3af; }
+.text-muted { color: #6b7280; }
 .text-red   { color: #dc2626; }
 .text-green { color: #16a34a; }
 .text-amber { color: #d97706; }
 .fw-bold    { font-weight: 700; }
 .font-serif { font-family: 'Playfair Display', serif; }
-.empty-state { text-align: center; padding: 48px 24px; color: #9ca3af; }
+.empty-state { text-align: center; padding: 48px 24px; color: #6b7280; }
 .empty-state svg { width: 48px; height: 48px; margin: 0 auto 12px; opacity: .4; }
 .search-input { position: relative; }
 .search-input input { padding-left: 36px; }
@@ -211,6 +211,10 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ── Additional mobile fixes ─────────────────────────────────────────────── */
+/* Prevent Safari auto-zooms on focus */
+@media (max-width: 900px) {
+  .form-input, .form-select, .form-textarea, input, select, textarea { font-size: 16px !important; -webkit-text-size-adjust: 100%; }
+}
 /* Stats grid was missing from the 768px breakpoint */
 @media (max-width: 900px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
@@ -221,6 +225,12 @@ tbody tr:last-child td { border-bottom: none; }
   #toast-container { bottom: 80px; right: 12px; left: auto; max-width: calc(100vw - 24px); }
   .tab-bar { gap: 2px; }
   .tab-btn { padding: 8px 12px; font-size: .75rem; }
+}
+/* Tablet layout ~600px */
+@media (max-width: 600px) {
+  .grid-4, .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .product-select-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 }
 /* Small phones <= 480px */
 @media (max-width: 480px) {
@@ -243,7 +253,13 @@ tbody tr:last-child td { border-bottom: none; }
   [style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
   .step-indicator { margin-bottom: 16px; }
 }
-  </style>
+  .skip-to-content{position:absolute;top:-40px;left:0;background:var(--rose);color:white;padding:8px 16px;z-index:99999;font-weight:600;border-radius:0 0 8px 0;transition:top .2s;}.skip-to-content:focus{top:0;}
+:focus-visible{outline:2px solid var(--rose);outline-offset:2px;}
+/* Print styles */
+@media print {
+  #sidebar,.mobile-topbar,.mobile-nav,#modal-overlay,#pin-overlay,#toast-container,#offline-bar,#pwa-install-banner,#delivery-overlay,.btn{display:none!important;}
+  .main-wrap{padding:0!important;margin:0!important;}
+</style>
 </head>
 <body>
 
@@ -986,24 +1002,20 @@ const Sync = {
   _merge(remote, local){
     // Merge arrays by ID (last-write-wins per item)
     const mergeById=(rArr,lArr)=>{const m={};(rArr||[]).forEach(x=>{m[x.id]=x;});(lArr||[]).forEach(x=>{m[x.id]=x;});return Object.values(m);};
-    const txs=mergeById(remote.transactions,local.transactions);
-    const dels=mergeById(remote.deletedTransactions,local.deletedTransactions);
-    const delivs=mergeById(remote.deliveries,local.deliveries);
-    const costH=mergeById(remote.costHistory,local.costHistory);
-    const stTakes=mergeById(remote.stockTakes,local.stockTakes);
-    // Filter out deleted transactions
-    const deletedIds=new Set(dels.map(d=>d.id));
-    // For non-array keys: prefer local (most recent editor wins), but include remote-only keys
+    const idArrayKeys=new Set();
+    const allKeys=new Set([...Object.keys(remote),...Object.keys(local)]);
+    for(const k of allKeys){
+      const arr=remote[k]||local[k];
+      if(Array.isArray(arr)&&arr.length>0&&arr[0]&&typeof arr[0]==='object'&&'id' in arr[0]) idArrayKeys.add(k);
+    }
     const merged={};
-    for(const k of new Set([...Object.keys(remote),...Object.keys(local)])){
-      if(['transactions','deletedTransactions','deliveries','costHistory','stockTakes'].includes(k)) continue;
+    for(const k of allKeys){
+      if(idArrayKeys.has(k)){merged[k]=mergeById(remote[k],local[k]);continue;}
       merged[k]=(k in local)?local[k]:remote[k];
     }
-    merged.transactions=txs.filter(t=>!deletedIds.has(t.id));
-    merged.deletedTransactions=dels;
-    merged.deliveries=delivs;
-    merged.costHistory=costH;
-    merged.stockTakes=stTakes;
+    // Filter out deleted transactions
+    const deletedIds=new Set((merged.deletedTransactions||[]).map(d=>d.id));
+    if(merged.transactions) merged.transactions=merged.transactions.filter(t=>!deletedIds.has(t.id));
     return merged;
   },
 
@@ -1044,8 +1056,9 @@ const Sync = {
   scheduleSync(){
     clearTimeout(this._debounceTimer);
     this._debounceTimer=setTimeout(()=>{
-      if(navigator.onLine) this.push(DB.get());
-      else localStorage.setItem('bob_sync_pending','1');
+      if(!navigator.onLine){localStorage.setItem('bob_sync_pending','1');return;}
+      if(this._pushLock){this._pendingData=DB.get();return;}
+      this.push(DB.get());
     }, 800);
   },
 
@@ -1255,17 +1268,22 @@ const UI = {
     if (el) el.classList.add('active');
     document.querySelectorAll('.nav-item,.mobile-nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===id));
   },
+_toastQueue:[],
   toast(msg,type='info') {
+    const container=document.getElementById('toast-container');
+    if(container.children.length>=3){this._toastQueue.push({msg,type});return;}
     const el = document.createElement('div');
     el.className=`toast toast-${type}`; el.textContent=msg;
-    document.getElementById('toast-container').appendChild(el);
-    setTimeout(()=>el.remove(),3500);
+    container.appendChild(el);
+    setTimeout(()=>{el.remove();if(this._toastQueue.length){const next=this._toastQueue.shift();this.toast(next.msg,next.type);}},3500);
   },
   modal(title,bodyHtml,footerHtml) {
     document.getElementById('modal-title').textContent=title;
     document.getElementById('modal-body').innerHTML=bodyHtml;
     document.getElementById('modal-footer').innerHTML=footerHtml||'<button class="btn btn-secondary" onclick="UI.closeModal()">Close</button>';
-    document.getElementById('modal-overlay').classList.add('show');
+    const ov=document.getElementById('modal-overlay');
+    ov.setAttribute('role','dialog');ov.setAttribute('aria-modal','true');ov.setAttribute('aria-labelledby','modal-title');
+    ov.classList.add('show');
   },
   closeModal() { document.getElementById('modal-overlay').classList.remove('show'); },
   fmt(n)     { return n==null?'—':'$'+parseFloat(n).toFixed(2); },
@@ -1290,7 +1308,7 @@ const UI = {
     return `<span class="badge badge-green">${qty}</span>`;
   },
   destroyChart(id) { if(this._charts[id]){this._charts[id].destroy();delete this._charts[id];} },
-  makeChart(id,cfg) { this.destroyChart(id); const ctx=document.getElementById(id); if(!ctx)return; this._charts[id]=new Chart(ctx,cfg); },
+  makeChart(id,cfg) { this.destroyChart(id); const ctx=document.getElementById(id); if(!ctx)return; const wrap=ctx.parentElement; let spin=wrap?.querySelector('.chart-spinner'); if(!spin){spin=document.createElement('div');spin.className='chart-spinner';spin.style.cssText='text-align:center;padding:20px;color:#9ca3af;font-size:.8rem';spin.textContent='Loading chart…';wrap?.insertBefore(spin,ctx);} try{this._charts[id]=new Chart(ctx,cfg);}catch(e){console.error('[Chart]',e);if(spin)spin.textContent='Chart failed to load';return;}finally{if(spin)spin.remove();} },
   storeBadge(store) {
     if (!store) return '';
     if (store.isFranchise) return `<span class="franchise-badge">Franchise</span>`;
@@ -1709,7 +1727,7 @@ const Pages = {
     const d=DB.get();
     const isReturnSub=this._logData.type==='return_in';
     const txn={
-      id:'txn_'+Date.now()+'_'+Math.random().toString(36).slice(2,8), date:new Date().toISOString().slice(0,10),
+      id:'txn_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''), date:new Date().toISOString().slice(0,10),
       storeId:this._getLogStoreId(), productId:this._logData.productId,
       type:this._logData.type, qty:this._logData.qty,
       staffName:this._logData.staffName, reason:this._logData.reason||'',
@@ -1793,7 +1811,7 @@ const Pages = {
     const d=DB.get(); const idx=d.transactions.findIndex(t=>t.id===id);
     if(idx>=0){
       const txn=d.transactions[idx];
-      txn.editLog.push({action:'deleted',by:name,reason:reason,at:new Date().toISOString()});
+      txn.editLog.push({action:'deleted',by:name,reason:reason,at:new Date().toISOString()});if(txn.editLog.length>10)txn.editLog=txn.editLog.slice(-10);
       if(!d.deletedTransactions)d.deletedTransactions=[];
       d.deletedTransactions.push({...txn,_deletedAt:new Date().toISOString(),_deletedBy:name,_deleteReason:reason});
       d.transactions.splice(idx,1); DB.commit();
@@ -2344,6 +2362,7 @@ const Pages = {
       </div>`;
     this._compToggle='out';
     this._comp24Metric='qty';
+    this._compAFrom=null;this._compATo=null;this._compBFrom=null;this._compBTo=null;
     this._setCompPeriods('yoy');
     this._compAllStores=allCompStores; this._compIsDir=isDir; this._compStores=allCompStores;
     this._renderComparisonData();
@@ -2772,7 +2791,7 @@ const Pages = {
       <div class="tbl-wrap card"><table><thead><tr><th>Store</th><th>Type</th><th>Status</th><th>Stock Value</th><th>Actions</th></tr></thead><tbody>${d.stores.map(s=>`<tr><td><strong>${s.name}</strong>${s.isFranchise?' <span class="franchise-badge">Franchise</span>':''}${s.type==='warehouse'?' <span class="warehouse-tag">Warehouse</span>':''}</td><td><span class="badge badge-blue">${s.type}</span></td><td>${s.active?'<span class="badge badge-green">Active</span>':'<span class="badge badge-gray">Inactive</span>'}</td><td>${UI.fmt(Stock.totalValue(s.id))}</td><td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editStoreModal('${s.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._toggleStore('${s.id}')">${s.active?'Deactivate':'Activate'}</button></td></tr>`).join('')}</tbody></table></div>`;
   },
   _addStoreModal(){UI.modal('Add Store',`<div class="form-group"><label class="form-label">Store ID *</label><input class="form-input" id="ns-id"></div><div class="form-group"><label class="form-label">Store Name *</label><input class="form-input" id="ns-name"></div><div class="form-group"><label class="form-label">Type</label><select class="form-select" id="ns-type"><option value="inline">Inline</option><option value="kiosk">Kiosk</option><option value="franchise">Franchise</option><option value="online">Online</option><option value="warehouse">Warehouse</option></select></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._saveNewStore()">Add Store</button>');},
-  _saveNewStore(){const id=document.getElementById('ns-id')?.value.trim().toLowerCase().replace(/\s+/g,'-');const name=document.getElementById('ns-name')?.value.trim();const type=document.getElementById('ns-type')?.value;if(!id||!name){UI.toast('ID and Name required','error');return;}const d=DB.get();if(d.stores.find(s=>s.id===id)){UI.toast('ID exists','error');return;}d.stores.push({id,name,type,active:true,isFranchise:type==='franchise',franchiseDiscount:null});DB.commit();UI.closeModal();UI.toast(`"${name}" added`,'success');this._refreshSettings('stores');},
+  _saveNewStore(){const id=document.getElementById('ns-id')?.value.trim().toLowerCase().replace(/\s+/g,'-');const name=document.getElementById('ns-name')?.value.trim();const type=document.getElementById('ns-type')?.value;if(!id||!name){UI.toast('ID and Name required','error');return;}const d=DB.get();if(d.stores.find(s=>s.id===id)){UI.toast('Store ID already exists','error');return;}if(d.stores.find(s=>s.name.toLowerCase()===name.toLowerCase())){UI.toast('A store with this name already exists','error');return;}d.stores.push({id,name,type,active:true,isFranchise:type==='franchise',franchiseDiscount:null});DB.commit();UI.closeModal();UI.toast(`"${name}" added`,'success');this._refreshSettings('stores');},
   _editStoreModal(id){const s=DB.get().stores.find(s=>s.id===id);UI.modal('Edit Store',`<div class="form-group"><label class="form-label">Store Name *</label><input class="form-input" id="es-name" value="${s.name}"></div><div class="form-group"><label class="form-label">Type</label><select class="form-select" id="es-type"><option value="inline" ${s.type==='inline'?'selected':''}>Inline</option><option value="kiosk" ${s.type==='kiosk'?'selected':''}>Kiosk</option><option value="franchise" ${s.type==='franchise'?'selected':''}>Franchise</option><option value="online" ${s.type==='online'?'selected':''}>Online</option><option value="warehouse" ${s.type==='warehouse'?'selected':''}>Warehouse</option></select></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._updateStore(\''+id+'\')">Save</button>');},
   _updateStore(id){const d=DB.get();const s=d.stores.find(s=>s.id===id);s.name=document.getElementById('es-name')?.value.trim()||s.name;s.type=document.getElementById('es-type')?.value||s.type;s.isFranchise=s.type==='franchise';DB.commit();UI.closeModal();UI.toast('Updated','success');this._refreshSettings('stores');},
   _toggleStore(id){const d=DB.get();const s=d.stores.find(s=>s.id===id);s.active=!s.active;DB.commit();UI.toast(`Store ${s.active?'activated':'deactivated'}`,'info');this._refreshSettings('stores');},
@@ -2870,11 +2889,12 @@ const Pages = {
     const pin=document.getElementById('nu-pin')?.value||'1234';
     const role=document.getElementById('nu-role')?.value;
     if(!name||!username||!password){UI.toast('Name, username and password required','error');return;}
+    if(pin&&!/^\d{4}$/.test(pin)){UI.toast('PIN must be exactly 4 digits','error');return;}
     const d=DB.get();
     if(d.users.find(u=>u.username===username)){UI.toast('Username already exists','error');return;}
     const storeIds=[...document.querySelectorAll('.nu-store-cb:checked')].map(cb=>cb.value);
     const id='u_'+Date.now();
-    d.users.push({id,username,password,role,name,storeIds,pin});
+    d.users.push({id,username,password,role,name,storeIds,pin:pin||'1234'});
     DB.commit();UI.closeModal();UI.toast(`"${name}" added`,'success');this._refreshSettings('users');
   },
   _editUserModal(id){
@@ -2902,7 +2922,7 @@ const Pages = {
     u.name=document.getElementById('eu-name')?.value.trim()||u.name;
     u.username=document.getElementById('eu-user')?.value.trim()||u.username;
     const np=document.getElementById('eu-pass')?.value;if(np)u.password=np;
-    u.pin=document.getElementById('eu-pin')?.value||u.pin;
+    const newPin=document.getElementById('eu-pin')?.value;if(newPin&&!/^\d{4}$/.test(newPin)){UI.toast('PIN must be exactly 4 digits','error');return;}u.pin=newPin||u.pin;
     u.role=document.getElementById('eu-role')?.value||u.role;
     u.storeIds=[...document.querySelectorAll('.eu-store-cb:checked')].map(cb=>cb.value);
     DB.commit();UI.closeModal();UI.toast('Updated','success');this._refreshSettings('users');
@@ -2983,6 +3003,7 @@ const Pages = {
     if(!file){UI.toast('Please select a backup file','error');return;}
     
     UI.confirm('Restore Backup','⚠ This will REPLACE all current app data with the backup. This cannot be undone.',()=>{
+    if(file.size>5*1024*1024){UI.toast('Backup file too large (max 5MB)','error');return;}
     const reader=new FileReader();
     reader.onload=e=>{
       try{
@@ -3523,7 +3544,7 @@ const Pages = {
       const rows=[];
       franStores.forEach(store=>{
         const storeDisc=store.franchiseDiscount||0;
-        d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate).forEach(t=>{
+        d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
           const p=d.products.find(pr=>pr.id===t.productId);
           const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
           const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -3534,7 +3555,7 @@ const Pages = {
     };
     const storeData=franStores.map(store=>{
       const storeDisc=store.franchiseDiscount||0;
-      const lines=d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate).map(t=>{
+      const lines=d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
         const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -3976,7 +3997,7 @@ const Pages = {
       const rows=[];
       franStores.forEach(store=>{
         const storeDisc=store.franchiseDiscount||0;
-        d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate).forEach(t=>{
+        d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
           const p=d.products.find(pr=>pr.id===t.productId);
           const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
           const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -3987,7 +4008,7 @@ const Pages = {
     };
     const storeData=franStores.map(store=>{
       const storeDisc=store.franchiseDiscount||0;
-      const lines=d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate).map(t=>{
+      const lines=d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
         const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -4260,7 +4281,7 @@ const Pages = {
         <div>
           <div style="font-weight:600;font-size:.85rem;margin-bottom:12px;color:var(--rose)">📋 DELIVERY DETAILS</div>
           <div class="form-group"><label class="form-label">Supplier *</label><input class="form-input" id="del-supplier" placeholder="e.g. ABC Beauty Supply"></div>
-          <div class="form-group"><label class="form-label">Delivery Date *</label><input type="date" class="form-input" id="del-date" value="${new Date().toISOString().slice(0,10)}"></div>
+          <div class="form-group"><label class="form-label">Delivery Date *</label><input type="date" class="form-input" id="del-date" value="${new Date().toISOString().slice(0,10)}" data-utc="true"></div>
           <div class="form-group"><label class="form-label">Invoice / Reference #</label><input class="form-input" id="del-invoice" placeholder="e.g. INV-2026-001"></div>
         </div>
         <div>
@@ -4374,7 +4395,7 @@ const Pages = {
       const headerShare=freightCustomsShare+taxShare;
       const landedTotal=lineVal+(ln.packaging||0)+(ln.labelling||0)+headerShare;
       const landedPerUnit=landedTotal/(ln.qty||1);
-      ln._landed=landedPerUnit; ln._headerShare=headerShare;
+      ln._landed=Math.round(landedPerUnit*100)/100; ln._headerShare=Math.round(headerShare*100)/100;
       const el=document.getElementById('del-landed-'+i);
       if(el)el.innerHTML=`<strong style="color:#16a34a">$${landedPerUnit.toFixed(2)}</strong>${allHaveWeight?'':freight+customs>0?'<br><span style="font-size:.65rem;color:#d97706">⚠ add weights for precise split</span>':''}`;
     });
@@ -4440,7 +4461,7 @@ const Pages = {
         if(prod)prod.costPrice=Math.round(landedPerUnit*100)/100;
       }
       // Create stock-in transaction
-      d.transactions.push({id:'tx_'+Date.now()+'_'+Math.random().toString(36).slice(2),date,storeId:'head_office',productId:ln.productId,type:'in',qty:ln.qty,by:Auth.user()?.username||'director',note:`Delivery from ${supplier}${invoiceNo?' #'+invoiceNo:''}`});
+      d.transactions.push({id:'tx_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),date,storeId:'head_office',productId:ln.productId,type:'in',qty:ln.qty,by:Auth.user()?.username||'director',note:`Delivery from ${supplier}${invoiceNo?' #'+invoiceNo:''}`});
     });
     d.deliveries.push(delivery);
     DB.commit();
@@ -5049,7 +5070,7 @@ const DeviceID = {
   get() {
     let id = localStorage.getItem(this._key);
     if (!id) {
-      id = 'DEV_' + Math.random().toString(36).slice(2,10).toUpperCase() + '_' + Date.now().toString(36).toUpperCase();
+      id = 'DEV_' + Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join('').toUpperCase() + '_' + Date.now().toString(36).toUpperCase();
       localStorage.setItem(this._key, id);
     }
     return id;
@@ -5201,15 +5222,16 @@ Pages.loginAudit = function() {
   <button onclick="document.getElementById('pwa-install-banner').style.display='none'" style="background:none;border:none;color:rgba(255,255,255,.5);cursor:pointer;font-size:1.2rem;padding:0 4px;line-height:1" aria-label="Dismiss install prompt">✕</button>
 </div>
 
+<a href="#main-content" class="skip-to-content">Skip to content</a>
 <div id="offline-bar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9998;background:#ef4444;color:white;text-align:center;padding:6px;font-size:.78rem;font-weight:600">
-  ⚡ You are offline — data will sync when reconnected
+  ⚡ You are offline — changes saved locally and will sync when reconnected. <button onclick="location.reload()" style="background:white;color:#ef4444;border:none;padding:2px 10px;border-radius:4px;font-weight:600;font-size:.75rem;cursor:pointer;margin-left:8px">Retry</button>
 </div>
 
 <script>
 // ── Service Worker ────────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js')
+    navigator.serviceWorker.register('/bob-stock/sw.js')
       .then(reg => console.log('[BOB] SW registered:', reg.scope))
       .catch(err => console.warn('[BOB] SW registration failed:', err));
   });
