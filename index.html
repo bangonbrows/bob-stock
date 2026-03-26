@@ -981,15 +981,18 @@ const Sync = {
     const deliv={};
     (remote.deliveries||[]).forEach(d=>{deliv[d.id]=d;});
     (local.deliveries||[]).forEach(d=>{deliv[d.id]=d;});
+    const deletedIds=new Set(Object.keys(delById));
     return {...remote,...local,
-      transactions:Object.values(txById),
+      transactions:Object.values(txById).filter(t=>!deletedIds.has(t.id)),
       deletedTransactions:Object.values(delById),
       deliveries:Object.values(deliv)};
   },
 
   _rerender(){
     try{
+      if(document.getElementById('modal-overlay')?.classList.contains('show')) return;
       const page=document.querySelector('[data-page].active')?.dataset?.page||'dashboard';
+      if(page==='log-movement') return;
       if(typeof navigateTo==='function') navigateTo(page);
     }catch(e){}
   },
