@@ -100,7 +100,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--bla
 .step.done { background: #d1fae5; color: #059669; }
 .step.active { background: var(--rose); color: white; }
 .step-line { flex: 1; height: 1px; background: #e5e7eb; max-width: 32px; }
-.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 12px; }
+.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 12px; background: linear-gradient(to right,white 30%,rgba(255,255,255,0)) left, linear-gradient(to left,white 30%,rgba(255,255,255,0)) right, radial-gradient(farthest-side at 0 50%,rgba(0,0,0,.08),transparent) left, radial-gradient(farthest-side at 100% 50%,rgba(0,0,0,.08),transparent) right; background-repeat:no-repeat; background-color:white; background-size:40px 100%,40px 100%,14px 100%,14px 100%; background-attachment:local,local,scroll,scroll; }
 table { width: 100%; border-collapse: collapse; background: white; }
 thead th { background: #f9fafb; padding: 11px 14px; text-align: left; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
 tbody td { padding: 10px 14px; border-bottom: 1px solid #f3f4f6; font-size: .825rem; }
@@ -270,7 +270,7 @@ tbody tr:last-child td { border-bottom: none; }
   <div id="modal-box">
     <div class="modal-header">
       <div class="modal-title" id="modal-title"></div>
-      <button class="modal-close" onclick="UI.closeModal()">✕</button>
+      <button class="modal-close" onclick="UI.closeModal()" aria-label="Close dialog">✕</button>
     </div>
     <div id="modal-body"></div>
     <div class="modal-footer" id="modal-footer"></div>
@@ -4157,7 +4157,7 @@ const Pages = {
     ov.innerHTML=`<div style="background:white;border-radius:16px;width:100%;max-width:960px;padding:28px;position:relative;margin:auto">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <div><div style="font-size:1.15rem;font-weight:700">🚚 Record New Delivery</div><div style="font-size:.8rem;color:#9ca3af;margin-top:2px">Landed costs are allocated proportionally across product lines</div></div>
-        <button onclick="document.getElementById('delivery-overlay').remove()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:#9ca3af">✕</button>
+        <button onclick="document.getElementById('delivery-overlay').remove()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:#9ca3af" aria-label="Close delivery form">✕</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:20px">
         <div>
@@ -4224,7 +4224,7 @@ const Pages = {
           <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.packaging||0}" min="0" step="0.01" style="width:100px;text-align:center" onchange="Pages._delLines[${i}].packaging=parseFloat(this.value)||0;Pages._updateDeliveryCalc()"></td>
           <td style="padding:6px 8px"><input type="number" class="form-input" value="${ln.labelling||0}" min="0" step="0.01" style="width:100px;text-align:center" onchange="Pages._delLines[${i}].labelling=parseFloat(this.value)||0;Pages._updateDeliveryCalc()"></td>
           <td style="padding:6px 8px;text-align:center" id="del-landed-${i}"><span style="color:#9ca3af;font-size:.8rem">—</span></td>
-          <td style="padding:6px 8px">${(this._delLines||[]).length>1?`<button onclick="Pages._removeDeliveryLine(${i})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem">✕</button>`:''}</td>
+          <td style="padding:6px 8px">${(this._delLines||[]).length>1?`<button onclick="Pages._removeDeliveryLine(${i})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:1rem" aria-label="Remove line">✕</button>`:''}</td>
         </tr>`;
       }).join('')}</tbody>
     </table>`;
@@ -4308,6 +4308,7 @@ const Pages = {
     const freight=parseFloat(document.getElementById('del-freight')?.value)||0;
     const tax=parseFloat(document.getElementById('del-tax')?.value)||0;
     const customs=parseFloat(document.getElementById('del-customs')?.value)||0;
+    if(freight<0||tax<0||customs<0){UI.toast('Header costs cannot be negative','error');return;}
     const totalHeader=freight+tax+customs;
     const totalLineVal=validLines.reduce((a,ln)=>a+ln.unitCost*ln.qty,0);
     const d=DB.get();
@@ -5099,7 +5100,7 @@ Pages.loginAudit = function() {
     <div style="font-size:.75rem;color:rgba(255,255,255,.7);margin-top:2px">Add to home screen for quick access</div>
   </div>
   <button id="pwa-install-btn" style="background:#D8838B;color:white;border:none;padding:8px 16px;border-radius:10px;font-weight:700;font-size:.82rem;cursor:pointer;white-space:nowrap">Install</button>
-  <button onclick="document.getElementById('pwa-install-banner').style.display='none'" style="background:none;border:none;color:rgba(255,255,255,.5);cursor:pointer;font-size:1.2rem;padding:0 4px;line-height:1">✕</button>
+  <button onclick="document.getElementById('pwa-install-banner').style.display='none'" style="background:none;border:none;color:rgba(255,255,255,.5);cursor:pointer;font-size:1.2rem;padding:0 4px;line-height:1" aria-label="Dismiss install prompt">✕</button>
 </div>
 
 <div id="offline-bar" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9998;background:#ef4444;color:white;text-align:center;padding:6px;font-size:.78rem;font-weight:600">
