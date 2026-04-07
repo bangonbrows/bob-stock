@@ -2021,6 +2021,15 @@ const Pages = {
     d.stockTakes.push(take); DB.commit();
     const disc=take.items.filter(i=>i.difference!==0).length;
     UI.toast(`Stock take submitted — ${take.items.length} items counted${disc?`, ${disc} discrepancies`:', all matched!'}`,disc?'error':'success');
+    // Email notification via Power Automate
+    try{
+      var sn=(d.stores||[]).find(function(s){return s.id===storeId;});
+      var storeName=sn?sn.name:storeId;
+      var rows=take.items.map(function(i){var p=(d.products||[]).find(function(x){return x.id===i.productId;});return '<tr><td>'+(p?p.name:i.productId)+'</td><td>'+i.systemCount+'</td><td>'+i.physicalCount+'</td><td style="color:'+(i.difference!==0?'red':'green')+'">'+i.difference+'</td></tr>';}).join('');
+      var summary='<h2>Stock Take Report</h2><p><b>Store:</b> '+storeName+'</p><p><b>Date:</b> '+take.date+'</p><p><b>Completed By:</b> '+take.completedBy+'</p><p><b>Total Items:</b> '+take.items.length+'</p><p><b>Discrepancies:</b> '+disc+'</p><table border="1" cellpadding="5" cellspacing="0"><tr><th>Product</th><th>System</th><th>Physical</th><th>Diff</th></tr>'+rows+'</table>';
+      fetch('https://default62257781bc424366b8e5487088dcb1.19.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/a1315b91dc39413c91964240f738c9f6/triggers/manual/paths/invoke?api-version=1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({store:storeName,date:take.date,completedBy:take.completedBy,totalItems:take.items.length,discrepancies:disc,summary:summary})}).catch(function(){});
+    }catch(e){}
+
   },
 
   // ── HO: Alerts ──
