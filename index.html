@@ -2121,7 +2121,7 @@ const Pages = {
     // visibleStores: for franchisee/store-level = their locations only; for HO = all stores + franchise offices + head_office
     const _allVisibleForFilter = (isFran||isSL)
       ? d.stores.filter(s=>s.active&&storeIds.includes(s.id))
-      : d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.id==='head_office'||s.isFranchiseOffice));
+      : d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
     const allStores=storeFilter?[d.stores.find(s=>s.id===storeFilter)||{id:'head_office',name:'Head Office (Warehouse)',type:'warehouse'}].filter(s=>s.id):
       mgmtStoreIds ? [
         mgmtStoreIds.includes('head_office')?{id:'head_office',name:'HO Warehouse',type:'warehouse'}:null,
