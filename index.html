@@ -1093,6 +1093,11 @@ const DB = {
     if(franUser&&!franUser.storeIds.includes('cockburn_office')){
       franUser.storeIds.unshift('cockburn_office'); changed=true;
     }
+    // Prune products not in current SEED (auto-cleanup after SEED update)
+    const seedIds=new Set(SEED.products.map(p=>p.id));
+    const before=this._cache.products.length;
+    this._cache.products=this._cache.products.filter(p=>seedIds.has(p.id));
+    if(this._cache.products.length<before){changed=true;}
     if(changed)this.commit();
   },
   commit(){ this._cache._v=(this._cache._v||0)+1; const ok=this.save(this._cache); if(ok&&typeof Sync!=='undefined') Sync.scheduleSync(); return ok; },
