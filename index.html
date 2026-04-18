@@ -931,19 +931,6 @@ const Sync = {
         throw new Error('Sync not configured');
       }
       this._retryCount=0;
-            localStorage.setItem('bob_sync_pending','1');
-            this._showStatus('⚠ Sync conflict — will retry on next save');
-            return;
-          }
-          const remote=await this.pull();
-          if(remote) return this.push(this._merge(remote,data));
-          return;
-        }
-        if(!res.ok) throw new Error(res.status);
-        const r=await res.json();
-        this._sha=r.content.sha;
-      }
-      this._retryCount=0;
       this._lastSyncAt=Date.now();
       localStorage.setItem('bob_last_sync',this._lastSyncAt.toString());
       localStorage.removeItem('bob_sync_pending');
