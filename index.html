@@ -849,20 +849,35 @@ function generateDemoTransactions() {
 
 // ── GitHub Sync ──────────────────────────────────────────────────────────────
 const Sync = {
-  REPO:  'bangonbrows/bob-stock',
-  FILE:  'data/bob-stock-data.json',
+  // GitHub sync removed — using SharePoint webhooks
+  
   // Token split to avoid secret-scanner false positives in repo
-  TOKEN: ['github_pat_','11CARCLKI063eF','DsFbhKAu_JMNYi53OdsKvTy6s4SAtul4YUdymifTCWZLPFUmgSbpYYHVHXEIc71D5MGc'].join(''),
+  TOKEN: '', // PAT removed — sync via SharePoint webhooks
   _sha: null, _pushLock: false, _pendingData: null, _retryCount: 0,
   _debounceTimer: null, _pollInterval: null, _statusEl: null, _hideTimer: null,
+  _spPushUrl: null, _spPullUrl: null, _lastSyncAt: 0,
+  STALE_THRESHOLD: 12 * 60 * 60 * 1000,
+  _deviceId: null,
 
-  get _url(){ return `https://api.github.com/repos/${this.REPO}/contents/${this.FILE}`; },
-
-  _hdrs(){
-    return { 'Authorization':`Bearer ${this.TOKEN}`,
-             'Accept':'application/vnd.github+json',
-             'X-GitHub-Api-Version':'2022-11-28' };
+  _loadSyncConfig(){
+    try{
+      const cfg=JSON.parse(localStorage.getItem('bob_sync_config')||'{}');
+      this._spPushUrl=cfg.pushUrl||null;
+      this._spPullUrl=cfg.pullUrl||null;
+    }catch(e){}
+    this._deviceId=localStorage.getItem('bob_device_id');
+    if(!this._deviceId){
+      this._deviceId='dev_'+Date.now()+'_'+Math.random().toString(36).substr(2,9);
+      localStorage.setItem('bob_device_id',this._deviceId);
+    }
+    this._lastSyncAt=parseInt(localStorage.getItem('bob_last_sync')||'0');
   },
+  useSharePoint(){ return !!(this._spPushUrl && this._spPullUrl); },
+  getConfig(){ try{return JSON.parse(localStorage.getItem('bob_sync_config')||'{}');}catch(e){return {};} },
+
+  
+
+  
 
   _showStatus(msg, autoHide){
     if(!this._statusEl){
@@ -887,15 +902,18 @@ const Sync = {
   },
 
   async pull(){
-    try{
-      const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),15000);
-      const res = await fetch(this._url, {headers:this._hdrs(),signal:ac.signal});clearTimeout(tid);
-      if(res.status===404) return null;
-      if(!res.ok) throw new Error(res.status);
-      const j = await res.json();
-      this._sha = j.sha;
-      return JSON.parse(decodeURIComponent(escape(atob(j.content.replace(/\s/g,'')))));
-    }catch(e){ console.warn('[Sync] pull failed:',e.message); return null; }
+    if(this.useSharePoint()){
+      try{
+        const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),15000);
+        const res=await fetch(this._spPullUrl,{signal:ac.signal});clearTimeout(tid);
+        if(!res.ok) throw new Error(res.status);
+        const data=await res.json();
+        return data||null;
+      }catch(e){console.warn('[Sync] SP pull failed:',e.message);return null;}
+    }
+    // GitHub sync disabled — waiting for SharePoint config
+    return null;
+  
   },
 
   async push(data){
@@ -903,34 +921,31 @@ const Sync = {
     this._pushLock=true;
     this._showStatus('☁ Syncing…');
     try{
-      const content = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
-      const body = {message:`sync ${new Date().toISOString()}`,content,
-                    ...(this._sha?{sha:this._sha}:{})};
-      const ac2=new AbortController();const tid2=setTimeout(()=>ac2.abort(),15000);
-      const res = await fetch(`https://api.github.com/repos/${this.REPO}/contents/${this.FILE}`,{
-        method:'PUT',
-        headers:{...this._hdrs(),'Content-Type':'application/json'},
-        body:JSON.stringify(body),
-        signal:ac2.signal
-      });clearTimeout(tid2);
-      if(res.status===409){
-        // SHA conflict – re-read, merge, retry (max 3 times)
-        this._pushLock=false;
-        this._retryCount=(this._retryCount||0)+1;
-        if(this._retryCount>3){
-          this._retryCount=0;
-          localStorage.setItem('bob_sync_pending','1');
-          this._showStatus('⚠ Sync conflict — will retry on next save');
+      if(this.useSharePoint()){
+        const payload={deviceId:this._deviceId,timestamp:new Date().toISOString(),data:data};
+        const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),15000);
+        const res=await fetch(this._spPushUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:ac.signal});clearTimeout(tid);
+        if(!res.ok) throw new Error('SP:'+res.status);
+      } else {
+        // GitHub sync disabled — configure SharePoint URLs in Settings
+        throw new Error('Sync not configured');
+      }
+      this._retryCount=0;
+            localStorage.setItem('bob_sync_pending','1');
+            this._showStatus('⚠ Sync conflict — will retry on next save');
+            return;
+          }
+          const remote=await this.pull();
+          if(remote) return this.push(this._merge(remote,data));
           return;
         }
-        const remote=await this.pull();
-        if(remote) return this.push(this._merge(remote,data));
-        return;
+        if(!res.ok) throw new Error(res.status);
+        const r=await res.json();
+        this._sha=r.content.sha;
       }
-      if(!res.ok) throw new Error(res.status);
-      const r=await res.json();
-      this._sha=r.content.sha;
       this._retryCount=0;
+      this._lastSyncAt=Date.now();
+      localStorage.setItem('bob_last_sync',this._lastSyncAt.toString());
       localStorage.removeItem('bob_sync_pending');
       this._showStatus('✓ Synced', true);
     }catch(e){
@@ -1006,16 +1021,33 @@ const Sync = {
   },
 
   async init(){
-    this._showStatus('☁ Loading live data…');
-    const remote=await this.pull();
-    if(remote){
-      const local=DB.get();
-      const merged=this._merge(remote,local);
-      DB._cache=merged; DB.save(merged);
-      this._rerender();
-      this._showStatus('✓ Live data loaded', true);
+    this._loadSyncConfig();
+    if(!this.useSharePoint()){ this._showStatus('☁ Cloud sync not configured — go to Settings', true); return; }
+    this._showStatus(this.useSharePoint()?'☁ Cloud sync active…':'☁ Loading live data…');
+    // Stale check: if local data > 12h old, pull fresh
+    const isStale=(Date.now()-this._lastSyncAt)>this.STALE_THRESHOLD;
+    if(isStale && (this.useSharePoint()||navigator.onLine)){
+      const fresh=await this.pull();
+      if(fresh){
+        const local=DB.get();
+        const merged=this._merge(fresh,local);
+        DB._cache=merged; DB.save(merged);
+        this._lastSyncAt=Date.now();
+        localStorage.setItem('bob_last_sync',this._lastSyncAt.toString());
+        this._rerender();
+        this._showStatus('✓ Fresh data loaded', true);
+      }
     } else {
-      await this.push(DB.get());
+      const remote=await this.pull();
+      if(remote){
+        const local=DB.get();
+        const merged=this._merge(remote,local);
+        DB._cache=merged; DB.save(merged);
+        this._rerender();
+        this._showStatus('✓ Live data loaded', true);
+      } else {
+        await this.push(DB.get());
+      }
     }
     if(localStorage.getItem('bob_sync_pending')) this.push(DB.get());
     this._pollInterval=setInterval(()=>this.poll(), 30000);
@@ -3016,6 +3048,88 @@ const Pages = {
         </div>
       </div>`;
   },
+
+  _dirCloudSync(elId){
+    const el=elId?document.getElementById(elId):null;if(!el)return;
+    const cfg=Sync.getConfig();
+    const deviceId=localStorage.getItem('bob_device_id')||'Not generated';
+    const lastSync=parseInt(localStorage.getItem('bob_last_sync')||'0');
+    const lastSyncStr=lastSync?new Date(lastSync).toLocaleString():'Never';
+    const isConfigured=!!(cfg.pushUrl&&cfg.pullUrl);
+    const statusColor=isConfigured?'#10b981':'#f59e0b';
+    const statusText=isConfigured?'Connected — syncing to SharePoint':'Not configured — paste your Power Automate URLs below';
+    el.innerHTML=`
+      <div class="page-header"><div><div class="page-title">Cloud Sync</div><div class="page-sub">Real-time backup to Microsoft SharePoint via Power Automate</div></div></div>
+      <div class="card card-body" style="margin-bottom:16px;border-left:4px solid ${statusColor}">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="font-size:1.3rem">${isConfigured?'☁️✓':'⚠️'}</span>
+          <div><strong style="color:${statusColor}">${statusText}</strong></div>
+        </div>
+        <div style="font-size:.8rem;color:#6b7280">Device ID: ${deviceId} &nbsp;·&nbsp; Last sync: ${lastSyncStr}</div>
+      </div>
+      <div class="card card-body" style="margin-bottom:16px">
+        <div style="font-weight:700;margin-bottom:12px;font-size:.95rem">🔗 Power Automate Webhook URLs</div>
+        <div style="margin-bottom:12px">
+          <label style="display:block;font-weight:600;font-size:.82rem;margin-bottom:4px;color:#374151">Push (Backup) URL</label>
+          <input class="form-input" id="sync-push-url" value="${cfg.pushUrl||''}" placeholder="https://prod-xx.logic.azure.com/workflows/..." style="width:100%;font-size:.8rem">
+          <div style="font-size:.72rem;color:#9ca3af;margin-top:2px">The HTTP POST trigger URL from your Backup flow</div>
+        </div>
+        <div style="margin-bottom:14px">
+          <label style="display:block;font-weight:600;font-size:.82rem;margin-bottom:4px;color:#374151">Pull (Restore) URL</label>
+          <input class="form-input" id="sync-pull-url" value="${cfg.pullUrl||''}" placeholder="https://prod-xx.logic.azure.com/workflows/..." style="width:100%;font-size:.8rem">
+          <div style="font-size:.72rem;color:#9ca3af;margin-top:2px">The HTTP GET trigger URL from your Restore flow</div>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-primary" onclick="Pages._saveSyncConfig()">Save URLs</button>
+          <button class="btn btn-secondary" onclick="Pages._testSync()">Test Connection</button>
+          ${isConfigured?'<button class="btn btn-secondary" onclick="Pages._forcePush()">Force Push Now</button>':''}
+        </div>
+      </div>
+      <div id="sync-test-result"></div>
+      <div class="card card-body" style="background:#f9fafb">
+        <div style="font-weight:700;margin-bottom:8px;font-size:.9rem">📖 Setup Guide</div>
+        <div style="font-size:.82rem;color:#4b5563;line-height:1.6">
+          1. Open <strong>Power Automate</strong> in your M365 portal<br>
+          2. Create two flows with <strong>HTTP request triggers</strong> (Premium)<br>
+          3. Flow 1 (Backup): HTTP POST → Create/Update file in SharePoint document library<br>
+          4. Flow 2 (Restore): HTTP GET → Read file from SharePoint → Response with JSON body<br>
+          5. Copy each flow\'s HTTP POST URL and paste above
+        </div>
+      </div>`;
+  },
+  getConfig(){ try{return JSON.parse(localStorage.getItem('bob_sync_config')||'{}');}catch(e){return {};} },
+  _saveSyncConfig(){
+    const pushUrl=(document.getElementById('sync-push-url')?.value||'').trim();
+    const pullUrl=(document.getElementById('sync-pull-url')?.value||'').trim();
+    localStorage.setItem('bob_sync_config',JSON.stringify({pushUrl,pullUrl}));
+    Sync._loadSyncConfig();
+    UI.toast('Sync URLs saved','success');
+    Pages.dirSettings('cloudsync');
+  },
+  async _testSync(){
+    const el=document.getElementById('sync-test-result');
+    if(!el)return;
+    el.innerHTML='<div class="card card-body" style="border-left:4px solid #3b82f6;margin-top:12px"><strong>Testing...</strong></div>';
+    Sync._loadSyncConfig();
+    if(!Sync.useSharePoint()){el.innerHTML='<div class="card card-body" style="border-left:4px solid #ef4444;margin-top:12px"><strong>Error:</strong> Both URLs must be configured first.</div>';return;}
+    try{
+      const testData={test:true,deviceId:Sync._deviceId,timestamp:new Date().toISOString()};
+      const pushRes=await fetch(Sync._spPushUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(testData)});
+      if(!pushRes.ok) throw new Error('Push failed: '+pushRes.status);
+      const pullRes=await fetch(Sync._spPullUrl);
+      if(!pullRes.ok) throw new Error('Pull failed: '+pullRes.status);
+      el.innerHTML='<div class="card card-body" style="border-left:4px solid #10b981;margin-top:12px"><strong style="color:#10b981">✓ Connection successful!</strong> Push and Pull both working. Cloud sync is active.</div>';
+    }catch(e){
+      el.innerHTML='<div class="card card-body" style="border-left:4px solid #ef4444;margin-top:12px"><strong style="color:#ef4444">✗ Connection failed:</strong> '+e.message+'</div>';
+    }
+  },
+  async _forcePush(){
+    Sync._loadSyncConfig();
+    if(!Sync.useSharePoint()){UI.toast('Configure sync URLs first','error');return;}
+    UI.toast('Pushing data to SharePoint...','info');
+    await Sync.push(DB.get());
+  },
+
   _dirSuppliers(elId) {
     const el=elId?document.getElementById(elId):null;if(!el)return;
     const d=DB.get();
@@ -4051,6 +4165,7 @@ const Pages = {
       {id:'suppliers',  label:'Suppliers',           icon:'🚚'},
       {id:'margins',    label:'Margins',             icon:'📈'},
       {id:'data',       label:'Data & Backup',       icon:'💾'},
+      {id:'cloudsync',  label:'Cloud Sync',          icon:'☁️'},
     ];
     el.innerHTML = `
       <div class="page-header"><div><div class="page-title">Settings</div><div class="page-sub">Director configuration hub</div></div></div>
@@ -4066,6 +4181,7 @@ const Pages = {
     else if(tab==='suppliers')  this._dirSuppliers('ds-tab-content');
     else if(tab==='margins')    this._dirMargins('ds-tab-content');
     else if(tab==='data')       this._dirDataBackup('ds-tab-content');
+    else if(tab==='cloudsync')  this._dirCloudSync('ds-tab-content');
     else if(tab==='pin'){
       const tcEl=document.getElementById('ds-tab-content');
       if(tcEl) tcEl.innerHTML=`<div class="page-header"><div class="page-title">Stock Take PIN</div><div class="page-sub">Manage access PIN for staff stock takes</div></div>${Pages._manageStockTakePinPanel()}`;
