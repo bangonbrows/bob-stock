@@ -5288,7 +5288,7 @@ Pages.loginAudit = function() {
 // ── Service Worker ────────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/bob-stock/sw.js')
+    navigator.serviceWorker.register('./sw.js')
       .then(reg => console.log('[BOB] SW registered:', reg.scope))
       .catch(err => console.warn('[BOB] SW registration failed:', err));
   });
