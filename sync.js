@@ -28,6 +28,9 @@ const Sync = {
   STALE_THRESHOLD: 12 * 60 * 60 * 1000,  // 12 hours
   POLL_INTERVAL: 30000,                    // 30 seconds
   DEBOUNCE_MS: 800,
+  // The config endpoint URL — the ONLY hardcoded URL in the app.
+  // All other URLs (push, pull) are fetched from AppConfig via this endpoint.
+  CONFIG_URL: 'https://prod-25.australiaeast.logic.azure.com:443/workflows/0d91c5e735f149898512b1fbf04b33f0/triggers/When_an_HTTP_request_is_received/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2FWhen_an_HTTP_request_is_received%2Frun&sv=1.0&sig=w1LTFeB8T-nr48W1J5rZkh_QzgPIJaOZLajCQjr0U5g',
 
   // ─── Config Management ───────────────────────────────────────────────
 
@@ -42,12 +45,67 @@ const Sync = {
       const config = JSON.parse(raw);
       this._pushUrl = config.pushUrl || null;
       this._pullUrl = config.pullUrl || null;
-      this._configUrl = config.configUrl || null;
+      this._configUrl = this.CONFIG_URL;
       this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
       this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
       return !!(this._pushUrl && this._pullUrl);
     } catch (e) {
       console.error('[Sync] Config load failed:', e);
+      return false;
+    }
+  },
+
+  /**
+   * Fetches sync config from the remote AppConfig endpoint.
+   * Looks for a 'sync_config' item and extracts pushUrl/pullUrl.
+   * Caches the result in localStorage for offline resilience.
+   * Returns true if config was successfully loaded.
+   */
+  async _fetchRemoteConfig() {
+    if (!this.CONFIG_URL || this.CONFIG_URL.includes('%%')) {
+      console.warn('[Sync] No config endpoint URL configured.');
+      return false;
+    }
+    try {
+      const resp = await fetch(this.CONFIG_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok) {
+        console.warn('[Sync] Config fetch failed:', resp.status);
+        return false;
+      }
+      const data = await resp.json();
+      if (!data.items || !Array.isArray(data.items)) return false;
+
+      const syncItem = data.items.find(i => i.ConfigType === 'sync_config');
+      if (!syncItem || !syncItem.ConfigData) {
+        console.warn('[Sync] No sync_config item found in AppConfig.');
+        return false;
+      }
+
+      const urls = typeof syncItem.ConfigData === 'string'
+        ? JSON.parse(syncItem.ConfigData)
+        : syncItem.ConfigData;
+
+      if (urls.pushUrl && urls.pullUrl) {
+        this._pushUrl = urls.pushUrl;
+        this._pullUrl = urls.pullUrl;
+        this._configUrl = this.CONFIG_URL;
+        localStorage.setItem('bob_sync_config', JSON.stringify({
+          pushUrl: urls.pushUrl,
+          pullUrl: urls.pullUrl,
+          configUrl: this.CONFIG_URL
+        }));
+        this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
+        this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
+        console.log('[Sync] Remote config loaded and cached.');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.warn('[Sync] Remote config fetch error:', e);
       return false;
     }
   },
@@ -336,8 +394,12 @@ const Sync = {
    * Initializes the sync system. Called after DB is ready.
    */
   async init() {
-    // Load config
-    const hasConfig = this._loadConfig();
+    // Try remote config first (self-configuring), fall back to localStorage cache
+    let hasConfig = await this._fetchRemoteConfig();
+    if (!hasConfig) {
+      // Fall back to cached localStorage config (offline resilience)
+      hasConfig = this._loadConfig();
+    }
     if (!hasConfig) {
       console.log('[Sync] No sync config found. Cloud sync disabled.');
       return;
