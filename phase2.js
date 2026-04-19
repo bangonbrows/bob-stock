@@ -307,7 +307,7 @@ const Transfer = {
 };
 
 // ── 4. Add HTML page containers ──
-const pageContainer = document.querySelector('.main-content') || document.querySelector('.content') || document.querySelector('main');
+const pageContainer = document.querySelector('.main-wrap') || document.querySelector('.main-content') || document.querySelector('.content') || document.querySelector('main');
 if (pageContainer) {
   const newPages = ['transfers','create-transfer','draft-transfer','receive-transfer','resolve-flags','optimum-levels'];
   newPages.forEach(id => {
