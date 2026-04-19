@@ -216,6 +216,9 @@ async function _loadFromDexie() {
 const DB = {
   KEY: 'bob_stock_v4',   // kept for migration detection
   _cache: null,
+  // Compatibility stubs for App.launch() and phase2.js
+  load() { /* no-op: data loaded by initDB(SEED) */ },
+  _migrate() { /* no-op: schema handled by Dexie */ },
 
   /**
    * SYNCHRONOUS. Returns the in-memory data cache.
