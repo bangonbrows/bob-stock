@@ -376,6 +376,11 @@ tbody tr:last-child td { border-bottom: none; }
   </div>
 </div>
 
+    <!-- Phase 3: Dexie.js + external DB/Sync modules -->
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+    <script src="./db.js"></script>
+    <script src="./sync.js"></script>
+
 <script>
 // ══════════════════════════════════════════════════
 //  BANG ON BROWS v2 — Seed Data
@@ -848,6 +853,7 @@ function generateDemoTransactions() {
 
 
 // ── GitHub Sync ──────────────────────────────────────────────────────────────
+/* PHASE3_DISABLED: Sync object now loaded from sync.js
 const Sync = {
   // GitHub sync removed — using SharePoint webhooks
   
@@ -1045,8 +1051,10 @@ const Sync = {
     window.addEventListener('offline',()=>this._showStatus('○ Offline – changes saved locally'));
   }
 };
+PHASE3_DISABLED */
 
 // ── DB Layer ─────────────────────────────────────
+/* PHASE3_DISABLED: DB object now loaded from db.js
 const DB = {
   KEY: 'bob_stock_v4',
   load() {
@@ -1122,6 +1130,7 @@ const DB = {
   commit(){ this._cache._v=(this._cache._v||0)+1; const ok=this.save(this._cache); if(ok&&typeof Sync!=='undefined') Sync.scheduleSync(); return ok; },
   reset() { localStorage.removeItem(this.KEY); this._cache = null; location.reload(); }
 };
+PHASE3_DISABLED */
 
 // ── Auth ─────────────────────────────────────────
 
@@ -5100,9 +5109,11 @@ const App = {
   }
 };
 
-document.addEventListener('DOMContentLoaded',()=>{
+document.addEventListener('DOMContentLoaded', async ()=>{
+  await initDB(SEED);
   App.launch();
-  setTimeout(()=>Sync.init(), 200);
+  await Sync.init();
+  if(navigator.serviceWorker){navigator.serviceWorker.addEventListener('message',(e)=>{if(e.data&&e.data.type==='sync-push')Sync.push();});}
 });
 </script>
 
