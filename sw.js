@@ -1,102 +1,122 @@
-// Bang on Brows Stock App — Service Worker v6
-const CACHE_NAME = 'bob-stock-v8';
-const OFFLINE_URL = './index.html';
+/**
+ * BOB Stock App — Service Worker (Phase 3)
+ * Network-first with cache fallback, cache versioning for cutover.
+ *
+ * Changes from Phase 2 sw.js:
+ *   - Cache version bumped to v8 for Phase 3 cutover
+ *   - Caches db.js and sync.js (new Dexie-based modules)
+ *   - Caches Dexie.js from CDN
+ *   - Background sync handler calls Sync.push() via postMessage
+ *   - Handles Azure SWA routing (no GitHub Pages path prefix)
+ */
 
-// Assets to cache on install
-const PRECACHE = [
+const CACHE_NAME = 'bob-stock-v8';
+
+const PRECACHE_URLS = [
+  './',
   './index.html',
+  './db.js',
+  './sync.js',
   './phase2.js',
-  './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  'https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Inter:wght@300;400;500;600;700&family=Dancing+Script:wght@700&display=swap',
-  'https://cdn.tailwindcss.com',
-  'https://cdn.jsdelivr.net/npm/chart.js'
+  'https://unpkg.com/dexie/dist/dexie.js',
 ];
 
-// ── Install: pre-cache shell ──────────────────────────────────────────────────
-self.addEventListener('install', event => {
+// ─── Install ──────────────────────────────────────────────────────────────────
+self.addEventListener('install', (event) => {
+  console.log('[SW] Installing', CACHE_NAME);
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      return cache.addAll([OFFLINE_URL, './manifest.json'])
-        .then(() => cache.addAll(PRECACHE.slice(2)).catch(() => {}));
-    }).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(PRECACHE_URLS))
+      .then(() => self.skipWaiting())
   );
 });
 
-// ── Activate: clean up old caches ────────────────────────────────────────────
-self.addEventListener('activate', event => {
+// ─── Activate ─────────────────────────────────────────────────────────────────
+self.addEventListener('activate', (event) => {
+  console.log('[SW] Activating', CACHE_NAME);
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key !== CACHE_NAME)
+          .map((key) => {
+            console.log('[SW] Removing old cache:', key);
+            return caches.delete(key);
+          })
+      ))
+      .then(() => self.clients.claim())
   );
 });
 
-// ── Fetch: cache-first for app shell, network-first for data ─────────────────
-self.addEventListener('fetch', event => {
-  const url = new URL(event.request.url);
+// ─── Fetch: Network-first, cache fallback ─────────────────────────────────────
+self.addEventListener('fetch', (event) => {
+  // Only handle GET requests
   if (event.request.method !== 'GET') return;
-  if (url.hostname === 'graph.microsoft.com') return;
-  if (url.pathname.endsWith('index.html') || url.pathname === url.origin + '/') {
-    event.respondWith(
-      caches.match(event.request).then(cached => {
-        const networkFetch = fetch(event.request).then(response => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-          }
-          return response;
-        });
-        return cached || networkFetch;
-      })
-    );
+
+  // Don't cache Logic App API calls
+  const url = new URL(event.request.url);
+  if (url.hostname.includes('logic.azure.com') ||
+      url.hostname.includes('azurewebsites.net')) {
     return;
   }
-  if (url.hostname !== self.location.hostname) {
-    event.respondWith(
-      caches.match(event.request).then(cached => {
-        const networkFetch = fetch(event.request).then(response => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(c => c.put(event.request, clone));
-          }
-          return response;
-        }).catch(() => cached);
-        return cached || networkFetch;
-      })
-    );
-    return;
-  }
+
   event.respondWith(
-    fetch(event.request).catch(() => caches.match(event.request))
+    fetch(event.request)
+      .then((response) => {
+        // Clone and cache successful responses
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, clone);
+          });
+        }
+        return response;
+      })
+      .catch(() => {
+        // Network failed — try cache
+        return caches.match(event.request).then((cached) => {
+          if (cached) return cached;
+          // If it's a navigation request, serve the main page (SPA fallback)
+          if (event.request.mode === 'navigate') {
+            return caches.match('./index.html');
+          }
+          return new Response('Offline', { status: 503 });
+        });
+      })
   );
 });
 
-self.addEventListener('sync', event => {
+// ─── Background Sync ──────────────────────────────────────────────────────────
+self.addEventListener('sync', (event) => {
   if (event.tag === 'bob-sync-data') {
+    console.log('[SW] Background sync triggered');
     event.waitUntil(syncPendingData());
   }
 });
 
 async function syncPendingData() {
-  console.log('[BOB SW] Background sync triggered — SharePoint sync pending');
+  // Notify the client to trigger a sync push
+  const clients = await self.clients.matchAll({ type: 'window' });
+  for (const client of clients) {
+    client.postMessage({ type: 'sync-push' });
+  }
 }
 
-self.addEventListener('push', event => {
-  if (!event.data) return;
-  const data = event.data.json();
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'Bang on Brows', {
-      body: data.body || '',
-      icon: './icons/icon-192.png',
-      badge: './icons/icon-192.png',
-      data: data
-    })
-  );
+// ─── Push Notifications ───────────────────────────────────────────────────────
+self.addEventListener('push', (event) => {
+  const data = event.data ? event.data.json() : {};
+  const title = data.title || 'BOB Stock';
+  const options = {
+    body: data.body || 'Stock data updated',
+    icon: data.icon || './icon-192.png',
+    badge: './icon-192.png',
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
-self.addEventListener('notificationclick', event => {
+self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  event.waitUntil(clients.openWindow('./index.html'));
+  event.waitUntil(
+    self.clients.openWindow('./')
+  );
 });
