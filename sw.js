@@ -1,10 +1,11 @@
-// Bang on Brows Stock App — Service Worker v4
-const CACHE_NAME = 'bob-stock-v4';
+// Bang on Brows Stock App — Service Worker v5
+const CACHE_NAME = 'bob-stock-v5';
 const OFFLINE_URL = './index.html';
 
 // Assets to cache on install
 const PRECACHE = [
   './index.html',
+  './phase2.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
