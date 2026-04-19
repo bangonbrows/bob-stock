@@ -402,6 +402,7 @@ const Sync = {
     }
     if (!hasConfig) {
       console.log('[Sync] No sync config found. Cloud sync disabled.');
+      this._showStatus('26a0 Cloud sync unavailable 2014 config not found. Contact Kunal.', 'error', 0);
       return;
     }
 
@@ -431,6 +432,14 @@ const Sync = {
         console.warn('[Sync] Background sync registration failed:', e);
       }
     }
+  },
+
+  /**
+   * Returns true if a sync push is currently in flight.
+   * Used by the beforeunload guard in db.js.
+   */
+  isSyncing() {
+    return this._pushLock;
   },
 
   /**

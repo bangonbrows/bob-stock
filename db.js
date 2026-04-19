@@ -364,7 +364,8 @@ const DB = {
 // Prevents the "Power Failure" data loss scenario.
 
 window.addEventListener('beforeunload', (e) => {
-  if (_pendingWrites > 0) {
+  const syncing = typeof Sync !== 'undefined' && Sync.isSyncing && Sync.isSyncing();
+  if (_pendingWrites > 0 || syncing) {
     e.preventDefault();
     e.returnValue = 'Data is still saving. Are you sure you want to leave?';
     return e.returnValue;
