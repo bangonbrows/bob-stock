@@ -1178,7 +1178,7 @@ PHASE3_DISABLED */
 const Stock = {
   qty(productId, storeId) {
     return DB.get().transactions
-      .filter(t=>t.productId===productId && t.storeId===storeId)
+      .filter(t=>t.productId===productId && t.storeId===storeId && t.type!=='deleted')
       .reduce((s,t)=>(t.type==='in'||t.type==='return_in')?s+t.qty:s-t.qty, 0);
   },
   storeStock(storeId) {
@@ -1217,6 +1217,7 @@ const Stock = {
       const d2 = new Date(now.getFullYear(), now.getMonth()-i, 1);
       const label = d2.toLocaleString('default',{month:'short',year:'2-digit'});
       const txns = DB.get().transactions.filter(t=>{
+        if(t.type==='deleted') return false;
         const td = new Date(t.date);
         return td.getMonth()===d2.getMonth() && td.getFullYear()===d2.getFullYear() && (!storeId||t.storeId===storeId);
       });
@@ -1738,7 +1739,7 @@ const Pages = {
   _renderTodayMovements() {
     const today=new Date().toISOString().slice(0,10);
     const storeId=this._getLogStoreId()||Auth.storeId();
-    const txns=DB.get().transactions.filter(t=>t.date===today&&t.storeId===storeId).reverse().slice(0,10);
+    const txns=DB.get().transactions.filter(t=>t.date===today&&t.storeId===storeId&&t.type!=='deleted').reverse().slice(0,10);
     const el=document.getElementById('today-movements'); if(!el)return;
     if(!txns.length){el.innerHTML='<div style="color:#9ca3af;font-size:.825rem;padding:8px 0">No movements logged today.</div>';return;}
     const typeBadge=t=>{
@@ -1886,7 +1887,7 @@ const Pages = {
   _renderHistTable() {
     const storeId=Auth.storeId(); const from=document.getElementById('hist-from')?.value; const to=document.getElementById('hist-to')?.value;
     const type=document.getElementById('hist-type')?.value; const search=document.getElementById('hist-search')?.value.toLowerCase()||'';
-    let txns=DB.get().transactions.filter(t=>t.storeId===storeId);
+    let txns=DB.get().transactions.filter(t=>t.storeId===storeId&&t.type!=='deleted');
     if(from)txns=txns.filter(t=>t.date>=from); if(to)txns=txns.filter(t=>t.date<=to);
     if(type)txns=txns.filter(t=>t.type===type);
     if(search)txns=txns.filter(t=>UI.productName(t.productId).toLowerCase().includes(search));
@@ -2411,7 +2412,7 @@ const Pages = {
     const stores=this._compStores||[]; const isDir=this._compIsDir; const d=DB.get();
     const toggle=this._compToggle||'out';
     const getPD=(storeId,from,to)=>{
-      const txns=d.transactions.filter(t=>t.storeId===storeId&&(!from||t.date>=from)&&(!to||t.date<=to));
+      const txns=d.transactions.filter(t=>t.storeId===storeId&&t.type!=='deleted'&&(!from||t.date>=from)&&(!to||t.date<=to));
       const ins=txns.filter(t=>t.type==='in'); const outs=txns.filter(t=>t.type==='out');
       const inU=ins.reduce((a,t)=>a+t.qty,0); const outU=outs.reduce((a,t)=>a+t.qty,0);
       const inV=ins.reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return a+(p?.price||0)*t.qty;},0);
@@ -2469,7 +2470,7 @@ const Pages = {
       const trendMetric=this._comp24Metric||'qty';
       const getVal=(txns)=>trendMetric==='val'?txns.reduce((b,t)=>{const p=dI.products.find(pr=>pr.id===t.productId);return p?.price?b+t.qty*p.price:b;},0):txns.reduce((b,t)=>b+t.qty,0);
       const mIns=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&t.type==='in'&&t.date>=m.from&&t.date<=m.to)),0));
-      const mOuts=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&(t.type==='out'||t.type==='return_in')&&t.date>=m.from&&t.date<=m.to)),0));
+      const mOuts=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&t.type!=='deleted'&&(t.type==='out'||t.type==='return_in')&&t.date>=m.from&&t.date<=m.to)),0));
       const yFmt=trendMetric==='val'?{ticks:{callback:v=>'$'+v.toLocaleString()}}:{beginAtZero:true};
       const ds=[];
       if(toggle==='in'||toggle==='both') ds.push({label:'Stock IN',data:mIns,backgroundColor:'#86efac',borderRadius:3});
@@ -3261,7 +3262,7 @@ const Pages = {
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
     // Stats
     const alerts=Stock.alerts(myStoreIds);
-    const todayTxns=d.transactions.filter(t=>t.date===today&&(isHO||Auth.storeIds().includes(t.storeId)));
+    const todayTxns=d.transactions.filter(t=>t.date===today&&t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId)));
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
@@ -3277,7 +3278,7 @@ const Pages = {
     if(isHO||isFran||isSM)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">🔔 Alerts</button>`);
     if(isDir)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('reorder')">📦 Reorder List</button>`);
     // Recent movements (last 5 in scope)
-    const recentTxns=d.transactions.filter(t=>isHO||Auth.storeIds().includes(t.storeId)).slice(-5).reverse();
+    const recentTxns=d.transactions.filter(t=>t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
     const txnBadge=t=>t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>':'<span class="badge badge-red">▼ OUT</span>';
     // Top alerts
     const topAlerts=alerts.slice(0,5);
@@ -3714,7 +3715,7 @@ const Pages = {
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
     // Stats
     const alerts=Stock.alerts(myStoreIds);
-    const todayTxns=d.transactions.filter(t=>t.date===today&&(isHO||Auth.storeIds().includes(t.storeId)));
+    const todayTxns=d.transactions.filter(t=>t.date===today&&t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId)));
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
@@ -3730,7 +3731,7 @@ const Pages = {
     if(isHO||isFran||isSM)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">🔔 Alerts</button>`);
     if(isDir)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('reorder')">📦 Reorder List</button>`);
     // Recent movements (last 5 in scope)
-    const recentTxns=d.transactions.filter(t=>isHO||Auth.storeIds().includes(t.storeId)).slice(-5).reverse();
+    const recentTxns=d.transactions.filter(t=>t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
     const txnBadge=t=>t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>':'<span class="badge badge-red">▼ OUT</span>';
     // Top alerts
     const topAlerts=alerts.slice(0,5);

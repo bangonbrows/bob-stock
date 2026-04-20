@@ -133,18 +133,73 @@ async function _persistRefDataToDexie(d) {
   }
 }
 
+// ─── Write Retry Logic (Tier 2 Fix #17) ─────────────────────────────────────
+// Retries failed Dexie writes with exponential backoff.
+// Shows a persistent warning banner if all retries fail.
+
+const WRITE_MAX_RETRIES = 3;
+const WRITE_BASE_DELAY = 500;  // ms — doubles each retry (500, 1000, 2000)
+
+/**
+ * Shows or hides the write-failure warning banner.
+ * The banner is injected into the DOM once, then shown/hidden.
+ */
+function _showWriteWarning(show) {
+  let banner = document.getElementById('db-write-warning');
+  if (show && !banner) {
+    banner = document.createElement('div');
+    banner.id = 'db-write-warning';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+      'background:#d32f2f;color:#fff;text-align:center;padding:10px 16px;' +
+      'font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3);';
+    banner.textContent = '\u26A0 Your changes may not have been saved. Please do not close this tab.';
+    document.body.appendChild(banner);
+  }
+  if (banner) {
+    banner.style.display = show ? 'block' : 'none';
+  }
+}
+
+/**
+ * Retries a Dexie write operation with exponential backoff.
+ * @param {Function} writeFn - Async function that performs the Dexie write
+ * @param {string} label - Human-readable label for logging
+ * @returns {boolean} true if write succeeded, false if all retries exhausted
+ */
+async function _retryWrite(writeFn, label) {
+  for (let attempt = 0; attempt <= WRITE_MAX_RETRIES; attempt++) {
+    try {
+      await writeFn();
+      // If we were showing a warning from a previous failure, clear it
+      _showWriteWarning(false);
+      return true;
+    } catch (err) {
+      if (attempt < WRITE_MAX_RETRIES) {
+        const delay = WRITE_BASE_DELAY * Math.pow(2, attempt);
+        console.warn(`[DB] ${label} failed (attempt ${attempt + 1}/${WRITE_MAX_RETRIES + 1}), retrying in ${delay}ms:`, err);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        console.error(`[DB] ${label} failed after ${WRITE_MAX_RETRIES + 1} attempts:`, err);
+        _showWriteWarning(true);
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
 // ─── Single-Record Append (used for transactions, transfers, etc.) ───────────
 // Inserts or updates a single record in an append-only table.
 // This is O(1) regardless of table size — no lag at 100K+ records.
+// Tier 2 Fix #17: Now retries with exponential backoff and shows warning on failure.
 
 async function _appendRecord(tableName, record) {
   _pendingWrites++;
   try {
-    await bobDB[tableName].put(record);
-    return true;
-  } catch (err) {
-    console.error(`[DB] Append to ${tableName} failed:`, err);
-    return false;
+    return await _retryWrite(
+      () => bobDB[tableName].put(record),
+      `Append to ${tableName}`
+    );
   } finally {
     _pendingWrites--;
   }
@@ -156,11 +211,10 @@ async function _appendRecords(tableName, records) {
   if (!records || records.length === 0) return true;
   _pendingWrites++;
   try {
-    await bobDB[tableName].bulkPut(records);
-    return true;
-  } catch (err) {
-    console.error(`[DB] Bulk append to ${tableName} failed:`, err);
-    return false;
+    return await _retryWrite(
+      () => bobDB[tableName].bulkPut(records),
+      `Bulk append to ${tableName} (${records.length} records)`
+    );
   } finally {
     _pendingWrites--;
   }
@@ -241,8 +295,11 @@ const DB = {
    */
   save(d) {
     this._cache = d;
-    _persistAllToDexie(d).catch(err => {
-      console.error('[DB] Background full-save failed:', err);
+    _retryWrite(
+      () => _persistAllToDexie(d),
+      'Full save'
+    ).catch(err => {
+      console.error('[DB] Background full-save failed after retries:', err);
     });
     return true;
   },
@@ -258,8 +315,11 @@ const DB = {
     if (!this._cache) return false;
     this._cache._v = (this._cache._v || 0) + 1;
     // Only rewrite small reference tables + meta — NOT transactions
-    _persistRefDataToDexie(this._cache).catch(err => {
-      console.error('[DB] Background commit failed:', err);
+    _retryWrite(
+      () => _persistRefDataToDexie(this._cache),
+      'Commit (ref data)'
+    ).catch(err => {
+      console.error('[DB] Background commit failed after retries:', err);
     });
     if (typeof Sync !== 'undefined') Sync.scheduleSync();
     return true;
@@ -339,13 +399,81 @@ const DB = {
 
   /**
    * Removes a transaction by ID from cache AND Dexie.
+   * Tier 2 Fix #6: Also pushes a tombstone to SharePoint so other devices
+   * learn about the deletion on their next sync pull.
+   *
+   * @param {string} txnId - The transaction ID to remove
+   * @param {object} options - Optional: { skipTombstone: true } to suppress sync
+   *   (used when applying a remote tombstone — don't re-push what we just received)
    */
-  removeTransaction(txnId) {
+  removeTransaction(txnId, options) {
     if (!this._cache) return false;
+    // Grab the original transaction before removing (for tombstone context)
+    const original = this._cache.transactions.find(t => t.id === txnId);
     this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
-    bobDB.transactions.delete(txnId).catch(err => {
-      console.error('[DB] Background transaction delete failed:', err);
+    // GPT review: apply retry/warning to delete operations (not just writes)
+    _retryWrite(
+      () => bobDB.transactions.delete(txnId),
+      `Delete transaction ${txnId}`
+    ).catch(err => {
+      console.error('[DB] Background transaction delete failed after retries:', err);
     });
+    // Push tombstone to SharePoint (unless this IS a remote tombstone being applied)
+    if (!(options && options.skipTombstone) && typeof Sync !== 'undefined' && Sync.pushTombstone) {
+      Sync.pushTombstone(txnId, original || {});
+    }
+    return true;
+  },
+
+  /**
+   * ATOMIC BATCH WRITE (Tier 2 Fix #12)
+   * Writes multiple transactions + a transfer update in a single Dexie transaction.
+   * If any write fails, ALL writes are rolled back — no partial state.
+   *
+   * Used by Transfer.receive() and Transfer.resolveFlag() where multiple
+   * addTransaction calls + an updateTransfer must succeed or fail together.
+   *
+   * @param {Array} transactions - Array of transaction objects to insert
+   * @param {object|null} transfer - Transfer object to update (optional)
+   * @returns {boolean} true (synchronous — actual write is async but atomic)
+   */
+  atomicTransferWrite(transactions, transfer) {
+    if (!this._cache) return false;
+
+    // Update cache synchronously (optimistic — matches existing pattern)
+    if (transactions && transactions.length > 0) {
+      this._cache.transactions.push(...transactions);
+    }
+    // Transfer is already mutated in cache by reference — just need to persist
+
+    // Atomic Dexie write — all or nothing, with retry (GPT review)
+    _pendingWrites++;
+    const tables = [bobDB.transactions];
+    if (transfer) tables.push(bobDB.transfers);
+
+    _retryWrite(
+      () => bobDB.transaction('rw', ...tables, async () => {
+        if (transactions && transactions.length > 0) {
+          await bobDB.transactions.bulkPut(transactions);
+        }
+        if (transfer) {
+          await bobDB.transfers.put(transfer);
+        }
+      }),
+      'Atomic transfer write'
+    ).then(ok => {
+      if (!ok) {
+        // All retries exhausted — roll back cache
+        console.error('[DB] Atomic transfer write failed after retries — rolling back cache.');
+        if (transactions && transactions.length > 0) {
+          const ids = new Set(transactions.map(t => t.id));
+          this._cache.transactions = this._cache.transactions.filter(t => !ids.has(t.id));
+        }
+      }
+    }).finally(() => {
+      _pendingWrites--;
+    });
+
     return true;
   },
 
@@ -447,7 +575,7 @@ async function _loadSeedData(seed) {
  *
  * Usage in index.html:
  *   await initDB(SEED);
-   *   // now DB.get() works synchronously everywhere
+ *   // now DB.get() works synchronously everywhere
  *   App.init();
  */
 async function initDB(seedData) {

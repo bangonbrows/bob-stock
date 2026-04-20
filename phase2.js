@@ -135,10 +135,13 @@ const Transfer = {
     t.items.forEach(i => { i.status = 'pending'; });
     t.status = 'in_transit';
     t.date = new Date().toISOString();
+    // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
+    const batchTxns = [];
     t.items.forEach(item => {
-      DB.addTransaction(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer to ' + UI.storeName(t.toStoreId)));
+      batchTxns.push(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer to ' + UI.storeName(t.toStoreId)));
     });
-    DB.updateTransfer(t); DB.commit();
+    DB.atomicTransferWrite(batchTxns, t);
+    DB.commit();
     this._notify({
       type: 'transfer_created', fromStore: UI.storeName(t.fromStoreId), toStore: UI.storeName(t.toStoreId),
       date: t.date, createdBy: Auth.user(),
@@ -156,13 +159,15 @@ const Transfer = {
     const d = DB.get();
     const now = new Date().toISOString();
     let hasFlagged = false;
+    // Tier 2 Fix #12: Collect all transactions, then write atomically
+    const batchTxns = [];
     t.items.forEach(item => {
       const ri = receivedItems.find(r => r.productId === item.productId);
       const rQty = ri ? ri.receivedQty : 0;
       item.receivedQty = rQty;
       if (rQty === item.sentQty) {
         item.status = 'accepted';
-        DB.addTransaction(this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)));
+        batchTxns.push(this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)));
       } else {
         item.status = 'flagged';
         hasFlagged = true;
@@ -172,7 +177,9 @@ const Transfer = {
     t.receivedDate = now;
     t.status = hasFlagged ? 'received' : 'completed';
     if (!hasFlagged) t.completedDate = now;
-    DB.updateTransfer(t); DB.commit();
+    // Atomic write: all transaction inserts + transfer update in one Dexie transaction
+    DB.atomicTransferWrite(batchTxns, t);
+    DB.commit();
     if (!hasFlagged) this._notifyCompleted(t);
     return { ok:true, hasFlagged };
   },
@@ -188,24 +195,22 @@ const Transfer = {
     item.resolvedAction = action;
     item.flagNote = note || '';
     item.status = 'resolved';
+    // Tier 2 Fix #12: Collect all transactions, then write atomically
+    const batchTxns = [];
     if (action === 'accept_as_is') {
-      // Accept whatever was received
-      DB.addTransaction(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
+      batchTxns.push(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
       const diff = item.sentQty - item.receivedQty;
       if (diff > 0) {
-        // Return shortfall to sender
-        DB.addTransaction(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned — ' + diff + ' units'));
+        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned — ' + diff + ' units'));
       }
     } else if (action === 'adjust') {
-      // Accept adjusted qty at destination
-      DB.addTransaction(this._txn('transfer_in', productId, qty, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
+      batchTxns.push(this._txn('transfer_in', productId, qty, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
       const diff = item.sentQty - qty;
       if (diff > 0) {
-        DB.addTransaction(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned — ' + diff + ' units'));
+        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned — ' + diff + ' units'));
       }
     } else if (action === 'reject') {
-      // Return full sent qty to sender
-      DB.addTransaction(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
+      batchTxns.push(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
     }
     // Check if all items resolved
     const allDone = t.items.every(i => i.status === 'accepted' || i.status === 'resolved');
@@ -214,7 +219,9 @@ const Transfer = {
       t.completedDate = new Date().toISOString();
       this._notifyCompleted(t);
     }
-    DB.updateTransfer(t); DB.commit();
+    // Atomic write: all transaction inserts + transfer update in one Dexie transaction
+    DB.atomicTransferWrite(batchTxns, t);
+    DB.commit();
     return { ok:true };
   },
 
@@ -256,15 +263,18 @@ const Transfer = {
     if (!this._canCancel()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || (t.status !== 'in_transit' && t.status !== 'draft')) return { ok:false, error:'Cannot cancel this transfer' };
+    // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
+    const batchTxns = [];
     if (t.status === 'in_transit') {
       // Reverse transfer_out transactions
       t.items.forEach(item => {
-        DB.addTransaction(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer cancelled — stock returned'));
+        batchTxns.push(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer cancelled — stock returned'));
       });
     }
     t.status = 'cancelled';
     t.completedDate = new Date().toISOString();
-    DB.updateTransfer(t); DB.commit();
+    DB.atomicTransferWrite(batchTxns, t);
+    DB.commit();
     return { ok:true };
   },
 
