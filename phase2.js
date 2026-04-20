@@ -1,8 +1,8 @@
-// ╔══════════════════════════════════════════════════════════╗
-// ║  PHASE 2: Bulk Stock Transfers — Self-contained patch   ║
-// ╚══════════════════════════════════════════════════════════╝
+// ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// â  PHASE 2: Bulk Stock Transfers â Self-contained patch   â
+// ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // This script is appended near </body>. It:
-// 1. Patches DB._migrate to add transfers + stockThresholds
+// 1. Patches DB._migrate to add transfers
 // 2. Patches Stock.qty to handle transfer_in
 // 3. Adds the Transfer module
 // 4. Adds HTML page containers
@@ -13,13 +13,13 @@
 (function() {
 'use strict';
 
-// ── 1. Patch DB._migrate ──
+// ââ 1. Patch DB._migrate ââ
 const origMigrate = DB._migrate.bind(DB);
 DB._migrate = function() {
   origMigrate();
   let changed = false;
   if (!this._cache.transfers) { this._cache.transfers = []; changed = true; }
-  if (!this._cache.stockThresholds) { this._cache.stockThresholds = { global:{}, stores:{} }; changed = true; }
+  // Fix #8: stockThresholds removed — thresholds now unified in d.thresholds array
   // Prune completed transfers > 30 days
   if (this._cache.transfers.length > 0) {
     const cutoff = Date.now() - 30 * 86400000;
@@ -32,15 +32,10 @@ DB._migrate = function() {
   }
   if (changed) this.commit();
 };
+// ── 2. Stock.qty patch REMOVED (Tier 2 Fix #7) ──
+// transfer_in is now handled by the Txn classifier in index.html Stock.qty()
 
-// ── 2. Patch Stock.qty to handle transfer_in ──
-Stock.qty = function(productId, storeId) {
-  return DB.get().transactions
-    .filter(t => t.productId === productId && t.storeId === storeId)
-    .reduce((s, t) => (t.type === 'in' || t.type === 'return_in' || t.type === 'transfer_in') ? s + t.qty : s - t.qty, 0);
-};
-
-// ── Transfer Module ──────────────────────────────────────────────────────────
+// ââ Transfer Module ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 const Transfer = {
   EMAIL_URL: 'https://prod-29.australiaeast.logic.azure.com:443/workflows/c190a25cfabc48fc85e1d63628c092b1/triggers/When_a_HTTP_request_is_received/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2FWhen_a_HTTP_request_is_received%2Frun&sv=1.0&sig=h7DYTLNOEE1RvqVW0ROaN31JCIBhn3vevqHsyCLBqo4',
 
@@ -106,9 +101,10 @@ const Transfer = {
     if (!this._canCreate()) return { ok:false, error:'Permission denied' };
     const items = [];
     stockTakeItems.forEach(st => {
-      const th = this.getThresholds(storeId)[st.productId];
-      if (th && st.counted < th.optimum) {
-        items.push({ productId: st.productId, qty: th.optimum - st.counted });
+      const thr = Stock.threshold(st.productId, storeId);
+      const optimum = thr ? (thr.optimumQty || thr.minQty || 0) : 0;
+      if (optimum && st.counted < optimum) {
+        items.push({ productId: st.productId, qty: optimum - st.counted });
       }
     });
     if (!items.length) return { ok:false, error:'No shortfalls detected' };
@@ -198,19 +194,19 @@ const Transfer = {
     // Tier 2 Fix #12: Collect all transactions, then write atomically
     const batchTxns = [];
     if (action === 'accept_as_is') {
-      batchTxns.push(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
+      batchTxns.push(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId, 'Flag resolved â accepted as-is from ' + UI.storeName(t.fromStoreId)));
       const diff = item.sentQty - item.receivedQty;
       if (diff > 0) {
-        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned — ' + diff + ' units'));
+        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned â ' + diff + ' units'));
       }
     } else if (action === 'adjust') {
-      batchTxns.push(this._txn('transfer_in', productId, qty, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
+      batchTxns.push(this._txn('transfer_in', productId, qty, t.toStoreId, transferId, 'Flag resolved â adjusted qty from ' + UI.storeName(t.fromStoreId)));
       const diff = item.sentQty - qty;
       if (diff > 0) {
-        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned — ' + diff + ' units'));
+        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned â ' + diff + ' units'));
       }
     } else if (action === 'reject') {
-      batchTxns.push(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
+      batchTxns.push(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected â full qty returned to ' + UI.storeName(t.fromStoreId)));
     }
     // Check if all items resolved
     const allDone = t.items.every(i => i.status === 'accepted' || i.status === 'resolved');
@@ -268,7 +264,7 @@ const Transfer = {
     if (t.status === 'in_transit') {
       // Reverse transfer_out transactions
       t.items.forEach(item => {
-        batchTxns.push(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer cancelled — stock returned'));
+        batchTxns.push(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer cancelled â stock returned'));
       });
     }
     t.status = 'cancelled';
@@ -278,29 +274,8 @@ const Transfer = {
     return { ok:true };
   },
 
-  getThresholds(storeId) {
-    const th = DB.get().stockThresholds || { global:{}, stores:{} };
-    const merged = Object.assign({}, th.global);
-    if (storeId && th.stores[storeId]) {
-      Object.keys(th.stores[storeId]).forEach(pid => { merged[pid] = th.stores[storeId][pid]; });
-    }
-    return merged;
-  },
-
-  setThresholds(scope, productId, min, optimum) {
-    if (!this._canSetThresholds()) return { ok:false, error:'Permission denied' };
-    if (min < 0 || optimum < 0 || min > optimum) return { ok:false, error:'Invalid threshold values' };
-    const d = DB.get();
-    if (!d.stockThresholds) d.stockThresholds = { global:{}, stores:{} };
-    if (scope === 'global') {
-      d.stockThresholds.global[productId] = { min, optimum };
-    } else {
-      if (!d.stockThresholds.stores[scope]) d.stockThresholds.stores[scope] = {};
-      d.stockThresholds.stores[scope][productId] = { min, optimum };
-    }
-    DB.commit();
-    return { ok:true };
-  },
+  // Fix #8: getThresholds/setThresholds REMOVED — unified into Stock.threshold() + d.thresholds array
+  // Optimum Stock Levels UI now reads/writes d.thresholds directly via saveOptimumLevels()
 
   pruneCompleted(daysOld) {
     const d = DB.get();
@@ -315,7 +290,7 @@ const Transfer = {
   }
 };
 
-// ── 4. Add HTML page containers ──
+// ââ 4. Add HTML page containers ââ
 const pageContainer = document.querySelector('.main-wrap') || document.querySelector('.main-content') || document.querySelector('.content') || document.querySelector('main');
 if (pageContainer) {
   const newPages = ['transfers','create-transfer','draft-transfer','receive-transfer','resolve-flags','optimum-levels'];
@@ -329,7 +304,7 @@ if (pageContainer) {
   });
 }
 
-// ── 5. Patch buildSidebar to add Transfers section ──
+// ââ 5. Patch buildSidebar to add Transfers section ââ
 if (typeof buildSidebar === 'function') {
   const origBuildSidebar = buildSidebar;
   window.buildSidebar = function() {
@@ -363,7 +338,7 @@ if (typeof buildSidebar === 'function') {
   };
 }
 
-// ── Icon helpers for nav ──
+// ââ Icon helpers for nav ââ
 function iconTransfer() {
   return '<svg style="width:18px;height:18px;margin-right:8px;vertical-align:middle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16l-4-4m0 0l4-4m-4 4h18M17 8l4 4m0 0l-4 4m4-4H3"/></svg>';
 }
@@ -374,7 +349,7 @@ function iconSettings() {
   return '<svg style="width:18px;height:18px;margin-right:8px;vertical-align:middle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>';
 }
 
-// ── 6. Patch navigateTo to handle new pages ──
+// ââ 6. Patch navigateTo to handle new pages ââ
 if (typeof navigateTo === 'function') {
   const origNavigateTo = navigateTo;
   window.navigateTo = function(page) {
@@ -408,13 +383,13 @@ if (typeof navigateTo === 'function') {
   };
 }
 
-// ── 7. Rebuild sidebar on next tick to add Transfers nav ──
+// ââ 7. Rebuild sidebar on next tick to add Transfers nav ââ
 setTimeout(function() {
   if (typeof buildSidebar === 'function' && Auth.user()) buildSidebar();
 }, 100);
 
 /* ============================================================
-   Phase 2 — Transfer Feature UI
+   Phase 2 â Transfer Feature UI
    All rendering functions + stepper component + CSS
    ============================================================ */
 
@@ -796,7 +771,7 @@ window.renderCreateTransfer = function() {
     !search || (p.name || '').toLowerCase().includes(search) || (p.id || '').toLowerCase().includes(search)
   );
 
-  const thresholds = data.stockThresholds || {};
+  // Fix #8: Use unified Stock.threshold() instead of stockThresholds
 
   const totalSelected = Object.values(_txState.createItems).filter(q => q > 0).length;
   const totalUnits = Object.values(_txState.createItems).reduce((s, q) => s + (q > 0 ? q : 0), 0);
@@ -872,8 +847,8 @@ window.renderCreateTransfer = function() {
         ${filteredProducts.map(p => {
           const originQty = from ? Stock.qty(p.id, from) : 0;
           const destQty = to ? Stock.qty(p.id, to) : 0;
-          const th = thresholds[p.id];
-          const optimum = th ? (th[to] || th.global || 0) : 0;
+          const thr = to ? Stock.threshold(p.id, to) : null;
+          const optimum = thr ? (thr.optimumQty || thr.minQty || 0) : 0;
           const shortfall = Math.max(0, optimum - destQty);
           const curQty = _txState.createItems[p.id] || 0;
           return `
@@ -1186,7 +1161,7 @@ window.renderOptimumLevels = function() {
   const data = DB.get();
   const products = (data.products || []).filter(p => p.active !== false);
   const stores = data.stores || [];
-  const thresholds = data.stockThresholds || {};
+  // Fix #8: Use unified Stock.threshold() instead of stockThresholds
   const scope = _txState.optScope;
   const storeId = _txState.optStore;
 
@@ -1194,11 +1169,12 @@ window.renderOptimumLevels = function() {
   products.forEach(p => {
     const key = scope === 'global' ? p.id : p.id + '_' + storeId;
     if (!_txState.optEdits[key]) {
-      const th = thresholds[p.id] || {};
       if (scope === 'global') {
-        _txState.optEdits[key] = { min: th.globalMin || 0, optimum: th.global || 0 };
+        const globalThr = data.thresholds.find(t => t.productId === p.id && (t.storeId === null || t.storeId === '*'));
+        _txState.optEdits[key] = { min: globalThr?.minQty || 0, optimum: globalThr?.optimumQty || 0 };
       } else {
-        _txState.optEdits[key] = { min: (th[storeId + 'Min']) || th.globalMin || 0, optimum: th[storeId] || th.global || 0 };
+        const thr = Stock.threshold(p.id, storeId);
+        _txState.optEdits[key] = { min: thr?.minQty || 0, optimum: thr?.optimumQty || 0 };
       }
     }
   });
@@ -1260,7 +1236,7 @@ window.renderOptimumLevels = function() {
 
 
 // ============================================================
-// TransferUI — action handlers
+// TransferUI â action handlers
 // ============================================================
 window.TransferUI = {
 
@@ -1470,18 +1446,21 @@ window.TransferUI = {
   saveOptimumLevels() {
     const scope = _txState.optScope;
     const storeId = _txState.optStore;
-    const data = DB.get();
-    const products = (data.products || []).filter(p => p.active !== false);
+    const d = DB.get();
+    const products = (d.products || []).filter(p => p.active !== false);
     let saved = 0;
 
     products.forEach(p => {
       const key = scope === 'global' ? p.id : p.id + '_' + storeId;
       const ed = _txState.optEdits[key];
       if (!ed) return;
-      const targetScope = scope === 'global' ? 'global' : storeId;
-      const result = Transfer.setThresholds(targetScope, p.id, ed.min || 0, ed.optimum || 0);
-      if (result.ok) saved++;
+      const targetStoreId = scope === 'global' ? null : storeId;
+      const idx = d.thresholds.findIndex(t => t.productId === p.id && ((targetStoreId === null) ? (t.storeId === null || t.storeId === '*') : t.storeId === targetStoreId));
+      const entry = { productId: p.id, storeId: targetStoreId, minQty: ed.min || 0, optimumQty: ed.optimum || 0, leadDays: null };
+      if (idx >= 0) { Object.assign(d.thresholds[idx], entry); } else { d.thresholds.push(entry); }
+      saved++;
     });
+      DB.commit();
 
     if (saved > 0) {
       UI.toast(`Saved ${saved} threshold(s)`, 'success');
