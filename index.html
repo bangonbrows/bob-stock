@@ -1154,7 +1154,7 @@ PHASE3_DISABLED */
     const s = sessionStorage.getItem('bob_session_v4');
     if (s) this._user = JSON.parse(s);
   },
-  logout() { this._user=null; sessionStorage.removeItem('bob_session_v4'); if(typeof Sync!=='undefined'&&Sync._pollInterval){clearInterval(Sync._pollInterval);Sync._pollInterval=null;} },
+  logout() { this._user=null; sessionStorage.removeItem('bob_session_v4'); if(typeof Sync!=='undefined'){Sync.clearSensitiveData();} },
   user()    { return this._user; },
   is(role)  { return this._user && this._user.role === role; },
   isAtLeast(role) {
@@ -1727,7 +1727,7 @@ const Pages = {
       const avail=Stock.qty(txn.productId,txn.storeId);
       if(avail<txn.qty){UI.toast(`⚠ Insufficient stock — only ${avail} unit${avail!==1?'s':''} available`,'error');return;}
     }
-    d.transactions.push(txn); DB.commit();
+    DB.addTransaction(txn); DB.commit();
     const icon=this._logData.type==='in'?'▲':isReturnSub?'↩':'▼';
     UI.toast(`Movement logged — ${icon} ${this._logData.qty} × ${UI.productName(this._logData.productId)}`,'success');
     this._logStep=1; this._logData={selectedStoreId:this._getLogStoreId()};
@@ -1793,13 +1793,11 @@ const Pages = {
     if(!name){UI.toast('Please enter your name','error');return;}
     if(!reasonSel){UI.toast('Please select a deletion reason','error');return;}
     const reason=reasonSel==='Other'?(reasonOther||'Other'):reasonSel;
-    const d=DB.get(); const idx=d.transactions.findIndex(t=>t.id===id);
-    if(idx>=0){
-      const txn=d.transactions[idx];
+    const d=DB.get(); const txn=d.transactions.find(t=>t.id===id);
+    if(txn){
       txn.editLog.push({action:'deleted',by:name,reason:reason,at:new Date().toISOString()});if(txn.editLog.length>10)txn.editLog=txn.editLog.slice(-10);
-      if(!d.deletedTransactions)d.deletedTransactions=[];
-      d.deletedTransactions.push({...txn,_deletedAt:new Date().toISOString(),_deletedBy:name,_deleteReason:reason});
-      d.transactions.splice(idx,1); DB.commit();
+      DB.addDeletedTransaction({...txn,_deletedAt:new Date().toISOString(),_deletedBy:name,_deleteReason:reason});
+      DB.removeTransaction(id); DB.commit();
       UI.closeModal(); UI.toast('Movement deleted','info'); this._renderTodayMovements();
     }
   },
@@ -1814,15 +1812,11 @@ const Pages = {
     UI.confirm('Undo Movement',`Undo ${icon} ${t.qty}× ${UI.esc(prodName)}? This will reverse the stock movement.`,()=>{
       const d2=DB.get();const t2=d2.transactions.find(tx=>tx.id===id);
       if(!t2){UI.toast('Movement not found','error');return;}
-      const idx=d2.transactions.findIndex(tx=>tx.id===id);
-      if(idx>=0){
-        if(!d2.deletedTransactions)d2.deletedTransactions=[];
-        d2.deletedTransactions.push({...t2,_deletedAt:new Date().toISOString(),_deletedBy:Auth.user()?.name||Auth.user()?.username||'unknown',_deleteReason:'Undo — reversed within 5 min window'});
-        d2.transactions.splice(idx,1);
-        DB.commit();
-        UI.toast(`Movement undone — ${icon} ${t2.qty}× ${prodName}`,'success');
-        Pages._renderTodayMovements();
-      }
+      DB.addDeletedTransaction({...t2,_deletedAt:new Date().toISOString(),_deletedBy:Auth.user()?.name||Auth.user()?.username||'unknown',_deleteReason:'Undo — reversed within 5 min window'});
+      DB.removeTransaction(id);
+      DB.commit();
+      UI.toast(`Movement undone — ${icon} ${t2.qty}× ${prodName}`,'success');
+      Pages._renderTodayMovements();
     },'Undo');
   },
 
@@ -2876,20 +2870,27 @@ const Pages = {
     const grp=document.getElementById(groupId);
     if(grp) grp.style.display=['head_office','director'].includes(role)?'none':'block';
   },
-  _saveNewUser(){
-    const name=document.getElementById('nu-name')?.value.trim();
-    const username=document.getElementById('nu-user')?.value.trim();
-    const password=document.getElementById('nu-pass')?.value;
-    const pin=document.getElementById('nu-pin')?.value||'1234';
-    const role=document.getElementById('nu-role')?.value;
-    if(!name||!username||!password){UI.toast('Name, username and password required','error');return;}
-    if(pin&&!/^\d{4}$/.test(pin)){UI.toast('PIN must be exactly 4 digits','error');return;}
-    const d=DB.get();
-    if(d.users.find(u=>u.username===username)){UI.toast('Username already exists','error');return;}
-    const storeIds=[...document.querySelectorAll('.nu-store-cb:checked')].map(cb=>cb.value);
-    const id='u_'+Date.now();
-    d.users.push({id,username,password,role,name,storeIds,pin:pin||'1234'});
-    DB.commit();UI.closeModal();UI.toast(`"${name}" added`,'success');this._refreshSettings('users');
+  async _saveNewUser(){
+    const btn=document.querySelector('.modal-footer .btn-primary');
+    if(btn){btn.disabled=true;btn.textContent='Saving...';}
+    try{
+      const name=document.getElementById('nu-name')?.value.trim();
+      const username=document.getElementById('nu-user')?.value.trim();
+      const password=document.getElementById('nu-pass')?.value;
+      const pin=document.getElementById('nu-pin')?.value||'1234';
+      const role=document.getElementById('nu-role')?.value;
+      if(!name||!username||!password){UI.toast('Name, username and password required','error');return;}
+      if(pin&&!/^\d{4}$/.test(pin)){UI.toast('PIN must be exactly 4 digits','error');return;}
+      const d=DB.get();
+      if(d.users.find(u=>u.username===username)){UI.toast('Username already exists','error');return;}
+      const storeIds=[...document.querySelectorAll('.nu-store-cb:checked')].map(cb=>cb.value);
+      const id='u_'+Date.now();
+      const hashedPassword=await sha256(password);
+      const hashedPin=await sha256(pin||'1234');
+      d.users.push({id,username,password:hashedPassword,role,name,storeIds,pin:hashedPin});
+      DB.commit();UI.closeModal();UI.toast(`"${name}" added`,'success');this._refreshSettings('users');
+    }catch(e){console.error('[Users] Save failed:',e);UI.toast('Failed to save user — please try again','error');}
+    finally{if(btn){btn.disabled=false;btn.textContent='Add User';}}
   },
   _editUserModal(id){
     const d=DB.get(); const u=d.users.find(u=>u.id===id);
@@ -2897,7 +2898,7 @@ const Pages = {
       <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="eu-name" value="${u.name}"></div>
       <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="eu-user" value="${u.username}"></div>
       <div class="form-group"><label class="form-label">New Password (leave blank to keep)</label><input type="password" class="form-input" id="eu-pass"></div>
-      <div class="form-group"><label class="form-label">PIN (4 digits)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="${u.pin||''}" placeholder="Set PIN" style="max-width:100px"></div>
+      <div class="form-group"><label class="form-label">New PIN (4 digits, leave blank to keep)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="" placeholder="Enter new PIN" style="max-width:100px"></div>
       <div class="form-group"><label class="form-label">Role</label>
         <select class="form-select" id="eu-role" onchange="Pages._toggleUserStoreField('eu-stores-grp','eu-role')">
           ${['staff','franchisee','store_manager','territory_manager','head_office','director'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r.replace(/_/g,' ')}</option>`).join('')}
@@ -2911,15 +2912,20 @@ const Pages = {
       </div>`,
     `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._updateUser('${id}')">Save</button>`);
   },
-  _updateUser(id){
-    const d=DB.get(); const u=d.users.find(u=>u.id===id);
-    u.name=document.getElementById('eu-name')?.value.trim()||u.name;
-    u.username=document.getElementById('eu-user')?.value.trim()||u.username;
-    const np=document.getElementById('eu-pass')?.value;if(np)u.password=np;
-    const newPin=document.getElementById('eu-pin')?.value;if(newPin&&!/^\d{4}$/.test(newPin)){UI.toast('PIN must be exactly 4 digits','error');return;}u.pin=newPin||u.pin;
-    u.role=document.getElementById('eu-role')?.value||u.role;
-    u.storeIds=[...document.querySelectorAll('.eu-store-cb:checked')].map(cb=>cb.value);
-    DB.commit();UI.closeModal();UI.toast('Updated','success');this._refreshSettings('users');
+  async _updateUser(id){
+    const btn=document.querySelector('.modal-footer .btn-primary');
+    if(btn){btn.disabled=true;btn.textContent='Saving...';}
+    try{
+      const d=DB.get(); const u=d.users.find(u=>u.id===id);
+      u.name=document.getElementById('eu-name')?.value.trim()||u.name;
+      u.username=document.getElementById('eu-user')?.value.trim()||u.username;
+      const np=document.getElementById('eu-pass')?.value;if(np)u.password=await sha256(np);
+      const newPin=document.getElementById('eu-pin')?.value;if(newPin&&!/^\d{4}$/.test(newPin)){UI.toast('PIN must be exactly 4 digits','error');return;}if(newPin)u.pin=await sha256(newPin);
+      u.role=document.getElementById('eu-role')?.value||u.role;
+      u.storeIds=[...document.querySelectorAll('.eu-store-cb:checked')].map(cb=>cb.value);
+      DB.commit();UI.closeModal();UI.toast('Updated','success');this._refreshSettings('users');
+    }catch(e){console.error('[Users] Update failed:',e);UI.toast('Failed to update user — please try again','error');}
+    finally{if(btn){btn.disabled=false;btn.textContent='Save';}}
   },
   _deleteUser(id){
     const u=DB.get().users.find(u=>u.id===id);
@@ -4515,7 +4521,7 @@ const Pages = {
         if(prod)prod.costPrice=Math.round(landedPerUnit*100)/100;
       }
       // Create stock-in transaction
-      d.transactions.push({id:'tx_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),date,storeId:'head_office',productId:ln.productId,type:'in',qty:ln.qty,by:Auth.user()?.username||'director',note:`Delivery from ${supplier}${invoiceNo?' #'+invoiceNo:''}`});
+      DB.addTransaction({id:'tx_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),date,storeId:'head_office',productId:ln.productId,type:'in',qty:ln.qty,staffName:Auth.user()?.name||Auth.user()?.username||'director',reason:`Delivery from ${supplier}${invoiceNo?' #'+invoiceNo:''}`,by:Auth.user(),editLog:[],createdAt:new Date().toISOString()});
     });
     d.deliveries.push(delivery);
     DB.commit();
