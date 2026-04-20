@@ -51,8 +51,9 @@ const Transfer = {
   _canCancel() { return Auth.is('director') || Auth.is('head_office'); },
   _canViewHistory() { return Auth.isAtLeast('store_manager') && !Auth.is('staff'); },
 
-  _txn(type, productId, qty, storeId, transferId) {
-    return { type, productId, qty, storeId, transferId, date: new Date().toISOString(), by: Auth.user() };
+  _txn(type, productId, qty, storeId, transferId, reason) {
+    const u = Auth.user();
+    return { id: 'txn_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join(''), type, productId, qty, storeId, transferId, date: new Date().toISOString().slice(0,10), staffName: u?.name || u?.username || 'unknown', reason: reason || '', by: u, editLog: [], createdAt: new Date().toISOString() };
   },
 
   _notify(payload) {
@@ -81,11 +82,11 @@ const Transfer = {
       receivedBy: null, receivedDate: null, completedDate: null,
       notes: opt.notes || ''
     };
-    d.transfers.push(transfer);
+    DB.addTransfer(transfer);
     // Transit Void: deduct stock immediately unless draft
     if (!opt.isDraft) {
       transfer.items.forEach(item => {
-        d.transactions.push(this._txn('transfer_out', item.productId, item.sentQty, fromStoreId, id));
+        DB.addTransaction(this._txn('transfer_out', item.productId, item.sentQty, fromStoreId, id, 'Transfer to ' + UI.storeName(toStoreId)));
       });
     }
     DB.commit();
@@ -120,7 +121,7 @@ const Transfer = {
     const item = t.items.find(i => i.productId === productId);
     if (!item) return { ok:false, error:'Item not found' };
     item.status = item.status === 'confirmed' ? 'pending' : 'confirmed';
-    DB.commit();
+    DB.updateTransfer(t); DB.commit();
     return { ok:true };
   },
 
@@ -134,11 +135,10 @@ const Transfer = {
     t.items.forEach(i => { i.status = 'pending'; });
     t.status = 'in_transit';
     t.date = new Date().toISOString();
-    const d = DB.get();
     t.items.forEach(item => {
-      d.transactions.push(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId));
+      DB.addTransaction(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer to ' + UI.storeName(t.toStoreId)));
     });
-    DB.commit();
+    DB.updateTransfer(t); DB.commit();
     this._notify({
       type: 'transfer_created', fromStore: UI.storeName(t.fromStoreId), toStore: UI.storeName(t.toStoreId),
       date: t.date, createdBy: Auth.user(),
@@ -162,7 +162,7 @@ const Transfer = {
       item.receivedQty = rQty;
       if (rQty === item.sentQty) {
         item.status = 'accepted';
-        d.transactions.push(this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId));
+        DB.addTransaction(this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)));
       } else {
         item.status = 'flagged';
         hasFlagged = true;
@@ -172,7 +172,7 @@ const Transfer = {
     t.receivedDate = now;
     t.status = hasFlagged ? 'received' : 'completed';
     if (!hasFlagged) t.completedDate = now;
-    DB.commit();
+    DB.updateTransfer(t); DB.commit();
     if (!hasFlagged) this._notifyCompleted(t);
     return { ok:true, hasFlagged };
   },
@@ -190,22 +190,22 @@ const Transfer = {
     item.status = 'resolved';
     if (action === 'accept_as_is') {
       // Accept whatever was received
-      d.transactions.push(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId));
+      DB.addTransaction(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
       const diff = item.sentQty - item.receivedQty;
       if (diff > 0) {
         // Return shortfall to sender
-        d.transactions.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId));
+        DB.addTransaction(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned — ' + diff + ' units'));
       }
     } else if (action === 'adjust') {
       // Accept adjusted qty at destination
-      d.transactions.push(this._txn('transfer_in', productId, qty, t.toStoreId, transferId));
+      DB.addTransaction(this._txn('transfer_in', productId, qty, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
       const diff = item.sentQty - qty;
       if (diff > 0) {
-        d.transactions.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId));
+        DB.addTransaction(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned — ' + diff + ' units'));
       }
     } else if (action === 'reject') {
       // Return full sent qty to sender
-      d.transactions.push(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId));
+      DB.addTransaction(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
     }
     // Check if all items resolved
     const allDone = t.items.every(i => i.status === 'accepted' || i.status === 'resolved');
@@ -214,7 +214,7 @@ const Transfer = {
       t.completedDate = new Date().toISOString();
       this._notifyCompleted(t);
     }
-    DB.commit();
+    DB.updateTransfer(t); DB.commit();
     return { ok:true };
   },
 
@@ -256,16 +256,15 @@ const Transfer = {
     if (!this._canCancel()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || (t.status !== 'in_transit' && t.status !== 'draft')) return { ok:false, error:'Cannot cancel this transfer' };
-    const d = DB.get();
     if (t.status === 'in_transit') {
       // Reverse transfer_out transactions
       t.items.forEach(item => {
-        d.transactions.push(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId));
+        DB.addTransaction(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer cancelled — stock returned'));
       });
     }
     t.status = 'cancelled';
     t.completedDate = new Date().toISOString();
-    DB.commit();
+    DB.updateTransfer(t); DB.commit();
     return { ok:true };
   },
 
