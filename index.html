@@ -1185,18 +1185,80 @@ PHASE3_DISABLED */
   isStoreLevel() { const r=this._user?.role; return r==='staff'||r==='store_manager'||r==='franchisee'; }
 };
 
+// ── Transaction Classification (Tier 2 Fix #7) ────────────────────────────────
+const Txn = {
+  classify(txn) {
+    switch (txn.type) {
+      case 'in':             return { direction: 'in',   category: 'delivery' };
+      case 'return_in':      return { direction: 'in',   category: 'return' };
+      case 'transfer_in':    return { direction: 'in',   category: 'transfer' };
+      case 'out':            return { direction: 'out',  category: 'sale' };
+      case 'transfer_out':   return { direction: 'out',  category: 'transfer' };
+      case 'wastage':        return { direction: 'out',  category: 'wastage' };
+      case 'adjustment_in':  return { direction: 'in',   category: 'adjustment' };
+      case 'adjustment_out': return { direction: 'out',  category: 'adjustment' };
+      case 'deleted':        return { direction: 'none', category: 'deleted' };
+      default:               return { direction: 'none', category: 'unknown' };
+    }
+  },
+  isIn(txn)  { return this.classify(txn).direction === 'in'; },
+  isOut(txn) { return this.classify(txn).direction === 'out'; },
+  isActive(txn) { return this.classify(txn).direction !== 'none'; }
+};
+
 // ââ Stock Calculations âââââââââââââââââââââââââââ
 const Stock = {
+  // Fix #9: Materialised view cache — O(1) qty lookups
+  _qtyCache: {},  // { storeId: { productId: qty } }
+
+  _buildCache() {
+    this._qtyCache = {};
+    const txns = DB.get().transactions;
+    for (const t of txns) {
+      if (!Txn.isActive(t)) continue;
+      if (!this._qtyCache[t.storeId]) this._qtyCache[t.storeId] = {};
+      const delta = Txn.isIn(t) ? t.qty : -t.qty;
+      this._qtyCache[t.storeId][t.productId] = (this._qtyCache[t.storeId][t.productId] || 0) + delta;
+    }
+  },
+
+  _applyDelta(storeId, productId, type, qty) {
+    if (!this._qtyCache[storeId]) this._qtyCache[storeId] = {};
+    const txn = { type };
+    const delta = Txn.isIn(txn) ? qty : -qty;
+    this._qtyCache[storeId][productId] = (this._qtyCache[storeId][productId] || 0) + delta;
+  },
+
+  // Debug: compare cache vs full scan — call from console to verify integrity
+  _verifyCacheIntegrity() {
+    const drifts = [];
+    const d = DB.get();
+    d.stores.filter(s => s.active).forEach(store => {
+      d.products.filter(p => p.active).forEach(product => {
+        const cached = (this._qtyCache[store.id] && this._qtyCache[store.id][product.id]) || 0;
+        const scanned = d.transactions
+          .filter(t => t.productId === product.id && t.storeId === store.id && Txn.isActive(t))
+          .reduce((s, t) => Txn.isIn(t) ? s + t.qty : s - t.qty, 0);
+        if (cached !== scanned) drifts.push({ store: store.name, product: product.name, cached, scanned, diff: cached - scanned });
+      });
+    });
+    if (drifts.length === 0) { console.log('[Stock] Cache integrity OK — no drift'); return true; }
+    console.warn('[Stock] Cache drift detected:', drifts);
+    return false;
+  },
+
   qty(productId, storeId) {
-    return DB.get().transactions
-      .filter(t=>t.productId===productId && t.storeId===storeId && t.type!=='deleted')
-      .reduce((s,t)=>(t.type==='in'||t.type==='return_in')?s+t.qty:s-t.qty, 0);
+    return (this._qtyCache[storeId] && this._qtyCache[storeId][productId]) || 0;
   },
   storeStock(storeId) {
     return DB.get().products.filter(p=>p.active).map(p=>({ product:p, qty:this.qty(p.id, storeId) }));
   },
   threshold(productId, storeId) {
-    return DB.get().thresholds.find(t=>t.productId===productId && t.storeId===storeId) || null;
+    // Fix #8: Lookup precedence — exact store match → global default (storeId=null) → null
+    const d = DB.get().thresholds;
+    return d.find(t=>t.productId===productId && t.storeId===storeId)
+        || d.find(t=>t.productId===productId && (t.storeId===null || t.storeId==='*'))
+        || null;
   },
   alerts(storeIds) {
     const d = DB.get();
@@ -1228,11 +1290,11 @@ const Stock = {
       const d2 = new Date(now.getFullYear(), now.getMonth()-i, 1);
       const label = d2.toLocaleString('default',{month:'short',year:'2-digit'});
       const txns = DB.get().transactions.filter(t=>{
-        if(t.type==='deleted') return false;
+        if(!Txn.isActive(t)) return false;
         const td = new Date(t.date);
         return td.getMonth()===d2.getMonth() && td.getFullYear()===d2.getFullYear() && (!storeId||t.storeId===storeId);
       });
-      result.push({ label, ins:txns.filter(t=>t.type==='in').reduce((s,t)=>s+t.qty,0), outs:txns.filter(t=>t.type==='out').reduce((s,t)=>s+t.qty,0) });
+      result.push({ label, ins:txns.filter(t=>Txn.isIn(t)).reduce((s,t)=>s+t.qty,0), outs:txns.filter(t=>Txn.isOut(t)).reduce((s,t)=>s+t.qty,0) });
     }
     return result;
   },
@@ -1750,7 +1812,7 @@ const Pages = {
   _renderTodayMovements() {
     const today=new Date().toISOString().slice(0,10);
     const storeId=this._getLogStoreId()||Auth.storeId();
-    const txns=DB.get().transactions.filter(t=>t.date===today&&t.storeId===storeId&&t.type!=='deleted').reverse().slice(0,10);
+    const txns=DB.get().transactions.filter(t=>t.date===today&&t.storeId===storeId&&Txn.isActive(t)).reverse().slice(0,10);
     const el=document.getElementById('today-movements'); if(!el)return;
     if(!txns.length){el.innerHTML='<div style="color:#9ca3af;font-size:.825rem;padding:8px 0">No movements logged today.</div>';return;}
     const typeBadge=t=>{
@@ -1898,7 +1960,7 @@ const Pages = {
   _renderHistTable() {
     const storeId=Auth.storeId(); const from=document.getElementById('hist-from')?.value; const to=document.getElementById('hist-to')?.value;
     const type=document.getElementById('hist-type')?.value; const search=document.getElementById('hist-search')?.value.toLowerCase()||'';
-    let txns=DB.get().transactions.filter(t=>t.storeId===storeId&&t.type!=='deleted');
+    let txns=DB.get().transactions.filter(t=>t.storeId===storeId&&Txn.isActive(t));
     if(from)txns=txns.filter(t=>t.date>=from); if(to)txns=txns.filter(t=>t.date<=to);
     if(type)txns=txns.filter(t=>t.type===type);
     if(search)txns=txns.filter(t=>UI.productName(t.productId).toLowerCase().includes(search));
@@ -2423,8 +2485,8 @@ const Pages = {
     const stores=this._compStores||[]; const isDir=this._compIsDir; const d=DB.get();
     const toggle=this._compToggle||'out';
     const getPD=(storeId,from,to)=>{
-      const txns=d.transactions.filter(t=>t.storeId===storeId&&t.type!=='deleted'&&(!from||t.date>=from)&&(!to||t.date<=to));
-      const ins=txns.filter(t=>t.type==='in'); const outs=txns.filter(t=>t.type==='out');
+      const txns=d.transactions.filter(t=>t.storeId===storeId&&Txn.isActive(t)&&(!from||t.date>=from)&&(!to||t.date<=to));
+      const ins=txns.filter(t=>Txn.isIn(t)); const outs=txns.filter(t=>Txn.isOut(t));
       const inU=ins.reduce((a,t)=>a+t.qty,0); const outU=outs.reduce((a,t)=>a+t.qty,0);
       const inV=ins.reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return a+(p?.price||0)*t.qty;},0);
       const outV=outs.reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return a+(p?.price||0)*t.qty;},0);
@@ -2450,7 +2512,7 @@ const Pages = {
       const uChg=pctChg(aD.units,bD.units); const vChg=pctChg(aD.val,bD.val);
       let dirCols='';
       if(isDir){
-        const calcProfit=(from,to)=>d.transactions.filter(t=>t.storeId===s.id&&t.type==='out'&&(!from||t.date>=from)&&(!to||t.date<=to)).reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);const c=Stock.costAtDate(t.productId,t.date);return p&&c!=null&&p.price!=null?a+(p.price-c)*t.qty:a;},0);
+        const calcProfit=(from,to)=>d.transactions.filter(t=>t.storeId===s.id&&Txn.isOut(t)&&(!from||t.date>=from)&&(!to||t.date<=to)).reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);const c=Stock.costAtDate(t.productId,t.date);return p&&c!=null&&p.price!=null?a+(p.price-c)*t.qty:a;},0);
         const aP=calcProfit(aFrom,aTo); const bP=calcProfit(bFrom,bTo); const pChg=pctChg(aP,bP);
         dirCols=`<td>${UI.fmt(aP)}</td><td>${UI.fmt(bP)}</td><td style="color:${chgColor(pChg)};font-weight:700">${chgTxt(pChg)}</td>`;
       }
@@ -2480,8 +2542,8 @@ const Pages = {
       const dI=DB.get();
       const trendMetric=this._comp24Metric||'qty';
       const getVal=(txns)=>trendMetric==='val'?txns.reduce((b,t)=>{const p=dI.products.find(pr=>pr.id===t.productId);return p?.price?b+t.qty*p.price:b;},0):txns.reduce((b,t)=>b+t.qty,0);
-      const mIns=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&t.type==='in'&&t.date>=m.from&&t.date<=m.to)),0));
-      const mOuts=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&t.type!=='deleted'&&(t.type==='out'||t.type==='return_in')&&t.date>=m.from&&t.date<=m.to)),0));
+      const mIns=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&Txn.isIn(t)&&t.date>=m.from&&t.date<=m.to)),0));
+      const mOuts=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&Txn.isActive(t)&&(t.type==='out'||t.type==='return_in')&&t.date>=m.from&&t.date<=m.to)),0));
       const yFmt=trendMetric==='val'?{ticks:{callback:v=>'$'+v.toLocaleString()}}:{beginAtZero:true};
       const ds=[];
       if(toggle==='in'||toggle==='both') ds.push({label:'Stock IN',data:mIns,backgroundColor:'#86efac',borderRadius:3});
@@ -2567,8 +2629,8 @@ const Pages = {
       const totalVal=valProds.reduce((sum,p)=>sum+valStores.reduce((s2,sId)=>s2+(Stock.qty(p.id,sId)*(Stock.currentCost(p.id)||0)),0),0);
       const valLabel=(f.cat||f.pt||f.store)?'Filtered Stock Value':'Total Stock Value';
       const alerts=Stock.alerts(f.store?[f.store]:storeIds).length;
-      const ins=txns.filter(t=>t.type==='in').reduce((a,t)=>a+t.qty,0);
-      const outs=txns.filter(t=>t.type==='out').reduce((a,t)=>a+t.qty,0);
+      const ins=txns.filter(t=>Txn.isIn(t)).reduce((a,t)=>a+t.qty,0);
+      const outs=txns.filter(t=>Txn.isOut(t)).reduce((a,t)=>a+t.qty,0);
       const catBreakdown=d.categories.map(cat=>{
         const catProds=d.products.filter(p=>p.catId===cat.id&&(!f.cat||p.catId===f.cat));
         const stores=f.store?[f.store]:(storeIds||d.stores.filter(s=>s.active).map(s=>s.id));
@@ -2619,8 +2681,8 @@ const Pages = {
       const rows=visibleCats.map(cat=>{
         const catProds=d.products.filter(p=>p.active&&p.catId===cat.id);
         const catTxns=txns.filter(t=>catProds.map(p=>p.id).includes(t.productId));
-        const ins=catTxns.filter(t=>t.type==='in').reduce((a,t)=>a+t.qty,0);
-        const outs=catTxns.filter(t=>t.type==='out').reduce((a,t)=>a+t.qty,0);
+        const ins=catTxns.filter(t=>Txn.isIn(t)).reduce((a,t)=>a+t.qty,0);
+        const outs=catTxns.filter(t=>Txn.isOut(t)).reduce((a,t)=>a+t.qty,0);
         const stockNow=catProds.reduce((sum,p)=>sum+stores.reduce((s2,sId)=>s2+Stock.qty(p.id,sId),0),0);
         return `<tr><td><strong>${cat.name}</strong></td><td>${catProds.length}</td><td>${stockNow}</td><td>${ins}</td><td>${outs}</td></tr>`;
       });
@@ -2629,7 +2691,7 @@ const Pages = {
       const getPieData=()=>visibleCats.map((cat,i)=>{
         const catProds=d.products.filter(p=>p.active&&p.catId===cat.id);
         const catTxns=txns.filter(t=>catProds.map(p=>p.id).includes(t.productId));
-        return {name:cat.name,out:catTxns.filter(t=>t.type==='out').reduce((a,t)=>a+t.qty,0),color:pieColors[i%pieColors.length]};
+        return {name:cat.name,out:catTxns.filter(t=>Txn.isOut(t)).reduce((a,t)=>a+t.qty,0),color:pieColors[i%pieColors.length]};
       }).filter(c=>c.out>0);
       let pieHtml='';
       if(f.store||f.pt||f.cat){
@@ -2828,12 +2890,12 @@ const Pages = {
     if(ptF){const catIds=d.categories.filter(c=>c.ptId===ptF).map(c=>c.id);prods=prods.filter(p=>catIds.includes(p.catId));}
     if(catF) prods=prods.filter(p=>p.catId===catF);
     if(search) prods=prods.filter(p=>p.name.toLowerCase().includes(search)||p.id.toLowerCase().includes(search));
-    _th('th-table').innerHTML=`<table><thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Min Qty (Reorder at)</th><th>Lead Time (days)</th><th></th></tr></thead><tbody>${prods.map(p=>{
+    _th('th-table').innerHTML=`<table><thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Min Qty</th><th>Optimum Qty</th><th>Lead Days</th><th></th></tr></thead><tbody>${prods.map(p=>{
       const thr=Stock.threshold(p.id,storeId); const qty=Stock.qty(p.id,storeId);
       return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty||''}" min="0" placeholder="Not set" style="max-width:100px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays||''}" min="0" placeholder="â" style="max-width:80px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
     }).join('')}</tbody></table>`;
   },
-  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty||minQty<0){UI.toast('Min quantity must be a positive number','error');return;}if(leadDays!==null&&leadDays<0){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,leadDays});DB.commit();UI.toast('Saved','success');},
+  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const optimumQty=parseInt(document.getElementById('thr-opt-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty||minQty<0){UI.toast('Min quantity must be a positive number','error');return;}if(optimumQty!==null&&optimumQty<minQty){UI.toast('Optimum must be >= min quantity','error');return;}if(leadDays!==null&&leadDays<0){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].optimumQty=optimumQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,optimumQty,leadDays});DB.commit();UI.toast('Saved','success');},
   _removeThr(productId,storeId){const d=DB.get();d.thresholds=d.thresholds.filter(t=>!(t.productId===productId&&t.storeId===storeId));DB.commit();this._renderThresholds();UI.toast('Cleared','info');},
 
 
@@ -2993,7 +3055,7 @@ const Pages = {
   _exportWastageCSV() {
     const d=DB.get();
     const headers=['Date','Store','Product','Category','Qty','Reason','Staff','Sell Price','Est. Value Lost'];
-    const rows=d.transactions.filter(t=>t.type==='out'&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage'))
+    const rows=d.transactions.filter(t=>Txn.isOut(t)&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage'))
       .sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const s=d.stores.find(st=>st.id===t.storeId);
@@ -3215,7 +3277,7 @@ const Pages = {
   dirWastage() {
     if(!Auth.is('director')){navigateTo('log-movement');return;}
     const d=DB.get();const el=document.getElementById('page-wastage');if(!el)return;
-    const allWaste=d.transactions.filter(t=>t.type==='out'&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage'))
+    const allWaste=d.transactions.filter(t=>Txn.isOut(t)&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage'))
       .sort((a,b)=>b.date.localeCompare(a.date));
     const storeFilter=document.getElementById('waste-store-filter')?.value||'';
     const filtered=storeFilter?allWaste.filter(t=>t.storeId===storeFilter):allWaste;
@@ -3273,7 +3335,7 @@ const Pages = {
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
     // Stats
     const alerts=Stock.alerts(myStoreIds);
-    const todayTxns=d.transactions.filter(t=>t.date===today&&t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId)));
+    const todayTxns=d.transactions.filter(t=>t.date===today&&Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId)));
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
@@ -3289,7 +3351,7 @@ const Pages = {
     if(isHO||isFran||isSM)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">ð Alerts</button>`);
     if(isDir)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('reorder')">ð¦ Reorder List</button>`);
     // Recent movements (last 5 in scope)
-    const recentTxns=d.transactions.filter(t=>t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
+    const recentTxns=d.transactions.filter(t=>Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
     const txnBadge=t=>t.type==='in'?'<span class="badge badge-green">â² IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">â© RTN</span>':'<span class="badge badge-red">â¼ OUT</span>';
     // Top alerts
     const topAlerts=alerts.slice(0,5);
@@ -3445,7 +3507,7 @@ const Pages = {
     d.products.filter(p=>p.active).forEach(p=>{
       filterStores.forEach(s=>{
         const qty=Stock.qty(p.id,s.id);if(qty<=0)return;
-        const lastOut=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&t.type==='out').sort((a,b)=>b.date.localeCompare(a.date))[0];
+        const lastOut=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isOut(t)).sort((a,b)=>b.date.localeCompare(a.date))[0];
         const lastOutDate=lastOut?.date||null;
         if(!lastOutDate||lastOutDate<cutoffStr){
           const daysSince=lastOutDate?Math.floor((new Date()-new Date(lastOutDate))/86400000):null;
@@ -3509,8 +3571,8 @@ const Pages = {
     d.products.filter(p=>p.active).forEach(p=>{
       let totalIn=0,totalOut=0;
       filterStores.forEach(s=>{
-        totalIn+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&t.type==='in'&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
-        totalOut+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&t.type==='out'&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
+        totalIn+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isIn(t)&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
+        totalOut+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isOut(t)&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
       });
       if(totalIn>0||totalOut>0)results.push({product:p,inQty:totalIn,outQty:totalOut,rate:totalIn>0?(totalOut/totalIn*100):null});
     });
@@ -3577,7 +3639,7 @@ const Pages = {
       take.items.forEach(item=>{
         const product=d.products.find(p=>p.id===item.productId);if(!product||!product.active)return;
         const netAfter=d.transactions.filter(t=>t.productId===item.productId&&t.storeId===take.storeId&&t.date>take.date)
-          .reduce((s,t)=>(t.type==='in'||t.type==='return_in')?s+t.qty:s-t.qty,0);
+          .reduce((s,t)=>Txn.isIn(t)?s+t.qty:s-t.qty,0);
         const expected=item.physicalCount+netAfter;
         const actual=Stock.qty(item.productId,take.storeId);
         const discrepancy=actual-expected;
@@ -3726,7 +3788,7 @@ const Pages = {
       :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
     // Stats
     const alerts=Stock.alerts(myStoreIds);
-    const todayTxns=d.transactions.filter(t=>t.date===today&&t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId)));
+    const todayTxns=d.transactions.filter(t=>t.date===today&&Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId)));
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
@@ -3742,7 +3804,7 @@ const Pages = {
     if(isHO||isFran||isSM)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">ð Alerts</button>`);
     if(isDir)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('reorder')">ð¦ Reorder List</button>`);
     // Recent movements (last 5 in scope)
-    const recentTxns=d.transactions.filter(t=>t.type!=='deleted'&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
+    const recentTxns=d.transactions.filter(t=>Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
     const txnBadge=t=>t.type==='in'?'<span class="badge badge-green">â² IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">â© RTN</span>':'<span class="badge badge-red">â¼ OUT</span>';
     // Top alerts
     const topAlerts=alerts.slice(0,5);
@@ -3898,7 +3960,7 @@ const Pages = {
     d.products.filter(p=>p.active).forEach(p=>{
       filterStores.forEach(s=>{
         const qty=Stock.qty(p.id,s.id);if(qty<=0)return;
-        const lastOut=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&t.type==='out').sort((a,b)=>b.date.localeCompare(a.date))[0];
+        const lastOut=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isOut(t)).sort((a,b)=>b.date.localeCompare(a.date))[0];
         const lastOutDate=lastOut?.date||null;
         if(!lastOutDate||lastOutDate<cutoffStr){
           const daysSince=lastOutDate?Math.floor((new Date()-new Date(lastOutDate))/86400000):null;
@@ -3962,8 +4024,8 @@ const Pages = {
     d.products.filter(p=>p.active).forEach(p=>{
       let totalIn=0,totalOut=0;
       filterStores.forEach(s=>{
-        totalIn+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&t.type==='in'&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
-        totalOut+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&t.type==='out'&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
+        totalIn+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isIn(t)&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
+        totalOut+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isOut(t)&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
       });
       if(totalIn>0||totalOut>0)results.push({product:p,inQty:totalIn,outQty:totalOut,rate:totalIn>0?(totalOut/totalIn*100):null});
     });
@@ -4030,7 +4092,7 @@ const Pages = {
       take.items.forEach(item=>{
         const product=d.products.find(p=>p.id===item.productId);if(!product||!product.active)return;
         const netAfter=d.transactions.filter(t=>t.productId===item.productId&&t.storeId===take.storeId&&t.date>take.date)
-          .reduce((s,t)=>(t.type==='in'||t.type==='return_in')?s+t.qty:s-t.qty,0);
+          .reduce((s,t)=>Txn.isIn(t)?s+t.qty:s-t.qty,0);
         const expected=item.physicalCount+netAfter;
         const actual=Stock.qty(item.productId,take.storeId);
         const discrepancy=actual-expected;
@@ -5082,6 +5144,7 @@ const App = {
   launch(){
     // Ensure schema up to date
     DB.load();
+    Stock._buildCache();  // Fix #9: Build materialised view on boot
     Auth.restore();
     const u=Auth.user();
     if(u){
