@@ -1,10 +1,10 @@
 /**
- * BOB Stock App — Dexie.js Data Layer (Phase 3)
+ * BOB Stock App â Dexie.js Data Layer (Phase 3)
  * Replaces the localStorage-based DB object with IndexedDB via Dexie.js
  *
  * CRITICAL DESIGN: DB.get() remains SYNCHRONOUS (returns _cache).
  * The cache is pre-loaded during initDB() before any UI renders.
- * DB.commit() is also synchronous — it updates _cache in memory and
+ * DB.commit() is also synchronous â it updates _cache in memory and
  * fires the Dexie write in the background (fire-and-forget).
  * This preserves compatibility with 140+ existing DB.get() calls
  * and 29 DB.commit() calls that don't use await.
@@ -19,11 +19,11 @@
  *   migration, SEED loading, and sync pull merges.
  */
 
-// ─── Dexie Database Definition ───────────────────────────────────────────────
+// âââ Dexie Database Definition âââââââââââââââââââââââââââââââââââââââââââââââ
 const bobDB = new Dexie('BobStockDB');
 
 bobDB.version(1).stores({
-  // SEED / reference data — keyed by `id`, indexed for lookups
+  // SEED / reference data â keyed by `id`, indexed for lookups
   productTypes:   'id, name',
   categories:     'id, name, ptId',
   products:       'id, name, catId, active',
@@ -31,7 +31,7 @@ bobDB.version(1).stores({
   users:          'id, username, role',
   thresholds:     '[storeId+productId], storeId, productId',
 
-  // Transactional data — keyed by `id`, indexed for queries
+  // Transactional data â keyed by `id`, indexed for queries
   transactions:         'id, date, storeId, productId, type, createdAt, _syncTs',
   deletedTransactions:  'id, date, storeId, productId',
   transfers:            'id, date, _syncTs',
@@ -39,16 +39,16 @@ bobDB.version(1).stores({
   stockTakes:           'id, storeId, date, _syncTs',
   deliveries:           'id, storeId, date, _syncTs',
 
-  // App metadata — key-value store for config, device info, etc.
+  // App metadata â key-value store for config, device info, etc.
   meta:                 'key'
 });
 
-// ─── Write Tracking ─────────────────────────────────────────────────────────
+// âââ Write Tracking âââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 // Tracks whether a Dexie write is in flight, used by beforeunload guard.
 let _pendingWrites = 0;
 
-// ─── Full Dexie Write (migration, SEED, sync merge ONLY) ────────────────────
-// Clears and rewrites ALL tables. Expensive at scale — only use for bulk ops.
+// âââ Full Dexie Write (migration, SEED, sync merge ONLY) ââââââââââââââââââââ
+// Clears and rewrites ALL tables. Expensive at scale â only use for bulk ops.
 
 async function _persistAllToDexie(d) {
   _pendingWrites++;
@@ -78,7 +78,7 @@ async function _persistAllToDexie(d) {
         await bobDB.meta.bulkPut([
           { key: '_v', value: d._v || 0 },
           { key: 'stockTakePin', value: d.stockTakePin || { pin: null, expiresAt: null } },
-          { key: 'stockThresholds', value: d.stockThresholds || {} },
+          // Fix #8: stockThresholds removed — thresholds now in d.thresholds table
         ]);
       }
     );
@@ -91,7 +91,7 @@ async function _persistAllToDexie(d) {
   }
 }
 
-// ─── Reference-Only Rewrite (used by normal commit) ─────────────────────────
+// âââ Reference-Only Rewrite (used by normal commit) âââââââââââââââââââââââââ
 // Only rewrites the small, rarely-changing reference tables + meta.
 // Transactions/transfers/deletedTransactions are handled by individual puts.
 
@@ -120,7 +120,7 @@ async function _persistRefDataToDexie(d) {
         await bobDB.meta.bulkPut([
           { key: '_v', value: d._v || 0 },
           { key: 'stockTakePin', value: d.stockTakePin || { pin: null, expiresAt: null } },
-          { key: 'stockThresholds', value: d.stockThresholds || {} },
+          // Fix #8: stockThresholds removed — thresholds now in d.thresholds table
         ]);
       }
     );
@@ -133,12 +133,12 @@ async function _persistRefDataToDexie(d) {
   }
 }
 
-// ─── Write Retry Logic (Tier 2 Fix #17) ─────────────────────────────────────
+// âââ Write Retry Logic (Tier 2 Fix #17) âââââââââââââââââââââââââââââââââââââ
 // Retries failed Dexie writes with exponential backoff.
 // Shows a persistent warning banner if all retries fail.
 
 const WRITE_MAX_RETRIES = 3;
-const WRITE_BASE_DELAY = 500;  // ms — doubles each retry (500, 1000, 2000)
+const WRITE_BASE_DELAY = 500;  // ms â doubles each retry (500, 1000, 2000)
 
 /**
  * Shows or hides the write-failure warning banner.
@@ -188,9 +188,9 @@ async function _retryWrite(writeFn, label) {
   return false;
 }
 
-// ─── Single-Record Append (used for transactions, transfers, etc.) ───────────
+// âââ Single-Record Append (used for transactions, transfers, etc.) âââââââââââ
 // Inserts or updates a single record in an append-only table.
-// This is O(1) regardless of table size — no lag at 100K+ records.
+// This is O(1) regardless of table size â no lag at 100K+ records.
 // Tier 2 Fix #17: Now retries with exponential backoff and shows warning on failure.
 
 async function _appendRecord(tableName, record) {
@@ -205,7 +205,7 @@ async function _appendRecord(tableName, record) {
   }
 }
 
-// ─── Bulk Append (used for sync merge of multiple remote records) ────────────
+// âââ Bulk Append (used for sync merge of multiple remote records) ââââââââââââ
 
 async function _appendRecords(tableName, records) {
   if (!records || records.length === 0) return true;
@@ -220,7 +220,7 @@ async function _appendRecords(tableName, records) {
   }
 }
 
-// ─── Async Dexie Read (used once at init) ────────────────────────────────────
+// âââ Async Dexie Read (used once at init) ââââââââââââââââââââââââââââââââââââ
 
 async function _loadFromDexie() {
   const [productTypes, categories, products, stores, users,
@@ -242,7 +242,7 @@ async function _loadFromDexie() {
 
   const metaV = await bobDB.meta.get('_v');
   const metaPin = await bobDB.meta.get('stockTakePin');
-  const metaThresholds = await bobDB.meta.get('stockThresholds');
+  // Fix #8: stockThresholds no longer loaded — thresholds unified in d.thresholds
 
   return {
     productTypes,
@@ -258,13 +258,12 @@ async function _loadFromDexie() {
     stockTakes,
     deliveries,
     stockTakePin: metaPin ? metaPin.value : { pin: null, expiresAt: null },
-    stockThresholds: metaThresholds ? metaThresholds.value : {},
     _v: metaV ? metaV.value : 0,
   };
 }
 
-// ─── DB Object (Compatibility Shim) ─────────────────────────────────────────
-// SYNCHRONOUS API — same contract as the original localStorage-based DB.
+// âââ DB Object (Compatibility Shim) âââââââââââââââââââââââââââââââââââââââââ
+// SYNCHRONOUS API â same contract as the original localStorage-based DB.
 // get() returns the cache; commit() updates cache + fires async persist.
 
 const DB = {
@@ -289,7 +288,7 @@ const DB = {
 
   /**
    * SYNCHRONOUS on the surface.
-   * Full save — writes ALL data to cache and persists ALL tables to Dexie.
+   * Full save â writes ALL data to cache and persists ALL tables to Dexie.
    * Used by sync merge (pull) where multiple tables change at once.
    * For normal user actions, prefer commit() which uses the hybrid strategy.
    */
@@ -301,6 +300,10 @@ const DB = {
     ).catch(err => {
       console.error('[DB] Background full-save failed after retries:', err);
     });
+    // Fix #9: Full cache rebuild after save (sync merge replaces entire dataset)
+    if (typeof Stock !== 'undefined' && Stock._buildCache) {
+      Stock._buildCache();
+    }
     return true;
   },
 
@@ -314,7 +317,7 @@ const DB = {
   commit() {
     if (!this._cache) return false;
     this._cache._v = (this._cache._v || 0) + 1;
-    // Only rewrite small reference tables + meta — NOT transactions
+    // Only rewrite small reference tables + meta â NOT transactions
     _retryWrite(
       () => _persistRefDataToDexie(this._cache),
       'Commit (ref data)'
@@ -325,7 +328,7 @@ const DB = {
     return true;
   },
 
-  // ─── Append-Only Record Methods (Hybrid Option C) ─────────────────
+  // âââ Append-Only Record Methods (Hybrid Option C) âââââââââââââââââ
 
   /**
    * Adds a single transaction to cache AND Dexie.
@@ -335,7 +338,7 @@ const DB = {
    *
    * IMPORTANT: This updates the cache synchronously and fires
    * the Dexie insert in the background. commit() only needs to
-   * persist the ref tables and meta — transactions are already saved.
+   * persist the ref tables and meta â transactions are already saved.
    */
   addTransaction(txn) {
     if (!this._cache) return false;
@@ -343,6 +346,10 @@ const DB = {
     _appendRecord('transactions', txn).catch(err => {
       console.error('[DB] Background transaction append failed:', err);
     });
+    // Fix #9: Incremental cache update
+    if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+      Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
+    }
     return true;
   },
 
@@ -394,6 +401,12 @@ const DB = {
     _appendRecords('transactions', txns).catch(err => {
       console.error('[DB] Background bulk transaction append failed:', err);
     });
+    // Fix #9: Incremental cache update for each transaction
+    if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+      for (const txn of txns) {
+        Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
+      }
+    }
     return true;
   },
 
@@ -404,13 +417,25 @@ const DB = {
    *
    * @param {string} txnId - The transaction ID to remove
    * @param {object} options - Optional: { skipTombstone: true } to suppress sync
-   *   (used when applying a remote tombstone — don't re-push what we just received)
+   *   (used when applying a remote tombstone â don't re-push what we just received)
    */
   removeTransaction(txnId, options) {
     if (!this._cache) return false;
     // Grab the original transaction before removing (for tombstone context)
     const original = this._cache.transactions.find(t => t.id === txnId);
     this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
+    // Fix #9: Reverse delta to keep cache in sync
+    if (original && typeof Stock !== 'undefined' && Stock._applyDelta) {
+      const reversedType = original.type === 'in' ? 'out' :
+                           original.type === 'return_in' ? 'out' :
+                           original.type === 'transfer_in' ? 'transfer_out' :
+                           original.type === 'out' ? 'in' :
+                           original.type === 'transfer_out' ? 'transfer_in' :
+                           original.type === 'wastage' ? 'in' :
+                           original.type === 'adjustment_in' ? 'adjustment_out' :
+                           original.type === 'adjustment_out' ? 'adjustment_in' : original.type;
+      Stock._applyDelta(original.storeId, original.productId, reversedType, original.qty);
+    }
     // GPT review: apply retry/warning to delete operations (not just writes)
     _retryWrite(
       () => bobDB.transactions.delete(txnId),
@@ -428,25 +453,31 @@ const DB = {
   /**
    * ATOMIC BATCH WRITE (Tier 2 Fix #12)
    * Writes multiple transactions + a transfer update in a single Dexie transaction.
-   * If any write fails, ALL writes are rolled back — no partial state.
+   * If any write fails, ALL writes are rolled back â no partial state.
    *
    * Used by Transfer.receive() and Transfer.resolveFlag() where multiple
    * addTransaction calls + an updateTransfer must succeed or fail together.
    *
    * @param {Array} transactions - Array of transaction objects to insert
    * @param {object|null} transfer - Transfer object to update (optional)
-   * @returns {boolean} true (synchronous — actual write is async but atomic)
+   * @returns {boolean} true (synchronous â actual write is async but atomic)
    */
   atomicTransferWrite(transactions, transfer) {
     if (!this._cache) return false;
 
-    // Update cache synchronously (optimistic — matches existing pattern)
+    // Update cache synchronously (optimistic â matches existing pattern)
     if (transactions && transactions.length > 0) {
       this._cache.transactions.push(...transactions);
+      // Fix #9: Incremental cache update for atomic batch
+      if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+        for (const txn of transactions) {
+          Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
+        }
+      }
     }
-    // Transfer is already mutated in cache by reference — just need to persist
+    // Transfer is already mutated in cache by reference â just need to persist
 
-    // Atomic Dexie write — all or nothing, with retry (GPT review)
+    // Atomic Dexie write â all or nothing, with retry (GPT review)
     _pendingWrites++;
     const tables = [bobDB.transactions];
     if (transfer) tables.push(bobDB.transfers);
@@ -463,11 +494,15 @@ const DB = {
       'Atomic transfer write'
     ).then(ok => {
       if (!ok) {
-        // All retries exhausted — roll back cache
-        console.error('[DB] Atomic transfer write failed after retries — rolling back cache.');
+        // All retries exhausted â roll back cache
+        console.error('[DB] Atomic transfer write failed after retries â rolling back cache.');
         if (transactions && transactions.length > 0) {
           const ids = new Set(transactions.map(t => t.id));
           this._cache.transactions = this._cache.transactions.filter(t => !ids.has(t.id));
+          // Fix #9: Rebuild cache from scratch after rollback to avoid drift
+          if (typeof Stock !== 'undefined' && Stock._buildCache) {
+            Stock._buildCache();
+          }
         }
       }
     }).finally(() => {
@@ -496,11 +531,15 @@ const DB = {
    */
   async refresh() {
     this._cache = await _loadFromDexie();
+    // Fix #9: Rebuild cache after refresh from Dexie
+    if (typeof Stock !== 'undefined' && Stock._buildCache) {
+      Stock._buildCache();
+    }
     return this._cache;
   }
 };
 
-// ─── beforeunload Guard (Gemini recommendation) ─────────────────────────────
+// âââ beforeunload Guard (Gemini recommendation) âââââââââââââââââââââââââââââ
 // Warns the user if they try to close the tab while a Dexie write is pending.
 // Prevents the "Power Failure" data loss scenario.
 
@@ -513,10 +552,10 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
-// ─── Migration & Initialization ──────────────────────────────────────────────
+// âââ Migration & Initialization ââââââââââââââââââââââââââââââââââââââââââââââ
 
 /**
- * One-time migration: reads old localStorage blob → imports into Dexie.
+ * One-time migration: reads old localStorage blob â imports into Dexie.
  * Archives the old key as a safety net (doesn't delete).
  * Uses _persistAllToDexie (full write) since this is a one-time bulk op.
  */
@@ -526,17 +565,17 @@ async function _migrateFromLocalStorage() {
 
   try {
     const old = JSON.parse(raw);
-    console.log('[DB] Migrating from localStorage → IndexedDB...');
+    console.log('[DB] Migrating from localStorage â IndexedDB...');
     await _persistAllToDexie(old);
 
-    // Archive old data (safety net — don't delete)
+    // Archive old data (safety net â don't delete)
     localStorage.setItem(DB.KEY + '_migrated', raw);
     localStorage.removeItem(DB.KEY);
 
     console.log('[DB] Migration complete.');
     return true;
   } catch (err) {
-    console.error('[DB] Migration failed — falling back to localStorage:', err);
+    console.error('[DB] Migration failed â falling back to localStorage:', err);
     return false;
   }
 }
@@ -562,7 +601,7 @@ async function _loadSeedData(seed) {
     stockTakes: [],
     deliveries: [],
     stockTakePin: { pin: null, expiresAt: null },
-    stockThresholds: {},
+    // Fix #8: stockThresholds removed — thresholds unified in d.thresholds
     _v: 1,
   };
   await _persistAllToDexie(data);
@@ -571,7 +610,7 @@ async function _loadSeedData(seed) {
 
 /**
  * ASYNC. Called once on app startup, BEFORE any UI renders.
- * Handles migration → seed → cache load in sequence.
+ * Handles migration â seed â cache load in sequence.
  *
  * Usage in index.html:
  *   await initDB(SEED);
@@ -583,7 +622,7 @@ async function initDB(seedData) {
     // Step 1: Migrate from old localStorage if present
     const migrated = await _migrateFromLocalStorage();
 
-    // Step 2: If no migration, check if Dexie is empty → load SEED
+    // Step 2: If no migration, check if Dexie is empty â load SEED
     if (!migrated) {
       const count = await bobDB.products.count();
       if (count === 0 && seedData) {
