@@ -313,6 +313,19 @@ const DB = {
   },
 
   /**
+   * Updates an existing transfer in Dexie (already mutated in cache).
+   * Use this when modifying a transfer's status, items, etc.
+   * Does NOT push to cache (the object is already there via reference).
+   */
+  updateTransfer(transfer) {
+    if (!this._cache) return false;
+    _appendRecord('transfers', transfer).catch(err => {
+      console.error('[DB] Background transfer update failed:', err);
+    });
+    return true;
+  },
+
+  /**
    * Bulk-adds multiple transactions (used by sync merge).
    */
   addTransactions(txns) {
@@ -434,7 +447,7 @@ async function _loadSeedData(seed) {
  *
  * Usage in index.html:
  *   await initDB(SEED);
- *   // now DB.get() works synchronously everywhere
+   *   // now DB.get() works synchronously everywhere
  *   App.init();
  */
 async function initDB(seedData) {
