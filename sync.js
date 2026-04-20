@@ -1,14 +1,33 @@
 /**
- * BOB Stock App — Sync Module (Phase 3)
- * Replaces the old Sync object with Logic App v2 API integration.
+ * BOB Stock App — Sync Module (Phase 3, v2 — Transaction Ledger)
+ * Fixed to align with Logic App v2 field mapping.
  *
  * Flow:
  *   DB.commit() → Sync.scheduleSync() → debounce 800ms → push()
- *   init() → _loadConfig() → check pending → start 30s poll → pull()
+ *   init() → _fetchRemoteConfig() → check pending → start 30s poll → pull()
  *
- * Push: POST full dataset to push-v2 Logic App → SharePoint StockTakes.Data
- * Pull: POST {since: lastSyncTs} to pull-v2 Logic App → get changed items
+ * Push: POST {data:{transactions:[...]}} to push-v2 Logic App
+ *       → Logic App For Each → Create Item in StockTransactions list
+ *       → Each transaction mapped from local camelCase to SharePoint PascalCase
+ *
+ * Pull: POST {since: lastSyncTs} to pull-v2 Logic App
+ *       → Returns {items:[...], serverTimestamp, status}
+ *       → Items are flat SharePoint records, mapped back to local camelCase
+ *
  * Config: Fetched from AppConfig SharePoint list via config Logic App
+ *
+ * FIELD MAPPING (local ↔ SharePoint):
+ *   id          ↔ TransactionId
+ *   date        ↔ Date
+ *   storeId     ↔ StoreId
+ *   productId   ↔ ProductId
+ *   type        ↔ Type
+ *   qty         ↔ Qty
+ *   staffName   ↔ StaffName
+ *   reason      ↔ Reason
+ *   deviceId    ↔ DeviceId
+ *   createdAt   → Timestamp (converted to epoch ms)
+ *   transferId  ↔ TransferId
  */
 
 const Sync = {
@@ -30,12 +49,22 @@ const Sync = {
   DEBOUNCE_MS: 800,
   // The config endpoint URL — the ONLY hardcoded URL in the app.
   // All other URLs (push, pull) are fetched from AppConfig via this endpoint.
-  CONFIG_URL: 'https://prod-25.australiaeast.logic.azure.com:443/workflows/0d91c5e735f149898512b1fbf04b33f0/triggers/When_an_HTTP_request_is_received/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2FWhen_an_HTTP_request_is_received%2Frun&sv=1.0&sig=w1LTFeB8T-nr48W1J5rZkh_QzgPIJaOZLajCQjr0U5g',
+  CONFIG_URL: '%%CONFIG_URL%%',
+
+  // ─── Multi-Tab Leader Election (Tier 2 Fix #15) ─────────────────────
+  _isLeader: false,
+  _bc: null,             // BroadcastChannel instance
+  _tabId: null,          // Unique ID for this tab
+  _leaderHeartbeat: null,
+  _leaderCheckTimer: null,
+  _lastLeaderPing: 0,
+  LEADER_TIMEOUT: 10000,  // If no heartbeat for 10s, leader is dead
+  HEARTBEAT_INTERVAL: 4000,
 
   // ─── Config Management ───────────────────────────────────────────────
 
   /**
-   * Loads sync config from localStorage (push/pull/config URLs).
+   * Loads sync config from localStorage cache (push/pull URLs).
    * These URLs are the SAS-secured Logic App trigger endpoints.
    */
   _loadConfig() {
@@ -93,6 +122,7 @@ const Sync = {
         this._pushUrl = urls.pushUrl;
         this._pullUrl = urls.pullUrl;
         this._configUrl = this.CONFIG_URL;
+        // Cache in localStorage for offline use
         localStorage.setItem('bob_sync_config', JSON.stringify({
           pushUrl: urls.pushUrl,
           pullUrl: urls.pullUrl,
@@ -141,6 +171,221 @@ const Sync = {
     return id;
   },
 
+  // ─── Multi-Tab Leader Election (Tier 2 Fix #15) ─────────────────────
+
+  /**
+   * Initializes BroadcastChannel-based leader election.
+   * Only the leader tab runs push/pull sync. Follower tabs listen for
+   * 'db-updated' messages and refresh their in-memory cache.
+   *
+   * Protocol:
+   * - On init, tab sends 'claim-leader'. If no 'leader-exists' reply
+   *   within 500ms, this tab becomes leader.
+   * - Leader sends 'heartbeat' every 4s.
+   * - If a follower doesn't see a heartbeat for 10s, it tries to claim leader.
+   * - When leader tab closes, it sends 'leader-leaving'. Next tab promotes.
+   * - After any sync pull/push, leader broadcasts 'db-updated' so followers refresh.
+   */
+  _initLeaderElection() {
+    if (typeof BroadcastChannel === 'undefined') {
+      // BroadcastChannel not supported — act as sole leader (old browser fallback)
+      this._isLeader = true;
+      console.log('[Sync] BroadcastChannel not supported — running as solo leader.');
+      return;
+    }
+
+    this._tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    this._bc = new BroadcastChannel('bob-sync-leader');
+
+    this._bc.onmessage = (e) => {
+      const msg = e.data;
+      if (!msg || !msg.type) return;
+
+      switch (msg.type) {
+        case 'claim-leader':
+          // Another tab is trying to become leader — tell it we exist
+          if (this._isLeader) {
+            this._bc.postMessage({ type: 'leader-exists', tabId: this._tabId });
+          }
+          break;
+
+        case 'leader-exists':
+          // Another tab is already leader — stay as follower
+          this._isLeader = false;
+          this._lastLeaderPing = Date.now();
+          break;
+
+        case 'heartbeat':
+          this._lastLeaderPing = Date.now();
+          break;
+
+        case 'leader-leaving':
+          // Leader is closing — try to promote ourselves
+          console.log('[Sync] Leader left. Attempting promotion...');
+          this._lastLeaderPing = 0;
+          setTimeout(() => this._tryClaimLeader(), Math.random() * 300);
+          break;
+
+        case 'db-updated':
+          // Leader synced new data — refresh our cache
+          if (!this._isLeader && typeof DB !== 'undefined' && DB.refresh) {
+            DB.refresh().then(() => {
+              this._rerender();
+              console.log('[Sync] Cache refreshed from leader sync.');
+            });
+          }
+          break;
+
+        case 'local-write':
+          // A follower wrote to Dexie — leader must refresh cache and push
+          if (this._isLeader && typeof DB !== 'undefined' && DB.refresh) {
+            console.log('[Sync] Follower wrote data — refreshing leader cache and scheduling push.');
+            DB.refresh().then(() => {
+              this.scheduleSync();
+            });
+          }
+          break;
+      }
+    };
+
+    // Try to claim leadership
+    this._tryClaimLeader();
+
+    // Watch for leader death (no heartbeats)
+    this._leaderCheckTimer = setInterval(() => {
+      if (!this._isLeader && this._lastLeaderPing > 0 &&
+          (Date.now() - this._lastLeaderPing) > this.LEADER_TIMEOUT) {
+        console.log('[Sync] Leader heartbeat timeout. Attempting promotion...');
+        this._tryClaimLeader();
+      }
+    }, this.LEADER_TIMEOUT / 2);
+
+    // When this tab is closing, notify others
+    window.addEventListener('beforeunload', () => {
+      if (this._isLeader && this._bc) {
+        this._bc.postMessage({ type: 'leader-leaving', tabId: this._tabId });
+      }
+    });
+  },
+
+  /**
+   * Attempts to claim leader. Sends 'claim-leader' and waits 500ms.
+   * If no 'leader-exists' reply, we become leader and start heartbeat + polling.
+   */
+  _tryClaimLeader() {
+    if (this._isLeader) return;
+
+    this._bc.postMessage({ type: 'claim-leader', tabId: this._tabId });
+
+    setTimeout(() => {
+      // If no leader responded in 500ms, we're the leader
+      if (!this._isLeader && (Date.now() - this._lastLeaderPing) > 500) {
+        this._becomeLeader();
+      }
+    }, 500);
+  },
+
+  /**
+   * Promotes this tab to leader — starts heartbeat and sync polling.
+   */
+  _becomeLeader() {
+    this._isLeader = true;
+    console.log(`[Sync] This tab (${this._tabId}) is now the sync leader.`);
+
+    // Start heartbeat
+    if (this._leaderHeartbeat) clearInterval(this._leaderHeartbeat);
+    this._leaderHeartbeat = setInterval(() => {
+      if (this._bc && this._isLeader) {
+        this._bc.postMessage({ type: 'heartbeat', tabId: this._tabId });
+      }
+    }, this.HEARTBEAT_INTERVAL);
+
+    // Start sync polling (if we have config)
+    if (this._pushUrl && this._pullUrl) {
+      this._startPolling();
+    }
+  },
+
+  /**
+   * Starts the periodic pull polling loop.
+   */
+  _startPolling() {
+    if (this._pollInterval) clearInterval(this._pollInterval);
+    this._pollInterval = setInterval(() => this.poll(), this.POLL_INTERVAL);
+  },
+
+  /**
+   * Broadcasts a 'db-updated' event to follower tabs after sync changes.
+   */
+  _notifyFollowers() {
+    if (this._bc) {
+      this._bc.postMessage({ type: 'db-updated', tabId: this._tabId });
+    }
+  },
+
+  // ─── Field Mapping ──────────────────────────────────────────────────
+
+  /**
+   * Maps a local transaction object to the SharePoint PascalCase format
+   * expected by the push-v2 Logic App's Create Item action.
+   */
+  _toSharePoint(t) {
+    // Derive Timestamp as epoch ms from createdAt or current time
+    let ts = 0;
+    if (typeof t.timestamp === 'number') {
+      ts = t.timestamp;
+    } else if (t.createdAt) {
+      ts = new Date(t.createdAt).getTime();
+    } else {
+      ts = Date.now();
+    }
+
+    const sp = {
+      TransactionId: t.id,
+      Date: t.date || '',
+      StoreId: t.storeId || '',
+      ProductId: t.productId || '',
+      Type: t.type || '',
+      Qty: typeof t.qty === 'number' ? t.qty : parseInt(t.qty, 10) || 0,
+      StaffName: t.staffName || '',
+      Reason: t.reason || '',
+      DeviceId: t.deviceId || this._deviceId || '',
+      Timestamp: ts,
+      TransferId: t.transferId || ''
+    };
+    // Tombstone support: include TargetTransactionId if present
+    if (t.targetTransactionId) {
+      sp.TargetTransactionId = t.targetTransactionId;
+    }
+    return sp;
+  },
+
+  /**
+   * Maps a SharePoint list item (PascalCase) back to local camelCase format.
+   * Used when pulling remote transactions.
+   */
+  _fromSharePoint(item) {
+    const local = {
+      id: item.TransactionId,
+      date: item.Date || '',
+      storeId: item.StoreId || '',
+      productId: item.ProductId || '',
+      type: item.Type || '',
+      qty: typeof item.Qty === 'number' ? item.Qty : parseInt(item.Qty, 10) || 0,
+      staffName: item.StaffName || '',
+      reason: item.Reason || '',
+      deviceId: item.DeviceId || '',
+      transferId: item.TransferId || '',
+      createdAt: item.Timestamp ? new Date(item.Timestamp).toISOString() : new Date().toISOString(),
+      _synced: true
+    };
+    // Tombstone support: map TargetTransactionId if present
+    if (item.TargetTransactionId) {
+      local.targetTransactionId = item.TargetTransactionId;
+    }
+    return local;
+  },
+
   // ─── Status UI ───────────────────────────────────────────────────────
 
   /**
@@ -167,8 +412,16 @@ const Sync = {
   // ─── Push (Local → SharePoint) ───────────────────────────────────────
 
   /**
-   * Pushes local data to SharePoint via the push-v2 Logic App.
-   * Sends changed transactions since last sync.
+   * Pushes unsynced local transactions to SharePoint via push-v2 Logic App.
+   *
+   * The push-v2 Logic App expects:
+   *   POST { data: { transactions: [ {TransactionId, Date, StoreId, ...}, ... ] } }
+   *
+   * Its For Each iterates triggerBody()?['data']?['transactions'] and creates
+   * one SharePoint list item per transaction.
+   *
+   * Only transactions without _synced=true are sent. After a successful push,
+   * they are marked _synced=true in local storage.
    */
   async push() {
     if (this._pushLock) {
@@ -184,30 +437,35 @@ const Sync = {
     this._showStatus('Syncing...', 'info', 0);
 
     try {
-      const data = DB.get();  // synchronous — returns cached data
+      // GPT review: always refresh from Dexie before push so we pick up
+      // any writes from follower tabs that went straight to IndexedDB
+      if (typeof DB !== 'undefined' && DB.refresh) {
+        await DB.refresh();
+      }
+      const data = DB.get();  // synchronous — returns freshly refreshed cache
 
-      // Build the push payload — send full dataset
+      // Filter to only unsynced transactions
+      const unsynced = (data.transactions || []).filter(t => !t._synced);
+
+      if (unsynced.length === 0) {
+        console.log('[Sync] No unsynced transactions to push.');
+        this._showStatus('Synced ✓', 'success');
+        localStorage.removeItem('bob_sync_pending');
+        return;
+      }
+
+      // Map local camelCase to SharePoint PascalCase
+      const spTransactions = unsynced.map(t => this._toSharePoint(t));
+
+      // Build payload matching Logic App's expected format:
+      // triggerBody()?['data']?['transactions']
       const payload = {
-        deviceId: this._deviceId,
-        timestamp: new Date().toISOString(),
         data: {
-          productTypes: data.productTypes,
-          categories: data.categories,
-          products: data.products,
-          stores: data.stores,
-          users: data.users,
-          thresholds: data.thresholds,
-          transactions: data.transactions,
-          deletedTransactions: data.deletedTransactions,
-          transfers: data.transfers,
-          costHistory: data.costHistory,
-          stockTakes: data.stockTakes,
-          deliveries: data.deliveries,
-          stockTakePin: data.stockTakePin,
-          stockThresholds: data.stockThresholds,
-          _v: data._v,
+          transactions: spTransactions
         }
       };
+
+      console.log(`[Sync] Pushing ${spTransactions.length} unsynced transactions...`);
 
       const resp = await fetch(this._pushUrl, {
         method: 'POST',
@@ -221,6 +479,15 @@ const Sync = {
 
       const result = await resp.json().catch(() => ({}));
 
+      // Mark pushed transactions as synced in local data
+      const pushedIds = new Set(unsynced.map(t => t.id));
+      data.transactions.forEach(t => {
+        if (pushedIds.has(t.id)) {
+          t._synced = true;
+        }
+      });
+      DB.save(data);
+
       // Update last sync timestamp
       this._lastSyncAt = Date.now();
       localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
@@ -228,7 +495,8 @@ const Sync = {
       this._retryCount = 0;
 
       this._showStatus('Synced ✓', 'success');
-      console.log('[Sync] Push complete:', result);
+      this._notifyFollowers();
+      console.log(`[Sync] Push complete: ${spTransactions.length} transactions synced.`, result);
 
     } catch (err) {
       console.error('[Sync] Push error:', err);
@@ -255,103 +523,246 @@ const Sync = {
 
   /**
    * Pulls changes from SharePoint via the pull-v2 Logic App.
-   * Sends {since: lastSyncTs} to get only items modified after that time.
+   *
+   * The pull-v2 Logic App:
+   *   - Accepts POST { since: <epoch_ms_number>, $top: N, $skip: N }
+   *   - Returns { items: [...], serverTimestamp: "...", status: "ok" }
+   *   - Items are flat SharePoint list records with PascalCase field names
+   *   - Filtered by: Timestamp ge <since>
+   *
+   * PAGINATION (Tier 2 Fix #13):
+   *   Uses $top=1000 and $skip to page through large result sets.
+   *   Loops until a page returns fewer items than $top.
+   *   lastSyncAt is NOT advanced until ALL pages are successfully retrieved.
+   *   If any page fails, the pull aborts and retries next cycle from the
+   *   same lastSyncAt (no data loss, just a delayed sync).
+   *
+   * TOMBSTONE HANDLING (Tier 2 Fix #6):
+   *   Items with Type === 'deleted' are tombstones — they signal that
+   *   the referenced transaction (TargetTransactionId field holds the original ID)
+   *   should be removed from the local database.
    */
+  PULL_PAGE_SIZE: 1000,
+
   async pull() {
     if (!this._pullUrl) return;
 
     try {
-      const resp = await fetch(this._pullUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ since: this._lastSyncAt }),
-      });
+      let skip = 0;
+      let allItems = [];
+      let keepGoing = true;
+      let watermark = null;  // Snapshot upper bound — captured from first page
 
-      if (!resp.ok) {
-        console.warn('[Sync] Pull failed:', resp.status);
-        return;
-      }
+      // Page through results with snapshot-safe pagination (GPT review fix)
+      // First page captures serverTimestamp as watermark.
+      // All pages filter: since < Timestamp <= watermark
+      // Stable sort: Timestamp asc, TransactionId asc (enforced by Logic App)
+      while (keepGoing) {
+        const body = {
+          since: String(this._lastSyncAt),
+          $top: this.PULL_PAGE_SIZE,
+          $skip: skip
+        };
+        // Send watermark on subsequent pages so Logic App uses consistent upper bound
+        if (watermark) {
+          body.watermark = watermark;
+        }
 
-      const remote = await resp.json();
+        const resp = await fetch(this._pullUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
 
-      // If no changes, nothing to do
-      if (!remote || !remote.length || remote.length === 0) return;
+        if (!resp.ok) {
+          console.warn(`[Sync] Pull page failed (skip=${skip}):`, resp.status);
+          this._showStatus('Data may be stale \u2014 last sync failed', 'warning', 0);
+          return;  // Abort — don't advance lastSyncAt, retry next cycle
+        }
 
-      // remote is an array of SharePoint list items with Data column
-      // Each item has .Data (JSON string) containing the pushed payload
-      const local = DB.get();  // synchronous
-      let merged = false;
+        const remote = await resp.json();
+        const items = (remote && Array.isArray(remote.items)) ? remote.items : [];
 
-      for (const item of remote) {
-        try {
-          const remoteData = typeof item.Data === 'string' ? JSON.parse(item.Data) : item.Data;
-          if (remoteData && remoteData.deviceId !== this._deviceId) {
-            // Merge remote data from a different device
-            this._merge(remoteData, local);
-            merged = true;
-          }
-        } catch (e) {
-          console.warn('[Sync] Failed to parse remote item:', e);
+        // Capture watermark from first page response
+        if (!watermark && remote.serverTimestamp) {
+          watermark = remote.serverTimestamp;
+        }
+
+        allItems = allItems.concat(items);
+        console.log(`[Sync] Pull page: skip=${skip}, received=${items.length}, total=${allItems.length}, watermark=${watermark}`);
+
+        if (items.length < this.PULL_PAGE_SIZE) {
+          keepGoing = false;  // Last page — fewer items than page size
+        } else {
+          skip += this.PULL_PAGE_SIZE;
         }
       }
 
-      if (merged) {
-        DB.save(local);  // synchronous (fire-and-forget persist)
-        this._rerender();
-        this._lastSyncAt = Date.now();
-        localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
-        console.log('[Sync] Pull merged remote changes.');
+      if (allItems.length === 0) {
+        return;  // No changes
       }
+
+      console.log(`[Sync] Pull received ${allItems.length} total items from SharePoint.`);
+
+      const local = DB.get();
+      const localIds = new Set((local.transactions || []).map(t => t.id));
+
+      // Separate tombstones from regular transactions
+      const tombstones = [];
+      const newTransactions = [];
+
+      for (const spItem of allItems) {
+        if (!spItem.TransactionId) continue;
+
+        // Tombstone handling (Fix #6): Type === 'deleted' means remove the original
+        if (spItem.Type === 'deleted') {
+          tombstones.push(spItem);
+          continue;
+        }
+
+        // Skip items we already have locally
+        if (localIds.has(spItem.TransactionId)) continue;
+
+        // Skip items from this device (we already have them)
+        if (spItem.DeviceId === this._deviceId) continue;
+
+        const localTxn = this._fromSharePoint(spItem);
+        newTransactions.push(localTxn);
+      }
+
+      let changed = false;
+
+      // Process tombstones — remove deleted transactions from local DB
+      if (tombstones.length > 0) {
+        for (const ts of tombstones) {
+          // TargetTransactionId holds the original transaction ID that was deleted
+          // (dedicated field per GPT review — not overloading TransferId)
+          const originalId = ts.TargetTransactionId || ts.TransactionId;
+          if (originalId && localIds.has(originalId)) {
+            DB.removeTransaction(originalId, { skipTombstone: true });
+            console.log(`[Sync] Tombstone applied: removed transaction ${originalId}`);
+            changed = true;
+          }
+        }
+      }
+
+      // Merge new transactions
+      if (newTransactions.length > 0) {
+        DB.addTransactions(newTransactions);
+        console.log(`[Sync] Merged ${newTransactions.length} new transactions from remote.`);
+        changed = true;
+      }
+
+      if (changed) {
+        DB.commit();
+        this._rerender();
+        this._notifyFollowers();
+      }
+
+      // Only advance lastSyncAt AFTER all pages succeeded.
+      // Use watermark (server timestamp) if available, NOT Date.now().
+      // Using Date.now() would skip any transactions that arrived in SharePoint
+      // during the pull loop. (Gemini + GPT both flagged this.)
+      if (watermark) {
+        const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime();
+        if (!isNaN(wmTs) && wmTs > 0) {
+          this._lastSyncAt = wmTs;
+        } else {
+          this._lastSyncAt = Date.now();
+        }
+      } else {
+        this._lastSyncAt = Date.now();
+      }
+      localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
+
+      // Clear any stale-data warning since sync succeeded
+      this._showStatus('Synced \u2713', 'success');
 
     } catch (err) {
       console.error('[Sync] Pull error:', err);
+      this._showStatus('Data may be stale \u2014 last sync failed', 'warning', 0);
+    }
+  },
+
+  // ─── Tombstone Push (Tier 2 Fix #6) ─────────────────────────────────
+
+  /**
+   * Pushes a tombstone record to SharePoint when a transaction is deleted locally.
+   * The tombstone is an append-only record with Type='deleted' and TransferId
+   * pointing to the original transaction ID. Other devices will see this on their
+   * next pull and remove the corresponding transaction.
+   *
+   * @param {string} originalTxnId - The ID of the deleted transaction
+   * @param {object} originalTxn - The original transaction object (for context fields)
+   */
+  async pushTombstone(originalTxnId, originalTxn) {
+    if (!this._pushUrl) {
+      console.warn('[Sync] No push URL — tombstone queued locally only.');
+      return;
+    }
+
+    const tombstone = {
+      TransactionId: 'del_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9),
+      Date: new Date().toISOString().split('T')[0],
+      StoreId: originalTxn?.storeId || '',
+      ProductId: originalTxn?.productId || '',
+      Type: 'deleted',
+      Qty: 0,
+      StaffName: (typeof Auth !== 'undefined' && Auth.user()) ? Auth.user().name || Auth.user().username || '' : '',
+      Reason: 'Transaction deleted: ' + originalTxnId,
+      DeviceId: this._deviceId || '',
+      Timestamp: Date.now(),
+      TransferId: '',
+      TargetTransactionId: originalTxnId  // Dedicated field for tombstone target (GPT review)
+    };
+
+    try {
+      const payload = { data: { transactions: [tombstone] } };
+      const resp = await fetch(this._pushUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Tombstone push failed: ${resp.status}`);
+      }
+
+      console.log(`[Sync] Tombstone pushed for deleted transaction ${originalTxnId}`);
+    } catch (err) {
+      console.error('[Sync] Tombstone push failed:', err);
+      // Store tombstone locally for retry on next push cycle
+      if (typeof DB !== 'undefined') {
+        const localTombstone = {
+          id: tombstone.TransactionId,
+          date: tombstone.Date,
+          storeId: tombstone.StoreId,
+          productId: tombstone.ProductId,
+          type: 'deleted',
+          qty: 0,
+          staffName: tombstone.StaffName,
+          reason: tombstone.Reason,
+          deviceId: tombstone.DeviceId,
+          transferId: '',
+          targetTransactionId: originalTxnId,
+          createdAt: new Date().toISOString(),
+          _synced: false  // Will be picked up by next push() cycle
+        };
+        DB.addTransaction(localTombstone);
+      }
     }
   },
 
   // ─── Merge Logic ────────────────────────────────────────────────────
 
   /**
-   * Merges remote data into local data.
-   * Transactions are append-only (merge by ID, remote wins for new ones).
-   * Reference data (products, stores, etc.) uses remote-wins strategy.
+   * Simple merge: adds remote transactions we don't have locally.
+   * No more full-dataset merge — reference data comes from AppConfig.
    */
-  _merge(remote, local) {
-    // Merge transactions: add any remote transactions we don't have locally
-    if (remote.transactions && Array.isArray(remote.transactions)) {
-      const localIds = new Set(local.transactions.map(t => t.id));
-      const newTxns = remote.transactions.filter(t => !localIds.has(t.id));
-      if (newTxns.length > 0) {
-        local.transactions = [...local.transactions, ...newTxns];
-        console.log(`[Sync] Merged ${newTxns.length} new transactions from remote.`);
-      }
-    }
-
-    // Merge deleted transactions
-    if (remote.deletedTransactions && Array.isArray(remote.deletedTransactions)) {
-      const localDelIds = new Set((local.deletedTransactions || []).map(t => t.id));
-      const newDel = remote.deletedTransactions.filter(t => !localDelIds.has(t.id));
-      if (newDel.length > 0) {
-        local.deletedTransactions = [...(local.deletedTransactions || []), ...newDel];
-      }
-    }
-
-    // Merge transfers
-    if (remote.transfers && Array.isArray(remote.transfers)) {
-      const localTrIds = new Set((local.transfers || []).map(t => t.id));
-      const newTr = remote.transfers.filter(t => !localTrIds.has(t.id));
-      if (newTr.length > 0) {
-        local.transfers = [...(local.transfers || []), ...newTr];
-      }
-    }
-
-    // Reference data: remote wins (full replace if remote has data)
-    // This keeps SEED data in sync across all devices
-    const refTables = ['products', 'stores', 'users', 'categories', 'productTypes', 'thresholds'];
-    for (const table of refTables) {
-      if (remote[table] && Array.isArray(remote[table]) && remote[table].length > 0) {
-        local[table] = remote[table];
-      }
-    }
+  _mergeTransactions(remoteItems, localTransactions) {
+    const localIds = new Set(localTransactions.map(t => t.id));
+    const newOnes = remoteItems.filter(t => !localIds.has(t.id));
+    return [...localTransactions, ...newOnes];
   },
 
   /**
@@ -372,9 +783,18 @@ const Sync = {
 
   /**
    * Called by DB.commit() — debounces rapid changes, then pushes.
+   * Tier 2 Fix #15: Only the leader tab actually pushes. Follower tabs
+   * just mark pending — the leader's next poll cycle will pick it up.
    */
   scheduleSync() {
     localStorage.setItem('bob_sync_pending', 'true');
+    if (!this._isLeader) {
+      // Follower tab — notify leader so it refreshes cache and pushes
+      if (this._bc) {
+        this._bc.postMessage({ type: 'local-write', tabId: this._tabId });
+      }
+      return;
+    }
     if (this._debounceTimer) clearTimeout(this._debounceTimer);
     this._debounceTimer = setTimeout(async () => {
       await this.push();
@@ -392,6 +812,9 @@ const Sync = {
 
   /**
    * Initializes the sync system. Called after DB is ready.
+   *
+   * Tier 2 Fix #15: Uses leader election so only one tab runs sync.
+   * All tabs load config, but only the leader starts push/pull/polling.
    */
   async init() {
     // Try remote config first (self-configuring), fall back to localStorage cache
@@ -402,11 +825,24 @@ const Sync = {
     }
     if (!hasConfig) {
       console.log('[Sync] No sync config found. Cloud sync disabled.');
-      this._showStatus('26a0 Cloud sync unavailable 2014 config not found. Contact Kunal.', 'error', 0);
+      this._showStatus('\u26A0 Cloud sync unavailable \u2014 config not found. Contact Kunal.', 'error', 0);
       return;
     }
 
     console.log(`[Sync] Initialized. Device: ${this._deviceId}, Last sync: ${this._lastSyncAt ? new Date(this._lastSyncAt).toISOString() : 'never'}`);
+
+    // Initialize leader election (Fix #15)
+    this._initLeaderElection();
+
+    // Wait briefly for leader election to resolve
+    await new Promise(r => setTimeout(r, 600));
+
+    if (!this._isLeader) {
+      console.log('[Sync] This tab is a follower — sync delegated to leader tab.');
+      return;
+    }
+
+    // === Leader-only logic below ===
 
     // Check for pending sync from last session
     if (localStorage.getItem('bob_sync_pending') === 'true') {
@@ -420,8 +856,8 @@ const Sync = {
       await this.pull();
     }
 
-    // Start polling
-    this._pollInterval = setInterval(() => this.poll(), this.POLL_INTERVAL);
+    // Start polling (leader only)
+    this._startPolling();
 
     // Register for service worker sync events
     if ('serviceWorker' in navigator && 'SyncManager' in window) {
@@ -443,7 +879,7 @@ const Sync = {
   },
 
   /**
-   * Stops polling (for cleanup/testing).
+   * Stops polling and cleans up leader election (for cleanup/testing).
    */
   stop() {
     if (this._pollInterval) {
@@ -454,5 +890,21 @@ const Sync = {
       clearTimeout(this._debounceTimer);
       this._debounceTimer = null;
     }
+    if (this._leaderHeartbeat) {
+      clearInterval(this._leaderHeartbeat);
+      this._leaderHeartbeat = null;
+    }
+    if (this._leaderCheckTimer) {
+      clearInterval(this._leaderCheckTimer);
+      this._leaderCheckTimer = null;
+    }
+    if (this._bc) {
+      if (this._isLeader) {
+        this._bc.postMessage({ type: 'leader-leaving', tabId: this._tabId });
+      }
+      this._bc.close();
+      this._bc = null;
+    }
+    this._isLeader = false;
   }
 };
