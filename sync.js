@@ -330,7 +330,9 @@ const Sync = {
    * expected by the push-v2 Logic App's Create Item action.
    */
   _toSharePoint(t) {
-    // Derive Timestamp as epoch ms from createdAt or current time
+    // Derive Timestamp as epoch ms from createdAt or current time.
+    // This is the BUSINESS EVENT TIME (when the transaction happened).
+    // SyncTimestamp (server arrival time) is set server-side by the Logic App — not sent from client.
     let ts = 0;
     if (typeof t.timestamp === 'number') {
       ts = t.timestamp;
@@ -363,6 +365,9 @@ const Sync = {
   /**
    * Maps a SharePoint list item (PascalCase) back to local camelCase format.
    * Used when pulling remote transactions.
+   * Note: SyncTimestamp is NOT mapped to local — it's used as the sync cursor only
+   * (tracked via lastSyncAt/watermark), not stored in Dexie.
+   * Timestamp (business event time) maps to createdAt for UI display.
    */
   _fromSharePoint(item) {
     const local = {
@@ -543,6 +548,10 @@ const Sync = {
    *   should be removed from the local database.
    */
   PULL_PAGE_SIZE: 1000,
+  PULL_LOOKBACK_MS: 10000,  // 10-second overlap margin — re-queries a small window to catch
+                             // rows that were mid-commit during the previous pull cycle.
+                             // Replayed rows are harmless: Dexie put() deduplicates by ID.
+                             // (Required by GPT as condition for final green flag.)
 
   async pull() {
     if (!this._pullUrl) return;
@@ -554,12 +563,16 @@ const Sync = {
       let watermark = null;  // Snapshot upper bound — captured from first page
 
       // Page through results with snapshot-safe pagination (GPT review fix)
-      // First page captures serverTimestamp as watermark.
-      // All pages filter: since < Timestamp <= watermark
-      // Stable sort: Timestamp asc, TransactionId asc (enforced by Logic App)
+      // First page captures serverTimestamp as watermark (epoch ms, server-owned).
+      // All pages filter: SyncTimestamp gt (since - lookback) AND SyncTimestamp le watermark
+      // SyncTimestamp is set server-side at ingest (not client event time).
+      // Stable sort: SyncTimestamp asc, ID asc (SharePoint server ID tie-breaker)
+      // This prevents offline/backdated pushes from being permanently skipped.
+      // The lookback margin (10s) catches rows that were mid-commit during the last pull.
+      const safeSince = Math.max(0, this._lastSyncAt - this.PULL_LOOKBACK_MS);
       while (keepGoing) {
         const body = {
-          since: String(this._lastSyncAt),
+          since: String(safeSince),
           $top: this.PULL_PAGE_SIZE,
           $skip: skip
         };
@@ -607,6 +620,10 @@ const Sync = {
       const local = DB.get();
       const localIds = new Set((local.transactions || []).map(t => t.id));
 
+      // Diagnostic: count overlap/replay rows (items in the lookback window already known locally)
+      // This helps verify the lookback margin is working and can be tuned later.
+      let overlapCount = 0;
+
       // Separate tombstones from regular transactions
       const tombstones = [];
       const newTransactions = [];
@@ -620,14 +637,21 @@ const Sync = {
           continue;
         }
 
-        // Skip items we already have locally
-        if (localIds.has(spItem.TransactionId)) continue;
+        // Skip items we already have locally (includes lookback overlap rows)
+        if (localIds.has(spItem.TransactionId)) {
+          overlapCount++;
+          continue;
+        }
 
         // Skip items from this device (we already have them)
         if (spItem.DeviceId === this._deviceId) continue;
 
         const localTxn = this._fromSharePoint(spItem);
         newTransactions.push(localTxn);
+      }
+
+      if (overlapCount > 0) {
+        console.log(`[Sync] Lookback overlap: ${overlapCount} rows already known locally (deduped). Margin: ${this.PULL_LOOKBACK_MS}ms`);
       }
 
       let changed = false;
@@ -660,9 +684,11 @@ const Sync = {
       }
 
       // Only advance lastSyncAt AFTER all pages succeeded.
-      // Use watermark (server timestamp) if available, NOT Date.now().
-      // Using Date.now() would skip any transactions that arrived in SharePoint
-      // during the pull loop. (Gemini + GPT both flagged this.)
+      // Use watermark (server timestamp at pull start) if available, NOT Date.now().
+      // The watermark is the exact upper bound used by the query (SyncTimestamp le watermark).
+      // Any records that arrive during the pull loop have SyncTimestamp > watermark,
+      // so they'll be picked up in the next sync cycle. (Gemini + GPT both flagged this.)
+      // Pull filter uses "gt since" (not "ge") to avoid replaying boundary rows.
       if (watermark) {
         const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime();
         if (!isNaN(wmTs) && wmTs > 0) {
