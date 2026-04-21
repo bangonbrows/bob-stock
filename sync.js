@@ -208,8 +208,10 @@ const Sync = {
       return;
     }
 
-    this._tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    this._tabStartedAt = Date.now();
+    this._tabId = 'tab_' + this._tabStartedAt + '_' + Math.random().toString(36).substring(2, 7);
     this._bc = new BroadcastChannel('bob-sync-leader');
+    this._pendingClaim = false;  // T2-07: track if we have an active claim in flight
 
     this._bc.onmessage = (e) => {
       const msg = e.data;
@@ -217,15 +219,29 @@ const Sync = {
 
       switch (msg.type) {
         case 'claim-leader':
-          // Another tab is trying to become leader — tell it we exist
+          // Another tab is trying to become leader
           if (this._isLeader) {
+            // We're already leader — tell them
             this._bc.postMessage({ type: 'leader-exists', tabId: this._tabId });
+          } else if (this._pendingClaim) {
+            // T2-07: We also have a pending claim — deterministic tiebreaker
+            // Older tab (lower startedAt) wins; tabId breaks exact ties
+            const theyWin = (msg.startedAt < this._tabStartedAt) ||
+                            (msg.startedAt === this._tabStartedAt && msg.tabId < this._tabId);
+            if (theyWin) {
+              // They have priority — cancel our claim
+              this._pendingClaim = false;
+              this._lastLeaderPing = Date.now();
+              console.log(`[Sync] Lost election tiebreak to ${msg.tabId} — standing down.`);
+            }
+            // If we win, we just ignore their claim — they'll see our claim and stand down
           }
           break;
 
         case 'leader-exists':
           // Another tab is already leader — stay as follower
           this._isLeader = false;
+          this._pendingClaim = false;
           this._lastLeaderPing = Date.now();
           break;
 
@@ -283,20 +299,29 @@ const Sync = {
   },
 
   /**
-   * Attempts to claim leader. Sends 'claim-leader' and waits 500ms.
-   * If no 'leader-exists' reply, we become leader and start heartbeat + polling.
+   * Attempts to claim leader. Sends 'claim-leader' with startedAt for deterministic tiebreak.
+   * T2-07: Uses startedAt + tabId tiebreaker to prevent split-brain on simultaneous startup.
+   * Adds random jitter (0-200ms) before claiming to reduce collision probability.
    */
   _tryClaimLeader() {
     if (this._isLeader) return;
 
-    this._bc.postMessage({ type: 'claim-leader', tabId: this._tabId });
-
+    // T2-07: Small random jitter to reduce simultaneous claim probability
+    const jitter = Math.random() * 200;
     setTimeout(() => {
-      // If no leader responded in 500ms, we're the leader
-      if (!this._isLeader && (Date.now() - this._lastLeaderPing) > 500) {
-        this._becomeLeader();
-      }
-    }, 500);
+      if (this._isLeader) return;  // Another tab may have claimed while we waited
+      this._pendingClaim = true;
+      this._bc.postMessage({ type: 'claim-leader', tabId: this._tabId, startedAt: this._tabStartedAt });
+
+      setTimeout(() => {
+        // If no leader responded in 500ms AND our claim wasn't cancelled by tiebreaker
+        if (!this._isLeader && this._pendingClaim && (Date.now() - this._lastLeaderPing) > 500) {
+          this._pendingClaim = false;
+          this._becomeLeader();
+        }
+        this._pendingClaim = false;
+      }, 500);
+    }, jitter);
   },
 
   /**

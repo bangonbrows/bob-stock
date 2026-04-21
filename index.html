@@ -1139,26 +1139,34 @@ PHASE3_DISABLED */
       const hash = await sha256(password);
       const u = DB.get().users.find(u=>u.username===username && u.password===hash);
       if (!u) return false;
+      // T2-02: Generate ephemeral session UUID — never store password hash in sessionStorage
+      const sessionToken = crypto.randomUUID();
+      u.currentSession = sessionToken;
+      DB.commit();
       this._user = u;
-      // Fix #10: Store username + hash token — role/storeIds never trusted from sessionStorage
-      sessionStorage.setItem('bob_session_v4', JSON.stringify({ username: u.username, token: u.password }));
+      sessionStorage.setItem('bob_session_v5', JSON.stringify({ username: u.username, token: sessionToken }));
       return true;
     },
   restore() {
-    const s = sessionStorage.getItem('bob_session_v4');
-    if (!s) return;
+    const s = sessionStorage.getItem('bob_session_v5');
+    if (!s) { sessionStorage.removeItem('bob_session_v4'); return; } // also clean up old key
     try {
       const saved = JSON.parse(s);
-      // Fix #10: Re-fetch full user from DB — requires both username AND hash token match
       const username = saved.username || saved.name;
       const token = saved.token;
-      if (!username || !token) { sessionStorage.removeItem('bob_session_v4'); return; }
-      const u = DB.get().users.find(u => u.username === username && u.password === token);
+      if (!username || !token) { sessionStorage.removeItem('bob_session_v5'); return; }
+      // T2-02: Match ephemeral session UUID, not password hash
+      const u = DB.get().users.find(u => u.username === username && u.currentSession === token);
       if (u) { this._user = u; }
-      else { sessionStorage.removeItem('bob_session_v4'); }
-    } catch(e) { sessionStorage.removeItem('bob_session_v4'); }
+      else { sessionStorage.removeItem('bob_session_v5'); }
+    } catch(e) { sessionStorage.removeItem('bob_session_v5'); }
   },
-  logout() { this._user=null; sessionStorage.removeItem('bob_session_v4'); if(typeof Sync!=='undefined'){Sync.clearSensitiveData();} },
+  logout() {
+    // T2-02: Clear ephemeral session from Dexie on logout
+    if (this._user) { this._user.currentSession = null; DB.commit(); }
+    this._user=null; sessionStorage.removeItem('bob_session_v5'); sessionStorage.removeItem('bob_session_v4');
+    if(typeof Sync!=='undefined'){Sync.clearSensitiveData();}
+  },
   user()    { return this._user; },
   is(role)  { return this._user && this._user.role === role; },
   isAtLeast(role) {
@@ -1315,6 +1323,8 @@ const Stock = {
 // ── UI Helpers ───────────────────────────────────
 const UI = {
   _charts: {},
+  /** Escape HTML special characters to prevent XSS when interpolating user input into innerHTML */
+  esc(s) { if (s == null) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); },
   showView(id) { document.querySelectorAll('.view').forEach(v=>v.classList.remove('active')); document.getElementById('view-'+id).classList.add('active'); },
   showPage(id) {
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
@@ -1600,7 +1610,7 @@ const Pages = {
         </div>
         <div class="form-group" id="reason-other-grp" style="display:${this._logData.reason==='Other'?'block':'none'}">
           <label class="form-label">Please specify</label>
-          <input class="form-input" id="inp-reason-other" value="${this._logData.reasonOther||''}" placeholder="Enter details..." style="max-width:320px">
+          <input class="form-input" id="inp-reason-other" value="${UI.esc(this._logData.reasonOther||'')}" placeholder="Enter details..." style="max-width:320px">
         </div>
         ${isReturn?`
         <div class="form-group">
@@ -1657,8 +1667,8 @@ const Pages = {
             <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Location</div><div style="font-weight:600;margin-top:4px">${UI.storeName(this._getLogStoreId())}${destStore?.isFranchise?' <span class="franchise-badge">Franchise</span>':''}</div></div>
             <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Product</div><div style="font-weight:600;margin-top:4px">${prod?.name}</div></div>
             <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Quantity</div><div style="font-size:1.5rem;font-weight:700;font-family:'Playfair Display',serif;margin-top:2px">${this._logData.qty}</div></div>
-            <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Staff</div><div style="font-weight:600;margin-top:4px">${this._logData.staffName}</div></div>
-            <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Reason</div><div style="margin-top:4px">${this._logData.reason}</div></div>
+            <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Staff</div><div style="font-weight:600;margin-top:4px">${UI.esc(this._logData.staffName)}</div></div>
+            <div><div style="font-size:.7rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em">Reason</div><div style="margin-top:4px">${UI.esc(this._logData.reason)}</div></div>
             ${extraRows}
           </div>
         </div>
@@ -1828,8 +1838,8 @@ const Pages = {
         <td><strong>${UI.productName(t.productId)}</strong></td>
         <td>${typeBadge(t)}</td>
         <td><strong>${t.qty}</strong></td>
-        <td>${t.staffName}</td>
-        <td style="color:#6b7280;font-size:.8rem">${t.reason||'—'}${t.returnCondition?`<br><span style="color:#92400e;font-size:.75rem;font-style:italic">${t.returnCondition}</span>`:''}</td>
+        <td>${UI.esc(t.staffName)}</td>
+        <td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}${t.returnCondition?`<br><span style="color:#92400e;font-size:.75rem;font-style:italic">${UI.esc(t.returnCondition)}</span>`:''}</td>
         <td style="font-size:.8rem">${fromTo(t)}</td>
         <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
           ${(Date.now()-new Date(t.createdAt).getTime())<300000?`<button class="btn btn-sm" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700;padding:4px 10px" onclick="Pages._undoMovement('${t.id}')">↩ Undo</button>`:''}
@@ -1965,7 +1975,7 @@ const Pages = {
     if(!el){return;}
     if(!txns.length){el.innerHTML='<div class="empty-state" style="text-align:center;padding:40px;color:#9ca3af"><p>No transactions found for this period.</p></div>';return;}
     el.innerHTML=`<table><thead><tr><th>Date</th><th>Product</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>
-      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><strong>${UI.productName(t.productId)}</strong><br><span style="color:#9ca3af;font-size:.7rem">${t.productId}</span></td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td><strong>${t.qty}</strong></td><td>${t.staffName}</td><td style="color:#6b7280;max-width:200px">${t.reason||'—'}${t.stockFrom?` <span style="color:#9ca3af;font-size:.75rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.75rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
+      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><strong>${UI.productName(t.productId)}</strong><br><span style="color:#9ca3af;font-size:.7rem">${t.productId}</span></td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td><strong>${t.qty}</strong></td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;max-width:200px">${UI.esc(t.reason||'—')}${t.stockFrom?` <span style="color:#9ca3af;font-size:.75rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.75rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
   },
 
   // ── Stock Take ──
@@ -2329,7 +2339,7 @@ const Pages = {
     if(search)  txns=txns.filter(t=>UI.productName(t.productId).toLowerCase().includes(search)||t.productId.toLowerCase().includes(search));
     txns=txns.slice().reverse().slice(0,500);
     document.getElementById('am-table').innerHTML=!txns.length?'<div class="empty-state"><p>No transactions match.</p></div>':`<table><thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>
-      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><span class="badge badge-rose">${UI.storeName(t.storeId)}</span></td><td><strong>${UI.productName(t.productId)}</strong></td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td><strong>${t.qty}</strong></td><td>${t.staffName}</td><td style="color:#6b7280;font-size:.8rem">${t.reason||'—'}${t.stockFrom?` <span style="color:#9ca3af;font-size:.73rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.73rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
+      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><span class="badge badge-rose">${UI.storeName(t.storeId)}</span></td><td><strong>${UI.productName(t.productId)}</strong></td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td><strong>${t.qty}</strong></td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}${t.stockFrom?` <span style="color:#9ca3af;font-size:.73rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.73rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
   },
 
   // ── HO: Store Comparison (with date range picker) ──
@@ -2660,7 +2670,7 @@ const Pages = {
       },100);
     } else if(this._repTab==='transactions'){
       const shown=txns.slice().reverse().slice(0,500);
-      el.innerHTML=`<div class="tbl-wrap card">${!shown.length?'<div class="empty-state"><p>No transactions match.</p></div>':`<table><thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Category</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>${shown.map(t=>{const prod=d.products.find(p=>p.id===t.productId);return `<tr><td>${UI.fmtDate(t.date)}</td><td>${UI.storeName(t.storeId)}</td><td>${UI.productName(t.productId)}</td><td>${UI.catName(prod?.catId)}</td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td>${t.qty}</td><td>${t.staffName}</td><td style="color:#6b7280;font-size:.8rem">${t.reason||'—'}</td></tr>`;}).join('')}</tbody></table>`}</div>`;
+      el.innerHTML=`<div class="tbl-wrap card">${!shown.length?'<div class="empty-state"><p>No transactions match.</p></div>':`<table><thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Category</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>${shown.map(t=>{const prod=d.products.find(p=>p.id===t.productId);return `<tr><td>${UI.fmtDate(t.date)}</td><td>${UI.storeName(t.storeId)}</td><td>${UI.productName(t.productId)}</td><td>${UI.catName(prod?.catId)}</td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td>${t.qty}</td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}</td></tr>`;}).join('')}</tbody></table>`}</div>`;
     } else if(this._repTab==='snapshot'){
       const stores=f.store
         ? (f.store==='head_office' ? [{id:'head_office',name:'Head Office (Warehouse)',type:'warehouse'}] : [d.stores.find(s=>s.id===f.store)]).filter(Boolean)
@@ -2901,7 +2911,7 @@ const Pages = {
     el.innerHTML=`<div class="page-header"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="page-title">User Management</div><div class="page-sub">${d.users.length} accounts configured</div></div><button class="btn btn-primary" onclick="Pages._addUserModal()">+ Add User</button></div></div>
       <div class="tbl-wrap card"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Assigned Stores</th><th>Actions</th></tr></thead><tbody>${d.users.map(u=>`<tr>
         <td><strong>${u.name}</strong></td>
-        <td><span style="font-family:monospace;font-size:.8rem;color:#6b7280">${u.username}</span></td>
+        <td><span style="font-family:monospace;font-size:.8rem;color:#6b7280">${UI.esc(u.username)}</span></td>
         <td>${Pages._roleBadge(u.role)}</td>
         <td>${Pages._userStoreList(u,d)}</td>
         <td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editUserModal('${u.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteUser('${u.id}')">Delete</button></td>
@@ -2966,7 +2976,7 @@ const Pages = {
     const d=DB.get(); const u=d.users.find(u=>u.id===id);
     UI.modal('Edit User',`
       <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="eu-name" value="${u.name}"></div>
-      <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="eu-user" value="${u.username}"></div>
+      <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="eu-user" value="${UI.esc(u.username)}"></div>
       <div class="form-group"><label class="form-label">New Password (leave blank to keep)</label><input type="password" class="form-input" id="eu-pass"></div>
       <div class="form-group"><label class="form-label">New PIN (4 digits, leave blank to keep)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="" placeholder="Enter new PIN" style="max-width:100px"></div>
       <div class="form-group"><label class="form-label">Role</label>
@@ -3216,8 +3226,8 @@ const Pages = {
             return`<tr>
               <td><strong>${p.name}</strong></td>
               <td style="color:#6b7280;font-size:.8rem">${cat?.name||'—'}</td>
-              <td><input class="form-input" id="sup-name-${p.id}" value="${(p.supplierName||'').replace(/"/g,'&quot;')}" placeholder="Supplier name" style="min-width:140px"></td>
-              <td><input class="form-input" id="sup-contact-${p.id}" value="${(p.supplierContact||'').replace(/"/g,'&quot;')}" placeholder="Phone or email" style="min-width:160px"></td>
+              <td><input class="form-input" id="sup-name-${p.id}" value="${UI.esc(p.supplierName||'')}" placeholder="Supplier name" style="min-width:140px"></td>
+              <td><input class="form-input" id="sup-contact-${p.id}" value="${UI.esc(p.supplierContact||'')}" placeholder="Phone or email" style="min-width:160px"></td>
               <td><input type="number" class="form-input" id="sup-lead-${p.id}" value="${p.leadDays||''}" placeholder="—" min="1" style="max-width:70px"></td>
               <td><button class="btn btn-sm btn-primary" onclick="Pages._saveSupplier('${p.id}')">Save</button></td>
             </tr>`;}).join('')}
@@ -3309,8 +3319,8 @@ const Pages = {
             <td>${s?.name||t.storeId}</td>
             <td><strong>${p?.name||t.productId}</strong></td>
             <td><strong>${t.qty}</strong></td>
-            <td><span class="badge badge-red" style="font-size:.75rem">${t.reason||t.stockTo||'—'}</span></td>
-            <td style="color:#6b7280">${t.staffName||'—'}</td>
+            <td><span class="badge badge-red" style="font-size:.75rem">${UI.esc(t.reason||t.stockTo||'—')}</span></td>
+            <td style="color:#6b7280">${UI.esc(t.staffName||'—')}</td>
             <td>$${val.toFixed(2)}</td>
           </tr>`;}).join('')}
         </tbody>
@@ -3480,7 +3490,7 @@ const Pages = {
             <td><strong>${UI.productName(t.productId)}</strong></td>
             <td>${typeLabel}</td>
             <td>${t.qty}</td>
-            <td style="color:#6b7280;font-size:.8rem">${t.staffName||'—'}</td>
+            <td style="color:#6b7280;font-size:.8rem">${UI.esc(t.staffName||'—')}</td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>`}`;
@@ -3940,7 +3950,7 @@ const Pages = {
       hist.map(h=>`<div class="cost-history-item">
         <div>
           <div style="font-weight:700;font-size:.95rem">${UI.fmt(h.costPrice)}</div>
-          ${h.notes?`<div style="font-size:.78rem;color:#6b7280;margin-top:2px">${h.notes}</div>`:''}
+          ${h.notes?`<div style="font-size:.78rem;color:#6b7280;margin-top:2px">${UI.esc(h.notes)}</div>`:''}
         </div>
         <div style="text-align:right">
           <div style="font-size:.8rem;color:#6b7280">${h.date}</div>
@@ -4163,11 +4173,11 @@ const Pages = {
       const linesWithUpdate=del.lines.filter(l=>l.costUpdated).length;
       return `<tr>
         <td>${del.date}</td>
-        <td><strong>${del.supplier}</strong></td>
+        <td><strong>${UI.esc(del.supplier)}</strong></td>
         <td>${del.invoiceNo||'—'}</td>
         <td>${del.lines.length} line${del.lines.length!==1?'s':''} ${linesWithUpdate>0?`<span style="font-size:.7rem;background:#dcfce7;color:#16a34a;padding:1px 6px;border-radius:10px">${linesWithUpdate} cost${linesWithUpdate>1?'s':''} updated</span>`:''}</td>
         <td>$${totalHeader.toFixed(2)}<br><span style="font-size:.7rem;color:#9ca3af">Freight:$${del.headerCosts.freight||0} Tax:$${del.headerCosts.tax||0} Customs:$${del.headerCosts.customs||0}</span></td>
-        <td>${del.createdBy}</td>
+        <td>${UI.esc(del.createdBy)}</td>
         <td><button class="btn btn-sm btn-secondary" onclick="Pages._viewDeliveryDetail('${del.id}')">View</button> <button class="btn btn-sm" style="background:#eff6ff;color:#2563eb" onclick="Pages._editDeliveryPackaging('${del.id}')">Edit Packaging</button></td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
@@ -4882,7 +4892,7 @@ Pages.loginAudit = function() {
             log.map((e, i) => `
               <tr style="background:${i % 2 === 0 ? '#fff' : '#f9fafb'};border-bottom:1px solid #e5e7eb">
                 <td style="padding:9px 12px;white-space:nowrap">${new Date(e.ts).toLocaleString('en-AU', {day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-                <td style="padding:9px 12px;font-weight:600">${e.username}</td>
+                <td style="padding:9px 12px;font-weight:600">${UI.esc(e.username)}</td>
                 <td style="padding:9px 12px">${e.deviceLabel || '—'}</td>
                 <td style="padding:9px 12px;font-family:monospace;font-size:.75rem;color:#6b7280">${(e.deviceId||'').slice(0,16)}…</td>
                 <td style="padding:9px 12px;text-align:center">${e.isNew ? '<span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:12px;font-size:.75rem;font-weight:700">🆕 New</span>' : '<span style="color:#10b981;font-size:.85rem">✓</span>'}</td>
