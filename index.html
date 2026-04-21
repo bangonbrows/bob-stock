@@ -1236,7 +1236,11 @@ const Stock = {
   // Debug: compare cache vs full scan — call from console to verify integrity
   _verifyCacheIntegrity() {
     const drifts = [];
+    const stale = [];
     const d = DB.get();
+    const activeStoreIds = new Set(d.stores.filter(s => s.active).map(s => s.id));
+    const activeProductIds = new Set(d.products.filter(p => p.active).map(p => p.id));
+    // Forward scan: verify cached values match recalculated totals for active entities
     d.stores.filter(s => s.active).forEach(store => {
       d.products.filter(p => p.active).forEach(product => {
         const cached = (this._qtyCache[store.id] && this._qtyCache[store.id][product.id]) || 0;
@@ -1246,8 +1250,24 @@ const Stock = {
         if (cached !== scanned) drifts.push({ store: store.name, product: product.name, cached, scanned, diff: cached - scanned });
       });
     });
-    if (drifts.length === 0) { console.log('[Stock] Cache integrity OK — no drift'); return true; }
-    console.warn('[Stock] Cache drift detected:', drifts);
+    // T2-08: Backward scan — prune stale cache entries for inactive/deleted products or stores
+    Object.keys(this._qtyCache).forEach(storeId => {
+      if (!activeStoreIds.has(storeId)) {
+        stale.push({ storeId, reason: 'inactive store' });
+        delete this._qtyCache[storeId];
+        return;
+      }
+      Object.keys(this._qtyCache[storeId]).forEach(productId => {
+        if (!activeProductIds.has(productId)) {
+          stale.push({ storeId, productId, reason: 'inactive product' });
+          delete this._qtyCache[storeId][productId];
+        }
+      });
+    });
+    if (stale.length > 0) console.warn('[Stock] Pruned ' + stale.length + ' stale cache entries:', stale);
+    if (drifts.length > 0) console.warn('[Stock] Cache drift detected:', drifts);
+    if (drifts.length === 0 && stale.length === 0) { console.log('[Stock] Cache integrity OK — no drift, no stale entries'); return true; }
+    // T2-08: Return false if drift OR stale entries found — strict health check per GPT audit
     return false;
   },
 
