@@ -78,7 +78,7 @@ async function _persistAllToDexie(d) {
         await bobDB.meta.bulkPut([
           { key: '_v', value: d._v || 0 },
           { key: 'stockTakePin', value: d.stockTakePin || { pin: null, expiresAt: null } },
-          // Fix #8: stockThresholds removed  thresholds now in d.thresholds table
+          // Fix #8: stockThresholds removed — thresholds now in d.thresholds table
         ]);
       }
     );
@@ -120,7 +120,7 @@ async function _persistRefDataToDexie(d) {
         await bobDB.meta.bulkPut([
           { key: '_v', value: d._v || 0 },
           { key: 'stockTakePin', value: d.stockTakePin || { pin: null, expiresAt: null } },
-          // Fix #8: stockThresholds removed  thresholds now in d.thresholds table
+          // Fix #8: stockThresholds removed — thresholds now in d.thresholds table
         ]);
       }
     );
@@ -242,7 +242,7 @@ async function _loadFromDexie() {
 
   const metaV = await bobDB.meta.get('_v');
   const metaPin = await bobDB.meta.get('stockTakePin');
-  // Fix #8: stockThresholds no longer loaded  thresholds unified in d.thresholds
+  // Fix #8: stockThresholds no longer loaded — thresholds unified in d.thresholds
 
   return {
     productTypes,
@@ -426,6 +426,7 @@ const DB = {
     this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
     // Fix #9: Reverse delta to keep cache in sync
     if (original && typeof Stock !== 'undefined' && Stock._applyDelta) {
+      // Reverse the direction: if original was 'in', we need to subtract (apply as 'out' equivalent)
       const reversedType = original.type === 'in' ? 'out' :
                            original.type === 'return_in' ? 'out' :
                            original.type === 'transfer_in' ? 'transfer_out' :
@@ -462,8 +463,12 @@ const DB = {
    * @param {object|null} transfer - Transfer object to update (optional)
    * @returns {boolean} true (synchronous — actual write is async but atomic)
    */
-  atomicTransferWrite(transactions, transfer) {
+  atomicTransferWrite(transactions, transfer, transferSnapshot) {
     if (!this._cache) return false;
+
+    // T2-06: Use pre-mutation snapshot passed by caller for rollback on failure.
+    // Caller must snapshot the transfer BEFORE mutating it — db.js cannot snapshot here
+    // because the transfer is already mutated by the time this method is called.
 
     // Update cache synchronously (optimistic — matches existing pattern)
     if (transactions && transactions.length > 0) {
@@ -475,7 +480,6 @@ const DB = {
         }
       }
     }
-    // Transfer is already mutated in cache by reference — just need to persist
 
     // Atomic Dexie write — all or nothing, with retry (GPT review)
     _pendingWrites++;
@@ -503,6 +507,12 @@ const DB = {
           if (typeof Stock !== 'undefined' && Stock._buildCache) {
             Stock._buildCache();
           }
+        }
+        // T2-06: Restore transfer object to pre-mutation state on failure
+        if (transfer && transferSnapshot) {
+          Object.keys(transfer).forEach(k => delete transfer[k]);
+          Object.assign(transfer, transferSnapshot);
+          console.warn('[DB] Transfer object restored to pre-write snapshot.');
         }
       }
     }).finally(() => {
@@ -601,7 +611,7 @@ async function _loadSeedData(seed) {
     stockTakes: [],
     deliveries: [],
     stockTakePin: { pin: null, expiresAt: null },
-    // Fix #8: stockThresholds removed  thresholds unified in d.thresholds
+    // Fix #8: stockThresholds removed — thresholds unified in d.thresholds
     _v: 1,
   };
   await _persistAllToDexie(data);

@@ -122,13 +122,25 @@ const Transfer = {
     return { ok:true };
   },
 
-  submitDraft(transferId) {
+  submitDraft(transferId, draftQtys) {
     if (!this._canCreate()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || t.status !== 'draft') return { ok:false, error:'Invalid transfer or not a draft' };
+    // T2-06: Snapshot the transfer BEFORE any mutations — passed to atomicTransferWrite for rollback
+    const snapshot = JSON.parse(JSON.stringify(t));
     // Remove unconfirmed items
     t.items = t.items.filter(i => i.status === 'confirmed');
-    if (!t.items.length) return { ok:false, error:'No confirmed items to submit' };
+    if (!t.items.length) {
+      // Restore snapshot since we mutated t.items
+      Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot);
+      return { ok:false, error:'No confirmed items to submit' };
+    }
+    // T2-06: Apply draft quantity edits after snapshot, before atomic write
+    if (draftQtys) {
+      t.items.forEach(i => {
+        if (draftQtys[i.productId] !== undefined) i.sentQty = draftQtys[i.productId];
+      });
+    }
     t.items.forEach(i => { i.status = 'pending'; });
     t.status = 'in_transit';
     t.date = new Date().toISOString();
@@ -137,8 +149,8 @@ const Transfer = {
     t.items.forEach(item => {
       batchTxns.push(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer to ' + UI.storeName(t.toStoreId)));
     });
-    DB.atomicTransferWrite(batchTxns, t);
-    DB.commit();
+    // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    DB.atomicTransferWrite(batchTxns, t, snapshot);
     this._notify({
       type: 'transfer_created', fromStore: UI.storeName(t.fromStoreId), toStore: UI.storeName(t.toStoreId),
       date: t.date, createdBy: Auth.user(),
@@ -153,6 +165,8 @@ const Transfer = {
     if (!this._canReceive()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || t.status !== 'in_transit') return { ok:false, error:'Invalid transfer or not in transit' };
+    // T2-06: Snapshot before mutations
+    const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
     const now = new Date().toISOString();
     let hasFlagged = false;
@@ -174,9 +188,8 @@ const Transfer = {
     t.receivedDate = now;
     t.status = hasFlagged ? 'received' : 'completed';
     if (!hasFlagged) t.completedDate = now;
-    // Atomic write: all transaction inserts + transfer update in one Dexie transaction
-    DB.atomicTransferWrite(batchTxns, t);
-    DB.commit();
+    // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    DB.atomicTransferWrite(batchTxns, t, snapshot);
     if (!hasFlagged) this._notifyCompleted(t);
     return { ok:true, hasFlagged };
   },
@@ -187,6 +200,8 @@ const Transfer = {
     if (!t || (t.status !== 'received' && t.status !== 'in_transit')) return { ok:false, error:'Invalid transfer' };
     const item = t.items.find(i => i.productId === productId && i.status === 'flagged');
     if (!item) return { ok:false, error:'Flagged item not found' };
+    // T2-06: Snapshot before mutations
+    const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
     item.resolvedBy = Auth.user();
     item.resolvedAction = action;
@@ -216,9 +231,8 @@ const Transfer = {
       t.completedDate = new Date().toISOString();
       this._notifyCompleted(t);
     }
-    // Atomic write: all transaction inserts + transfer update in one Dexie transaction
-    DB.atomicTransferWrite(batchTxns, t);
-    DB.commit();
+    // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    DB.atomicTransferWrite(batchTxns, t, snapshot);
     return { ok:true };
   },
 
@@ -260,6 +274,8 @@ const Transfer = {
     if (!this._canCancel()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || (t.status !== 'in_transit' && t.status !== 'draft')) return { ok:false, error:'Cannot cancel this transfer' };
+    // T2-06: Snapshot before mutations
+    const snapshot = JSON.parse(JSON.stringify(t));
     // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
     const batchTxns = [];
     if (t.status === 'in_transit') {
@@ -270,8 +286,8 @@ const Transfer = {
     }
     t.status = 'cancelled';
     t.completedDate = new Date().toISOString();
-    DB.atomicTransferWrite(batchTxns, t);
-    DB.commit();
+    // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    DB.atomicTransferWrite(batchTxns, t, snapshot);
     return { ok:true };
   },
 
@@ -1342,17 +1358,16 @@ window.TransferUI = {
       if (_txState.draftConfirmed[i.productId] && i.status !== 'confirmed') {
         Transfer.confirmDraftItem(transferId, i.productId);
       }
-      // Update quantities from draft edits
-      if (_txState.draftQtys[i.productId] !== undefined) {
-        i.sentQty = _txState.draftQtys[i.productId];
-      }
+      // T2-06: Do NOT mutate sentQty here — pass draftQtys to Transfer.submitDraft()
+      // so the mutation happens inside the atomic write boundary
     });
     const allConfirmed = t.items.every(i => i.status === 'confirmed');
     if (!allConfirmed) { UI.toast('Confirm all items first', 'warning'); return; }
 
     UI.confirm('Submit this draft and mark as In Transit?', function() {
       try {
-        const result = Transfer.submitDraft(transferId);
+        // T2-06: Pass draft quantities so they're applied inside the atomic boundary
+        const result = Transfer.submitDraft(transferId, _txState.draftQtys);
         if (!result.ok) { UI.toast(result.error, 'error'); return; }
         _txState.draftConfirmed = {};
         _txState.draftQtys = {};

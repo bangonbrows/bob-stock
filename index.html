@@ -2898,10 +2898,11 @@ const Pages = {
     if(search) prods=prods.filter(p=>p.name.toLowerCase().includes(search)||p.id.toLowerCase().includes(search));
     _th('th-table').innerHTML=`<table><thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Min Qty</th><th>Optimum Qty</th><th>Lead Days</th><th></th></tr></thead><tbody>${prods.map(p=>{
       const thr=Stock.threshold(p.id,storeId); const qty=Stock.qty(p.id,storeId);
-      return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty||''}" min="0" placeholder="Not set" style="max-width:80px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.optimumQty||''}" min="0" placeholder="—" style="max-width:80px" id="thr-opt-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays||''}" min="0" placeholder="—" style="max-width:70px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
+      return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty!=null?thr.minQty:''}" min="0" placeholder="Not set" style="max-width:80px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.optimumQty!=null?thr.optimumQty:''}" min="0" placeholder="—" style="max-width:80px" id="thr-opt-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays!=null?thr.leadDays:''}" min="0" placeholder="—" style="max-width:70px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
     }).join('')}</tbody></table>`;
   },
-  _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const optimumQty=parseInt(document.getElementById('thr-opt-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty||minQty<0){UI.toast('Min quantity must be a positive number','error');return;}if(optimumQty!==null&&optimumQty<minQty){UI.toast('Optimum must be >= min quantity','error');return;}if(leadDays!==null&&leadDays<0){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].optimumQty=optimumQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,optimumQty,leadDays});DB.commit();UI.toast('Saved','success');},
+  // T2-03: Use strict number validation — parseInt(0)||null incorrectly treats zero as null
+  _saveThr(productId,storeId){const rawMin=document.getElementById('thr-min-'+productId)?.value;const rawOpt=document.getElementById('thr-opt-'+productId)?.value;const rawLead=document.getElementById('thr-lead-'+productId)?.value;const minQty=rawMin!==''&&rawMin!=null?parseInt(rawMin,10):null;const optimumQty=rawOpt!==''&&rawOpt!=null?parseInt(rawOpt,10):null;const leadDays=rawLead!==''&&rawLead!=null?parseInt(rawLead,10):null;if(minQty===null||isNaN(minQty)||minQty<0){UI.toast('Min quantity must be 0 or a positive number','error');return;}if(optimumQty!==null&&(isNaN(optimumQty)||optimumQty<minQty)){UI.toast('Optimum must be >= min quantity','error');return;}if(leadDays!==null&&(isNaN(leadDays)||leadDays<0)){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].optimumQty=optimumQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,optimumQty,leadDays});DB.commit();UI.toast('Saved','success');},
   _removeThr(productId,storeId){const d=DB.get();d.thresholds=d.thresholds.filter(t=>!(t.productId===productId&&t.storeId===storeId));DB.commit();this._renderThresholds();UI.toast('Cleared','info');},
 
 
@@ -3023,16 +3024,22 @@ const Pages = {
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();URL.revokeObjectURL(url);
     UI.toast(`${filename} downloaded`,'success');
   },
+  // T2-04: Use Txn.classify() instead of hardcoded 3-way type mapping
   _exportMovementsCSV() {
     const d=DB.get();
-    const headers=['Date','Store','Product','Type','Qty','Staff','Reason','From','To','Notes'];
-    const rows=d.transactions.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>[
-      t.date,
-      d.stores.find(s=>s.id===t.storeId)?.name||t.storeId,
-      d.products.find(p=>p.id===t.productId)?.name||t.productId,
-      t.type==='in'?'IN':t.type==='return_in'?'RETURN IN':'OUT',
-      t.qty,t.staffName||'',t.reason||'',t.stockFrom||'',t.stockTo||'',t.note||''
-    ]);
+    const headers=['Date','Store','Product','Type','Direction','Category','Qty','Staff','Reason','From','To','Notes'];
+    const rows=d.transactions.filter(t=>Txn.isActive(t)).slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{
+      const cls=Txn.classify(t);
+      return [
+        t.date,
+        d.stores.find(s=>s.id===t.storeId)?.name||t.storeId,
+        d.products.find(p=>p.id===t.productId)?.name||t.productId,
+        t.type,
+        cls.direction.toUpperCase(),
+        cls.category,
+        t.qty,t.staffName||'',t.reason||'',t.stockFrom||'',t.stockTo||'',t.note||''
+      ];
+    });
     this._downloadCSV(`bob-movements-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
   },
   _exportStockCSV() {
@@ -3706,7 +3713,7 @@ const Pages = {
       const rows=[];
       franStores.forEach(store=>{
         const storeDisc=store.franchiseDiscount||0;
-        d.transactions.filter(t=>t.storeId===store.id&&(t.type==='in'||t.type==='transfer_in')&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
+        d.transactions.filter(t=>t.storeId===store.id&&Txn.isIn(t)&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
           const p=d.products.find(pr=>pr.id===t.productId);
           const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
           const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -3717,7 +3724,7 @@ const Pages = {
     };
     const storeData=franStores.map(store=>{
       const storeDisc=store.franchiseDiscount||0;
-      const lines=d.transactions.filter(t=>t.storeId===store.id&&(t.type==='in'||t.type==='transfer_in')&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
+      const lines=d.transactions.filter(t=>t.storeId===store.id&&Txn.isIn(t)&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
         const full=sell*t.qty;const discAmt=full*(prodDisc/100);
