@@ -35,7 +35,7 @@ const Sync = {
   _pushUrl: null,
   _pullUrl: null,
   _configUrl: null,
-  _pushLock: false,
+  _syncLock: false,  // Unified lock — serialises push and pull operations
   _retryCount: 0,
   _maxRetries: 3,
   _debounceTimer: null,
@@ -64,12 +64,13 @@ const Sync = {
   // ─── Config Management ───────────────────────────────────────────────
 
   /**
-   * Loads sync config from localStorage cache (push/pull URLs).
+   * Loads sync config from sessionStorage cache (push/pull URLs).
    * These URLs are the SAS-secured Logic App trigger endpoints.
+   * Stored in sessionStorage (not localStorage) so they are cleared on tab/browser close.
    */
   _loadConfig() {
     try {
-      const raw = localStorage.getItem('bob_sync_config');
+      const raw = sessionStorage.getItem('bob_sync_config');
       if (!raw) return false;
       const config = JSON.parse(raw);
       this._pushUrl = config.pushUrl || null;
@@ -87,7 +88,7 @@ const Sync = {
   /**
    * Fetches sync config from the remote AppConfig endpoint.
    * Looks for a 'sync_config' item and extracts pushUrl/pullUrl.
-   * Caches the result in localStorage for offline resilience.
+   * Caches the result in sessionStorage for the current session.
    * Returns true if config was successfully loaded.
    */
   async _fetchRemoteConfig() {
@@ -122,8 +123,8 @@ const Sync = {
         this._pushUrl = urls.pushUrl;
         this._pullUrl = urls.pullUrl;
         this._configUrl = this.CONFIG_URL;
-        // Cache in localStorage for offline use
-        localStorage.setItem('bob_sync_config', JSON.stringify({
+        // Cache in sessionStorage — SAS URLs must not persist across sessions (Tier 1 Fix #5)
+        sessionStorage.setItem('bob_sync_config', JSON.stringify({
           pushUrl: urls.pushUrl,
           pullUrl: urls.pullUrl,
           configUrl: this.CONFIG_URL
@@ -141,13 +142,13 @@ const Sync = {
   },
 
   /**
-   * Saves sync config to localStorage.
+   * Saves sync config to sessionStorage.
    * Called from the Cloud Sync settings UI.
    */
   saveConfig(pushUrl, pullUrl, configUrl) {
     const config = { pushUrl, pullUrl };
     if (configUrl) config.configUrl = configUrl;
-    localStorage.setItem('bob_sync_config', JSON.stringify(config));
+    sessionStorage.setItem('bob_sync_config', JSON.stringify(config));
     this._pushUrl = pushUrl;
     this._pullUrl = pullUrl;
     this._configUrl = configUrl || null;
@@ -158,8 +159,21 @@ const Sync = {
    * Returns current config for the settings UI.
    */
   getConfig() {
-    const raw = localStorage.getItem('bob_sync_config');
+    const raw = sessionStorage.getItem('bob_sync_config');
     return raw ? JSON.parse(raw) : null;
+  },
+
+  /**
+   * Clears sensitive sync data (SAS URLs) from sessionStorage.
+   * Called by Auth.logout() to ensure credentials don't linger.
+   * Non-sensitive data (device ID, last sync timestamp) stays in localStorage.
+   */
+  clearSensitiveData() {
+    sessionStorage.removeItem('bob_sync_config');
+    this._pushUrl = null;
+    this._pullUrl = null;
+    this._configUrl = null;
+    console.log('[Sync] Sensitive data cleared.');
   },
 
   /**
@@ -330,7 +344,9 @@ const Sync = {
    * expected by the push-v2 Logic App's Create Item action.
    */
   _toSharePoint(t) {
-    // Derive Timestamp as epoch ms from createdAt or current time
+    // Derive Timestamp as epoch ms from createdAt or current time.
+    // This is the BUSINESS EVENT TIME (when the transaction happened).
+    // SyncTimestamp (server arrival time) is set server-side by the Logic App — not sent from client.
     let ts = 0;
     if (typeof t.timestamp === 'number') {
       ts = t.timestamp;
@@ -363,6 +379,9 @@ const Sync = {
   /**
    * Maps a SharePoint list item (PascalCase) back to local camelCase format.
    * Used when pulling remote transactions.
+   * Note: SyncTimestamp is NOT mapped to local — it's used as the sync cursor only
+   * (tracked via lastSyncAt/watermark), not stored in Dexie.
+   * Timestamp (business event time) maps to createdAt for UI display.
    */
   _fromSharePoint(item) {
     const local = {
@@ -424,8 +443,8 @@ const Sync = {
    * they are marked _synced=true in local storage.
    */
   async push() {
-    if (this._pushLock) {
-      console.log('[Sync] Push already in progress, skipping.');
+    if (this._syncLock) {
+      console.log('[Sync] Sync already in progress, skipping push.');
       return;
     }
     if (!this._pushUrl) {
@@ -433,7 +452,7 @@ const Sync = {
       return;
     }
 
-    this._pushLock = true;
+    this._syncLock = true;
     this._showStatus('Syncing...', 'info', 0);
 
     try {
@@ -453,6 +472,10 @@ const Sync = {
         localStorage.removeItem('bob_sync_pending');
         return;
       }
+
+      // Capture exact IDs being sent BEFORE the async push — any transactions
+      // added during the fetch must NOT be marked as synced.
+      const batchIds = new Set(unsynced.map(t => t.id));
 
       // Map local camelCase to SharePoint PascalCase
       const spTransactions = unsynced.map(t => this._toSharePoint(t));
@@ -479,24 +502,67 @@ const Sync = {
 
       const result = await resp.json().catch(() => ({}));
 
-      // Mark pushed transactions as synced in local data
-      const pushedIds = new Set(unsynced.map(t => t.id));
-      data.transactions.forEach(t => {
-        if (pushedIds.has(t.id)) {
-          t._synced = true;
+      // ── Server acknowledgement verification (GPT Tier 1 review requirement) ──
+      // The Logic App returns: { status: "ok", processedCount: N, serverTimestamp }
+      // Verification rules:
+      //   status ok/success + processedCount === batchSize  → mark synced
+      //   status ok/success WITHOUT processedCount          → FAIL-SAFE, leave unsynced
+      //   status missing + processedCount === batchSize     → mark synced (fallback)
+      //   anything else (partial, ambiguous, missing)       → FAIL-SAFE, leave unsynced
+      //
+      // If the server can't prove full-batch success, we leave the batch unsynced
+      // and retry on the next cycle. Dedup on the server prevents duplicate inserts.
+
+      const serverStatus = (result.status || '').toLowerCase();
+      const serverCount = result.processedCount;
+      const batchSize = spTransactions.length;
+
+      let ackVerified = false;
+      if (serverStatus === 'ok' || serverStatus === 'success') {
+        if (serverCount !== undefined) {
+          // Server reported a count — must match batch size for full-batch confirmation
+          ackVerified = (Number(serverCount) === batchSize);
+          if (!ackVerified) {
+            console.warn(`[Sync] Partial push: server processed ${serverCount}/${batchSize}. Leaving batch unsynced for retry.`);
+          }
+        } else {
+          // No processedCount — ambiguous, leave unsynced for retry (GPT strict requirement)
+          console.warn('[Sync] Server returned ok but no processedCount — leaving batch unsynced for safety.');
+          ackVerified = false;
         }
-      });
-      DB.save(data);
+      } else if (serverCount !== undefined && Number(serverCount) === batchSize) {
+        // No explicit status but count matches — accept
+        ackVerified = true;
+      }
 
-      // Update last sync timestamp
-      this._lastSyncAt = Date.now();
-      localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
-      localStorage.removeItem('bob_sync_pending');
-      this._retryCount = 0;
+      if (ackVerified) {
+        // Re-read data in case it changed during the async push
+        const freshData = DB.get();
 
-      this._showStatus('Synced ✓', 'success');
-      this._notifyFollowers();
-      console.log(`[Sync] Push complete: ${spTransactions.length} transactions synced.`, result);
+        // Mark ONLY the batch we actually sent as synced
+        freshData.transactions.forEach(t => {
+          if (batchIds.has(t.id)) {
+            t._synced = true;
+          }
+        });
+        DB.save(freshData);
+
+        // Update last sync timestamp
+        this._lastSyncAt = Date.now();
+        localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
+        localStorage.removeItem('bob_sync_pending');
+        this._retryCount = 0;
+
+        this._showStatus('Synced ✓', 'success');
+        this._notifyFollowers();
+        console.log(`[Sync] Push complete: ${batchSize} transactions synced.`, result);
+      } else {
+        // Fail-safe: server response ambiguous or partial — leave unsynced, retry later
+        // Server-side dedup (by TransactionId) ensures replayed rows are harmless
+        console.warn('[Sync] Push response ambiguous — batch left unsynced for retry.', result);
+        this._showStatus('Sync uncertain — will verify on next cycle', 'warning');
+        localStorage.setItem('bob_sync_pending', 'true');
+      }
 
     } catch (err) {
       console.error('[Sync] Push error:', err);
@@ -504,18 +570,24 @@ const Sync = {
 
       if (this._retryCount <= this._maxRetries) {
         this._showStatus(`Sync failed, retrying (${this._retryCount}/${this._maxRetries})...`, 'warning');
-        setTimeout(() => {
-          this._pushLock = false;
+        const delay = 2000 * this._retryCount;
+        this._syncRetryTimer = setTimeout(() => {
+          this._syncLock = false;
+          this._syncRetryTimer = null;
           this.push();
-        }, 2000 * this._retryCount);  // exponential-ish backoff
-        return;
+        }, delay);
+        // Do NOT release lock here — it stays held until retry fires
+        this._skipLockRelease = true;
       } else {
         this._showStatus('Sync failed — will retry later', 'error');
         localStorage.setItem('bob_sync_pending', 'true');
         this._retryCount = 0;
       }
     } finally {
-      this._pushLock = false;
+      if (!this._skipLockRelease) {
+        this._syncLock = false;
+      }
+      this._skipLockRelease = false;
     }
   },
 
@@ -543,10 +615,19 @@ const Sync = {
    *   should be removed from the local database.
    */
   PULL_PAGE_SIZE: 1000,
+  PULL_LOOKBACK_MS: 10000,  // 10-second overlap margin — re-queries a small window to catch
+                             // rows that were mid-commit during the previous pull cycle.
+                             // Replayed rows are harmless: Dexie put() deduplicates by ID.
+                             // (Required by GPT as condition for final green flag.)
 
   async pull() {
     if (!this._pullUrl) return;
+    if (this._syncLock) {
+      console.log('[Sync] Sync already in progress, skipping pull.');
+      return;
+    }
 
+    this._syncLock = true;
     try {
       let skip = 0;
       let allItems = [];
@@ -554,12 +635,16 @@ const Sync = {
       let watermark = null;  // Snapshot upper bound — captured from first page
 
       // Page through results with snapshot-safe pagination (GPT review fix)
-      // First page captures serverTimestamp as watermark.
-      // All pages filter: since < Timestamp <= watermark
-      // Stable sort: Timestamp asc, TransactionId asc (enforced by Logic App)
+      // First page captures serverTimestamp as watermark (epoch ms, server-owned).
+      // All pages filter: SyncTimestamp gt (since - lookback) AND SyncTimestamp le watermark
+      // SyncTimestamp is set server-side at ingest (not client event time).
+      // Stable sort: SyncTimestamp asc, ID asc (SharePoint server ID tie-breaker)
+      // This prevents offline/backdated pushes from being permanently skipped.
+      // The lookback margin (10s) catches rows that were mid-commit during the last pull.
+      const safeSince = Math.max(0, this._lastSyncAt - this.PULL_LOOKBACK_MS);
       while (keepGoing) {
         const body = {
-          since: String(this._lastSyncAt),
+          since: String(safeSince),
           $top: this.PULL_PAGE_SIZE,
           $skip: skip
         };
@@ -607,6 +692,10 @@ const Sync = {
       const local = DB.get();
       const localIds = new Set((local.transactions || []).map(t => t.id));
 
+      // Diagnostic: count overlap/replay rows (items in the lookback window already known locally)
+      // This helps verify the lookback margin is working and can be tuned later.
+      let overlapCount = 0;
+
       // Separate tombstones from regular transactions
       const tombstones = [];
       const newTransactions = [];
@@ -620,14 +709,21 @@ const Sync = {
           continue;
         }
 
-        // Skip items we already have locally
-        if (localIds.has(spItem.TransactionId)) continue;
+        // Skip items we already have locally (includes lookback overlap rows)
+        if (localIds.has(spItem.TransactionId)) {
+          overlapCount++;
+          continue;
+        }
 
         // Skip items from this device (we already have them)
         if (spItem.DeviceId === this._deviceId) continue;
 
         const localTxn = this._fromSharePoint(spItem);
         newTransactions.push(localTxn);
+      }
+
+      if (overlapCount > 0) {
+        console.log(`[Sync] Lookback overlap: ${overlapCount} rows already known locally (deduped). Margin: ${this.PULL_LOOKBACK_MS}ms`);
       }
 
       let changed = false;
@@ -660,9 +756,11 @@ const Sync = {
       }
 
       // Only advance lastSyncAt AFTER all pages succeeded.
-      // Use watermark (server timestamp) if available, NOT Date.now().
-      // Using Date.now() would skip any transactions that arrived in SharePoint
-      // during the pull loop. (Gemini + GPT both flagged this.)
+      // Use watermark (server timestamp at pull start) if available, NOT Date.now().
+      // The watermark is the exact upper bound used by the query (SyncTimestamp le watermark).
+      // Any records that arrive during the pull loop have SyncTimestamp > watermark,
+      // so they'll be picked up in the next sync cycle. (Gemini + GPT both flagged this.)
+      // Pull filter uses "gt since" (not "ge") to avoid replaying boundary rows.
       if (watermark) {
         const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime();
         if (!isNaN(wmTs) && wmTs > 0) {
@@ -681,6 +779,8 @@ const Sync = {
     } catch (err) {
       console.error('[Sync] Pull error:', err);
       this._showStatus('Data may be stale \u2014 last sync failed', 'warning', 0);
+    } finally {
+      this._syncLock = false;
     }
   },
 
@@ -817,10 +917,10 @@ const Sync = {
    * All tabs load config, but only the leader starts push/pull/polling.
    */
   async init() {
-    // Try remote config first (self-configuring), fall back to localStorage cache
+    // Try remote config first (self-configuring), fall back to sessionStorage cache
     let hasConfig = await this._fetchRemoteConfig();
     if (!hasConfig) {
-      // Fall back to cached localStorage config (offline resilience)
+      // Fall back to cached sessionStorage config (within same session)
       hasConfig = this._loadConfig();
     }
     if (!hasConfig) {
@@ -875,7 +975,7 @@ const Sync = {
    * Used by the beforeunload guard in db.js.
    */
   isSyncing() {
-    return this._pushLock;
+    return this._syncLock;
   },
 
   /**
