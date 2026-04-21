@@ -364,13 +364,6 @@ tbody tr:last-child td { border-bottom: none; }
     <div class="page" id="page-sell-through"></div>
     <div class="page" id="page-reconciliation"></div>
     <div class="page" id="page-franchise-invoice"></div>
-    <div class="page" id="page-dashboard"></div>
-    <div class="page" id="page-reorder"></div>
-    <div class="page" id="page-audit-log"></div>
-    <div class="page" id="page-dead-stock"></div>
-    <div class="page" id="page-sell-through"></div>
-    <div class="page" id="page-reconciliation"></div>
-    <div class="page" id="page-franchise-invoice"></div>
     <div class="page" id="page-dir-settings"></div>
     <nav id="mobile-nav" class="mobile-nav"></nav>
   </div>
@@ -1147,7 +1140,7 @@ PHASE3_DISABLED */
       const u = DB.get().users.find(u=>u.username===username && u.password===hash);
       if (!u) return false;
       this._user = u;
-      // Fix #10: Store username + hash token  role/storeIds never trusted from sessionStorage
+      // Fix #10: Store username + hash token — role/storeIds never trusted from sessionStorage
       sessionStorage.setItem('bob_session_v4', JSON.stringify({ username: u.username, token: u.password }));
       return true;
     },
@@ -1156,7 +1149,7 @@ PHASE3_DISABLED */
     if (!s) return;
     try {
       const saved = JSON.parse(s);
-      // Fix #10: Re-fetch full user from DB  requires both username AND hash token match
+      // Fix #10: Re-fetch full user from DB — requires both username AND hash token match
       const username = saved.username || saved.name;
       const token = saved.token;
       if (!username || !token) { sessionStorage.removeItem('bob_session_v4'); return; }
@@ -1185,7 +1178,7 @@ PHASE3_DISABLED */
   isStoreLevel() { const r=this._user?.role; return r==='staff'||r==='store_manager'||r==='franchisee'; }
 };
 
-//    Transaction Classification (Tier 2 Fix #7)                                 
+// ── Transaction Classification (Tier 2 Fix #7) ──────────────────────────────
 const Txn = {
   classify(txn) {
     switch (txn.type) {
@@ -1208,7 +1201,7 @@ const Txn = {
 
 // ── Stock Calculations ───────────────────────────
 const Stock = {
-  // Fix #9: Materialised view cache  O(1) qty lookups
+  // Fix #9: Materialised view cache — O(1) qty lookups
   _qtyCache: {},  // { storeId: { productId: qty } }
 
   _buildCache() {
@@ -1223,13 +1216,16 @@ const Stock = {
   },
 
   _applyDelta(storeId, productId, type, qty) {
-    if (!this._qtyCache[storeId]) this._qtyCache[storeId] = {};
+    // Guard: only apply delta for active (stock-affecting) transaction types
     const txn = { type };
+    if (!Txn.isActive(txn)) return;
+    if (!this._qtyCache[storeId]) this._qtyCache[storeId] = {};
+    if (this._qtyCache[storeId][productId] === undefined) this._qtyCache[storeId][productId] = 0;
     const delta = Txn.isIn(txn) ? qty : -qty;
-    this._qtyCache[storeId][productId] = (this._qtyCache[storeId][productId] || 0) + delta;
+    this._qtyCache[storeId][productId] += delta;
   },
 
-  // Debug: compare cache vs full scan  call from console to verify integrity
+  // Debug: compare cache vs full scan — call from console to verify integrity
   _verifyCacheIntegrity() {
     const drifts = [];
     const d = DB.get();
@@ -1242,7 +1238,7 @@ const Stock = {
         if (cached !== scanned) drifts.push({ store: store.name, product: product.name, cached, scanned, diff: cached - scanned });
       });
     });
-    if (drifts.length === 0) { console.log('[Stock] Cache integrity OK  no drift'); return true; }
+    if (drifts.length === 0) { console.log('[Stock] Cache integrity OK — no drift'); return true; }
     console.warn('[Stock] Cache drift detected:', drifts);
     return false;
   },
@@ -1254,7 +1250,7 @@ const Stock = {
     return DB.get().products.filter(p=>p.active).map(p=>({ product:p, qty:this.qty(p.id, storeId) }));
   },
   threshold(productId, storeId) {
-    // Fix #8: Lookup precedence  exact store match � global default (storeId=null) � null
+    // Fix #8: Lookup precedence — exact store match → global default (storeId=null) → null
     const d = DB.get().thresholds;
     return d.find(t=>t.productId===productId && t.storeId===storeId)
         || d.find(t=>t.productId===productId && (t.storeId===null || t.storeId==='*'))
@@ -2543,7 +2539,7 @@ const Pages = {
       const trendMetric=this._comp24Metric||'qty';
       const getVal=(txns)=>trendMetric==='val'?txns.reduce((b,t)=>{const p=dI.products.find(pr=>pr.id===t.productId);return p?.price?b+t.qty*p.price:b;},0):txns.reduce((b,t)=>b+t.qty,0);
       const mIns=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&Txn.isIn(t)&&t.date>=m.from&&t.date<=m.to)),0));
-      const mOuts=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&Txn.isActive(t)&&(t.type==='out'||t.type==='return_in')&&t.date>=m.from&&t.date<=m.to)),0));
+      const mOuts=months.map(m=>stores.reduce((a,s)=>a+getVal(dI.transactions.filter(t=>t.storeId===s.id&&Txn.isOut(t)&&t.date>=m.from&&t.date<=m.to)),0));
       const yFmt=trendMetric==='val'?{ticks:{callback:v=>'$'+v.toLocaleString()}}:{beginAtZero:true};
       const ds=[];
       if(toggle==='in'||toggle==='both') ds.push({label:'Stock IN',data:mIns,backgroundColor:'#86efac',borderRadius:3});
@@ -2892,7 +2888,7 @@ const Pages = {
     if(search) prods=prods.filter(p=>p.name.toLowerCase().includes(search)||p.id.toLowerCase().includes(search));
     _th('th-table').innerHTML=`<table><thead><tr><th>Product</th><th>Category</th><th>Current Stock</th><th>Min Qty</th><th>Optimum Qty</th><th>Lead Days</th><th></th></tr></thead><tbody>${prods.map(p=>{
       const thr=Stock.threshold(p.id,storeId); const qty=Stock.qty(p.id,storeId);
-      return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty||''}" min="0" placeholder="Not set" style="max-width:100px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays||''}" min="0" placeholder="—" style="max-width:80px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
+      return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td><input type="number" class="form-input" value="${thr?.minQty||''}" min="0" placeholder="Not set" style="max-width:80px" id="thr-min-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.optimumQty||''}" min="0" placeholder="—" style="max-width:80px" id="thr-opt-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td><input type="number" class="form-input" value="${thr?.leadDays||''}" min="0" placeholder="—" style="max-width:70px" id="thr-lead-${p.id}" onchange="Pages._saveThr('${p.id}','${storeId}')"></td><td>${thr?`<button class="btn btn-sm btn-danger" onclick="Pages._removeThr('${p.id}','${storeId}')">Clear</button>`:''}</td></tr>`;
     }).join('')}</tbody></table>`;
   },
   _saveThr(productId,storeId){const minQty=parseInt(document.getElementById('thr-min-'+productId)?.value, 10)||null;const optimumQty=parseInt(document.getElementById('thr-opt-'+productId)?.value, 10)||null;const leadDays=parseInt(document.getElementById('thr-lead-'+productId)?.value, 10)||null;if(!minQty||minQty<0){UI.toast('Min quantity must be a positive number','error');return;}if(optimumQty!==null&&optimumQty<minQty){UI.toast('Optimum must be >= min quantity','error');return;}if(leadDays!==null&&leadDays<0){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].optimumQty=optimumQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,optimumQty,leadDays});DB.commit();UI.toast('Saved','success');},
@@ -3339,7 +3335,7 @@ const Pages = {
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
-    const wastageThisMonth=isDir?d.transactions.filter(t=>t.type==='out'&&t.date>=monthStart&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage')).reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0):0;
+    const wastageThisMonth=isDir?d.transactions.filter(t=>Txn.isOut(t)&&t.date>=monthStart&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage')).reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0):0;
     // Reorder count (director)
     const reorderCount=isDir?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)).reduce((total,s)=>{
       return total+d.products.filter(p=>p.active).filter(p=>{const thr=Stock.threshold(p.id,s.id);return thr&&Stock.qty(p.id,s.id)<=thr.minQty;}).length;
@@ -3700,7 +3696,7 @@ const Pages = {
       const rows=[];
       franStores.forEach(store=>{
         const storeDisc=store.franchiseDiscount||0;
-        d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
+        d.transactions.filter(t=>t.storeId===store.id&&(t.type==='in'||t.type==='transfer_in')&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
           const p=d.products.find(pr=>pr.id===t.productId);
           const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
           const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -3711,460 +3707,7 @@ const Pages = {
     };
     const storeData=franStores.map(store=>{
       const storeDisc=store.franchiseDiscount||0;
-      const lines=d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
-        const p=d.products.find(pr=>pr.id===t.productId);
-        const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
-        const full=sell*t.qty;const discAmt=full*(prodDisc/100);
-        return{product:p,date:t.date,qty:t.qty,sell,prodDisc,full,discAmt,owed:full-discAmt};
-      });
-      const totalFull=lines.reduce((s,l)=>s+l.full,0);
-      const totalDisc=lines.reduce((s,l)=>s+l.discAmt,0);
-      const totalOwed=lines.reduce((s,l)=>s+l.owed,0);
-      return{store,lines,totalFull,totalDisc,totalOwed,storeDisc};
-    }).filter(sd=>sd.lines.length>0);
-    const grandFull=storeData.reduce((s,sd)=>s+sd.totalFull,0);
-    const grandDisc=storeData.reduce((s,sd)=>s+sd.totalDisc,0);
-    const grandOwed=storeData.reduce((s,sd)=>s+sd.totalOwed,0);
-    el.innerHTML=`
-      <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-        <div><div class="page-title">Franchise Invoice Report</div><div class="page-sub">Stock received by franchise stores with discount applied</div></div>
-        <button class="btn btn-secondary" onclick="(${exportFI.toString()})()">⬇ Export CSV</button>
-      </div>
-      <div class="filter-row" style="margin-bottom:20px;align-items:flex-end">
-        <div><label class="form-label">From</label><input type="date" class="form-input" id="fi-from" value="${fromDate}" onchange="Pages.franchiseInvoice()" style="max-width:160px"></div>
-        <div><label class="form-label">To</label><input type="date" class="form-input" id="fi-to" value="${toDate}" onchange="Pages.franchiseInvoice()" style="max-width:160px"></div>
-      </div>
-      <div class="grid-4" style="margin-bottom:20px">
-        <div class="stat-card"><div class="stat-val">${storeData.length}</div><div class="stat-lbl">Franchise Stores Active</div></div>
-        <div class="stat-card"><div class="stat-val">$${grandFull.toFixed(2)}</div><div class="stat-lbl">Total Retail Value</div></div>
-        <div class="stat-card"><div class="stat-val text-green">$${grandDisc.toFixed(2)}</div><div class="stat-lbl">Total Discount Given</div></div>
-        <div class="stat-card"><div class="stat-val">$${grandOwed.toFixed(2)}</div><div class="stat-lbl">Total Amount Owed</div></div>
-      </div>
-      ${!storeData.length?'<div class="card card-body empty-state"><p>No franchise stock movements found in this period.</p></div>':
-      storeData.map(sd=>`
-        <div class="card" style="margin-bottom:16px">
-          <div style="padding:12px 16px;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <div style="font-weight:700;font-size:1rem">${sd.store.name} <span style="font-size:.75rem;color:#6b7280;font-weight:400">— Store discount: ${sd.storeDisc}%</span></div>
-            <div style="display:flex;gap:16px;font-size:.825rem">
-              <span>Retail: <strong>$${sd.totalFull.toFixed(2)}</strong></span>
-              <span style="color:#16a34a">Discount: <strong>-$${sd.totalDisc.toFixed(2)}</strong></span>
-              <span style="font-weight:700">Owed: $${sd.totalOwed.toFixed(2)}</span>
-            </div>
-          </div>
-          <div style="overflow-x:auto"><table class="data-table">
-            <thead><tr><th>Date</th><th>Product</th><th>Qty</th><th>Sell Price</th><th>Disc %</th><th>Full Value</th><th>Discount</th><th>Amount Owed</th></tr></thead>
-            <tbody>${sd.lines.map(l=>`<tr>
-              <td>${l.date}</td>
-              <td><strong>${l.product?.name||'—'}</strong></td>
-              <td>${l.qty}</td>
-              <td>$${l.sell.toFixed(2)}</td>
-              <td>${l.prodDisc}%</td>
-              <td>$${l.full.toFixed(2)}</td>
-              <td style="color:#16a34a">-$${l.discAmt.toFixed(2)}</td>
-              <td><strong>$${l.owed.toFixed(2)}</strong></td>
-            </tr>`).join('')}
-            <tr style="background:#f9fafb;font-weight:700">
-              <td colspan="5" style="text-align:right;color:#6b7280">TOTAL</td>
-              <td>$${sd.totalFull.toFixed(2)}</td>
-              <td style="color:#16a34a">-$${sd.totalDisc.toFixed(2)}</td>
-              <td>$${sd.totalOwed.toFixed(2)}</td>
-            </tr></tbody>
-          </table></div>
-        </div>`).join('')}`;
-  },
-
-  // ── Dashboard (role-aware) ──
-  dashboard() {
-    const el=document.getElementById('page-dashboard');if(!el)return;
-    const d=DB.get();const u=Auth.user();const role=u?.role||'';
-    const isDir=Auth.is('director');const isHO=Auth.isHO();
-    const isFran=Auth.isFranchisee();const isSM=role==='store_manager';const isStaff=role==='staff';
-    const today=new Date().toISOString().slice(0,10);
-    const greeting=()=>{const h=new Date().getHours();return h<12?'Good morning':h<17?'Good afternoon':'Good evening';};
-    // Scope stores
-    const myStoreIds=isHO?null:Auth.storeIds();
-    const visibleStores=isHO
-      ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
-      :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    // Stats
-    const alerts=Stock.alerts(myStoreIds);
-    const todayTxns=d.transactions.filter(t=>t.date===today&&Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId)));
-    const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
-    // Wastage this month (director)
-    const monthStart=today.slice(0,7)+'-01';
-    const wastageThisMonth=isDir?d.transactions.filter(t=>t.type==='out'&&t.date>=monthStart&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage')).reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0):0;
-    // Reorder count (director)
-    const reorderCount=isDir?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)).reduce((total,s)=>{
-      return total+d.products.filter(p=>p.active).filter(p=>{const thr=Stock.threshold(p.id,s.id);return thr&&Stock.qty(p.id,s.id)<=thr.minQty;}).length;
-    },0):0;
-    // Quick actions by role
-    const quickActions=[];
-    quickActions.push(`<button class="btn btn-primary" onclick="navigateTo('log-movement')">➕ Log Movement</button>`);
-    if(!isStaff)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('stock-take')">📋 Stock Take</button>`);
-    if(isHO||isFran||isSM)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">🔔 Alerts</button>`);
-    if(isDir)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('reorder')">📦 Reorder List</button>`);
-    // Recent movements (last 5 in scope)
-    const recentTxns=d.transactions.filter(t=>Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
-    const txnBadge=t=>t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>':'<span class="badge badge-red">▼ OUT</span>';
-    // Top alerts
-    const topAlerts=alerts.slice(0,5);
-    el.innerHTML=`
-      <div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-sub">Welcome back, ${u?.name||'User'} · ${new Date().toLocaleDateString('en-AU',{weekday:'long',day:'numeric',month:'long'})}</div></div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:24px">${quickActions.join('')}</div>
-      <div class="grid-4" style="margin-bottom:24px">
-        ${(isHO||isFran)?`<div class="stat-card"><div class="stat-val">${stockVal.toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">${isHO?'Total Stock Value':'My Stock Value'}</div></div>`:''}
-        <div class="stat-card"><div class="stat-val ${alerts.length?'text-red':''}">${alerts.length}</div><div class="stat-lbl">Low Stock Alerts</div></div>
-        <div class="stat-card"><div class="stat-val">${todayTxns.length}</div><div class="stat-lbl">Movements Today</div></div>
-        ${isDir?`<div class="stat-card"><div class="stat-val ${reorderCount?'text-amber':''}">${reorderCount}</div><div class="stat-lbl">Products to Reorder</div></div>`:
-          isFran||isSM?`<div class="stat-card"><div class="stat-val">${visibleStores.length}</div><div class="stat-lbl">My Stores</div></div>`:
-          `<div class="stat-card"><div class="stat-val">${d.products.filter(p=>p.active).length}</div><div class="stat-lbl">Active Products</div></div>`}
-      </div>
-      ${isDir?`<div class="grid-4" style="margin-bottom:24px">
-        <div class="stat-card"><div class="stat-val">$${Stock.totalValue('head_office').toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">HO Warehouse Value</div></div>
-        <div class="stat-card"><div class="stat-val text-red">$${wastageThisMonth.toFixed(2)}</div><div class="stat-lbl">Wastage This Month</div></div>
-        <div class="stat-card"><div class="stat-val">${d.stores.filter(s=>s.active&&s.isFranchise&&!s.isFranchiseOffice).length}</div><div class="stat-lbl">Franchise Stores</div></div>
-        <div class="stat-card"><div class="stat-val">${(d.deliveries||[]).length}</div><div class="stat-lbl">Deliveries Recorded</div></div>
-      </div>`:''}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
-        <div class="card card-body">
-          <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Recent Movements</div>
-          ${recentTxns.length?`<div class="tbl-wrap"><table style="width:100%;font-size:.8rem"><tbody>
-            ${recentTxns.map(t=>`<tr style="border-bottom:1px solid #f3f4f6">
-              <td style="padding:6px 4px">${txnBadge(t)}</td>
-              <td style="padding:6px 4px"><strong>${UI.productName(t.productId)}</strong></td>
-              <td style="padding:6px 4px;color:#6b7280">${t.qty} units</td>
-              <td style="padding:6px 4px;color:#9ca3af;font-size:.75rem">${t.date}</td>
-            </tr>`).join('')}
-          </tbody></table></div>`:'<div style="color:#9ca3af;font-size:.825rem">No movements yet.</div>'}
-        </div>
-        <div class="card card-body">
-          <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Top Alerts ${alerts.length>5?`<span style="color:#6b7280;font-weight:400;font-size:.75rem">(showing 5 of ${alerts.length})</span>`:''}</div>
-          ${topAlerts.length?topAlerts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f3f4f6">
-            <span>${a.critical?'🚨':'⚠️'}</span>
-            <div style="flex:1;min-width:0"><div style="font-size:.8rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.product.name}</div><div style="font-size:.75rem;color:#6b7280">${a.store.name} · ${a.qty} in stock</div></div>
-            ${UI.stockBadge(a.qty,a.minQty)}
-          </div>`).join(''):'<div style="color:#9ca3af;font-size:.825rem">✓ All stock levels healthy.</div>'}
-          ${alerts.length?`<div style="margin-top:8px"><button class="btn btn-sm btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">View all ${alerts.length} alerts →</button></div>`:''}
-        </div>
-      </div>`;
-  },
-
-  // ── Reorder List (Director only) ──
-  reorderList() {
-    if(!Auth.is('director')){navigateTo('dashboard');return;}
-    const d=DB.get();const el=document.getElementById('page-reorder');if(!el)return;
-    const stores=d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
-    const items=[];
-    d.products.filter(p=>p.active).forEach(p=>{
-      stores.forEach(s=>{
-        const thr=Stock.threshold(p.id,s.id);if(!thr)return;
-        const qty=Stock.qty(p.id,s.id);
-        if(qty<=thr.minQty){
-          const reorderQty=Math.max(thr.minQty*2-qty,thr.minQty);
-          items.push({product:p,store:s,currentQty:qty,minQty:thr.minQty,reorderQty,leadDays:p.leadDays||thr.leadDays||null,supplier:p.supplierName||'',contact:p.supplierContact||''});
-        }
-      });
-    });
-    // Group by supplier
-    const bySupplier={};
-    items.forEach(it=>{const k=it.supplier||'No Supplier';if(!bySupplier[k])bySupplier[k]=[];bySupplier[k].push(it);});
-    const exportReorder=()=>{
-      const headers=['Supplier','Contact','Product','Store','Current Qty','Min Qty','Reorder Qty','Lead Days'];
-      const rows=items.map(it=>[it.supplier||'—',it.contact||'—',it.product.name,it.store.name,it.currentQty,it.minQty,it.reorderQty,it.leadDays||'—']);
-      Pages._downloadCSV(`bob-reorder-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
-    };
-    el.innerHTML=`
-      <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-        <div><div class="page-title">Reorder List</div><div class="page-sub">Products at or below minimum threshold — suggested order quantities</div></div>
-        <button class="btn btn-secondary" onclick="(${exportReorder.toString()})()">⬇ Export CSV</button>
-      </div>
-      <div class="grid-4" style="margin-bottom:20px">
-        <div class="stat-card"><div class="stat-val ${items.length?'text-amber':''}">${items.length}</div><div class="stat-lbl">Items to Reorder</div></div>
-        <div class="stat-card"><div class="stat-val">${Object.keys(bySupplier).length}</div><div class="stat-lbl">Suppliers</div></div>
-        <div class="stat-card"><div class="stat-val">${items.filter(i=>i.currentQty===0).length}</div><div class="stat-lbl">Out of Stock</div></div>
-        <div class="stat-card"><div class="stat-val">${items.reduce((s,i)=>s+i.reorderQty,0)}</div><div class="stat-lbl">Total Units to Order</div></div>
-      </div>
-      ${!items.length?'<div class="card card-body empty-state"><p>✓ All products are above minimum thresholds. Nothing to reorder.</p></div>':
-      Object.entries(bySupplier).sort((a,b)=>a[0].localeCompare(b[0])).map(([sup,sitems])=>`
-        <div class="card" style="margin-bottom:16px">
-          <div style="padding:12px 16px;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center">
-            <div style="font-weight:700">🚚 ${sup}</div>
-            ${sitems[0].contact?`<div style="font-size:.8rem;color:#6b7280">${sitems[0].contact}</div>`:''}
-          </div>
-          <div class="tbl-wrap"><table class="data-table">
-            <thead><tr><th>Product</th><th>Store</th><th>Current</th><th>Min</th><th>Reorder Qty</th><th>Lead Days</th></tr></thead>
-            <tbody>${sitems.map(it=>`<tr>
-              <td><strong>${it.product.name}</strong></td>
-              <td>${it.store.name}</td>
-              <td><strong class="${it.currentQty===0?'text-red':'text-amber'}">${it.currentQty}</strong></td>
-              <td>${it.minQty}</td>
-              <td><strong>${it.reorderQty}</strong></td>
-              <td>${it.leadDays?it.leadDays+' days':'—'}</td>
-            </tr>`).join('')}</tbody>
-          </table></div>
-        </div>`).join('')}`;
-  },
-
-  // ── Audit Log (Director only) ──
-  auditLog() {
-    if(!Auth.is('director')){navigateTo('dashboard');return;}
-    const d=DB.get();const el=document.getElementById('page-audit-log');if(!el)return;
-    const deletedTxns=(d.deletedTransactions||[]).slice().sort((a,b)=>b._deletedAt.localeCompare(a._deletedAt));
-    const storeFilter=document.getElementById('audit-store-filter')?.value||'';
-    const filtered=storeFilter?deletedTxns.filter(t=>t.storeId===storeFilter):deletedTxns;
-    const allStores=d.stores.filter(s=>s.active||(d.deletedTransactions||[]).some(t=>t.storeId===s.id));
-    el.innerHTML=`
-      <div class="page-header"><div><div class="page-title">Audit Log</div><div class="page-sub">All deleted movements with deletion reason and author</div></div></div>
-      <div class="filter-row" style="margin-bottom:16px">
-        <select class="form-select" id="audit-store-filter" style="max-width:220px" onchange="Pages.auditLog()">
-          <option value="">All Stores (${deletedTxns.length} records)</option>
-          ${d.stores.map(s=>{const cnt=deletedTxns.filter(t=>t.storeId===s.id).length;return cnt?`<option value="${s.id}"${storeFilter===s.id?' selected':''}>${s.name} (${cnt})</option>`:''}).join('')}
-        </select>
-        <span style="color:#6b7280;font-size:.8rem;align-self:center">${filtered.length} deleted movement${filtered.length!==1?'s':''}</span>
-      </div>
-      ${!filtered.length?'<div class="card card-body empty-state"><p>No deleted movements on record.</p></div>':
-      `<div class="tbl-wrap card"><table class="data-table">
-        <thead><tr><th>Deleted At</th><th>Deleted By</th><th>Reason</th><th>Original Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>Staff</th></tr></thead>
-        <tbody>${filtered.map(t=>{
-          const store=d.stores.find(s=>s.id===t.storeId);
-          const typeLabel=t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>':'<span class="badge badge-red">▼ OUT</span>';
-          return`<tr>
-            <td style="white-space:nowrap;font-size:.8rem">${new Date(t._deletedAt).toLocaleString('en-AU',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
-            <td><strong>${t._deletedBy||'—'}</strong></td>
-            <td><span style="color:#dc2626;font-size:.8rem">${t._deleteReason||'—'}</span></td>
-            <td>${t.date}</td>
-            <td style="font-size:.8rem">${store?.name||t.storeId}</td>
-            <td><strong>${UI.productName(t.productId)}</strong></td>
-            <td>${typeLabel}</td>
-            <td>${t.qty}</td>
-            <td style="color:#6b7280;font-size:.8rem">${t.staffName||'—'}</td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table></div>`}`;
-  },
-
-  // ── Dead Stock / Stock Aging ──
-  deadStock() {
-    const d=DB.get();const el=document.getElementById('page-dead-stock');if(!el)return;
-    const isHO=Auth.isHO();const isMgmt=Auth.isMgmt();
-    const myStoreIds=isHO?null:Auth.storeIds();
-    const visibleStores=isHO
-      ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
-      :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const days=parseInt(document.getElementById('ds-days')?.value, 10)||30;
-    const storeFilter=document.getElementById('ds-store-filter')?.value||'';
-    const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
-    const cutoffStr=cutoff.toISOString().slice(0,10);
-    const filterStores=storeFilter?visibleStores.filter(s=>s.id===storeFilter):visibleStores;
-    const results=[];
-    d.products.filter(p=>p.active).forEach(p=>{
-      filterStores.forEach(s=>{
-        const qty=Stock.qty(p.id,s.id);if(qty<=0)return;
-        const lastOut=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isOut(t)).sort((a,b)=>b.date.localeCompare(a.date))[0];
-        const lastOutDate=lastOut?.date||null;
-        if(!lastOutDate||lastOutDate<cutoffStr){
-          const daysSince=lastOutDate?Math.floor((new Date()-new Date(lastOutDate))/86400000):null;
-          results.push({product:p,store:s,qty,lastOutDate,daysSince});
-        }
-      });
-    });
-    results.sort((a,b)=>(b.daysSince??99999)-(a.daysSince??99999));
-    const totalValue=results.reduce((s,r)=>(r.product.price||0)*r.qty+s,0);
-    el.innerHTML=`
-      <div class="page-header"><div><div class="page-title">Dead Stock / Aging</div><div class="page-sub">Products with stock on hand but no outgoing movement in the selected period</div></div></div>
-      <div class="filter-row" style="margin-bottom:16px">
-        <select class="form-select" id="ds-days" style="max-width:150px" onchange="Pages.deadStock()">
-          <option value="30" ${days===30?'selected':''}>Last 30 days</option>
-          <option value="60" ${days===60?'selected':''}>Last 60 days</option>
-          <option value="90" ${days===90?'selected':''}>Last 90 days</option>
-        </select>
-        ${visibleStores.length>1?`<select class="form-select" id="ds-store-filter" style="max-width:220px" onchange="Pages.deadStock()">
-          <option value="">All Stores</option>
-          ${visibleStores.map(s=>`<option value="${s.id}"${storeFilter===s.id?' selected':''}>${s.name}</option>`).join('')}
-        </select>`:'<input type="hidden" id="ds-store-filter" value="">'}
-      </div>
-      <div class="grid-4" style="margin-bottom:20px">
-        <div class="stat-card"><div class="stat-val ${results.length?'text-amber':''}">${results.length}</div><div class="stat-lbl">Dead Stock Lines</div></div>
-        <div class="stat-card"><div class="stat-val">${results.reduce((s,r)=>s+r.qty,0)}</div><div class="stat-lbl">Total Units Stagnant</div></div>
-        <div class="stat-card"><div class="stat-val text-red">$${totalValue.toFixed(2)}</div><div class="stat-lbl">Est. Retail Value Tied Up</div></div>
-        <div class="stat-card"><div class="stat-val">${[...new Set(results.map(r=>r.product.id))].length}</div><div class="stat-lbl">Products Affected</div></div>
-      </div>
-      ${!results.length?'<div class="card card-body empty-state"><p>✓ All stocked products have had recent outgoing movements.</p></div>':
-      `<div style="overflow-x:auto"><table class="data-table">
-        <thead><tr><th>Product</th><th>Store</th><th>Qty on Hand</th><th>Est. Value</th><th>Last OUT Date</th><th>Days Stagnant</th></tr></thead>
-        <tbody>${results.map(r=>{
-          const val=(r.product.price||0)*r.qty;
-          const severity=r.daysSince===null?'color:#6b7280':r.daysSince>90?'color:#dc2626;font-weight:700':r.daysSince>60?'color:#f59e0b;font-weight:600':'color:#6b7280';
-          return`<tr>
-            <td><strong>${r.product.name}</strong></td>
-            <td>${r.store.name}</td>
-            <td><strong>${r.qty}</strong></td>
-            <td>$${val.toFixed(2)}</td>
-            <td>${r.lastOutDate||'<span style="color:#9ca3af">Never sold</span>'}</td>
-            <td><span style="${severity}">${r.daysSince!==null?r.daysSince+' days':'Never'}</span></td>
-          </tr>`;}).join('')}
-        </tbody>
-      </table></div>`}`;
-  },
-
-  // ── Sell-Through Rate ──
-  sellThrough() {
-    const d=DB.get();const el=document.getElementById('page-sell-through');if(!el)return;
-    const isHO=Auth.isHO();
-    const myStoreIds=isHO?null:Auth.storeIds();
-    const visibleStores=isHO
-      ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
-      :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const days=parseInt(document.getElementById('str-days')?.value, 10)||30;
-    const storeFilter=document.getElementById('str-store')?.value||'';
-    const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
-    const cutoffStr=cutoff.toISOString().slice(0,10);
-    const filterStores=storeFilter?visibleStores.filter(s=>s.id===storeFilter):visibleStores;
-    const results=[];
-    d.products.filter(p=>p.active).forEach(p=>{
-      let totalIn=0,totalOut=0;
-      filterStores.forEach(s=>{
-        totalIn+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isIn(t)&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
-        totalOut+=d.transactions.filter(t=>t.productId===p.id&&t.storeId===s.id&&Txn.isOut(t)&&t.date>=cutoffStr).reduce((a,t)=>a+t.qty,0);
-      });
-      if(totalIn>0||totalOut>0)results.push({product:p,inQty:totalIn,outQty:totalOut,rate:totalIn>0?(totalOut/totalIn*100):null});
-    });
-    results.sort((a,b)=>(b.rate??-1)-(a.rate??-1));
-    const withRate=results.filter(r=>r.rate!==null);
-    const avgRate=withRate.length?withRate.reduce((s,r)=>s+r.rate,0)/withRate.length:null;
-    el.innerHTML=`
-      <div class="page-header"><div><div class="page-title">Sell-Through Rate</div><div class="page-sub">% of received stock that has been sold in the selected period</div></div></div>
-      <div class="filter-row" style="margin-bottom:16px">
-        <select class="form-select" id="str-days" style="max-width:150px" onchange="Pages.sellThrough()">
-          <option value="30" ${days===30?'selected':''}>Last 30 days</option>
-          <option value="60" ${days===60?'selected':''}>Last 60 days</option>
-          <option value="90" ${days===90?'selected':''}>Last 90 days</option>
-        </select>
-        ${visibleStores.length>1?`<select class="form-select" id="str-store" style="max-width:220px" onchange="Pages.sellThrough()">
-          <option value="">All Stores</option>
-          ${visibleStores.map(s=>`<option value="${s.id}"${storeFilter===s.id?' selected':''}>${s.name}</option>`).join('')}
-        </select>`:'<input type="hidden" id="str-store" value="">'}
-      </div>
-      <div class="grid-4" style="margin-bottom:20px">
-        <div class="stat-card"><div class="stat-val">${results.length}</div><div class="stat-lbl">Products with Activity</div></div>
-        <div class="stat-card"><div class="stat-val">${results.reduce((s,r)=>s+r.inQty,0)}</div><div class="stat-lbl">Total Units Received</div></div>
-        <div class="stat-card"><div class="stat-val">${results.reduce((s,r)=>s+r.outQty,0)}</div><div class="stat-lbl">Total Units Sold</div></div>
-        <div class="stat-card"><div class="stat-val ${avgRate!==null?(avgRate>=70?'text-green':avgRate>=40?'text-amber':'text-red'):''}">${avgRate!==null?avgRate.toFixed(1)+'%':'—'}</div><div class="stat-lbl">Avg Sell-Through</div></div>
-      </div>
-      ${!results.length?'<div class="card card-body empty-state"><p>No stock movements found in this period.</p></div>':
-      `<div style="overflow-x:auto"><table class="data-table">
-        <thead><tr><th>Product</th><th>In (Received)</th><th>Out (Sold)</th><th>Sell-Through %</th><th>Performance</th></tr></thead>
-        <tbody>${results.map(r=>{
-          const pct=r.rate;const bar=pct!==null?Math.min(Math.round(pct),100):0;
-          const color=pct===null?'#d1d5db':pct>=70?'#16a34a':pct>=40?'#f59e0b':'#dc2626';
-          const label=pct===null?'<span style="color:#9ca3af">No stock in</span>':pct>=70?'<span style="color:#16a34a">Strong</span>':pct>=40?'<span style="color:#f59e0b">Moderate</span>':'<span style="color:#dc2626">Slow</span>';
-          return`<tr>
-            <td><strong>${r.product.name}</strong></td>
-            <td>${r.inQty}</td>
-            <td>${r.outQty}</td>
-            <td><strong>${pct!==null?pct.toFixed(1)+'%':'—'}</strong></td>
-            <td style="min-width:140px">${label}${pct!==null?`<div style="background:#f3f4f6;border-radius:4px;height:6px;margin-top:4px"><div style="background:${color};height:6px;border-radius:4px;width:${bar}%"></div></div>`:''}</td>
-          </tr>`;}).join('')}
-        </tbody>
-      </table></div>`}`;
-  },
-
-  // ── Stock Reconciliation ──
-  stockReconciliation() {
-    const d=DB.get();const el=document.getElementById('page-reconciliation');if(!el)return;
-    const isHO=Auth.isHO();
-    const visibleStores=isHO
-      ?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice))
-      :d.stores.filter(s=>s.active&&Auth.storeIds().includes(s.id));
-    const storeFilter=document.getElementById('recon-store')?.value||'';
-    const showAll=document.getElementById('recon-show-all')?.checked;
-    const filterStores=storeFilter?visibleStores.filter(s=>s.id===storeFilter):visibleStores;
-    // Get the most recent stock take per store
-    const latestTakeByStore={};
-    d.stockTakes.forEach(take=>{
-      if(!filterStores.find(s=>s.id===take.storeId))return;
-      if(!latestTakeByStore[take.storeId]||take.date>latestTakeByStore[take.storeId].date)
-        latestTakeByStore[take.storeId]=take;
-    });
-    const results=[];
-    Object.values(latestTakeByStore).forEach(take=>{
-      const store=visibleStores.find(s=>s.id===take.storeId);if(!store)return;
-      take.items.forEach(item=>{
-        const product=d.products.find(p=>p.id===item.productId);if(!product||!product.active)return;
-        const netAfter=d.transactions.filter(t=>t.productId===item.productId&&t.storeId===take.storeId&&t.date>take.date)
-          .reduce((s,t)=>Txn.isIn(t)?s+t.qty:s-t.qty,0);
-        const expected=item.physicalCount+netAfter;
-        const actual=Stock.qty(item.productId,take.storeId);
-        const discrepancy=actual-expected;
-        if(showAll||discrepancy!==0)results.push({product,store,takeDate:take.date,physicalCount:item.physicalCount,netAfter,expected,actual,discrepancy});
-      });
-    });
-    results.sort((a,b)=>Math.abs(b.discrepancy)-Math.abs(a.discrepancy));
-    const discrepCount=results.filter(r=>r.discrepancy!==0).length;
-    el.innerHTML=`
-      <div class="page-header"><div><div class="page-title">Stock Reconciliation</div><div class="page-sub">Expected stock (from last stock take + movements) vs actual system stock</div></div></div>
-      <div class="filter-row" style="margin-bottom:16px">
-        ${visibleStores.length>1?`<select class="form-select" id="recon-store" style="max-width:220px" onchange="Pages.stockReconciliation()">
-          <option value="">All Stores</option>
-          ${visibleStores.map(s=>`<option value="${s.id}"${storeFilter===s.id?' selected':''}>${s.name}</option>`).join('')}
-        </select>`:'<input type="hidden" id="recon-store" value="">'}
-        <label style="display:flex;align-items:center;gap:6px;font-size:.825rem;cursor:pointer">
-          <input type="checkbox" id="recon-show-all" ${showAll?'checked':''} onchange="Pages.stockReconciliation()">Show matched lines too
-        </label>
-      </div>
-      ${!Object.keys(latestTakeByStore).length?'<div class="card card-body empty-state"><p>No stock takes found. Complete a stock take first to enable reconciliation.</p></div>':
-      `<div class="grid-4" style="margin-bottom:20px">
-        <div class="stat-card"><div class="stat-val">${Object.keys(latestTakeByStore).length}</div><div class="stat-lbl">Stores with Stock Takes</div></div>
-        <div class="stat-card"><div class="stat-val">${results.length}</div><div class="stat-lbl">Lines Checked</div></div>
-        <div class="stat-card"><div class="stat-val ${discrepCount?'text-red':''}">${discrepCount}</div><div class="stat-lbl">Discrepancies</div></div>
-        <div class="stat-card"><div class="stat-val text-green">${results.length-discrepCount}</div><div class="stat-lbl">Matched Lines</div></div>
-      </div>
-      ${!results.length?'<div class="card card-body empty-state"><p>✓ No discrepancies found.</p></div>':
-      `<div style="overflow-x:auto"><table class="data-table">
-        <thead><tr><th>Store</th><th>Product</th><th>Last Take</th><th>Counted</th><th>Movements Since</th><th>Expected</th><th>Actual</th><th>Discrepancy</th></tr></thead>
-        <tbody>${results.map(r=>{
-          const discColor=r.discrepancy===0?'color:#16a34a':r.discrepancy>0?'color:#f59e0b':'color:#dc2626';
-          const discStr=r.discrepancy===0?'✓ Match':r.discrepancy>0?`+${r.discrepancy} surplus`:`${r.discrepancy} shortage`;
-          return`<tr>
-            <td style="font-size:.8rem">${r.store.name}</td>
-            <td><strong>${r.product.name}</strong></td>
-            <td style="font-size:.8rem">${r.takeDate}</td>
-            <td>${r.physicalCount}</td>
-            <td>${r.netAfter>=0?'+':''}<span style="color:${r.netAfter>=0?'#16a34a':'#dc2626'}">${r.netAfter}</span></td>
-            <td><strong>${r.expected}</strong></td>
-            <td><strong>${r.actual}</strong></td>
-            <td><span style="font-weight:700;${discColor}">${discStr}</span></td>
-          </tr>`;}).join('')}
-        </tbody>
-      </table></div>`}`}`;
-  },
-
-  // ── Franchise Invoice Report (Director only) ──
-  franchiseInvoice() {
-    if(!Auth.is('director')){navigateTo('dashboard');return;}
-    const d=DB.get();const el=document.getElementById('page-franchise-invoice');if(!el)return;
-    const today=new Date().toISOString().slice(0,10);
-    const defaultFrom=new Date(Date.now()-30*86400000).toISOString().slice(0,10);
-    const fromDate=document.getElementById('fi-from')?.value||defaultFrom;
-    const toDate=document.getElementById('fi-to')?.value||today;
-    const franStores=d.stores.filter(s=>s.active&&s.isFranchise&&!s.isFranchiseOffice);
-    const exportFI=()=>{
-      const headers=['Franchise Store','Product','Date','Qty','Sell Price','Store Discount %','Product Discount %','Disc Applied','Full Value','Discount Amt','Amount Owed'];
-      const rows=[];
-      franStores.forEach(store=>{
-        const storeDisc=store.franchiseDiscount||0;
-        d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
-          const p=d.products.find(pr=>pr.id===t.productId);
-          const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
-          const full=sell*t.qty;const discAmt=full*(prodDisc/100);
-          rows.push([store.name,p?.name||t.productId,t.date,t.qty,sell.toFixed(2),storeDisc+'%',p?.franchiseDiscount!=null?p.franchiseDiscount+'%':'(store default)',prodDisc+'%',full.toFixed(2),discAmt.toFixed(2),(full-discAmt).toFixed(2)]);
-        });
-      });
-      Pages._downloadCSV(`bob-franchise-invoice-${fromDate}-to-${toDate}.csv`,headers,rows);
-    };
-    const storeData=franStores.map(store=>{
-      const storeDisc=store.franchiseDiscount||0;
-      const lines=d.transactions.filter(t=>t.storeId===store.id&&t.type==='in'&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
+      const lines=d.transactions.filter(t=>t.storeId===store.id&&(t.type==='in'||t.type==='transfer_in')&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
         const full=sell*t.qty;const discAmt=full*(prodDisc/100);
@@ -5295,7 +4838,7 @@ const _origLogin = Auth.login.bind(Auth);
 Auth.login = async function(username, password) {
   const ok = await _origLogin(username, password);
   if (ok) {
-    // Audit is best-effort  must never block or break login
+    // Audit is best-effort — must never block or break login
     try {
       const entry = LoginAudit.record(username);
       LoginAudit.checkAndAlert(entry);
