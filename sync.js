@@ -467,8 +467,9 @@ const Sync = {
    * Only transactions without _synced=true are sent. After a successful push,
    * they are marked _synced=true in local storage.
    */
-  async push() {
-    if (this._syncLock) {
+  async push(_isRetry) {
+    // T3-02: _isRetry flag allows retry to re-enter push() without releasing the lock
+    if (this._syncLock && !_isRetry) {
       console.log('[Sync] Sync already in progress, skipping push.');
       return;
     }
@@ -596,12 +597,11 @@ const Sync = {
       if (this._retryCount <= this._maxRetries) {
         this._showStatus(`Sync failed, retrying (${this._retryCount}/${this._maxRetries})...`, 'warning');
         const delay = 2000 * this._retryCount;
+        // T3-02: Keep lock held during retry delay — call push(true) to skip lock check
         this._syncRetryTimer = setTimeout(() => {
-          this._syncLock = false;
           this._syncRetryTimer = null;
-          this.push();
+          this.push(true);  // _isRetry=true: re-enters push without releasing/re-acquiring lock
         }, delay);
-        // Do NOT release lock here — it stays held until retry fires
         this._skipLockRelease = true;
       } else {
         this._showStatus('Sync failed — will retry later', 'error');

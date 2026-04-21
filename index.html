@@ -1194,6 +1194,7 @@ const Txn = {
       case 'return_in':      return { direction: 'in',   category: 'return' };
       case 'transfer_in':    return { direction: 'in',   category: 'transfer' };
       case 'out':            return { direction: 'out',  category: 'sale' };
+      case 'move_out':       return { direction: 'out',  category: 'move' };
       case 'transfer_out':   return { direction: 'out',  category: 'transfer' };
       case 'wastage':        return { direction: 'out',  category: 'wastage' };
       case 'adjustment_in':  return { direction: 'in',   category: 'adjustment' };

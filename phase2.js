@@ -65,8 +65,9 @@ const Transfer = {
     const id = 'tr_' + Date.now();
     const now = new Date().toISOString();
     const transfer = {
-      id, date: now, fromStoreId, toStoreId,
+      id, date: now, createdAt: now, fromStoreId, toStoreId,
       createdBy: Auth.user(),
+      createdByName: Auth.user()?.name || Auth.user()?.username || 'unknown',
       status: opt.isDraft ? 'draft' : 'in_transit',
       returnReason: opt.returnReason || null,
       returnNote: opt.returnNote || '',
