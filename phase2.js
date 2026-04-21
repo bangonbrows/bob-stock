@@ -53,7 +53,8 @@ const Transfer = {
   },
 
   _notify(payload) {
-    try { fetch(this.EMAIL_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); } catch(e) {}
+    // T3-03: Added .catch() to handle async rejection (try/catch can't catch promise errors)
+    try { fetch(this.EMAIL_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }).catch(() => {}); } catch(e) {}
   },
 
   create(fromStoreId, toStoreId, items, options) {
@@ -62,7 +63,8 @@ const Transfer = {
     if (fromStoreId === toStoreId) return { ok:false, error:'Cannot transfer to same store' };
     const opt = options || {};
     const d = DB.get();
-    const id = 'tr_' + Date.now();
+    // T3-03: Add random suffix to prevent ID collision from concurrent devices
+    const id = 'tr_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('');
     const now = new Date().toISOString();
     const transfer = {
       id, date: now, createdAt: now, fromStoreId, toStoreId,
@@ -230,10 +232,11 @@ const Transfer = {
     if (allDone) {
       t.status = 'completed';
       t.completedDate = new Date().toISOString();
-      this._notifyCompleted(t);
     }
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
     DB.atomicTransferWrite(batchTxns, t, snapshot);
+    // T3-M3r1: Notify AFTER successful atomic write (was before — would send ghost emails on write failure)
+    if (allDone) this._notifyCompleted(t);
     return { ok:true };
   },
 
@@ -745,7 +748,7 @@ window.renderTransfersHub = function() {
             <div class="tx-date">${UI.fmtDate(t.createdAt)}</div>
             <div>
               <div class="tx-route">${UI.storeName(t.fromStoreId)} &rarr; ${UI.storeName(t.toStoreId)}</div>
-              <div class="tx-meta">${t.createdByName || ''} &middot; ${t.type === 'return' ? 'Return' : 'Standard'}</div>
+              <div class="tx-meta">${UI.esc(t.createdByName || '')} &middot; ${t.type === 'return' ? 'Return' : 'Standard'}</div>
             </div>
             <div class="tx-right">
               <span class="badge badge-${t.status || 'draft'}">${UI.esc(statusLabel)}</span>

@@ -845,286 +845,8 @@ function generateDemoTransactions() {
 // ══════════════════════════════════════════════════
 
 
-// ── GitHub Sync ──────────────────────────────────────────────────────────────
-/* PHASE3_DISABLED: Sync object now loaded from sync.js
-const Sync = {
-  // GitHub sync removed — using SharePoint webhooks
-  
-  // Token split to avoid secret-scanner false positives in repo
-  TOKEN: '', // PAT removed — sync via SharePoint webhooks
-  _sha: null, _pushLock: false, _pendingData: null, _retryCount: 0,
-  _debounceTimer: null, _pollInterval: null, _statusEl: null, _hideTimer: null,
-  _spPushUrl: null, _spPullUrl: null, _lastSyncAt: 0,
-  STALE_THRESHOLD: 12 * 60 * 60 * 1000,
-  _deviceId: null,
-
-  _loadSyncConfig(){
-    try{
-      const cfg=JSON.parse(localStorage.getItem('bob_sync_config')||'{}');
-      this._spPushUrl=cfg.pushUrl||null;
-      this._spPullUrl=cfg.pullUrl||null;
-    }catch(e){}
-    this._deviceId=localStorage.getItem('bob_device_id');
-    if(!this._deviceId){
-      this._deviceId='dev_'+Date.now()+'_'+Math.random().toString(36).substr(2,9);
-      localStorage.setItem('bob_device_id',this._deviceId);
-    }
-    this._lastSyncAt=parseInt(localStorage.getItem('bob_last_sync')||'0');
-  },
-  useSharePoint(){ return !!(this._spPushUrl && this._spPullUrl); },
-  getConfig(){ try{return JSON.parse(localStorage.getItem('bob_sync_config')||'{}');}catch(e){return {};} },
-
-  
-
-  
-
-  _showStatus(msg, autoHide){
-    if(!this._statusEl){
-      this._statusEl = document.createElement('div');
-      this._statusEl.style.cssText =
-        'position:fixed;bottom:72px;right:14px;z-index:99999;'+
-        'background:rgba(20,20,20,0.88);color:#fff;padding:5px 14px;'+
-        'border-radius:20px;font-size:11px;pointer-events:none;'+
-        'transition:opacity 0.4s;box-shadow:0 2px 8px rgba(0,0,0,0.4);';
-      document.body.appendChild(this._statusEl);
-    }
-    clearTimeout(this._hideTimer);
-    this._statusEl.style.opacity='1';
-    this._statusEl.style.display='block';
-    this._statusEl.textContent = msg;
-    if(autoHide){
-      this._hideTimer = setTimeout(()=>{
-        this._statusEl.style.opacity='0';
-        setTimeout(()=>{ if(this._statusEl)this._statusEl.style.display='none'; },500);
-      }, 2500);
-    }
-  },
-
-  async pull(){
-    if(this.useSharePoint()){
-      try{
-        const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),15000);
-        const res=await fetch(this._spPullUrl,{signal:ac.signal});clearTimeout(tid);
-        if(!res.ok) throw new Error(res.status);
-        const data=await res.json();
-        return data||null;
-      }catch(e){console.warn('[Sync] SP pull failed:',e.message);return null;}
-    }
-    // GitHub sync disabled — waiting for SharePoint config
-    return null;
-  
-  },
-
-  async push(data){
-    if(this._pushLock){ this._pendingData=data; return; }
-    this._pushLock=true;
-    this._showStatus('☁ Syncing…');
-    try{
-      if(this.useSharePoint()){
-        const payload={deviceId:this._deviceId,timestamp:new Date().toISOString(),data:data};
-        const ac=new AbortController();const tid=setTimeout(()=>ac.abort(),15000);
-        const res=await fetch(this._spPushUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:ac.signal});clearTimeout(tid);
-        if(!res.ok) throw new Error('SP:'+res.status);
-      } else {
-        // GitHub sync disabled — configure SharePoint URLs in Settings
-        throw new Error('Sync not configured');
-      }
-      this._retryCount=0;
-      this._lastSyncAt=Date.now();
-      localStorage.setItem('bob_last_sync',this._lastSyncAt.toString());
-      localStorage.removeItem('bob_sync_pending');
-      this._showStatus('✓ Synced', true);
-    }catch(e){
-      console.warn('[Sync] push failed:',e.message);
-      localStorage.setItem('bob_sync_pending','1');
-      this._showStatus('○ Offline – will sync when back online');
-    }
-    this._pushLock=false;
-    if(this._pendingData){ const pd=this._pendingData; this._pendingData=null; this.push(pd); }
-  },
-
-  _merge(remote, local){
-    // Merge arrays by ID (last-write-wins per item)
-    const mergeById=(rArr,lArr)=>{const m={};(rArr||[]).forEach(x=>{m[x.id]=x;});(lArr||[]).forEach(x=>{m[x.id]=x;});return Object.values(m);};
-    const idArrayKeys=new Set();
-    const allKeys=new Set([...Object.keys(remote),...Object.keys(local)]);
-    for(const k of allKeys){
-      const arr=remote[k]||local[k];
-      if(Array.isArray(arr)&&arr.length>0&&arr[0]&&typeof arr[0]==='object'&&'id' in arr[0]) idArrayKeys.add(k);
-    }
-    const merged={};
-    for(const k of allKeys){
-      if(idArrayKeys.has(k)){merged[k]=mergeById(remote[k],local[k]);continue;}
-      merged[k]=(k in local)?local[k]:remote[k];
-    }
-    // Filter out deleted transactions
-    const deletedIds=new Set((merged.deletedTransactions||[]).map(d=>d.id));
-    if(merged.transactions) merged.transactions=merged.transactions.filter(t=>!deletedIds.has(t.id));
-    return merged;
-  },
-
-  _rerender(){
-    try{
-      if(document.getElementById('modal-overlay')?.classList.contains('show')) return;
-      const page=document.querySelector('[data-page].active')?.dataset?.page||'dashboard';
-      if(page==='log-movement') return;
-      if(typeof navigateTo==='function') navigateTo(page);
-    }catch(e){}
-  },
-
-  async poll(){
-    if(!navigator.onLine||this._pushLock) return;
-    const remote=await this.pull();
-    if(!remote) return;
-    const local=DB.get(); // Fresh read after async pull
-    const rSig=JSON.stringify([
-      (remote.transactions||[]).map(t=>t.id).sort(),
-      (remote.deletedTransactions||[]).map(t=>t.id).sort(),
-      (remote.deliveries||[]).map(d=>d.id).sort()
-    ]);
-    const lSig=JSON.stringify([
-      (local.transactions||[]).map(t=>t.id).sort(),
-      (local.deletedTransactions||[]).map(t=>t.id).sort(),
-      (local.deliveries||[]).map(d=>d.id).sort()
-    ]);
-    if(rSig!==lSig){
-      const merged=this._merge(remote,local);
-      // Re-check: if local was modified during our async merge, skip
-      const fresh=DB.get();
-      if(fresh._v!==local._v){ console.warn('[Sync] local changed during poll, skipping merge'); return; }
-      DB._cache=merged; DB.save(merged);
-      this._rerender();
-    }
-  },
-
-  scheduleSync(){
-    clearTimeout(this._debounceTimer);
-    this._debounceTimer=setTimeout(()=>{
-      if(!navigator.onLine){localStorage.setItem('bob_sync_pending','1');return;}
-      if(this._pushLock){this._pendingData=DB.get();return;}
-      this.push(DB.get());
-    }, 800);
-  },
-
-  async init(){
-    this._loadSyncConfig();
-    if(!this.useSharePoint()){ this._showStatus('☁ Cloud sync not configured — go to Settings', true); return; }
-    this._showStatus(this.useSharePoint()?'☁ Cloud sync active…':'☁ Loading live data…');
-    // Stale check: if local data > 12h old, pull fresh
-    const isStale=(Date.now()-this._lastSyncAt)>this.STALE_THRESHOLD;
-    if(isStale && (this.useSharePoint()||navigator.onLine)){
-      const fresh=await this.pull();
-      if(fresh){
-        const local=DB.get();
-        const merged=this._merge(fresh,local);
-        DB._cache=merged; DB.save(merged);
-        this._lastSyncAt=Date.now();
-        localStorage.setItem('bob_last_sync',this._lastSyncAt.toString());
-        this._rerender();
-        this._showStatus('✓ Fresh data loaded', true);
-      }
-    } else {
-      const remote=await this.pull();
-      if(remote){
-        const local=DB.get();
-        const merged=this._merge(remote,local);
-        DB._cache=merged; DB.save(merged);
-        this._rerender();
-        this._showStatus('✓ Live data loaded', true);
-      } else {
-        await this.push(DB.get());
-      }
-    }
-    if(localStorage.getItem('bob_sync_pending')) this.push(DB.get());
-    this._pollInterval=setInterval(()=>this.poll(), 30000);
-    window.addEventListener('online',()=>{
-      this._showStatus('☁ Back online – syncing…');
-      if(localStorage.getItem('bob_sync_pending')) this.push(DB.get());
-    });
-    window.addEventListener('offline',()=>this._showStatus('○ Offline – changes saved locally'));
-  }
-};
-PHASE3_DISABLED */
-
-// ── DB Layer ─────────────────────────────────────
-/* PHASE3_DISABLED: DB object now loaded from db.js
-const DB = {
-  KEY: 'bob_stock_v4',
-  load() {
-    const raw = localStorage.getItem(this.KEY);
-    if (raw) return JSON.parse(raw);
-    const d = {
-      productTypes: JSON.parse(JSON.stringify(SEED.productTypes)),
-      categories:   JSON.parse(JSON.stringify(SEED.categories)),
-      products:     SEED.products.map(p=>({...p, active:true, freight:null, customs:null, tax:null, supplierName:'', supplierContact:'', leadDays:null})),
-      stores:       JSON.parse(JSON.stringify(SEED.stores)),
-      users:        JSON.parse(JSON.stringify(SEED.users)),
-      thresholds:   JSON.parse(JSON.stringify(SEED.thresholds)),
-      transactions: JSON.parse(JSON.stringify(SEED.transactions)),
-      costHistory:  JSON.parse(JSON.stringify(SEED.costHistory)),
-      stockTakes:   [],
-      stockTakePin: { pin: null, expiresAt: null }
-    };
-    this.save(d); return d;
-  },
-  save(d) {
-    try{
-      localStorage.setItem(this.KEY, JSON.stringify(d));
-      return true;
-    }catch(e){
-      if(e.name==='QuotaExceededError'||e.code===22){
-        let banner=document.getElementById('storage-full-banner');
-        if(!banner){
-          banner=document.createElement('div');
-          banner.id='storage-full-banner';
-          banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:white;text-align:center;padding:10px 16px;font-weight:600;font-size:.875rem';
-          banner.innerHTML='⚠ Storage Full — App data cannot be saved. Please export a backup and clear old data.';
-          document.body.prepend(banner);
-        }
-        console.error('[DB] QuotaExceededError — localStorage full');
-        return false;
-      }
-    }
-  },
-  get()   {
-    if(!this._cache){ this._cache=this.load(); this._migrate(); }
-    return this._cache;
-  },
-  _migrate(){
-    let changed=false;
-    if(!this._cache.stockTakePin){this._cache.stockTakePin={pin:null,expiresAt:null};changed=true;}
-    if(!this._cache.deliveries){this._cache.deliveries=[];changed=true;}
-    if(!this._cache.deletedTransactions){this._cache.deletedTransactions=[];changed=true;}
-    if(!this._cache.deletedTransactions){this._cache.deletedTransactions=[];changed=true;}
-    // Rename franchiseMarkup → franchiseDiscount on stores and products
-    this._cache.stores.forEach(s=>{if(s.franchiseMarkup!==undefined&&s.franchiseDiscount===undefined){s.franchiseDiscount=s.franchiseMarkup;delete s.franchiseMarkup;changed=true;}});
-    this._cache.products.forEach(p=>{if(p.franchiseMarkup!==undefined&&p.franchiseDiscount===undefined){p.franchiseDiscount=p.franchiseMarkup;delete p.franchiseMarkup;changed=true;}});
-    // Add weightGrams to products if missing
-    this._cache.products.forEach(p=>{if(p.weightGrams===undefined){p.weightGrams=null;changed=true;}});
-    // Add internalUse to products if missing
-    this._cache.products.forEach(p=>{if(p.internalUse===undefined){p.internalUse=false;changed=true;}});
-    // Add cockburn_office franchise store if missing
-    if(!this._cache.stores.find(s=>s.id==='cockburn_office')){
-      this._cache.stores.push({id:'cockburn_office',name:'Cockburn Franchise Office',type:'warehouse',active:true,isFranchise:true,isFranchiseOffice:true,franchiseDiscount:null});
-      changed=true;
-    }
-    // Update fran_cockburn user to have cockburn_office in storeIds
-    const franUser=this._cache.users.find(u=>u.username==='fran_cockburn');
-    if(franUser&&!franUser.storeIds.includes('cockburn_office')){
-      franUser.storeIds.unshift('cockburn_office'); changed=true;
-    }
-    // Retire products not in current SEED (soft-delete to preserve referential integrity)
-    const seedIds=new Set(SEED.products.map(p=>p.id));
-    this._cache.products.forEach(p=>{
-      if(!seedIds.has(p.id)&&p.active!==false){p.active=false;changed=true;}
-    });
-    if(changed)this.commit();
-  },
-  commit(){ this._cache._v=(this._cache._v||0)+1; const ok=this.save(this._cache); if(ok&&typeof Sync!=='undefined') Sync.scheduleSync(); return ok; },
-  reset() { localStorage.removeItem(this.KEY); this._cache = null; location.reload(); }
-};
-PHASE3_DISABLED */
-
+// T3-03: Dead Sync + DB objects removed (PHASE3_DISABLED blocks deleted)
+// Sync is now loaded from sync.js, DB from db.js
 // ── Auth ─────────────────────────────────────────
 
     // ── Crypto Util ─────────────────────────────────
@@ -1408,7 +1130,7 @@ _toastQueue:[],
   },
   closeModal() { document.getElementById('modal-overlay').classList.remove('show'); },
   fmt(n)     { return n==null?'—':'$'+parseFloat(n).toFixed(2); },
-  esc(s){ const _d=document.createElement('div');_d.textContent=String(s??'');return _d.innerHTML; },
+  // T3-03: Removed duplicate UI.esc() — using regex version at line 1106
   confirm(title,msg,onOk,okLabel,danger){
     okLabel=okLabel||'Confirm'; danger=danger!==false;
     this._confirmCb=onOk;
@@ -3238,12 +2960,12 @@ const Pages = {
         </div>
       </div>`;
   },
-  getConfig(){ try{return JSON.parse(localStorage.getItem('bob_sync_config')||'{}');}catch(e){return {};} },
+  // T3-M3r1: Removed orphan Pages.getConfig() — UI already uses Sync.getConfig()
   _saveSyncConfig(){
     const pushUrl=(document.getElementById('sync-push-url')?.value||'').trim();
     const pullUrl=(document.getElementById('sync-pull-url')?.value||'').trim();
-    localStorage.setItem('bob_sync_config',JSON.stringify({pushUrl,pullUrl}));
-    Sync._loadSyncConfig();
+    // T3-M3r1: Use Sync.saveConfig() to write to sessionStorage (not localStorage)
+    Sync.saveConfig(pushUrl, pullUrl);
     UI.toast('Sync URLs saved','success');
     Pages.dirSettings('cloudsync');
   },
@@ -3251,13 +2973,12 @@ const Pages = {
     const el=document.getElementById('sync-test-result');
     if(!el)return;
     el.innerHTML='<div class="card card-body" style="border-left:4px solid #3b82f6;margin-top:12px"><strong>Testing...</strong></div>';
-    Sync._loadSyncConfig();
-    if(!Sync.useSharePoint()){el.innerHTML='<div class="card card-body" style="border-left:4px solid #ef4444;margin-top:12px"><strong>Error:</strong> Both URLs must be configured first.</div>';return;}
+    if(!Sync._loadConfig()){el.innerHTML='<div class="card card-body" style="border-left:4px solid #ef4444;margin-top:12px"><strong>Error:</strong> Both URLs must be configured first.</div>';return;}
     try{
       const testData={test:true,deviceId:Sync._deviceId,timestamp:new Date().toISOString()};
-      const pushRes=await fetch(Sync._spPushUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(testData)});
+      const pushRes=await fetch(Sync._pushUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(testData)});
       if(!pushRes.ok) throw new Error('Push failed: '+pushRes.status);
-      const pullRes=await fetch(Sync._spPullUrl);
+      const pullRes=await fetch(Sync._pullUrl);
       if(!pullRes.ok) throw new Error('Pull failed: '+pullRes.status);
       el.innerHTML='<div class="card card-body" style="border-left:4px solid #10b981;margin-top:12px"><strong style="color:#10b981">✓ Connection successful!</strong> Push and Pull both working. Cloud sync is active.</div>';
     }catch(e){
@@ -3265,10 +2986,9 @@ const Pages = {
     }
   },
   async _forcePush(){
-    Sync._loadSyncConfig();
-    if(!Sync.useSharePoint()){UI.toast('Configure sync URLs first','error');return;}
+    if(!Sync._loadConfig()){UI.toast('Configure sync URLs first','error');return;}
     UI.toast('Pushing data to SharePoint...','info');
-    await Sync.push(DB.get());
+    await Sync.push();
   },
 
   _dirSuppliers(elId) {
