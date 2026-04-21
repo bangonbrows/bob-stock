@@ -1477,6 +1477,8 @@ window.TransferUI = {
     });
 
     if (saved > 0) {
+      // T3-04: Invalidate threshold Map cache before commit
+      if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) { Stock._invalidateThrMap(); }
       DB.commit();
       UI.toast(`Saved ${saved} threshold(s)`, 'success');
     } else {

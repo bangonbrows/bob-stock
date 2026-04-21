@@ -1205,7 +1205,29 @@ const Txn = {
   },
   isIn(txn)  { return this.classify(txn).direction === 'in'; },
   isOut(txn) { return this.classify(txn).direction === 'out'; },
-  isActive(txn) { return this.classify(txn).direction !== 'none'; }
+  isActive(txn) { return this.classify(txn).direction !== 'none'; },
+  // T3-05: Centralised badge + icon helpers — replaces hardcoded type checks in UI
+  badge(t) {
+    const c = this.classify(t);
+    if (c.category === 'return')  return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>';
+    if (c.direction === 'in')     return '<span class="badge badge-green">▲ IN</span>';
+    if (c.direction === 'out')    return '<span class="badge badge-red">▼ OUT</span>';
+    return '<span class="badge">—</span>';
+  },
+  badgeShort(t) {
+    const c = this.classify(t);
+    if (c.category === 'return')  return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>';
+    if (c.direction === 'in')     return '<span class="badge badge-green">▲ IN</span>';
+    if (c.direction === 'out')    return '<span class="badge badge-red">▼ OUT</span>';
+    return '<span class="badge">—</span>';
+  },
+  icon(t) {
+    const c = this.classify(t);
+    if (c.category === 'return') return '↩';
+    if (c.direction === 'in')    return '▲';
+    if (c.direction === 'out')   return '▼';
+    return '—';
+  }
 };
 
 // ── Stock Calculations ───────────────────────────
@@ -1215,6 +1237,7 @@ const Stock = {
 
   _buildCache() {
     this._qtyCache = {};
+    this._thrMap = null;  // T3-04: Invalidate threshold Map when data reloads
     const txns = DB.get().transactions;
     for (const t of txns) {
       if (!Txn.isActive(t)) continue;
@@ -1278,11 +1301,24 @@ const Stock = {
   storeStock(storeId) {
     return DB.get().products.filter(p=>p.active).map(p=>({ product:p, qty:this.qty(p.id, storeId) }));
   },
+  // T3-04: Threshold Map for O(1) lookups (replaces linear scan)
+  _thrMap: null,
+  _buildThrMap() {
+    this._thrMap = new Map();
+    const thresholds = DB.get().thresholds;
+    for (const t of thresholds) {
+      const exactKey = t.productId + ':' + t.storeId;
+      this._thrMap.set(exactKey, t);
+    }
+  },
+  _invalidateThrMap() { this._thrMap = null; },
   threshold(productId, storeId) {
     // Fix #8: Lookup precedence — exact store match → global default (storeId=null) → null
-    const d = DB.get().thresholds;
-    return d.find(t=>t.productId===productId && t.storeId===storeId)
-        || d.find(t=>t.productId===productId && (t.storeId===null || t.storeId==='*'))
+    // T3-04: O(1) Map lookup instead of array.find()
+    if (!this._thrMap) this._buildThrMap();
+    return this._thrMap.get(productId + ':' + storeId)
+        || this._thrMap.get(productId + ':null')
+        || this._thrMap.get(productId + ':*')
         || null;
   },
   alerts(storeIds) {
@@ -1824,13 +1860,12 @@ const Pages = {
       returnCondition:isReturnSub?(this._logData.returnCondition||null):null,
       editLog:[], createdAt:new Date().toISOString()
     };
-    if(txn.type==='out'||txn.type==='move_out'){
+    if(Txn.isOut(txn)){
       const avail=Stock.qty(txn.productId,txn.storeId);
       if(avail<txn.qty){UI.toast(`⚠ Insufficient stock — only ${avail} unit${avail!==1?'s':''} available`,'error');return;}
     }
     DB.addTransaction(txn); DB.commit();
-    const icon=this._logData.type==='in'?'▲':isReturnSub?'↩':'▼';
-    UI.toast(`Movement logged — ${icon} ${this._logData.qty} × ${UI.productName(this._logData.productId)}`,'success');
+    UI.toast(`Movement logged — ${Txn.icon(txn)} ${this._logData.qty} × ${UI.productName(this._logData.productId)}`,'success');
     this._logStep=1; this._logData={selectedStoreId:this._getLogStoreId()};
     this._renderLogStep(); this._renderTodayMovements();
     const alts=Stock.alerts().filter(a=>a.product.id===txn.productId&&a.store.id===txn.storeId);
@@ -1842,11 +1877,7 @@ const Pages = {
     const txns=DB.get().transactions.filter(t=>t.date===today&&t.storeId===storeId&&Txn.isActive(t)).reverse().slice(0,10);
     const el=document.getElementById('today-movements'); if(!el)return;
     if(!txns.length){el.innerHTML='<div style="color:#9ca3af;font-size:.825rem;padding:8px 0">No movements logged today.</div>';return;}
-    const typeBadge=t=>{
-      if(t.type==='in') return '<span class="badge badge-green">▲ IN</span>';
-      if(t.type==='return_in') return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>';
-      return '<span class="badge badge-red">▼ OUT</span>';
-    };
+    const typeBadge=t=>Txn.badge(t);
     const fromTo=t=>{
       const parts=[];
       if(t.stockFrom) parts.push(`<span style="color:#6b7280">From:</span> ${t.stockFrom}`);
@@ -1908,7 +1939,7 @@ const Pages = {
     if(!t){UI.toast('Movement not found','error');return;}
     const ageMs=Date.now()-new Date(t.createdAt).getTime();
     if(ageMs>300000){UI.toast('Undo window expired — movements can only be undone within 5 minutes.','error');this._renderTodayMovements();return;}
-    const icon=t.type==='in'?'▲':t.type==='return_in'?'↩':'▼';
+    const icon=Txn.icon(t);
     const prodName=UI.productName(t.productId);
     UI.confirm('Undo Movement',`Undo ${icon} ${t.qty}× ${UI.esc(prodName)}? This will reverse the stock movement.`,()=>{
       const d2=DB.get();const t2=d2.transactions.find(tx=>tx.id===id);
@@ -1996,7 +2027,7 @@ const Pages = {
     if(!el){return;}
     if(!txns.length){el.innerHTML='<div class="empty-state" style="text-align:center;padding:40px;color:#9ca3af"><p>No transactions found for this period.</p></div>';return;}
     el.innerHTML=`<table><thead><tr><th>Date</th><th>Product</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>
-      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><strong>${UI.productName(t.productId)}</strong><br><span style="color:#9ca3af;font-size:.7rem">${t.productId}</span></td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td><strong>${t.qty}</strong></td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;max-width:200px">${UI.esc(t.reason||'—')}${t.stockFrom?` <span style="color:#9ca3af;font-size:.75rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.75rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
+      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><strong>${UI.productName(t.productId)}</strong><br><span style="color:#9ca3af;font-size:.7rem">${t.productId}</span></td><td>${Txn.badge(t)}</td><td><strong>${t.qty}</strong></td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;max-width:200px">${UI.esc(t.reason||'—')}${t.stockFrom?` <span style="color:#9ca3af;font-size:.75rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.75rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
   },
 
   // ── Stock Take ──
@@ -2360,7 +2391,7 @@ const Pages = {
     if(search)  txns=txns.filter(t=>UI.productName(t.productId).toLowerCase().includes(search)||t.productId.toLowerCase().includes(search));
     txns=txns.slice().reverse().slice(0,500);
     document.getElementById('am-table').innerHTML=!txns.length?'<div class="empty-state"><p>No transactions match.</p></div>':`<table><thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>
-      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><span class="badge badge-rose">${UI.storeName(t.storeId)}</span></td><td><strong>${UI.productName(t.productId)}</strong></td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td><strong>${t.qty}</strong></td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}${t.stockFrom?` <span style="color:#9ca3af;font-size:.73rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.73rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
+      ${txns.map(t=>`<tr><td>${UI.fmtDate(t.date)}</td><td><span class="badge badge-rose">${UI.storeName(t.storeId)}</span></td><td><strong>${UI.productName(t.productId)}</strong></td><td>${Txn.badge(t)}</td><td><strong>${t.qty}</strong></td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}${t.stockFrom?` <span style="color:#9ca3af;font-size:.73rem">(from: ${t.stockFrom})</span>`:t.stockTo?` <span style="color:#9ca3af;font-size:.73rem">(to: ${t.stockTo})</span>`:''}</td></tr>`).join('')}</tbody></table>`;
   },
 
   // ── HO: Store Comparison (with date range picker) ──
@@ -2691,7 +2722,7 @@ const Pages = {
       },100);
     } else if(this._repTab==='transactions'){
       const shown=txns.slice().reverse().slice(0,500);
-      el.innerHTML=`<div class="tbl-wrap card">${!shown.length?'<div class="empty-state"><p>No transactions match.</p></div>':`<table><thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Category</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>${shown.map(t=>{const prod=d.products.find(p=>p.id===t.productId);return `<tr><td>${UI.fmtDate(t.date)}</td><td>${UI.storeName(t.storeId)}</td><td>${UI.productName(t.productId)}</td><td>${UI.catName(prod?.catId)}</td><td>${t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700">↩ RETURN</span>':'<span class="badge badge-red">▼ OUT</span>'}</td><td>${t.qty}</td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}</td></tr>`;}).join('')}</tbody></table>`}</div>`;
+      el.innerHTML=`<div class="tbl-wrap card">${!shown.length?'<div class="empty-state"><p>No transactions match.</p></div>':`<table><thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Category</th><th>Type</th><th>Qty</th><th>By</th><th>Reason</th></tr></thead><tbody>${shown.map(t=>{const prod=d.products.find(p=>p.id===t.productId);return `<tr><td>${UI.fmtDate(t.date)}</td><td>${UI.storeName(t.storeId)}</td><td>${UI.productName(t.productId)}</td><td>${UI.catName(prod?.catId)}</td><td>${Txn.badge(t)}</td><td>${t.qty}</td><td>${UI.esc(t.staffName)}</td><td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}</td></tr>`;}).join('')}</tbody></table>`}</div>`;
     } else if(this._repTab==='snapshot'){
       const stores=f.store
         ? (f.store==='head_office' ? [{id:'head_office',name:'Head Office (Warehouse)',type:'warehouse'}] : [d.stores.find(s=>s.id===f.store)]).filter(Boolean)
@@ -2850,7 +2881,7 @@ const Pages = {
   _deleteProduct(productId) {
     UI.confirm('Remove Product',`Remove "${UI.esc(UI.productName(productId))}"? This will deactivate the product.`,()=>{
       const d=DB.get(); const p=d.products.find(pr=>pr.id===productId);
-      if(p){p.active=false;d.thresholds=d.thresholds.filter(t=>t.productId!==productId);d.costHistory=(d.costHistory||[]).filter(h=>h.productId!==productId);d.stockTakes=(d.stockTakes||[]).filter(s=>!s.lines||!s.lines.some(l=>l.productId===productId)||Object.assign(s,{lines:s.lines.filter(l=>l.productId!==productId)}));DB.commit();UI.toast('Removed','info');Pages._refreshSettings('products');}
+      if(p){p.active=false;d.thresholds=d.thresholds.filter(t=>t.productId!==productId);Stock._invalidateThrMap();d.costHistory=(d.costHistory||[]).filter(h=>h.productId!==productId);d.stockTakes=(d.stockTakes||[]).filter(s=>!s.lines||!s.lines.some(l=>l.productId===productId)||Object.assign(s,{lines:s.lines.filter(l=>l.productId!==productId)}));DB.commit();UI.toast('Removed','info');Pages._refreshSettings('products');}
     },'Remove');
   },
 
@@ -2923,8 +2954,8 @@ const Pages = {
     }).join('')}</tbody></table>`;
   },
   // T2-03: Use strict number validation — parseInt(0)||null incorrectly treats zero as null
-  _saveThr(productId,storeId){const rawMin=document.getElementById('thr-min-'+productId)?.value;const rawOpt=document.getElementById('thr-opt-'+productId)?.value;const rawLead=document.getElementById('thr-lead-'+productId)?.value;const minQty=rawMin!==''&&rawMin!=null?parseInt(rawMin,10):null;const optimumQty=rawOpt!==''&&rawOpt!=null?parseInt(rawOpt,10):null;const leadDays=rawLead!==''&&rawLead!=null?parseInt(rawLead,10):null;if(minQty===null||isNaN(minQty)||minQty<0){UI.toast('Min quantity must be 0 or a positive number','error');return;}if(optimumQty!==null&&(isNaN(optimumQty)||optimumQty<minQty)){UI.toast('Optimum must be >= min quantity','error');return;}if(leadDays!==null&&(isNaN(leadDays)||leadDays<0)){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].optimumQty=optimumQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,optimumQty,leadDays});DB.commit();UI.toast('Saved','success');},
-  _removeThr(productId,storeId){const d=DB.get();d.thresholds=d.thresholds.filter(t=>!(t.productId===productId&&t.storeId===storeId));DB.commit();this._renderThresholds();UI.toast('Cleared','info');},
+  _saveThr(productId,storeId){const rawMin=document.getElementById('thr-min-'+productId)?.value;const rawOpt=document.getElementById('thr-opt-'+productId)?.value;const rawLead=document.getElementById('thr-lead-'+productId)?.value;const minQty=rawMin!==''&&rawMin!=null?parseInt(rawMin,10):null;const optimumQty=rawOpt!==''&&rawOpt!=null?parseInt(rawOpt,10):null;const leadDays=rawLead!==''&&rawLead!=null?parseInt(rawLead,10):null;if(minQty===null||isNaN(minQty)||minQty<0){UI.toast('Min quantity must be 0 or a positive number','error');return;}if(optimumQty!==null&&(isNaN(optimumQty)||optimumQty<minQty)){UI.toast('Optimum must be >= min quantity','error');return;}if(leadDays!==null&&(isNaN(leadDays)||leadDays<0)){UI.toast('Lead days must be positive','error');return;}const d=DB.get();const idx=d.thresholds.findIndex(t=>t.productId===productId&&t.storeId===storeId);if(idx>=0){d.thresholds[idx].minQty=minQty;d.thresholds[idx].optimumQty=optimumQty;d.thresholds[idx].leadDays=leadDays;}else d.thresholds.push({storeId,productId,minQty,optimumQty,leadDays});Stock._invalidateThrMap();DB.commit();UI.toast('Saved','success');},
+  _removeThr(productId,storeId){const d=DB.get();d.thresholds=d.thresholds.filter(t=>!(t.productId===productId&&t.storeId===storeId));Stock._invalidateThrMap();DB.commit();this._renderThresholds();UI.toast('Cleared','info');},
 
 
   // ── Director: Users ──
@@ -3386,7 +3417,7 @@ const Pages = {
     if(isDir)quickActions.push(`<button class="btn btn-secondary" onclick="navigateTo('reorder')">📦 Reorder List</button>`);
     // Recent movements (last 5 in scope)
     const recentTxns=d.transactions.filter(t=>Txn.isActive(t)&&(isHO||Auth.storeIds().includes(t.storeId))).slice(-5).reverse();
-    const txnBadge=t=>t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>':'<span class="badge badge-red">▼ OUT</span>';
+    const txnBadge=t=>Txn.badgeShort(t);
     // Top alerts
     const topAlerts=alerts.slice(0,5);
     el.innerHTML=`
@@ -3508,7 +3539,7 @@ const Pages = {
         <thead><tr><th>Deleted At</th><th>Deleted By</th><th>Reason</th><th>Original Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>Staff</th></tr></thead>
         <tbody>${filtered.map(t=>{
           const store=d.stores.find(s=>s.id===t.storeId);
-          const typeLabel=t.type==='in'?'<span class="badge badge-green">▲ IN</span>':t.type==='return_in'?'<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24">↩ RTN</span>':'<span class="badge badge-red">▼ OUT</span>';
+          const typeLabel=Txn.badgeShort(t);
           return`<tr>
             <td style="white-space:nowrap;font-size:.8rem">${new Date(t._deletedAt).toLocaleString('en-AU',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
             <td><strong>${t._deletedBy||'—'}</strong></td>
