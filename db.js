@@ -181,6 +181,8 @@ async function _retryWrite(writeFn, label) {
       } else {
         console.error(`[DB] ${label} failed after ${WRITE_MAX_RETRIES + 1} attempts:`, err);
         _showWriteWarning(true);
+        // G-F2/G-F3: surface ANY exhausted write failure loudly — no fire-and-forget save fails silently
+        if (typeof UI !== 'undefined' && UI.fatalSaveError) UI.fatalSaveError('A save to this device failed (' + label + '). Your last change may not have been saved — contact your administrator.');
         return false;
       }
     }
@@ -218,6 +220,15 @@ async function _appendRecords(tableName, records) {
   } finally {
     _pendingWrites--;
   }
+}
+
+// F1-C01 shared primitive: BOTH the load-time normalizer (DB._normalizeActiveFlags)
+// and the seed loader (_loadSeedData) run through this ONE function — so the
+// saboteur harness can prove sentinel S-37 by breaking a single point. A missing
+// active flag means ACTIVE; only an explicit active===false means deactivated.
+function _defaultActiveTrue(rows) {
+  (rows || []).forEach(o => { if (o && typeof o === 'object') o.active = o.active !== false; });
+  return rows || [];
 }
 
 // ─── Async Dexie Read (used once at init) ────────────────────────────────────
@@ -292,10 +303,40 @@ const DB = {
    * Used by sync merge (pull) where multiple tables change at once.
    * For normal user actions, prefer commit() which uses the hybrid strategy.
    */
+  // B-F1: strip < > from all catalogue names at the persistence choke point so a
+  // boobytrapped name can NEVER be stored (closes the ~104 raw ${name} sinks at the source).
+  _sanitizeNames() {
+    if (!this._cache) return;
+    // B-F1/A-F1: strip body AND attribute-breakout chars from names + supplier fields
+    const strip = v => (typeof v === 'string') ? v.replace(/[<>"'`]/g, '') : v;
+    ['products','stores','categories','productTypes','users'].forEach(coll => {
+      (this._cache[coll] || []).forEach(o => {
+        if (!o) return;
+        if (typeof o.name === 'string') o.name = strip(o.name);
+        if (typeof o.supplierName === 'string') o.supplierName = strip(o.supplierName);
+        if (typeof o.supplierContact === 'string') o.supplierContact = strip(o.supplierContact);
+        if (typeof o.username === 'string') o.username = strip(o.username);  // R6: sanitize username (feeds createdBy)
+        if (typeof o.id === 'string') o.id = strip(o.id);  // SA-B-F1: ids render raw in ~40 sinks (store id is user-entered); ids never legitimately contain < > " ' `
+      });
+    });
+    this._normalizeActiveFlags();  // F1-C01: piggy-back on the same choke point — every load/commit/save path runs through here
+  },
+
+  // F1-C01 (GPT FINAL C-01): products/stores with NO active flag must default to
+  // ACTIVE, never hidden. Seed products omit `active`; ~20 UI surfaces filter on
+  // truthy p.active, so a fresh install rendered 192 products / 0 visible.
+  // `active === false` (explicit deactivation via Remove) is preserved.
+  // Both this and the seed loader run through _defaultActiveTrue (one provable point).
+  _normalizeActiveFlags() {
+    if (!this._cache) return;
+    ['products','stores'].forEach(coll => _defaultActiveTrue(this._cache[coll]));
+  },
+
   save(d) {
     this._cache = d;
+    this._sanitizeNames();
     _retryWrite(
-      () => _persistAllToDexie(d),
+      async () => { const _r = await _persistAllToDexie(d); if (!_r) throw new Error('full persist returned false'); },  // A-F2
       'Full save'
     ).catch(err => {
       console.error('[DB] Background full-save failed after retries:', err);
@@ -316,16 +357,42 @@ const DB = {
    */
   commit() {
     if (!this._cache) return false;
+    this._sanitizeNames();
     this._cache._v = (this._cache._v || 0) + 1;
     // Only rewrite small reference tables + meta — NOT transactions
     _retryWrite(
-      () => _persistRefDataToDexie(this._cache),
+      async () => { const _r = await _persistRefDataToDexie(this._cache); if (!_r) throw new Error('ref-data persist returned false'); },  // A-F2: surface swallowed failure
       'Commit (ref data)'
     ).catch(err => {
       console.error('[DB] Background commit failed after retries:', err);
     });
     if (typeof Sync !== 'undefined') Sync.scheduleSync();
     return true;
+  },
+
+  // F2-CRIT03 (Gemini FINAL CRIT-03): flipping _synced on a pushed batch used
+  // DB.save() — a clear+rewrite of ALL 12 tables (10k+ ledger rows) on EVERY
+  // successful push. Verified live: 12 table clears for one flag flip. This is
+  // the targeted replacement: update only the pushed rows, in cache + Dexie.
+  // Returns true only when the rows are durably persisted; on false the batch
+  // stays unsynced and re-pushes next cycle (server dedup makes replay safe).
+  async markTransactionsSynced(ids) {
+    if (!this._cache) return false;
+    const idSet = ids instanceof Set ? ids : new Set(ids);
+    const rows = (this._cache.transactions || []).filter(t => t && idSet.has(t.id));
+    if (rows.length === 0) return true;
+    rows.forEach(t => { t._synced = true; });
+    _pendingWrites++;
+    try {
+      const ok = await _retryWrite(
+        () => bobDB.transactions.bulkPut(rows),
+        `Mark ${rows.length} transactions synced`
+      );
+      if (!ok) rows.forEach(t => { t._synced = false; });  // cache must not claim what disk didn't confirm
+      return ok;
+    } finally {
+      _pendingWrites--;
+    }
   },
 
   // ─── Append-Only Record Methods (Hybrid Option C) ─────────────────
@@ -342,6 +409,8 @@ const DB = {
    */
   addTransaction(txn) {
     if (!this._cache) return false;
+    // MFL-023: dedupe by id — don't create a second cache entry for an existing transaction
+    if (txn && this._cache.transactions.some(t => t.id === txn.id)) return true;
     this._cache.transactions.push(txn);
     _appendRecord('transactions', txn).catch(err => {
       console.error('[DB] Background transaction append failed:', err);
@@ -397,6 +466,9 @@ const DB = {
    */
   addTransactions(txns) {
     if (!this._cache || !txns || txns.length === 0) return false;
+    const _seen = new Set(this._cache.transactions.map(t => t.id));
+    txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // MFL-023/DA-1: dedupe vs cache AND within the batch (running set)
+    if (txns.length === 0) return true;
     this._cache.transactions.push(...txns);
     _appendRecords('transactions', txns).catch(err => {
       console.error('[DB] Background bulk transaction append failed:', err);
@@ -433,6 +505,7 @@ const DB = {
                            original.type === 'out' ? 'in' :
                            original.type === 'transfer_out' ? 'transfer_in' :
                            original.type === 'wastage' ? 'in' :
+                           original.type === 'move_out' ? 'in' :  // MFL-006: reverse out -> add back
                            original.type === 'adjustment_in' ? 'adjustment_out' :
                            original.type === 'adjustment_out' ? 'adjustment_in' : original.type;
       Stock._applyDelta(original.storeId, original.productId, reversedType, original.qty);
@@ -446,7 +519,7 @@ const DB = {
     });
     // Push tombstone to SharePoint (unless this IS a remote tombstone being applied)
     if (!(options && options.skipTombstone) && typeof Sync !== 'undefined' && Sync.pushTombstone) {
-      Sync.pushTombstone(txnId, original || {});
+      Sync.pushTombstone(txnId, original || {}, options);
     }
     return true;
   },
@@ -472,6 +545,8 @@ const DB = {
 
     // Update cache synchronously (optimistic — matches existing pattern)
     if (transactions && transactions.length > 0) {
+      const _seen = new Set(this._cache.transactions.map(t => t.id));
+      transactions = transactions.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // DA-1/CONV-2: dedupe vs cache + within batch
       this._cache.transactions.push(...transactions);
       // Fix #9: Incremental cache update for atomic batch
       if (typeof Stock !== 'undefined' && Stock._applyDelta) {
@@ -522,6 +597,183 @@ const DB = {
     return true;
   },
 
+  // ─── W1a — DURABLE (await-able) WRITE API (MFL-002 fix) ──────────────────
+  // These are the Promise-returning counterparts of the fire-and-forget methods
+  // above. A caller that `await`s these gets `true` ONLY after the Dexie write
+  // is confirmed durable, or `false` after retries are exhausted — in which case
+  // the optimistic cache mutation is rolled back here. Callers must show success
+  // / navigate / clear the form / send email ONLY when the result is `true`, and
+  // surface a failure to the user when it is `false`.
+  // Additive: the legacy methods above are untouched; nothing calls these yet.
+
+  async addTransactionDurable(txn) {
+    if (!this._cache) return false;
+    if (txn && this._cache.transactions.some(t => t.id === txn.id)) return true; // MFL-023 dedupe
+    this._cache.transactions.push(txn);
+    if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+      Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
+    }
+    const ok = await _appendRecord('transactions', txn);
+    if (!ok) {
+      // Roll back the optimistic cache mutation (remove the exact object we pushed)
+      this._cache.transactions = this._cache.transactions.filter(t => t !== txn);
+      if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+    }
+    return ok;
+  },
+
+  async addTransactionsDurable(txns) {
+    if (!this._cache || !txns || txns.length === 0) return false;
+    const _seen = new Set(this._cache.transactions.map(t => t.id));
+    txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // MFL-023/DA-1: dedupe vs cache AND within the batch (running set)
+    if (txns.length === 0) return true;
+    this._cache.transactions.push(...txns);
+    if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+      for (const txn of txns) Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
+    }
+    const ok = await _appendRecords('transactions', txns);
+    if (!ok) {
+      const added = new Set(txns);
+      this._cache.transactions = this._cache.transactions.filter(t => !added.has(t));
+      if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+    }
+    return ok;
+  },
+
+  async commitDurable() {
+    if (!this._cache) return false;
+    this._sanitizeNames();
+    const prevV = this._cache._v || 0;
+    this._cache._v = prevV + 1;
+    // NOTE: _persistRefDataToDexie swallows its own error and returns false, so we
+    // must convert a false return into a throw — otherwise _retryWrite (which only
+    // catches throws) would treat a failed persist as success.
+    const ok = await _retryWrite(
+      async () => { const r = await _persistRefDataToDexie(this._cache); if (!r) throw new Error('ref-data persist returned false'); },
+      'Commit (ref data, durable)'
+    );
+    if (ok) {
+      if (typeof Sync !== 'undefined') Sync.scheduleSync();
+    } else {
+      this._cache._v = prevV; // restore version counter on failure
+    }
+    return ok;
+  },
+
+  async addTransferDurable(transfer) {
+    if (!this._cache) return false;
+    if (!this._cache.transfers) this._cache.transfers = [];
+    this._cache.transfers.push(transfer);
+    const ok = await _appendRecord('transfers', transfer);
+    if (!ok) this._cache.transfers = this._cache.transfers.filter(t => t !== transfer);
+    return ok;
+  },
+
+  async updateTransferDurable(transfer, transferSnapshot) {
+    if (!this._cache) return false;
+    const ok = await _appendRecord('transfers', transfer);
+    if (!ok && transferSnapshot) {
+      // Restore the transfer object to its pre-mutation state
+      Object.keys(transfer).forEach(k => delete transfer[k]);
+      Object.assign(transfer, transferSnapshot);
+    }
+    return ok;
+  },
+
+  async removeTransactionDurable(txnId, options) {
+    if (!this._cache) return false;
+    const original = this._cache.transactions.find(t => t.id === txnId);
+    if (!original) return true; // nothing to remove — idempotent success
+    this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
+    // Rebuild from the ledger (avoids the move_out reverse-delta hazard, MFL-006)
+    if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+    _pendingWrites++;
+    let ok = false;
+    try {
+      ok = await _retryWrite(() => bobDB.transactions.delete(txnId), `Delete transaction ${txnId} (durable)`);
+    } finally { _pendingWrites--; }
+    if (!ok) {
+      // Restore the removed row
+      this._cache.transactions.push(original);
+      if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+      return false;
+    }
+    if (!(options && options.skipTombstone) && typeof Sync !== 'undefined' && Sync.pushTombstone) {
+      Sync.pushTombstone(txnId, original || {}, options);
+    }
+    return true;
+  },
+
+  async atomicTransferWriteDurable(transactions, transfer, transferSnapshot) {
+    if (!this._cache) return false;
+    if (transactions && transactions.length > 0) {
+      const _seen = new Set(this._cache.transactions.map(t => t.id));
+      transactions = transactions.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // DA-1/CONV-2: dedupe vs cache + within batch
+      this._cache.transactions.push(...transactions);
+      if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+        for (const txn of transactions) Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
+      }
+    }
+    _pendingWrites++;
+    const tables = [bobDB.transactions];
+    if (transfer) tables.push(bobDB.transfers);
+    let ok = false;
+    try {
+      ok = await _retryWrite(
+        () => bobDB.transaction('rw', ...tables, async () => {
+          if (transactions && transactions.length > 0) await bobDB.transactions.bulkPut(transactions);
+          if (transfer) await bobDB.transfers.put(transfer);
+        }),
+        'Atomic transfer write (durable)'
+      );
+    } finally { _pendingWrites--; }
+    if (!ok) {
+      if (transactions && transactions.length > 0) {
+        const added = new Set(transactions);
+        this._cache.transactions = this._cache.transactions.filter(t => !added.has(t));
+        if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+      }
+      if (transfer && transferSnapshot) {
+        Object.keys(transfer).forEach(k => delete transfer[k]);
+        Object.assign(transfer, transferSnapshot);
+      }
+    }
+    return ok;
+  },
+
+  async atomicDeliveryWrite(txns) {
+    // A-F1: a delivery is ALL-OR-NOTHING across transactions + deliveries + costHistory + products
+    if (!this._cache) return false;
+    if (txns && txns.length > 0) {
+      const _seen = new Set(this._cache.transactions.map(t => t.id));
+      txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // DA-1/CONV-2: dedupe vs cache + within batch
+      this._cache.transactions.push(...txns);
+      if (typeof Stock !== 'undefined' && Stock._applyDelta) {
+        for (const t of txns) Stock._applyDelta(t.storeId, t.productId, t.type, t.qty);
+      }
+    }
+    _pendingWrites++;
+    let ok = false;
+    try {
+      ok = await _retryWrite(() => bobDB.transaction('rw',
+        bobDB.transactions, bobDB.deliveries, bobDB.costHistory, bobDB.products, bobDB.meta,
+        async () => {
+          if (txns && txns.length > 0) await bobDB.transactions.bulkPut(txns);
+          await bobDB.deliveries.clear(); if (this._cache.deliveries && this._cache.deliveries.length) await bobDB.deliveries.bulkPut(this._cache.deliveries);
+          await bobDB.costHistory.clear(); if (this._cache.costHistory && this._cache.costHistory.length) await bobDB.costHistory.bulkPut(this._cache.costHistory);
+          await bobDB.products.clear(); if (this._cache.products && this._cache.products.length) await bobDB.products.bulkPut(this._cache.products);
+        }), 'Atomic delivery write');
+    } finally { _pendingWrites--; }
+    if (!ok) {
+      if (txns && txns.length > 0) {
+        const set = new Set(txns);
+        this._cache.transactions = this._cache.transactions.filter(t => !set.has(t));
+      }
+      try { await this.refresh(); } catch(e) {}  // G-F1: revert ref-table cache mutations too (symmetric rollback)
+    }
+    return ok;
+  },
+
   /**
    * Wipes the Dexie database and reloads.
    * Only called from settings (rare).
@@ -541,6 +793,7 @@ const DB = {
    */
   async refresh() {
     this._cache = await _loadFromDexie();
+    this._sanitizeNames();  // GPT-003: sanitize on load (import/migrate/restore bypass commit-time sanitize)
     // Fix #9: Rebuild cache after refresh from Dexie
     if (typeof Stock !== 'undefined' && Stock._buildCache) {
       Stock._buildCache();
@@ -573,21 +826,29 @@ async function _migrateFromLocalStorage() {
   const raw = localStorage.getItem(DB.KEY);
   if (!raw) return false;
 
+  let old;
   try {
-    const old = JSON.parse(raw);
-    console.log('[DB] Migrating from localStorage → IndexedDB...');
-    await _persistAllToDexie(old);
-
-    // Archive old data (safety net — don't delete)
-    localStorage.setItem(DB.KEY + '_migrated', raw);
-    localStorage.removeItem(DB.KEY);
-
-    console.log('[DB] Migration complete.');
-    return true;
+    old = JSON.parse(raw);
   } catch (err) {
-    console.error('[DB] Migration failed — falling back to localStorage:', err);
+    // Corrupt source blob: unreadable either way — fall through to the seed path.
+    console.error('[DB] Migration source unreadable (corrupt JSON):', err);
     return false;
   }
+
+  console.log('[DB] Migrating from localStorage → IndexedDB...');
+  // Wave G (blind audit CaC-H4): _persistAllToDexie swallows its own errors and returns false,
+  // so the old `await` here could "succeed", archive + delete the live key, and boot an EMPTY app
+  // after a failed persist (e.g. quota on a big restore). A failed persist must THROW so initDB's
+  // disaster-recovery catch serves the still-intact localStorage data in recovery mode instead.
+  const ok = await _persistAllToDexie(old);
+  if (!ok) throw new Error('Migration persist to IndexedDB failed — localStorage source kept intact');
+
+  // Archive old data (safety net — don't delete). Only reached after a VERIFIED persist.
+  localStorage.setItem(DB.KEY + '_migrated', raw);
+  localStorage.removeItem(DB.KEY);
+
+  console.log('[DB] Migration complete.');
+  return true;
 }
 
 /**
@@ -597,11 +858,15 @@ async function _migrateFromLocalStorage() {
  */
 async function _loadSeedData(seed) {
   console.log('[DB] Loading SEED data into IndexedDB...');
+  // F1-C01: seed products ship without `active` — default missing flags to true
+  // BEFORE first persist so a fresh install never boots with an empty catalogue.
+  // Copies first (never mutate the SEED constant), then the shared normalizer.
+  const _act = arr => _defaultActiveTrue((arr || []).map(o => (o && typeof o === 'object') ? Object.assign({}, o) : o));
   const data = {
     productTypes: seed.productTypes || [],
     categories: seed.categories || [],
-    products: seed.products || [],
-    stores: seed.stores || [],
+    products: _act(seed.products),
+    stores: _act(seed.stores),
     users: seed.users || [],
     thresholds: seed.thresholds || [],
     transactions: [],
@@ -614,7 +879,10 @@ async function _loadSeedData(seed) {
     // Fix #8: stockThresholds removed — thresholds unified in d.thresholds
     _v: 1,
   };
-  await _persistAllToDexie(data);
+  // Wave G (CaC-H4 sibling sweep): same silent-false trap as migration — a failed seed persist
+  // must throw so boot shows the fatal contact-admin screen, not a silently empty app.
+  const ok = await _persistAllToDexie(data);
+  if (!ok) throw new Error('SEED persist to IndexedDB failed');
   console.log('[DB] SEED data loaded.');
 }
 
@@ -642,6 +910,7 @@ async function initDB(seedData) {
 
     // Step 3: Load everything into the synchronous cache
     DB._cache = await _loadFromDexie();
+    DB._sanitizeNames();  // GPT-003: sanitize on initial load (covers localStorage migration + backup restore before first render)
 
     console.log(`[DB] Ready. ${DB._cache.products.length} products, ${DB._cache.transactions.length} transactions, v${DB._cache._v}`);
     return true;
@@ -653,7 +922,10 @@ async function initDB(seedData) {
     if (raw) {
       try {
         DB._cache = JSON.parse(raw);
-        console.warn('[DB] Fell back to localStorage data.');
+        DB._recoveryMode = true;  // M-01: this archive is frozen at migration time and may be weeks stale
+        console.warn('[DB] Fell back to localStorage data (RECOVERY MODE — possibly stale).');
+        // Never silently present stale stock as current — surface the blocking contact-admin warning.
+        try { if (typeof UI !== 'undefined' && UI.fatalSaveError) UI.fatalSaveError('Local database could not open. The app is showing the LAST LOCAL BACKUP, which may be OUT OF DATE — do not rely on stock numbers. Please contact your administrator.'); } catch(e) {}
         return true;
       } catch (e) {
         console.error('[DB] Fallback also failed:', e);

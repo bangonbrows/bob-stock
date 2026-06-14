@@ -10,7 +10,7 @@
  *   - Handles Azure SWA routing (no GitHub Pages path prefix)
  */
 
-const CACHE_NAME = 'bob-stock-v8';
+const CACHE_NAME = 'bob-stock-v10';  // D-044: precache Dexie URL realigned to the page's pinned+SRI jsdelivr build
 
 const PRECACHE_URLS = [
   './',
@@ -18,7 +18,12 @@ const PRECACHE_URLS = [
   './db.js',
   './sync.js',
   './phase2.js',
-  'https://unpkg.com/dexie/dist/dexie.js',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/icon-maskable-512.png',
+  'https://cdn.jsdelivr.net/npm/dexie@3.2.7/dist/dexie.min.js',  // D-044: match the page's pinned+SRI Dexie build (was unpkg unmin — never cache-hit, broke first-load-offline)
+  'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js',  // MFL-022: charts work offline
 ];
 
 // ─── Install ──────────────────────────────────────────────────────────────────

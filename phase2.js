@@ -38,29 +38,32 @@ DB._migrate = function() {
 
 // ── Transfer Module ──────────────────────────────────────────────────────────
 const Transfer = {
-  EMAIL_URL: 'https://prod-29.australiaeast.logic.azure.com:443/workflows/c190a25cfabc48fc85e1d63628c092b1/triggers/When_a_HTTP_request_is_received/paths/invoke?api-version=2016-06-01&sp=%2Ftriggers%2FWhen_a_HTTP_request_is_received%2Frun&sv=1.0&sig=h7DYTLNOEE1RvqVW0ROaN31JCIBhn3vevqHsyCLBqo4',
+  EMAIL_URL: null,  // MFL-010: moved to AppConfig — fetched at runtime via Sync._emailUrl
 
-  _canCreate() { return Auth.isAtLeast('store_manager') && !Auth.is('staff'); },
+  _canCreate() { return ['franchisee','territory_manager','head_office','director'].includes(Auth.user()?.role); },  // D-018 transfer role matrix
   _canReceive() { return Auth.isAtLeast('staff'); },
-  _canResolve() { return Auth.is('director') || Auth.is('head_office') || Auth.is('franchisee'); },
+  _canResolve() { return Auth.is('director'); },  // D-018: resolve (write-off) = director only
   _canSetThresholds() { return Auth.is('director') || Auth.is('head_office'); },
-  _canCancel() { return Auth.is('director') || Auth.is('head_office'); },
+  _canCancel() { return Auth.is('director'); },  // D-044: cancel = Director ONLY (tightened from the D-018 franchisee&above set)
   _canViewHistory() { return Auth.isAtLeast('store_manager') && !Auth.is('staff'); },
 
   _txn(type, productId, qty, storeId, transferId, reason) {
     const u = Auth.user();
-    return { id: 'txn_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join(''), type, productId, qty, storeId, transferId, date: new Date().toISOString().slice(0,10), staffName: u?.name || u?.username || 'unknown', reason: reason || '', by: u, editLog: [], createdAt: new Date().toISOString() };
+    return { id: 'txn_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join(''), type, productId, qty, storeId, transferId, date: UI.todayLocal(), staffName: u?.name || u?.username || 'unknown', reason: reason || '', by: Auth.actor(), editLog: [], createdAt: new Date().toISOString() };
   },
 
   _notify(payload) {
+    // SA-D-F1: never email a full user object (carries password/PIN hashes). Slim every actor field.
+    if (payload && typeof Auth!=='undefined' && Auth._slimActorsDeep) Auth._slimActorsDeep(payload);  // SA-I-F1: deep-slim incl nested flaggedItems[].resolvedBy
     // T3-03: Added .catch() to handle async rejection (try/catch can't catch promise errors)
-    try { fetch(this.EMAIL_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }).catch(() => {}); } catch(e) {}
+    try { const _u=((typeof Sync!=='undefined'&&Sync._emailUrl)||''); if(!_u){ console.warn('[Transfer] email URL not configured'); return; } fetch(_u, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }).catch(() => {}); } catch(e) {}
   },
 
-  create(fromStoreId, toStoreId, items, options) {
+  async create(fromStoreId, toStoreId, items, options) {
     if (!this._canCreate()) return { ok:false, error:'Permission denied' };
     if (!fromStoreId || !toStoreId || !items?.length) return { ok:false, error:'Missing required fields' };
     if (fromStoreId === toStoreId) return { ok:false, error:'Cannot transfer to same store' };
+    if (!(Auth.isHO() || Auth.is('director'))) { const _mine=Auth.storeIds()||[]; if(!_mine.includes(fromStoreId)||!_mine.includes(toStoreId)) return { ok:false, error:'You can only transfer between stores you manage' }; }  // D-018 store-scope
     const opt = options || {};
     const d = DB.get();
     // T3-03: Add random suffix to prevent ID collision from concurrent devices
@@ -68,36 +71,37 @@ const Transfer = {
     const now = new Date().toISOString();
     const transfer = {
       id, date: now, createdAt: now, fromStoreId, toStoreId,
-      createdBy: Auth.user(),
+      createdBy: Auth.actor(),
       createdByName: Auth.user()?.name || Auth.user()?.username || 'unknown',
       status: opt.isDraft ? 'draft' : 'in_transit',
       returnReason: opt.returnReason || null,
       returnNote: opt.returnNote || '',
       items: items.map(i => ({
-        productId: i.productId, sentQty: i.qty, receivedQty: null,
+        productId: i.productId, sentQty: Math.max(0, UI.safeInt(i.qty) || 0), receivedQty: null,
         status: opt.isDraft ? 'pending' : 'pending',
         flagNote: '', resolvedBy: null, resolvedAction: null
       })),
       receivedBy: null, receivedDate: null, completedDate: null,
       notes: opt.notes || ''
     };
-    DB.addTransfer(transfer);
-    // Transit Void: deduct stock immediately unless draft
-    if (!opt.isDraft) {
-      transfer.items.forEach(item => {
-        DB.addTransaction(this._txn('transfer_out', item.productId, item.sentQty, fromStoreId, id, 'Transfer to ' + UI.storeName(toStoreId)));
-      });
+    if (opt.isDraft) {
+      const _ok = await DB.addTransferDurable(transfer);
+      if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+      return { ok:true, transferId:id };
     }
-    DB.commit();
-    if (!opt.isDraft) {
-      this._notify({
-        type: 'transfer_created', fromStore: UI.storeName(fromStoreId), toStore: UI.storeName(toStoreId),
-        date: now, createdBy: Auth.user(),
-        items: transfer.items.map(i => ({ product: UI.productName(i.productId), qty: i.sentQty })),
-        totalItems: transfer.items.length,
-        totalUnits: transfer.items.reduce((s, i) => s + i.sentQty, 0)
-      });
-    }
+    // Transit Void: deduct stock immediately (non-draft), atomically with the new transfer
+    if (!DB.get().transfers) DB.get().transfers = [];
+    DB.get().transfers.push(transfer);
+    const _batch = transfer.items.map(item => this._txn('transfer_out', item.productId, item.sentQty, fromStoreId, id, 'Transfer to ' + UI.storeName(toStoreId)));
+    const _ok = await DB.atomicTransferWriteDurable(_batch, transfer, null);
+    if (!_ok) { DB.get().transfers = DB.get().transfers.filter(x => x !== transfer); UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    this._notify({
+      type: 'transfer_created', fromStore: UI.storeName(fromStoreId), toStore: UI.storeName(toStoreId),
+      date: now, createdBy: Auth.actor(),
+      items: transfer.items.map(i => ({ product: UI.productName(i.productId), qty: i.sentQty })),
+      totalItems: transfer.items.length,
+      totalUnits: transfer.items.reduce((s, i) => s + i.sentQty, 0)
+    });
     return { ok:true, transferId:id };
   },
 
@@ -125,7 +129,7 @@ const Transfer = {
     return { ok:true };
   },
 
-  submitDraft(transferId, draftQtys) {
+  async submitDraft(transferId, draftQtys) {
     if (!this._canCreate()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || t.status !== 'draft') return { ok:false, error:'Invalid transfer or not a draft' };
@@ -141,7 +145,7 @@ const Transfer = {
     // T2-06: Apply draft quantity edits after snapshot, before atomic write
     if (draftQtys) {
       t.items.forEach(i => {
-        if (draftQtys[i.productId] !== undefined) i.sentQty = draftQtys[i.productId];
+        if (draftQtys[i.productId] !== undefined) i.sentQty = Math.max(0, UI.safeInt(draftQtys[i.productId]) || 0);
       });
     }
     t.items.forEach(i => { i.status = 'pending'; });
@@ -153,10 +157,11 @@ const Transfer = {
       batchTxns.push(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer to ' + UI.storeName(t.toStoreId)));
     });
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
-    DB.atomicTransferWrite(batchTxns, t, snapshot);
+    const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
+    if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     this._notify({
       type: 'transfer_created', fromStore: UI.storeName(t.fromStoreId), toStore: UI.storeName(t.toStoreId),
-      date: t.date, createdBy: Auth.user(),
+      date: t.date, createdBy: Auth.actor(),
       items: t.items.map(i => ({ product: UI.productName(i.productId), qty: i.sentQty })),
       totalItems: t.items.length,
       totalUnits: t.items.reduce((s, i) => s + i.sentQty, 0)
@@ -164,10 +169,25 @@ const Transfer = {
     return { ok:true };
   },
 
-  receive(transferId, receivedItems) {
+  async receive(transferId, receivedItems) {
     if (!this._canReceive()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || t.status !== 'in_transit') return { ok:false, error:'Invalid transfer or not in transit' };
+    // MFL-013: enforce store ownership in the function, not just the hidden UI
+    if (!(Auth.isHO() || Auth.is('director') || (Auth.storeIds && Auth.storeIds().includes(t.toStoreId)))) {
+      return { ok:false, error:'You can only receive transfers for your own store' };
+    }
+    // F2-CRIT02 (Gemini FINAL CRIT-02): the status check above is LOCAL-only — a
+    // second device whose replica is still in_transit could receive again and
+    // double the stock (verified live: qty 0→20 on a 10-unit transfer). If the
+    // ledger already holds ANY transfer_in for this transfer, a receive happened
+    // somewhere; refuse and tell the user to sync. Server-side idempotency by
+    // (TransferId, Type) is the authoritative fix — see SERVER-SIDE-REQUIREMENTS.
+    {
+      const _d = DB.get();
+      const _already = (_d.transactions || []).some(x => x && x.transferId === transferId && x.type === 'transfer_in');
+      if (_already) return { ok:false, error:'This transfer was already received (possibly on another device). Sync and reopen it.' };
+    }
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
@@ -185,19 +205,31 @@ const Transfer = {
       } else {
         item.status = 'flagged';
         hasFlagged = true;
+        // F2-HIGH02 (Gemini FINAL HIGH-02, replaces the flagged half of the Transit
+        // Void model): stock that PHYSICALLY ARRIVED is credited immediately — only
+        // the discrepancy waits for the Director. Before this, a flagged line
+        // credited ZERO until resolution, so real shelf stock showed as
+        // out-of-stock and triggered false reorders. `creditedAtReceive` tells
+        // resolveFlag the credit already happened (absent = legacy pre-F2 transfer).
+        const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(rQty)) || 0));
+        item.creditedAtReceive = credit;
+        if (credit > 0) {
+          batchTxns.push(this._txn('transfer_in', item.productId, credit, t.toStoreId, transferId, 'Received (discrepancy flagged) from ' + UI.storeName(t.fromStoreId)));
+        }
       }
     });
-    t.receivedBy = Auth.user();
+    t.receivedBy = Auth.actor();
     t.receivedDate = now;
     t.status = hasFlagged ? 'received' : 'completed';
     if (!hasFlagged) t.completedDate = now;
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
-    DB.atomicTransferWrite(batchTxns, t, snapshot);
+    const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
+    if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     if (!hasFlagged) this._notifyCompleted(t);
     return { ok:true, hasFlagged };
   },
 
-  resolveFlag(transferId, productId, action, qty, note) {
+  async resolveFlag(transferId, productId, action, qty, note) {
     if (!this._canResolve()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || (t.status !== 'received' && t.status !== 'in_transit')) return { ok:false, error:'Invalid transfer' };
@@ -206,25 +238,47 @@ const Transfer = {
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
-    item.resolvedBy = Auth.user();
+    item.resolvedBy = Auth.actor();
     item.resolvedAction = action;
     item.flagNote = note || '';
     item.status = 'resolved';
     // Tier 2 Fix #12: Collect all transactions, then write atomically
+    // F2-HIGH02: receive() now credits the physically-received qty IMMEDIATELY and
+    // records it in item.creditedAtReceive — resolution settles only the DIFFERENCE.
+    // Transfers flagged before this change carry no marker → alreadyCredited = 0 →
+    // the maths below collapses to the original behaviour (backward compatible).
+    const alreadyCredited = Number.isSafeInteger(item.creditedAtReceive)
+      ? Math.max(0, Math.min(item.sentQty, item.creditedAtReceive)) : 0;
     const batchTxns = [];
     if (action === 'accept_as_is') {
-      batchTxns.push(this._txn('transfer_in', productId, item.receivedQty, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
-      const diff = item.sentQty - item.receivedQty;
+      const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(item.receivedQty)) || 0));  // D-F1/SA-F-F1: clamp credit to [0, sentQty], integer (no phantom/negative)
+      const topUp = credit - alreadyCredited;
+      if (topUp > 0) {
+        batchTxns.push(this._txn('transfer_in', productId, topUp, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
+      }
+      const diff = item.sentQty - credit;
       if (diff > 0) {
         batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned — ' + diff + ' units'));
       }
     } else if (action === 'adjust') {
-      batchTxns.push(this._txn('transfer_in', productId, qty, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
-      const diff = item.sentQty - qty;
+      const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(qty)) || 0));  // D-F1/SA-F-F1: clamp adjust to [0, sentQty], integer (no phantom/negative)
+      const delta = credit - alreadyCredited;
+      if (delta > 0) {
+        batchTxns.push(this._txn('transfer_in', productId, delta, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
+      } else if (delta < 0) {
+        // Director ruled fewer units than were credited at receive — book the
+        // difference OUT of the receiver so the ledger matches the ruling.
+        batchTxns.push(this._txn('adjustment_out', productId, -delta, t.toStoreId, transferId, 'Flag resolved — received qty adjusted down by Director'));  // adjustment category, NOT 'out' (= sale) — keeps sell-through reports clean
+      }
+      const diff = item.sentQty - credit;
       if (diff > 0) {
         batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned — ' + diff + ' units'));
       }
     } else if (action === 'reject') {
+      if (alreadyCredited > 0) {
+        // Reverse the receive-time credit — on reject the receiver keeps nothing.
+        batchTxns.push(this._txn('adjustment_out', productId, alreadyCredited, t.toStoreId, transferId, 'Rejected — received units sent back to ' + UI.storeName(t.fromStoreId)));  // adjustment category, NOT 'out' (= sale)
+      }
       batchTxns.push(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
     }
     // Check if all items resolved
@@ -234,7 +288,8 @@ const Transfer = {
       t.completedDate = new Date().toISOString();
     }
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
-    DB.atomicTransferWrite(batchTxns, t, snapshot);
+    const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
+    if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     // T3-M3r1: Notify AFTER successful atomic write (was before — would send ghost emails on write failure)
     if (allDone) this._notifyCompleted(t);
     return { ok:true };
@@ -274,10 +329,11 @@ const Transfer = {
     return (DB.get().transfers || []).find(t => t.id === transferId) || null;
   },
 
-  cancel(transferId) {
+  async cancel(transferId) {
     if (!this._canCancel()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || (t.status !== 'in_transit' && t.status !== 'draft')) return { ok:false, error:'Cannot cancel this transfer' };
+    if (!(Auth.isHO() || Auth.is('director'))) { const _mine=Auth.storeIds()||[]; if(!_mine.includes(t.fromStoreId)||!_mine.includes(t.toStoreId)) return { ok:false, error:'You can only cancel transfers between stores you manage' }; }  // D-018 store-scope
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
     // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
@@ -291,7 +347,8 @@ const Transfer = {
     t.status = 'cancelled';
     t.completedDate = new Date().toISOString();
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
-    DB.atomicTransferWrite(batchTxns, t, snapshot);
+    const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
+    if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     return { ok:true };
   },
 
@@ -302,11 +359,18 @@ const Transfer = {
     const d = DB.get();
     const cutoff = Date.now() - (daysOld || 30) * 86400000;
     const before = d.transfers.length;
+    const _prunedIds = [];
     d.transfers = d.transfers.filter(t => {
       if (t.status !== 'completed' && t.status !== 'cancelled') return true;
-      return new Date(t.completedDate || t.date).getTime() > cutoff;
+      const keep = new Date(t.completedDate || t.date).getTime() > cutoff;
+      if (!keep) _prunedIds.push(t.id);
+      return keep;
     });
-    if (d.transfers.length < before) DB.commit();
+    if (_prunedIds.length) {
+      DB.commit();
+      // MFL-019: also delete from IndexedDB so pruned transfers don't reappear on next DB.refresh()
+      if (typeof bobDB !== 'undefined') bobDB.transfers.bulkDelete(_prunedIds).catch(() => {});
+    }
     return before - d.transfers.length;
   }
 };
@@ -334,8 +398,9 @@ if (typeof buildSidebar === 'function') {
     const sidebarNav = document.querySelector('.sidebar-nav');
     if (sidebarNav && !sidebarNav.querySelector('[data-page="transfers"]')) {
       const role = Auth.user()?.role || '';
-      const canCreate = ['director','head_office','franchisee','store_manager'].includes(role);
-      const canViewHistory = canCreate;
+      const canCreate = ['director','head_office','territory_manager','franchisee'].includes(role);  // D-018
+      const canSeeHub = !!Auth.user();  // D-018: any staff can reach the Hub to RECEIVE
+      const canViewHistory = canSeeHub;
       const canSetThresholds = ['director','head_office'].includes(role);
       if (canViewHistory || canCreate) {
         const section = document.createElement('div');
@@ -719,7 +784,7 @@ window.renderTransfersHub = function() {
   const page = Math.min(_txState.hubPage, totalPages - 1);
   const paged = filtered.slice(page * perPage, (page + 1) * perPage);
 
-  const canCreate = Auth.isAtLeast('store_manager');
+  const canCreate = ['franchisee','territory_manager','head_office','director'].includes(Auth.user()?.role);  // D-F3: match D-018 matrix
   const tabs = [
     { key: 'all', label: 'All' },
     { key: 'in_transit', label: 'In Transit' },
@@ -978,6 +1043,7 @@ window.renderDraftTransfer = function(transferId) {
     }).join('')}
 
     <div style="margin-top:16px;text-align:right">
+      ${Auth.is('director') ? `<button class="btn-grey" style="margin-right:8px" onclick="TransferUI.cancelTransfer('${transferId}')">Cancel Transfer</button>` : ''}
       <button class="btn-rose" onclick="TransferUI.submitDraft('${transferId}')"
         ${!allConfirmed ? 'disabled style="opacity:.5"' : ''}>
         Submit &amp; Send Transfer
@@ -1064,6 +1130,7 @@ window.renderReceiveTransfer = function(transferId) {
     }).join('')}
 
     <div style="margin-top:16px;text-align:right">
+      ${Auth.is('director') ? `<button class="btn-grey" style="margin-right:8px" onclick="TransferUI.cancelTransfer('${transferId}')">Cancel Transfer</button>` : ''}
       <button class="btn-rose" onclick="TransferUI.submitReceive('${transferId}')"
         ${!allMatched ? 'disabled style="opacity:.5"' : ''}>Submit Receipt</button>
     </div>
@@ -1259,6 +1326,7 @@ window.renderOptimumLevels = function() {
 // ============================================================
 // TransferUI — action handlers
 // ============================================================
+window._txState = _txState;  // SA-D-F2: inline onclick handlers reference _txState in global scope
 window.TransferUI = {
 
   openDetail(transferId) {
@@ -1280,8 +1348,10 @@ window.TransferUI = {
         TransferUI.showReadOnly(t);
       }
     } else if (t.status === 'flagged' || t.status === 'received') {
-      _txState.flagActions = {};
-      navigateToTransferDetail('resolve-flags', transferId);
+      if (Auth.is('director')) {  // D-044: resolving is Director-only — others get read-only, not a dead resolve screen
+        _txState.flagActions = {};
+        navigateToTransferDetail('resolve-flags', transferId);
+      } else { TransferUI.showReadOnly(t); }
     } else {
       TransferUI.showReadOnly(t);
     }
@@ -1312,6 +1382,28 @@ window.TransferUI = {
     `);
   },
 
+  cancelTransfer(transferId) {  // D-044: Director-only cancel for a wrong draft/in-transit transfer
+    if (!Transfer._canCancel()) { UI.toast('Only a Director can cancel a transfer', 'error'); return; }
+    const t = Transfer.get(transferId);
+    if (!t) return;
+    if (t.status !== 'in_transit' && t.status !== 'draft') { UI.toast('This transfer can no longer be cancelled', 'error'); return; }
+    const back = t.status === 'in_transit'
+      ? `It has already been sent, so the stock will be returned to ${UI.storeName(t.fromStoreId)}.`
+      : 'This draft will be discarded.';
+    UI.confirm(`Cancel this transfer (${UI.storeName(t.fromStoreId)} → ${UI.storeName(t.toStoreId)})? ${back}`, async function() {
+      if (_txState._creating) return; _txState._creating = true;  // D-F4 double-submit guard
+      try {
+        const result = await Transfer.cancel(transferId);
+        if (!result.ok) { UI.toast(result.error, 'error'); return; }
+        UI.toast('Transfer cancelled', 'success');
+        navigateTo('transfers');
+        renderTransfersHub();
+      } catch (e) {
+        UI.toast(e.message || 'Failed to cancel transfer', 'error');
+      } finally { _txState._creating = false; }
+    });
+  },
+
   submitCreate() {
     const from = _txState.createFrom;
     const to = _txState.createTo;
@@ -1327,14 +1419,16 @@ window.TransferUI = {
       UI.toast('Select a return reason', 'error'); return;
     }
 
-    UI.confirm(`Create transfer of ${items.length} products (${items.reduce((s,i)=>s+i.qty,0)} units) from ${UI.storeName(from)} to ${UI.storeName(to)}?`, function() {
+    UI.confirm(`Create transfer of ${items.length} products (${items.reduce((s,i)=>s+i.qty,0)} units) from ${UI.storeName(from)} to ${UI.storeName(to)}?`, async function() {
+      if (_txState._creating) return;  // D-F2: prevent double-confirm duplicate transfer
+      _txState._creating = true;
       try {
         const opts = {};
         if (_txState.createType === 'return') {
           opts.returnReason = _txState.createReturnReason || null;
           opts.returnNote = _txState.createReturnNotes || '';
         }
-        const result = Transfer.create(from, to, items, opts);
+        const result = await Transfer.create(from, to, items, opts);
         if (!result.ok) { UI.toast(result.error, 'error'); return; }
         _txState.createItems = {};
         _txState.createSearch = '';
@@ -1345,7 +1439,7 @@ window.TransferUI = {
         renderTransfersHub();
       } catch (e) {
         UI.toast(e.message || 'Failed to create transfer', 'error');
-      }
+      } finally { _txState._creating = false; }
     });
   },
 
@@ -1368,10 +1462,16 @@ window.TransferUI = {
     const allConfirmed = t.items.every(i => i.status === 'confirmed');
     if (!allConfirmed) { UI.toast('Confirm all items first', 'warning'); return; }
 
-    UI.confirm('Submit this draft and mark as In Transit?', function() {
+    // Wave G follow-up note: submitDraft does NOT need the _txState._creating guard its siblings have.
+    // It is already idempotent against a double-tap via TWO synchronous status checks — this handler
+    // returns early above if status!=='draft', and Transfer.submitDraft flips status to 'in_transit'
+    // synchronously (phase2 ~line 152) before its await, so any second invocation bails. Adding a
+    // guard here would be dead code that no sentinel could mutation-prove (verified: removing it
+    // changes nothing). Left unguarded deliberately.
+    UI.confirm('Submit this draft and mark as In Transit?', async function() {
       try {
         // T2-06: Pass draft quantities so they're applied inside the atomic boundary
-        const result = Transfer.submitDraft(transferId, _txState.draftQtys);
+        const result = await Transfer.submitDraft(transferId, _txState.draftQtys);
         if (!result.ok) { UI.toast(result.error, 'error'); return; }
         _txState.draftConfirmed = {};
         _txState.draftQtys = {};
@@ -1407,13 +1507,14 @@ window.TransferUI = {
       ? 'Some items have mismatched quantities. Submit receipt and flag mismatches?'
       : 'All items match. Submit receipt?';
 
-    UI.confirm(msg, function() {
+    UI.confirm(msg, async function() {
+      if (_txState._creating) return; _txState._creating = true;  // D-F4
       try {
         const receiptItems = items.map(i => ({
           productId: i.productId,
           receivedQty: _txState.receiveQtys[i.productId] ?? (i.sentQty || i.qty || 0)
         }));
-        const result = Transfer.receive(transferId, receiptItems);
+        const result = await Transfer.receive(transferId, receiptItems);
         if (!result.ok) { UI.toast(result.error, 'error'); return; }
         _txState.receiveMatched = {};
         _txState.receiveQtys = {};
@@ -1422,7 +1523,7 @@ window.TransferUI = {
         renderTransfersHub();
       } catch (e) {
         UI.toast(e.message || 'Failed to submit receipt', 'error');
-      }
+      } finally { _txState._creating = false; }
     });
   },
 
@@ -1440,27 +1541,33 @@ window.TransferUI = {
     const allResolved = flagged.every(i => _txState.flagActions[i.productId]?.action);
     if (!allResolved) { UI.toast('Resolve all flagged items first', 'warning'); return; }
 
-    UI.confirm('Complete this transfer with the resolved flags?', function() {
+    UI.confirm('Complete this transfer with the resolved flags?', async function() {
+      if (_txState._creating) return; _txState._creating = true;  // D-F4
       try {
-        flagged.forEach(i => {
+        for (const i of flagged) {
           const fa = _txState.flagActions[i.productId];
           const action = fa.action; // 'accept_as_is' | 'adjust' | 'reject'
           const qty = fa.action === 'adjust' ? (fa.qty || 0) : undefined;
           const note = fa.notes || '';
-          const result = Transfer.resolveFlag(transferId, i.productId, action, qty, note);
+          const result = await Transfer.resolveFlag(transferId, i.productId, action, qty, note);
           if (!result.ok) throw new Error(result.error);
-        });
+        }
         _txState.flagActions = {};
         UI.toast('Transfer completed', 'success');
         navigateTo('transfers');
         renderTransfersHub();
       } catch (e) {
         UI.toast(e.message || 'Failed to complete transfer', 'error');
-      }
+      } finally { _txState._creating = false; }
     });
   },
 
-  saveOptimumLevels() {
+  async saveOptimumLevels() {
+    // Wave G follow-up (Gemini BLOCK P3 — G6 incomplete sweep): the other two write paths got
+    // double-tap guards, this "Save All" did not. A touchscreen double-tap fired overlapping
+    // commitDurable() calls (redundant sync + spurious "Save failed" UI). Same re-entrancy pattern.
+    if (this._optSaving) return; this._optSaving = true;
+    try {
     // Fix #8: Write to canonical d.thresholds array
     const scope = _txState.optScope;
     const storeId = _txState.optStore;
@@ -1468,36 +1575,54 @@ window.TransferUI = {
     const products = (d.products || []).filter(p => p.active !== false);
     let saved = 0;
 
-    products.forEach(p => {
+    for (const p of products) {
       const key = scope === 'global' ? p.id : p.id + '_' + storeId;
       const ed = _txState.optEdits[key];
-      if (!ed) return;
-      const targetStoreId = scope === 'global' ? null : storeId;
-      const idx = d.thresholds.findIndex(t => t.productId === p.id && ((targetStoreId === null) ? (t.storeId === null || t.storeId === '*') : t.storeId === targetStoreId));
-      const entry = { productId: p.id, storeId: targetStoreId, minQty: ed.min || 0, optimumQty: ed.optimum || 0, leadDays: null };
+      if (!ed) continue;
+      // Wave D (GPT-ABC-003): validate like the Settings threshold path — whole non-negative numbers, optimum >= min
+      const min = Number(ed.min || 0), opt = Number(ed.optimum || 0);
+      if (!Number.isInteger(min) || min < 0 || !Number.isInteger(opt) || opt < 0) { UI.toast(`${p.name}: min/optimum must be whole non-negative numbers`, 'error'); return; }
+      if (opt > 0 && min > 0 && opt < min) { UI.toast(`${p.name}: optimum must be greater than or equal to minimum`, 'error'); return; }
+      // Wave D (GPT-ABC-003): global scope persists as '*', NOT null — the [storeId+productId] compound primary key rejects a null component (that broke the global durable save). The read path (Stock.threshold) already falls back to ':*' and ':null'.
+      const targetStoreId = scope === 'global' ? '*' : storeId;
+      const idx = d.thresholds.findIndex(t => t.productId === p.id && ((scope === 'global') ? (t.storeId === null || t.storeId === '*') : t.storeId === targetStoreId));
+      // Wave G (blind W3-4): this entry used to hard-code leadDays:null, so every Save All silently
+      // wiped the reorder lead times set on the Settings > Thresholds screen. Preserve the existing value.
+      const _existingLead = idx >= 0 ? (d.thresholds[idx].leadDays != null ? d.thresholds[idx].leadDays : null) : null;
+      const entry = { productId: p.id, storeId: targetStoreId, minQty: min, optimumQty: opt, leadDays: _existingLead };
       if (idx >= 0) { Object.assign(d.thresholds[idx], entry); } else { d.thresholds.push(entry); }
       saved++;
-    });
+    }
 
     if (saved > 0) {
       // T3-04: Invalidate threshold Map cache before commit
       if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) { Stock._invalidateThrMap(); }
-      DB.commit();
+      if(!(await DB.commitDurable())){ try{ await DB.refresh(); }catch(e){} UI.fatalSaveError('Thresholds could not be saved to this device.'); return; }
       UI.toast(`Saved ${saved} threshold(s)`, 'success');
     } else {
       UI.toast('No changes to save', 'info');
     }
+    } finally { this._optSaving = false; }
   },
 
-  // Reset all transient state (call when navigating away)
+  // Reset all transient state (called on logout — Wave G / blind W8: shared store devices
+  // must not leak one user's half-finished drafts to the next user).
+  // Wave G also completed the sweep: createType/From/To/ReturnReason/ReturnNotes and optEdits
+  // were missing from this "reset all" — the exact incomplete-sweep trap from framework P-12.
   resetState() {
     _txState.createItems = {};
+    _txState.createType = 'standard';
+    _txState.createFrom = '';
+    _txState.createTo = '';
+    _txState.createReturnReason = '';
+    _txState.createReturnNotes = '';
     _txState.createSearch = '';
     _txState.receiveMatched = {};
     _txState.receiveQtys = {};
     _txState.flagActions = {};
     _txState.draftConfirmed = {};
     _txState.draftQtys = {};
+    _txState.optEdits = {};
   }
 };
 

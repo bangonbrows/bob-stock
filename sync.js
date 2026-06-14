@@ -34,6 +34,8 @@ const Sync = {
   // ─── State ───────────────────────────────────────────────────────────
   _pushUrl: null,
   _pullUrl: null,
+  _emailUrl: null,  // MFL-010: email Logic App URL from AppConfig (not hard-coded)
+  _localWriteDebounce: null,  // MFL-018: debounce leader refresh on follower writes
   _configUrl: null,
   _syncLock: false,  // Unified lock — serialises push and pull operations
   _retryCount: 0,
@@ -75,6 +77,7 @@ const Sync = {
       const config = JSON.parse(raw);
       this._pushUrl = config.pushUrl || null;
       this._pullUrl = config.pullUrl || null;
+      this._emailUrl = config.emailUrl || null;  // MFL-010
       this._configUrl = this.CONFIG_URL;
       this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
       this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
@@ -109,6 +112,19 @@ const Sync = {
       const data = await resp.json();
       if (!data.items || !Array.isArray(data.items)) return false;
 
+      // F3-CRIT01 (Gemini FINAL CRIT-01): master-data distribution. Before this,
+      // products/stores/categories NEVER synced — a Director price change or new
+      // product stayed trapped on one device (catalogue islands, verified live).
+      // AppConfig may now carry a 'master_data' item; merge it on every config
+      // fetch (app launch). Non-fatal if absent. Upstream catalogue WRITES still
+      // need a Logic App endpoint — see SERVER-SIDE-REQUIREMENTS.md.
+      try {
+        const mdItem = data.items.find(i => i.ConfigType === 'master_data');
+        if (mdItem && mdItem.ConfigData) this._applyMasterData(mdItem.ConfigData);
+      } catch (e) {
+        console.warn('[Sync] master_data merge failed (catalogue unchanged):', e);
+      }
+
       const syncItem = data.items.find(i => i.ConfigType === 'sync_config');
       if (!syncItem || !syncItem.ConfigData) {
         console.warn('[Sync] No sync_config item found in AppConfig.');
@@ -122,11 +138,13 @@ const Sync = {
       if (urls.pushUrl && urls.pullUrl) {
         this._pushUrl = urls.pushUrl;
         this._pullUrl = urls.pullUrl;
+        this._emailUrl = urls.emailUrl || null;  // MFL-010
         this._configUrl = this.CONFIG_URL;
         // Cache in sessionStorage — SAS URLs must not persist across sessions (Tier 1 Fix #5)
         sessionStorage.setItem('bob_sync_config', JSON.stringify({
           pushUrl: urls.pushUrl,
           pullUrl: urls.pullUrl,
+          emailUrl: urls.emailUrl || null,
           configUrl: this.CONFIG_URL
         }));
         this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
@@ -141,13 +159,104 @@ const Sync = {
     }
   },
 
+  // F3-CRIT01: merge a versioned master-data payload into the local catalogue.
+  // Payload: { version:N, products:[], stores:[], categories:[], productTypes:[] }.
+  // Rules:
+  //   - version gate: only apply when version > the device's last-applied version
+  //     (localStorage 'bob_catalogue_version') — idempotent across launches.
+  //   - UPSERT only: server rows update/insert; local-only rows are KEPT (there is
+  //     no upstream catalogue push yet, so deletion here would destroy
+  //     Director-added products that exist nowhere else).
+  //   - server is authoritative per-field; local costPrice is preserved unless the
+  //     server explicitly sends one (cost flows from local delivery workflows).
+  //   - every row passes the same boundary rules as import: safe key, no
+  //     sanitizer-stripped chars in ids, finite non-negative money. Bad rows are
+  //     skipped + logged, never coerced.
+  _applyMasterData(raw) {
+    const md = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!md || typeof md !== 'object') return;
+    const version = Number(md.version);
+    if (!Number.isFinite(version) || version <= 0) return;
+    let lastApplied = 0;
+    try { lastApplied = parseInt(localStorage.getItem('bob_catalogue_version') || '0', 10) || 0; } catch (e) {}
+    if (version <= lastApplied) return;
+
+    const d = DB.get();
+    if (!d) return;
+    const badId = v => typeof v !== 'string' || v === '' || /[<>"'`]/.test(v) ||
+      (typeof Stock !== 'undefined' && Stock._isSafeKey && !Stock._isSafeKey(v));
+    // F-followup (GPT-WF-03): money through the SHARED policy (rejects >MONEY_MAX
+    // and non-finite/negative; normalises to 2dp), not the old finite+non-negative-only.
+    const _money = v => (typeof Validate !== 'undefined') ? Validate.money(v, { optional: true }) : { ok: Number.isFinite(Number(v)) && Number(v) >= 0, value: Number(v) };
+    const badMoney = v => v != null && !_money(v).ok;
+    // F-followup (CL-01, I-02): reserved keys must NEVER be copied from a remote
+    // row — `local['__proto__']=…` / Object.assign spreading a `__proto__` field
+    // swaps the merged object's prototype (prototype-pollution at the catalogue boundary).
+    const RESERVED = { id: 1, __proto__: 1, constructor: 1, prototype: 1 };
+    const normMoney = (k, v, moneyFields) => (moneyFields.indexOf(k) >= 0 && v != null) ? _money(v).value : v;
+    // F-followup: ONE reserved-key copy guard used by BOTH the update and insert
+    // branches (so a single saboteur mutation breaks both — no blind branch). A
+    // reserved key (__proto__/constructor/prototype/id) is NEVER copied from a
+    // remote row, on either path.
+    const copyFields = (target, row, moneyFields, keepLocalCost) => {
+      Object.keys(row).forEach(k => {
+        if (RESERVED[k]) return;
+        if (keepLocalCost && k === 'costPrice' && row.costPrice == null) return;  // keep local cost unless server sends one
+        target[k] = normMoney(k, row[k], moneyFields);
+      });
+    };
+    const skipped = [];
+    const upsert = (coll, rows, moneyFields) => {
+      if (!Array.isArray(rows)) return 0;
+      moneyFields = moneyFields || [];
+      let applied = 0;
+      rows.forEach(row => {
+        if (!row || typeof row !== 'object' || badId(row.id) || typeof row.name !== 'string' || row.name === '') { skipped.push(coll + ':' + (row && row.id)); return; }
+        if (moneyFields.some(f => badMoney(row[f]))) { skipped.push(coll + ':' + row.id + ':money'); return; }
+        const local = (d[coll] = d[coll] || []).find(x => x && x.id === row.id);
+        if (local) {
+          copyFields(local, row, moneyFields, true);
+        } else {
+          const clean = {};                                           // build on a fresh plain object — no proto inheritance from the payload
+          copyFields(clean, row, moneyFields, false);
+          clean.id = row.id;
+          clean.active = row.active !== false;
+          d[coll].push(clean);
+        }
+        applied++;
+      });
+      return applied;
+    };
+
+    const counts = {
+      products: upsert('products', md.products, ['price', 'costPrice']),
+      stores: upsert('stores', md.stores, []),
+      categories: upsert('categories', md.categories, []),
+      productTypes: upsert('productTypes', md.productTypes, []),
+    };
+    if (skipped.length) {
+      console.warn('[Sync] master_data skipped ' + skipped.length + ' invalid row(s): ' + skipped.join(', '));
+      try { if (typeof Diag !== 'undefined') Diag.log('sync', 'master_data skipped rows: ' + skipped.join(', ')); } catch (e) {}
+    }
+    DB.commit();  // runs _sanitizeNames + active normalization + ref-data persist
+    try { localStorage.setItem('bob_catalogue_version', String(version)); } catch (e) {}
+    if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap();
+    this._rerender();
+    console.log('[Sync] master_data v' + version + ' applied:', JSON.stringify(counts));
+  },
+
   /**
    * Saves sync config to sessionStorage.
    * Called from the Cloud Sync settings UI.
    */
+  // SA-D-F1/G-F4: localStorage can throw (Safari Private, quota) — never let a pending-flag op crash a save.
+  _setPending(on) { try { if (on) localStorage.setItem('bob_sync_pending', 'true'); else localStorage.removeItem('bob_sync_pending'); } catch (e) {} },
+  _getPending() { try { return localStorage.getItem('bob_sync_pending') === 'true'; } catch (e) { return false; } },
+
   saveConfig(pushUrl, pullUrl, configUrl) {
     const config = { pushUrl, pullUrl };
     if (configUrl) config.configUrl = configUrl;
+    if (this._emailUrl) config.emailUrl = this._emailUrl;  // SA-C-F1: keep email URL across a settings save (don't disable logistics email)
     sessionStorage.setItem('bob_sync_config', JSON.stringify(config));
     this._pushUrl = pushUrl;
     this._pullUrl = pullUrl;
@@ -172,6 +281,7 @@ const Sync = {
     sessionStorage.removeItem('bob_sync_config');
     this._pushUrl = null;
     this._pullUrl = null;
+    this._emailUrl = null;  // MFL-010: clear email URL on logout too
     this._configUrl = null;
     console.log('[Sync] Sensitive data cleared.');
   },
@@ -247,6 +357,16 @@ const Sync = {
 
         case 'heartbeat':
           this._lastLeaderPing = Date.now();
+          // MFL-011: two leaders after mobile backgrounding — newer leader wins, older demotes.
+          if (this._isLeader && msg.tabId !== this._tabId && typeof msg.startedAt === 'number' &&
+              (msg.startedAt > this._tabStartedAt ||
+               (msg.startedAt === this._tabStartedAt && msg.tabId < this._tabId))) {  // C-F5: equal-startedAt tie-break
+            console.warn('[Sync] Another newer leader active — demoting this tab to follower.');
+            this._isLeader = false;
+            if (this._leaderHeartbeat) { clearInterval(this._leaderHeartbeat); this._leaderHeartbeat = null; }
+            if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
+            this._lastLeaderPing = Date.now();
+          }
           break;
 
         case 'leader-leaving':
@@ -266,13 +386,19 @@ const Sync = {
           }
           break;
 
+        case 'push-tombstone':
+          // SA-C-F3: a follower delegated a tombstone push; the leader (single pusher) sends it.
+          if (this._isLeader && msg.originalTxnId) this.pushTombstone(msg.originalTxnId, msg.originalTxn, msg.meta);
+          break;
+
         case 'local-write':
-          // A follower wrote to Dexie — leader must refresh cache and push
+          // A follower wrote to Dexie — leader refreshes cache and pushes.
+          // MFL-018: debounce so a burst of follower writes triggers ONE refresh+push, not N.
           if (this._isLeader && typeof DB !== 'undefined' && DB.refresh) {
-            console.log('[Sync] Follower wrote data — refreshing leader cache and scheduling push.');
-            DB.refresh().then(() => {
-              this.scheduleSync();
-            });
+            clearTimeout(this._localWriteDebounce);
+            this._localWriteDebounce = setTimeout(() => {
+              DB.refresh().then(() => this.scheduleSync());
+            }, 400);
           }
           break;
       }
@@ -335,7 +461,7 @@ const Sync = {
     if (this._leaderHeartbeat) clearInterval(this._leaderHeartbeat);
     this._leaderHeartbeat = setInterval(() => {
       if (this._bc && this._isLeader) {
-        this._bc.postMessage({ type: 'heartbeat', tabId: this._tabId });
+        this._bc.postMessage({ type: 'heartbeat', tabId: this._tabId, startedAt: this._tabStartedAt });
       }
     }, this.HEARTBEAT_INTERVAL);
 
@@ -387,7 +513,7 @@ const Sync = {
       StoreId: t.storeId || '',
       ProductId: t.productId || '',
       Type: t.type || '',
-      Qty: typeof t.qty === 'number' ? t.qty : parseInt(t.qty, 10) || 0,
+      Qty: (function(v){ var n = Math.trunc(Number(v)); return Number.isSafeInteger(n) ? n : 0; })(t.qty),  // DA-4: safe-int egress (NaN/Infinity/huge -> 0, symmetry with ingest)
       StaffName: t.staffName || '',
       Reason: t.reason || '',
       DeviceId: t.deviceId || this._deviceId || '',
@@ -409,18 +535,39 @@ const Sync = {
    * Timestamp (business event time) maps to createdAt for UI display.
    */
   _fromSharePoint(item) {
+    // F-followup (GPT-WF-01): STRICT ingest — reject the whole row (return null ->
+    // caller quarantines) rather than coerce. The old code truncated 5.9 to 5
+    // (silent wrong stock), zeroed NaN/huge/Infinity (silent lost movement), and
+    // accepted unknown Type / unknown product / unknown store, while the cursor
+    // advanced. A boundary must never turn hostile/malformed input into durable
+    // truth. Uses the shared Validate.qty policy (same as UI + backup import).
+    if (!item) return null;
+    const _q = (typeof Validate !== 'undefined') ? Validate.qty(item.Qty) : { ok: Number.isSafeInteger(Math.trunc(Number(item.Qty))) && Math.trunc(Number(item.Qty)) >= 0 && Number.isInteger(Number(item.Qty)), value: Number(item.Qty) };
+    if (!_q.ok) return null;                                                    // fractional / NaN / huge / Infinity / negative
+    const _dir = (typeof Txn !== 'undefined' && Txn.classify) ? Txn.classify({ type: String(item.Type || '') }).direction : 'in';
+    if (_dir !== 'in' && _dir !== 'out') return null;                           // unknown / non-movement transaction type
+    // Unknown product/store reference: reject (an orphan ledger row the stock cache
+    // would skip = the exact ledger/cache disagreement H-01 was meant to close).
+    // Note: the realistic legitimate-but-not-yet-synced case is mitigated by the
+    // master_data catalogue merge running at launch BEFORE pull; the authoritative
+    // guard is server-side (SERVER-SIDE-REQUIREMENTS.md P0-2).
+    const _d = (typeof DB !== 'undefined' && DB.get) ? DB.get() : null;
+    if (_d) {
+      if (!(_d.products || []).some(p => p && p.id === item.ProductId)) return null;
+      if (!(_d.stores || []).some(s => s && s.id === item.StoreId)) return null;
+    }
     const local = {
       id: item.TransactionId,
       date: item.Date || '',
       storeId: item.StoreId || '',
       productId: item.ProductId || '',
       type: item.Type || '',
-      qty: typeof item.Qty === 'number' ? item.Qty : parseInt(item.Qty, 10) || 0,
+      qty: _q.value,                                                            // validated safe non-negative integer (no coercion)
       staffName: item.StaffName || '',
       reason: item.Reason || '',
       deviceId: item.DeviceId || '',
       transferId: item.TransferId || '',
-      createdAt: item.Timestamp ? new Date(item.Timestamp).toISOString() : new Date().toISOString(),
+      createdAt: (function(){ try { if(item.Timestamp){ var _d=new Date(item.Timestamp); if(!isNaN(_d.getTime())) return _d.toISOString(); } } catch(e){} return new Date().toISOString(); })(),  // SA-C-F1: tolerate malformed remote Timestamp
       _synced: true
     };
     // Tombstone support: map TargetTransactionId if present
@@ -490,12 +637,35 @@ const Sync = {
       const data = DB.get();  // synchronous — returns freshly refreshed cache
 
       // Filter to only unsynced transactions
-      const unsynced = (data.transactions || []).filter(t => !t._synced);
+      const _allUnsynced = (data.transactions || []).filter(t => !t._synced);
+
+      // F-followup-2 (GPT-FF-02): EGRESS validation — the 4th trust boundary.
+      // _toSharePoint coerced bad qty (5.9->5, NaN->0) and forwarded unknown
+      // type/product/store, so a tampered/legacy local row could poison the cloud
+      // for every device. Validate each row with the SAME policy as ingress;
+      // exclude (do NOT push) anything that fails, and log it. Such rows stay
+      // unsynced (never propagated) — correct for garbage; server-side remains
+      // the authoritative gate (SERVER-SIDE-REQUIREMENTS.md).
+      const _egressOk = (t) => {
+        if (!t) return false;
+        if (typeof Validate !== 'undefined' && !Validate.qty(t.qty).ok) return false;
+        const _dir = (typeof Txn !== 'undefined' && Txn.classify) ? Txn.classify({ type: String(t.type || '') }).direction : 'in';
+        if (_dir !== 'in' && _dir !== 'out') return false;
+        if (!(data.products || []).some(p => p && p.id === t.productId)) return false;
+        if (!(data.stores || []).some(s => s && s.id === t.storeId)) return false;
+        return true;
+      };
+      const unsynced = _allUnsynced.filter(_egressOk);
+      const _rejected = _allUnsynced.filter(t => !_egressOk(t));
+      if (_rejected.length > 0) {
+        console.warn(`[Sync] EGRESS: ${_rejected.length} hostile/invalid local row(s) excluded from push (not propagated): ${_rejected.map(t => t.id).join(', ')}`);
+        try { if (typeof Diag !== 'undefined') Diag.log('sync', `egress-excluded ${_rejected.length} invalid local rows: ${_rejected.map(t => t.id).join(', ')}`); } catch (e) {}
+      }
 
       if (unsynced.length === 0) {
         console.log('[Sync] No unsynced transactions to push.');
         this._showStatus('Synced ✓', 'success');
-        localStorage.removeItem('bob_sync_pending');
+        Sync._setPending(false);
         return;
       }
 
@@ -556,27 +726,26 @@ const Sync = {
           console.warn('[Sync] Server returned ok but no processedCount — leaving batch unsynced for safety.');
           ackVerified = false;
         }
-      } else if (serverCount !== undefined && Number(serverCount) === batchSize) {
-        // No explicit status but count matches — accept
+      } else if (!serverStatus && serverCount !== undefined && Number(serverCount) === batchSize) {
+        // C-F4: count-fallback ONLY when there is NO status (never on an explicit error/failed status)
         ackVerified = true;
       }
 
       if (ackVerified) {
-        // Re-read data in case it changed during the async push
-        const freshData = DB.get();
+        // F2-CRIT03: mark ONLY the pushed batch as synced via a targeted row
+        // update. The old path (DB.save) clear+rewrote ALL 12 Dexie tables per
+        // push ack — a freeze time-bomb once the ledger grows. On a failed
+        // persist the batch stays unsynced and re-pushes (server dedup safe).
+        const _marked = await DB.markTransactionsSynced(batchIds);
+        if (!_marked) {
+          console.warn('[Sync] markSynced persist failed — batch stays unsynced for retry.');
+        }
 
-        // Mark ONLY the batch we actually sent as synced
-        freshData.transactions.forEach(t => {
-          if (batchIds.has(t.id)) {
-            t._synced = true;
-          }
-        });
-        DB.save(freshData);
-
-        // Update last sync timestamp
-        this._lastSyncAt = Date.now();
-        localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
-        localStorage.removeItem('bob_sync_pending');
+        // SA-G-F2: do NOT advance the pull cursor from the device clock on push.
+        // _lastSyncAt is the pull "since" and must be driven ONLY by the server watermark in
+        // pull(); a fast client clock here would skip other stores' rows. Pushed rows get
+        // re-pulled and deduped (server dedup + client ID-merge), which is safe.
+        Sync._setPending(false);
         this._retryCount = 0;
 
         this._showStatus('Synced ✓', 'success');
@@ -587,7 +756,7 @@ const Sync = {
         // Server-side dedup (by TransactionId) ensures replayed rows are harmless
         console.warn('[Sync] Push response ambiguous — batch left unsynced for retry.', result);
         this._showStatus('Sync uncertain — will verify on next cycle', 'warning');
-        localStorage.setItem('bob_sync_pending', 'true');
+        Sync._setPending(true);
       }
 
     } catch (err) {
@@ -605,7 +774,7 @@ const Sync = {
         this._skipLockRelease = true;
       } else {
         this._showStatus('Sync failed — will retry later', 'error');
-        localStorage.setItem('bob_sync_pending', 'true');
+        Sync._setPending(true);  // G-F4
         this._retryCount = 0;
       }
     } finally {
@@ -709,7 +878,10 @@ const Sync = {
       }
 
       if (allItems.length === 0) {
-        return;  // No changes
+        // Gemini-1: no new rows, but still advance the cursor to the server watermark so quiet
+        // systems don't re-query the same range every cycle (sync stagnation).
+        if (watermark) { const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime(); if (!isNaN(wmTs) && wmTs > 0) { this._lastSyncAt = Math.max(this._lastSyncAt, wmTs); try { localStorage.setItem('bob_last_sync', String(this._lastSyncAt)); } catch(e) {} } }
+        return;  // No new rows (cursor advanced)
       }
 
       console.log(`[Sync] Pull received ${allItems.length} total items from SharePoint.`);
@@ -720,13 +892,14 @@ const Sync = {
       // Diagnostic: count overlap/replay rows (items in the lookback window already known locally)
       // This helps verify the lookback margin is working and can be tuned later.
       let overlapCount = 0;
+      const quarantined = [];  // F1-H01: negative-qty remote rows skipped at ingest
 
       // Separate tombstones from regular transactions
       const tombstones = [];
       const newTransactions = [];
 
       for (const spItem of allItems) {
-        if (!spItem.TransactionId) continue;
+        if (!spItem || typeof spItem !== 'object' || !spItem.TransactionId) continue;  // SA-C-F2: skip null/garbage rows (don't throw -> don't stall the device's sync)
 
         // Tombstone handling (Fix #6): Type === 'deleted' means remove the original
         if (spItem.Type === 'deleted') {
@@ -744,7 +917,21 @@ const Sync = {
         if (spItem.DeviceId === this._deviceId) continue;
 
         const localTxn = this._fromSharePoint(spItem);
+
+        // F1-H01 (GPT FINAL H-01): stock movements are never negative. A negative
+        // remote row would sit in the ledger while the stock cache skips it, so
+        // ledger/reports/cache disagree forever. _fromSharePoint returns null for
+        // such rows — quarantine loudly, never coerce.
+        if (!localTxn || localTxn.qty < 0) {
+          quarantined.push(String(spItem.TransactionId));
+          continue;
+        }
         newTransactions.push(localTxn);
+      }
+
+      if (quarantined.length > 0) {
+        console.warn(`[Sync] QUARANTINED ${quarantined.length} remote row(s) with negative qty (admin: fix at source): ${quarantined.join(', ')}`);
+        try { if (typeof Diag !== 'undefined') Diag.log('sync', `quarantined ${quarantined.length} negative-qty remote rows: ${quarantined.join(', ')}`); } catch (e) {}
       }
 
       if (overlapCount > 0) {
@@ -752,6 +939,7 @@ const Sync = {
       }
 
       let changed = false;
+      let tombstoneDurable = true;  // SA-G-F3: gate the cursor on durable tombstone removal
 
       // Process tombstones — remove deleted transactions from local DB
       if (tombstones.length > 0) {
@@ -760,24 +948,45 @@ const Sync = {
           // (dedicated field per GPT review — not overloading TransferId)
           const originalId = ts.TargetTransactionId || ts.TransactionId;
           if (originalId && localIds.has(originalId)) {
-            DB.removeTransaction(originalId, { skipTombstone: true });
+            const _orig = DB.get().transactions.find(t => t.id === originalId);
+            // SA-G-F3: durable removal — if the delete isn't persisted, don't advance the cursor
+            const _okDel = await DB.removeTransactionDurable(originalId, { skipTombstone: true });
+            if (!_okDel) tombstoneDurable = false;
+            // MFL-004: record the deletion in THIS device's audit log from the synced metadata
+            if (_orig && DB.addDeletedTransaction && !((DB.get().deletedTransactions || []).some(x => x.id === originalId))) {
+              DB.addDeletedTransaction(Object.assign({}, _orig, {
+                _deletedBy: ts.DeletedBy || '', _deletedAt: ts.DeletedAt || new Date().toISOString(), _deleteReason: ts.DeleteReason || ''
+              }));
+            }
             console.log(`[Sync] Tombstone applied: removed transaction ${originalId}`);
             changed = true;
           }
         }
       }
 
-      // Merge new transactions
+      // Merge new transactions — DURABLE (MFL-001): the pull cursor must NOT advance
+      // past rows that aren't durably persisted, or those stock movements are lost forever.
+      let mergeDurable = true;
       if (newTransactions.length > 0) {
-        DB.addTransactions(newTransactions);
-        console.log(`[Sync] Merged ${newTransactions.length} new transactions from remote.`);
-        changed = true;
+        mergeDurable = await DB.addTransactionsDurable(newTransactions);
+        if (mergeDurable) {
+          console.log(`[Sync] Merged ${newTransactions.length} new transactions from remote.`);
+          changed = true;
+        } else {
+          console.error('[Sync] Durable persist of merged rows FAILED — leaving cursor unchanged so they re-pull next cycle.');
+        }
       }
 
       if (changed) {
         DB.commit();
         this._rerender();
         this._notifyFollowers();
+      }
+
+      // MFL-001: advance the cursor ONLY if the merged rows were durably persisted.
+      if (!mergeDurable || !tombstoneDurable) {  // SA-G-F3
+        this._showStatus('Data may be stale — will retry', 'warning');
+        return;
       }
 
       // Only advance lastSyncAt AFTER all pages succeeded.
@@ -789,12 +998,13 @@ const Sync = {
       if (watermark) {
         const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime();
         if (!isNaN(wmTs) && wmTs > 0) {
-          this._lastSyncAt = wmTs;
+          // MFL-008: clamp — never let a stale/older server watermark move the cursor backwards
+          this._lastSyncAt = Math.max(this._lastSyncAt, wmTs);
         } else {
-          this._lastSyncAt = Date.now();
+          this._lastSyncAt = Math.max(this._lastSyncAt, Date.now());
         }
       } else {
-        this._lastSyncAt = Date.now();
+        this._lastSyncAt = Math.max(this._lastSyncAt, Date.now());
       }
       localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
 
@@ -820,7 +1030,12 @@ const Sync = {
    * @param {string} originalTxnId - The ID of the deleted transaction
    * @param {object} originalTxn - The original transaction object (for context fields)
    */
-  async pushTombstone(originalTxnId, originalTxn) {
+  async pushTombstone(originalTxnId, originalTxn, meta) {
+    // SA-C-F3 / I-60: only the leader pushes. A follower delegates the tombstone to the leader.
+    if (!this._isLeader) {
+      if (this._bc) this._bc.postMessage({ type: 'push-tombstone', originalTxnId, originalTxn, meta });
+      return;
+    }
     if (!this._pushUrl) {
       console.warn('[Sync] No push URL — tombstone queued locally only.');
       return;
@@ -838,7 +1053,11 @@ const Sync = {
       DeviceId: this._deviceId || '',
       Timestamp: Date.now(),
       TransferId: '',
-      TargetTransactionId: originalTxnId  // Dedicated field for tombstone target (GPT review)
+      TargetTransactionId: originalTxnId,  // Dedicated field for tombstone target (GPT review)
+      // MFL-004: carry deletion audit metadata so other devices learn who/when/why
+      DeletedBy: (meta && meta.deletedBy) || ((typeof Auth !== 'undefined' && Auth.user()) ? (Auth.user().name || Auth.user().username || '') : ''),
+      DeletedAt: (meta && meta.deletedAt) || new Date().toISOString(),
+      DeleteReason: (meta && meta.deleteReason) || ''
     };
 
     try {
@@ -912,7 +1131,7 @@ const Sync = {
    * just mark pending — the leader's next poll cycle will pick it up.
    */
   scheduleSync() {
-    localStorage.setItem('bob_sync_pending', 'true');
+    Sync._setPending(true);
     if (!this._isLeader) {
       // Follower tab — notify leader so it refreshes cache and pushes
       if (this._bc) {
@@ -970,7 +1189,7 @@ const Sync = {
     // === Leader-only logic below ===
 
     // Check for pending sync from last session
-    if (localStorage.getItem('bob_sync_pending') === 'true') {
+    if (Sync._getPending()) {
       console.log('[Sync] Pending sync found, pushing...');
       await this.push();
     }

@@ -1,0 +1,13 @@
+{
+  "name": "bob-stock-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Saboteur sentinel suite for the BOB Stock App. Version-controlled with the app so every code change has a regression guard.",
+  "scripts": {
+    "smoke": "node smoke-test.js",
+    "saboteur": "node saboteur-runner.js"
+  },
+  "dependencies": {
+    "playwright": "^1.60.0"
+  }
+}

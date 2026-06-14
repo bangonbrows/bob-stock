@@ -1,0 +1,10 @@
+node_modules/
+test/node_modules/
+test/_shots/
+*.log
+
+# Audit working scratch: 35MB+ of regenerable probe scripts, JSON results and run logs.
+# The durable knowledge is preserved at root (BLIND-AUDIT-TRACKING.md,
+# BLIND-AUDIT-CONSOLIDATED-REPORT.md, WAVE-*-REVIEW.md, EXTERNAL-AUDIT-*.md) and the
+# reproducible harness lives in test/.
+audit-artifacts/

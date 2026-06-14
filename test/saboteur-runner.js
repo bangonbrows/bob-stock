@@ -1,0 +1,354 @@
+// BOB Stock App — saboteur mutation runner (the "file-mutation loop").
+//
+// For each mutation: copy the app's source files to a temp dir, apply a TRUE
+// source-level mutation (re-introduce a real bug), boot that mutated copy in
+// Chromium, run the matching sentinel, and assert it flips to CLEAN-FAIL.
+// A sentinel that stays green on its own saboteur is BLIND and proves nothing.
+//
+//   node test/saboteur-runner.js
+//
+// Coverage note (honest, no silent cap): this runner ships 4 representative
+// mutations — including S-04 and S-06, the two sentinels a 2026-06 audit found
+// were "blind" (they asserted re-derived logic, not live code). They now drive
+// the live pull-clamp and the live CSV export respectively. The full mutation
+// catalogue lives in ../SABOTEUR-MUTATION-LIST.md; extend MUTATIONS below as new
+// invariants are added.
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const SMOKE = path.join(__dirname, 'smoke-test.js');
+
+const REPO = path.resolve(__dirname, '..');
+const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'phase2.js', 'sw.js'];
+
+const MUTATIONS = [
+  { id: 'S-01', file: 'db.js',
+    find: "const ok = await _appendRecord('transactions', txn);",
+    repl: "const ok = true; await _appendRecord('transactions', txn);",
+    note: 'durable write returns true even when the Dexie put failed -> "Saved!" before saved' },
+  { id: 'S-02', file: 'sync.js',
+    find: 'ackVerified = false;\n        }\n      } else if (!serverStatus',
+    repl: 'ackVerified = true;\n        }\n      } else if (!serverStatus',
+    note: 'mark batch synced on an ambiguous (ok-but-no-count) ack -> silent data loss' },
+  { id: 'S-03', file: 'phase2.js',
+    find: 'const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);',
+    repl: 'const _ok = (DB.atomicTransferWriteDurable(batchTxns, t, snapshot), true);',
+    note: 'transfer email fires before the durable write is confirmed -> notify before saved' },
+  { id: 'S-12', file: 'db.js',
+    find: 'txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });',
+    repl: 'txns = txns.filter(t => t && !_seen.has(t.id));',
+    note: 'bulk add stops deduping within a batch -> paginated pull double-counts stock (DA-1)' },
+  { id: 'S-07', file: 'index.html',
+    find: "if(e.data&&e.data.type==='sync-push'&&Sync._isLeader)Sync.push();",
+    repl: "if(e.data&&e.data.type==='sync-push')Sync.push();",
+    note: 'remove the SW leader gate -> a follower tab pushes on the sync-push message (I-60)' },
+  { id: 'S-13', file: 'index.html',
+    find: 'const n = parseInt(x, 10); return Number.isSafeInteger(n) ? n : NaN;',
+    repl: 'return parseInt(x, 10);',
+    note: 'safeInt drops the safe-integer magnitude cap -> 16+ digit qty poisons reports' },
+  { id: 'S-14', file: 'index.html',
+    find: 'Recorded by: ${UI.esc(del.createdBy)}</div>',
+    repl: 'Recorded by: ${del.createdBy}</div>',
+    note: 'delivery createdBy rendered unescaped -> stored XSS in the detail modal' },
+  { id: 'S-15', file: 'phase2.js',
+    find: 'by: Auth.actor(), editLog: []',
+    repl: 'by: u, editLog: []',
+    note: 'transaction actor reverts to full user object -> password/PIN hashes leak into every ledger row + backup' },
+  { id: 'S-16', file: 'index.html',
+    find: "if(!(await this._commitSettings('Supplier info could not be saved.')))return;UI.toast('Supplier info saved','success');",
+    repl: "DB.commit();UI.toast('Supplier info saved','success');",
+    note: 'supplier save reverts to fire-and-forget -> success toast before durable persist (false success)' },
+  { id: 'S-17', file: 'db.js',
+    find: "this._sanitizeNames();  // GPT-003: sanitize on load (import/migrate/restore bypass commit-time sanitize)",
+    repl: "",
+    note: 'refresh() stops sanitising on load -> a poisoned backup/import name executes before any commit' },
+  { id: 'S-18', file: 'index.html',
+    find: 'if(batch.length && !(await DB.addTransactionsDurable(batch)))',
+    repl: 'if(false && !(await DB.addTransactionsDurable(batch)))',
+    note: 'stock-take approval stops creating adjustment entries -> approved take does NOT reconcile stock (M-4)' },
+  { id: 'S-19', file: 'index.html',
+    find: "todayLocal() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Perth' }).format(new Date()); },",
+    repl: "todayLocal() { return new Date().toISOString().slice(0,10); },",
+    note: 'dates revert to UTC slice -> early-AM Perth actions dated to the previous day (I-86)' },
+  { id: 'S-20', file: 'sync.js',
+    find: "        if (watermark) { const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime(); if (!isNaN(wmTs) && wmTs > 0) { this._lastSyncAt = Math.max(this._lastSyncAt, wmTs); try { localStorage.setItem('bob_last_sync', String(this._lastSyncAt)); } catch(e) {} } }",
+    repl: "",
+    note: 'empty pull stops advancing the cursor -> quiet systems re-query the same range forever (I-89)' },
+  { id: 'S-21', file: 'index.html',
+    find: "else walk(v[k]);",
+    repl: "",
+    note: 'deep actor-slim loses recursion -> nested flaggedItems[].resolvedBy credential hashes leak (SA-I-F1)' },
+  { id: 'S-08', file: 'db.js',
+    find: "original.type === 'move_out' ? 'in' :  // MFL-006: reverse out -> add back",
+    repl: "original.type === 'move_out' ? 'out' :  // MFL-006: reverse out -> add back",
+    note: 'removeTransaction reverses move_out the wrong way -> deleting a move_out double-subtracts (I-13)' },
+  { id: 'S-10', file: 'phase2.js',
+    find: "if (!(Auth.isHO() || Auth.is('director') || (Auth.storeIds && Auth.storeIds().includes(t.toStoreId)))) {",
+    repl: "if (false) {",
+    note: 'receive store-ownership guard removed -> any role receives any store\'s transfer (I-91)' },
+  { id: 'S-11', file: 'db.js',
+    find: "this._cache.transactions = this._cache.transactions.filter(t => t !== txn);",
+    repl: "/* S-11 saboteur: rollback removed */",
+    note: 'addTransactionDurable stops rolling back on a quota throw -> torn half-saved state (I-21/I-131)' },
+  { id: 'S-04', file: 'sync.js',
+    find: 'this._lastSyncAt = Math.max(this._lastSyncAt, wmTs);\n        } else {',
+    repl: 'this._lastSyncAt = wmTs;\n        } else {',
+    note: 'remove the main watermark clamp (post-merge) -> a stale older server watermark rewinds the cursor' },
+  { id: 'S-05', file: 'index.html',
+    find: ".replace(/</g,'&lt;')",
+    repl: '',
+    note: 'UI.esc stops escaping "<" -> stored XSS executes' },
+  { id: 'S-06', file: 'index.html',
+    find: 'const esc=v=>{let s=String(v==null?\'\':v);if(/^[=+\\-@\\t\\r]/.test(s)&&isNaN(Number(s)))s="\'"+s;',
+    repl: 'const esc=v=>{let s=String(v==null?\'\':v);',
+    note: 'remove the LIVE CSV formula guard -> =HYPERLINK/=SUM cells execute in Excel' },
+  { id: 'S-09', file: 'db.js',
+    find: 'if (txn && this._cache.transactions.some(t => t.id === txn.id)) return true;',
+    repl: '',
+    note: 'remove addTransaction dedupe -> duplicate ledger rows double-count stock' },
+  { id: 'S-22', file: 'index.html',
+    find: "if(!Sync._isLeader && typeof Sync._becomeLeader==='function') Sync._becomeLeader();",
+    repl: '',
+    note: 'force-push stops claiming leadership -> a follower tab becomes an ungated push entry-door (SA-C-R9-F1)' },
+  { id: 'S-23', file: 'index.html',
+    find: "if(!Auth.can('recordDelivery')){UI.toast('Only a Director can record deliveries','error');return;}",
+    repl: '',
+    note: 'remove the delivery role gate -> a staff DevTools user records deliveries + overwrites cost prices (M-3 / D-044)' },
+  { id: 'S-24', file: 'phase2.js',
+    find: "_canCancel() { return Auth.is('director'); },",
+    repl: "_canCancel() { return ['franchisee','territory_manager','head_office','director'].includes(Auth.user()?.role); },",
+    note: 'cancel reverts to franchisee&above -> a franchisee cancels a transfer that is now Director-only (D-044)' },
+  { id: 'S-25', file: 'index.html',
+    find: '_stTakeUnlocked=true; Auth._tempStockTake=pinCfg.expiresAt;',
+    repl: '_stTakeUnlocked=true;',
+    note: 'PIN unlock stops wiring the temp grant -> a store computer with a valid 24h PIN is still blocked from stock-take (D-044)' },
+  { id: 'S-26', file: 'phase2.js',
+    find: "if (Auth.is('director')) {  // D-044: resolving is Director-only",
+    repl: "if (true) {  // D-044: resolving is Director-only",
+    note: 'flagged-transfer detail shown to everyone -> a non-director gets the dead Director-only resolve screen (D-044 dead-UI)' },
+  { id: 'S-27', file: 'index.html',
+    find: 'const clean=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get()))));',
+    repl: 'const clean=Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get())));',
+    note: 'backup export stops scrubbing -> live session tokens + SAS/URLs ship in the backup file (Wave C / C1)' },
+  { id: 'S-28', file: 'index.html',
+    find: 'this._scrubBackupSecrets(data);',
+    repl: '',
+    note: 'backup import stops scrubbing -> a crafted backup injects a live session token = restored active login (Wave C / C1)' },
+  { id: 'S-29', file: 'index.html',
+    find: 'msg: this._scrub(msg)',
+    repl: 'msg: String(msg)',
+    note: 'diagnostic log stops scrubbing -> secrets/auth material (hashes, session tokens, Logic App URLs) leak into the exportable diag log (Wave C / C5)' },
+  { id: 'S-30', file: 'index.html',
+    find: "_isSafeKey(k){ return typeof k==='string' && k!=='__proto__' && k!=='constructor' && k!=='prototype'; }",
+    repl: "_isSafeKey(k){ return typeof k==='string'; }",
+    note: 'cache key guard removed -> a __proto__/constructor-keyed tampered txn pollutes the stock cache (L35 / I-02)' },
+  { id: 'S-31', file: 'index.html',
+    find: '_safeQty(v) { const n = Number(v); return (Number.isSafeInteger(n) && n >= 0) ? n : null; }',
+    repl: '_safeQty(v) { const n = Number(v); return Number.isSafeInteger(n) ? n : null; }',
+    note: 'load-path qty guard drops the non-negative check -> a tampered negative qty poisons stock totals on load (L35 / C6)' },
+  { id: 'S-32', file: 'index.html',
+    find: '<button class="btn btn-secondary" onclick="Pages._exportReorderCSV()">⬇ Export CSV</button>',
+    repl: '<button class="btn btn-secondary" onclick="(${exportReorder.toString()})()">⬇ Export CSV</button>',
+    note: 'reorder CSV button reverts to a stringified closure -> dead button (ReferenceError on items) (Wave D / Gemini)' },
+  { id: 'S-33', file: 'index.html',
+    find: "if(typeof Stock!=='undefined'&&Stock._isSafeKey&&(!data.products.every(p=>Stock._isSafeKey(p.id))||!data.stores.every(s=>Stock._isSafeKey(s.id)))) return {ok:false,error:'Backup contains a reserved/invalid product or store ID.'};",
+    repl: '',
+    note: 'backup import stops rejecting reserved IDs -> a store id like `constructor` imports, then its stock silently vanishes from the cache (Wave D / GPT-ABC-001)' },
+  { id: 'S-34', file: 'index.html',
+    find: "if(validLines.some(ln=>!(Number.isFinite(ln.unitCost)&&ln.unitCost>=0)||!(Number.isFinite(ln.packaging||0)&&(ln.packaging||0)>=0)||!(Number.isFinite(ln.labelling||0)&&(ln.labelling||0)>=0)||!(Number.isFinite(ln.weightGrams||0)&&(ln.weightGrams||0)>=0))){UI.toast('Unit cost, packaging, labelling and weight cannot be negative','error');return;}",
+    repl: '',
+    note: 'delivery stops rejecting negative line costs -> negative landed/product cost corrupts valuation (Wave D / GPT-ABC-002)' },
+  { id: 'S-35', file: 'phase2.js',
+    find: "const targetStoreId = scope === 'global' ? '*' : storeId;",
+    repl: "const targetStoreId = scope === 'global' ? null : storeId;",
+    note: 'optimum global save reverts to a null compound key -> the durable save aborts (global optimum cannot be saved) (Wave D / GPT-ABC-003)' },
+  { id: 'S-36', file: 'index.html',
+    find: 'from:UI.dateLocal(md),to:UI.dateLocal(new Date(md.getFullYear(),md.getMonth()+1,0))',
+    repl: "from:md.toISOString().slice(0,7)+'-01',to:new Date(md.getFullYear(),md.getMonth()+1,0).toISOString().slice(0,10)",
+    note: 'store-comparison reverts to UTC slices -> monthly report drifts across Perth month boundaries (Wave D / GPT-ABC-004)' },
+  { id: 'S-37', file: 'db.js',
+    find: "(rows || []).forEach(o => { if (o && typeof o === 'object') o.active = o.active !== false; });",
+    repl: ';',
+    note: 'shared active-flag primitive gutted (both seed + load paths) -> fresh install hides the entire 192-product catalogue (F1-C01 / GPT FINAL C-01). Round-1 lesson: the original two independent defenses made any single-point mutation survivable (BLIND) — refactored to one provable primitive.' },
+  { id: 'S-38', file: 'index.html',
+    find: "const _cost=UI.money(document.getElementById('nc-cost')?.value);  // F1-C02: central validator (finite + non-negative + capped)",
+    repl: "const _cost=(function(){const c=parseFloat(document.getElementById('nc-cost')?.value);return {ok:!(isNaN(c)||c<0),value:c};})();",
+    note: 'cost entry reverts to ad-hoc parseFloat -> 1e309 saves a $Infinity cost row (F1-C02 / GPT FINAL C-02)' },
+  { id: 'S-39', file: 'index.html',
+    find: "if (!Number.isSafeInteger(n)) return { ok: false, error: 'magnitude too large' };\n    if (n < 0) return { ok: false, error: 'cannot be negative' };",
+    repl: "if (!Number.isSafeInteger(n)) return { ok: false, error: 'magnitude too large' };",
+    note: 'shared Validate.qty stops rejecting negative qty -> backup import (+ sync pull) accept negative ledger rows: ledger/cache disagree after restore (F1-H01 / GPT FINAL H-01). Retargeted at the shared validator after the F-followup replaced the inline backup check (find-string was orphaned -> SKIPPED in run #1).' },
+  { id: 'S-40', file: 'index.html',
+    find: "if(!_p.ok||!_l.ok){UI.toast('Line '+(i+1)",
+    repl: "if(!_p.ok&&!_l.ok){UI.toast('Line '+(i+1)",
+    note: 'packaging validation only aborts when BOTH fields invalid -> partial commit + success toast after error (F1-H02 / GPT FINAL H-02)' },
+  { id: 'S-41', file: 'index.html',
+    find: 'const margin=currCost!==null&&p.price?((p.price-currCost)/p.price*100).toFixed(1):null;  // F1-H03: field-name drift — catalogue stores `price`, sellPrice never exists',
+    repl: 'const margin=currCost!==null&&p.sellPrice?((p.sellPrice-currCost)/p.sellPrice*100).toFixed(1):null;',
+    note: 'cost table reverts to the phantom sellPrice field -> Director margins render as dashes (F1-H03 / GPT FINAL H-03). Round-1 lesson: the v1 find-string was a PREFIX of the line — the replace left dangling comment text = parse error, not the bug (BLIND). Mutations must match the WHOLE statement.' },
+  { id: 'S-42', file: 'sync.js',
+    find: 'const _marked = await DB.markTransactionsSynced(batchIds);',
+    repl: 'const freshData = DB.get(); freshData.transactions.forEach(t => { if (batchIds.has(t.id)) { t._synced = true; } }); DB.save(freshData); const _marked = true;',
+    note: 'push ack reverts to DB.save -> clear+rewrite of ALL 12 tables per push (F2-CRIT03 / Gemini CRIT-03 freeze time-bomb)' },
+  { id: 'S-43', file: 'index.html',
+    find: "if([...data.products,...data.stores].some(o=>/[<>\"'`]/.test(String(o.id)))) return {ok:false,error:'Backup contains a product/store ID with forbidden characters",
+    repl: "if(false) return {ok:false,error:'Backup contains a product/store ID with forbidden characters",
+    note: 'import stops rejecting sanitizer-stripped id chars -> restored product detaches from its ledger history on next load (F2-CRIT04 / Gemini CRIT-04)' },
+  { id: 'S-44', file: 'phase2.js',
+    find: "const _already = (_d.transactions || []).some(x => x && x.transferId === transferId && x.type === 'transfer_in');",
+    repl: 'const _already = false;',
+    note: 'double-receive ledger guard removed -> two devices receiving the same transfer doubles stock (F2-CRIT02 / Gemini CRIT-02)' },
+  { id: 'S-45', file: 'phase2.js',
+    find: 'const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(rQty)) || 0));\n        item.creditedAtReceive = credit;',
+    repl: 'const credit = 0;\n        item.creditedAtReceive = credit;',
+    note: 'flagged receipt reverts to zero credit -> physically-arrived stock invisible until Director resolves (F2-HIGH02 / Gemini HIGH-02 transit void)' },
+  { id: 'S-46', file: 'sync.js',
+    find: 'if (mdItem && mdItem.ConfigData) this._applyMasterData(mdItem.ConfigData);',
+    repl: 'if (false && mdItem && mdItem.ConfigData) this._applyMasterData(mdItem.ConfigData);',
+    note: 'master-data merge disabled -> catalogue islands return: Director price/product changes never reach other devices (F3-CRIT01 / Gemini CRIT-01)' },
+  { id: 'S-47', file: 'sync.js',
+    find: 'const _q = (typeof Validate !== \'undefined\') ? Validate.qty(item.Qty) : { ok: Number.isSafeInteger(Math.trunc(Number(item.Qty))) && Math.trunc(Number(item.Qty)) >= 0 && Number.isInteger(Number(item.Qty)), value: Number(item.Qty) };',
+    repl: 'const _q = { ok: true, value: (function(v){ var n = Math.trunc(Number(v)); return Number.isSafeInteger(n) ? n : 0; })(item.Qty) };',
+    note: 'sync pull reverts to coercing ingest (trunc fractional, zero NaN/huge, accept any) -> bad remote row becomes durable wrong stock (F-followup / GPT-WF-01)' },
+  { id: 'S-48', file: 'index.html',
+    find: 'const _q=Validate.qty(t.qty);',
+    repl: 'const _q={ok:Number.isSafeInteger(Math.trunc(Number(t.qty)))&&Math.trunc(Number(t.qty))>=0,value:Math.trunc(Number(t.qty))};',
+    note: 'backup import reverts to truncating fractional qty (1.5->1) -> restored ledger silently wrong (F-followup / GPT-WF-02)' },
+  { id: 'S-49', file: 'sync.js',
+    find: 'const badMoney = v => v != null && !_money(v).ok;',
+    repl: 'const badMoney = v => v != null && (!Number.isFinite(Number(v)) || Number(v) < 0);',
+    note: 'master_data money check reverts to finite+non-negative only -> 1000000.01 / 3-decimal prices pushed to every device (F-followup / GPT-WF-03)' },
+  { id: 'S-50', file: 'sync.js',
+    find: 'if (RESERVED[k]) return;\n        if (keepLocalCost && k === \'costPrice\' && row.costPrice == null) return;',
+    repl: 'if (k === \'id\') return;\n        if (keepLocalCost && k === \'costPrice\' && row.costPrice == null) return;',
+    note: 'master_data upsert stops skipping reserved keys -> a __proto__ field in a remote row swaps the merged object prototype (F-followup / CL-01, I-02). Round-1 lesson: the shared copyFields helper means ONE mutation breaks both insert+update branches; the v1 mutation hit only the update branch while the sentinel tested a new product (insert) -> BLIND.' },
+  { id: 'S-51', file: 'index.html',
+    find: "if (!this._QTY_RE.test(s)) return { ok: false, error: 'must be a whole number' };",
+    repl: ';',
+    note: 'shared Validate.qty drops the lexical gate -> exponent/hex strings coerce (5e2->500, 0x10->16) at backup + pull = phantom stock (F-followup-2 / GPT-FF-01)' },
+  { id: 'S-52', file: 'sync.js',
+    find: 'const unsynced = _allUnsynced.filter(_egressOk);',
+    repl: 'const unsynced = _allUnsynced;',
+    note: 'push egress stops filtering -> hostile/legacy local rows (5.9->5, NaN->0, unknown type/product/store) forwarded to the cloud to poison every device (F-followup-2 / GPT-FF-02)' },
+  { id: 'S-53', file: 'index.html',
+    find: "const _sh=UI.money(document.getElementById('del-shipping')?.value,{optional:true});",
+    repl: 'const _sh={ok:true,value:null};',
+    note: 'delivery save stops reading the Shipping field -> user-entered shipping silently dropped from landed cost again (Wave G / blind x5)' },
+  { id: 'S-54', file: 'db.js',
+    find: "if (!ok) throw new Error('Migration persist to IndexedDB failed — localStorage source kept intact');",
+    repl: ';',
+    note: 'migration reverts to ignoring the persist result -> failed restore archives+deletes the source and boots an EMPTY app (Wave G / CaC-H4)' },
+  { id: 'S-55', file: 'index.html',
+    find: "    'login-audit':        {id:'page-login-audit',    fn:()=>Pages.loginAudit()},  // Wave G (blind W3-1): sidebar link existed but the route was never registered — the whole feature was unreachable",
+    repl: '',
+    note: 'login-audit route deregistered -> the sidebar link dead-ends and the whole feature is unreachable again (Wave G / blind W3-1)' },
+  { id: 'S-56', file: 'phase2.js',
+    find: 'const _existingLead = idx >= 0 ? (d.thresholds[idx].leadDays != null ? d.thresholds[idx].leadDays : null) : null;',
+    repl: 'const _existingLead = null;',
+    note: 'optimum Save All reverts to hard-coding leadDays:null -> every save silently wipes reorder lead times (Wave G / blind W3-4)' },
+  { id: 'S-57', file: 'index.html',
+    find: '      Pages._logData={}; Pages._logStep=1;        // movement wizard draft',
+    repl: '',
+    note: 'logout stops clearing the movement draft -> next user on a shared device inherits the previous user\'s half-finished movement (Wave G / blind W8)' },
+  { id: 'S-58', file: 'index.html',
+    find: 'if(this._logSubmitting)return; this._logSubmitting=true;',
+    repl: 'this._logSubmitting=true;',
+    note: 'movement double-submit guard removed -> a touchscreen double-tap records the movement TWICE (distinct crypto ids defeat dedup) (Wave G / blind W6)' },
+  { id: 'S-59', file: 'index.html',
+    find: 'if(this._delSaving)return; this._delSaving=true;',
+    repl: 'this._delSaving=true;',
+    note: 'delivery double-submit guard removed -> a touchscreen double-tap doubles the delivery stock-in (Wave G follow-up / GPT BLOCK P3 — proves the _delSaving half S-58 only asserted)' },
+  { id: 'S-60', file: 'index.html',
+    find: 'const headerShare=ln.headerCostShare||0;',
+    repl: 'const headerShare=(ln.unitCost*ln.quantity/del.lines.reduce((a,l)=>a+l.unitCost*l.quantity,0))*Object.values(del.headerCosts).reduce((a,v)=>a+v,0);',
+    note: 'packaging edit reverts to value-based allocation of the lumped header -> a weight-allocated delivery has its freight/shipping share re-flattened on edit, corrupting landed cost (Wave G follow-up / GPT+Gemini BLOCK P2, convergence x2)' },
+  { id: 'S-61', file: 'phase2.js',
+    find: 'if (this._optSaving) return; this._optSaving = true;',
+    repl: 'this._optSaving = true;',
+    note: 'optimum-levels Save All double-tap guard removed -> overlapping commitDurable calls (redundant sync + spurious save-failed UI) (Wave G follow-up / Gemini BLOCK P3 — G6 sweep)' },
+  { id: 'S-62', file: 'index.html',
+    find: 'if(this._pkgSaving)return; this._pkgSaving=true;',
+    repl: 'this._pkgSaving=true;',
+    note: 'packaging-edit double-tap guard removed -> a 2nd commit can show the fatal "could not be saved" overlay after a successful save + append duplicate cost-history rows (Wave G follow-up / GPT re-audit P3)' },
+  { id: 'S-63', file: 'index.html',
+    find: 'if(this._costSaving)return; this._costSaving=true;',
+    repl: 'this._costSaving=true;',
+    note: 'cost-entry double-tap guard removed -> duplicate ch_+Date.now() cost-history rows (Wave G follow-up / Gemini write-path family)' },
+  { id: 'S-64', file: 'index.html',
+    find: 'if(this._stCountSubmitting)return; this._stCountSubmitting=true;',
+    repl: 'this._stCountSubmitting=true;',
+    note: 'clean stock-take double-tap guard removed -> a second commit (= duplicate st_+Date.now() record on a real ms-apart double-tap) (Wave G follow-up / Gemini write-path family)' },
+  // NOTE: no S-65. The submitDraft _txState._creating guard was reverted — the handler is already
+  // idempotent via two synchronous status checks, so a guard there is dead code with no provable
+  // behaviour. Documented at phase2.js submitDraft.
+];
+
+function copyRepoTo(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of SRC_FILES) {
+    const src = path.join(REPO, f);
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dir, f));
+  }
+}
+
+// Run the sentinel suite in a FRESH child process per call — isolates each mutation's
+// browser lifecycle so a Playwright teardown race can't crash the whole run (Round-10 harness note).
+function runSmokeChild(dir) {
+  let out = '';
+  try { out = execFileSync('node', [SMOKE, dir], { encoding: 'utf8', timeout: 360000, stdio: ['ignore', 'pipe', 'pipe'] }); }  // Wave G: 58 sentinels no longer fit the old 180s child budget
+  catch (e) { out = (e.stdout || '') + '\n' + (e.stderr || ''); }
+  const res = [];
+  for (const m of out.matchAll(/\[CLEAN-(PASS|FAIL)!?\]\s+(S-\d+)/g)) res.push({ id: m[2], cleanPass: m[1] === 'PASS' });
+  return res;
+}
+
+(async () => {
+  console.log('=== BOB Stock saboteur mutation runner ===\n');
+
+  // 0) Baseline: every sentinel must be green on clean code.
+  console.log('[baseline] running sentinels against clean repo (isolated child process)...');
+  let clean = runSmokeChild(REPO);
+  if (clean.length === 0) clean = runSmokeChild(REPO);  // retry once on a crashed run
+  const cleanGreen = clean.filter(o => o.cleanPass).length;
+  console.log(`[baseline] ${cleanGreen}/${clean.length} green on clean code\n`);
+  if (cleanGreen !== clean.length) {
+    console.error('BASELINE FAIL — a sentinel is red on clean code. Fix before mutation testing.');
+    process.exit(1);
+  }
+
+  // 1) Each mutation must turn its sentinel red.
+  // Targeted-first support: `SABOTEUR_ONLY=S-39,S-51 node saboteur-runner.js` runs
+  // just those mutations (fast feedback after authoring/changing a sentinel, before
+  // the full ~35min run). No env var = full suite.
+  const _only = (process.env.SABOTEUR_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
+  const _muts = _only.length ? MUTATIONS.filter(m => _only.includes(m.id)) : MUTATIONS;
+  if (_only.length) console.log(`[targeted] running only: ${_only.join(', ')}`);
+  let caught = 0, blind = 0, missingFind = 0;
+  for (const m of _muts) {
+    const dir = path.join(os.tmpdir(), 'bob-sab-' + m.id + '-' + Date.now());
+    copyRepoTo(dir);
+    const target = path.join(dir, m.file);
+    const before = fs.readFileSync(target, 'utf8');
+    if (before.indexOf(m.find) === -1) {
+      console.log(`  [SKIP-NOFIND] ${m.id} :: source string not found in ${m.file} (mutation needs updating)`);
+      missingFind++;
+      fs.rmSync(dir, { recursive: true, force: true });
+      continue;
+    }
+    fs.writeFileSync(target, before.replace(m.find, m.repl), 'utf8');
+
+    let out = runSmokeChild(dir);
+    if (!out.find(o => o.id === m.id)) out = runSmokeChild(dir);  // retry once if the run crashed before reaching this sentinel
+    const sentinel = out.find(o => o.id === m.id);
+    const flippedRed = sentinel && sentinel.cleanPass === false;
+    if (flippedRed) { caught++; console.log(`  [CAUGHT]  ${m.id} flipped RED on saboteur (${m.note})`); }
+    else { blind++; console.log(`  [BLIND!]  ${m.id} stayed GREEN with the bug applied — sentinel proves nothing (${m.note})`); }
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  console.log(`\n==== mutation results: ${caught} CAUGHT, ${blind} BLIND, ${missingFind} skipped of ${MUTATIONS.length} ====`);
+  process.exit(blind === 0 && missingFind === 0 ? 0 : 1);
+})().catch(e => { console.error('RUNNER ERROR:', e); process.exit(2); });
