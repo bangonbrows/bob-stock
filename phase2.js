@@ -188,6 +188,17 @@ const Transfer = {
       const _already = (_d.transactions || []).some(x => x && x.transferId === transferId && x.type === 'transfer_in');
       if (_already) return { ok:false, error:'This transfer was already received (possibly on another device). Sync and reopen it.' };
     }
+    // Wave H (H5 / GPTc-4): reject OVER-receipt at the boundary, before any mutation. Receiving
+    // MORE than was sent silently lost the excess — receivedQty stored as e.g. 12 but every credit
+    // path clamps to sentQty (10), so the extra 2 units vanished from the ledger. A genuine surplus
+    // is a stock adjustment, not a transfer receipt — reject and tell the user.
+    for (const _it of t.items) {
+      const _ri = receivedItems.find(r => r.productId === _it.productId);
+      const _rq = _ri ? (Math.trunc(Number(_ri.receivedQty)) || 0) : 0;
+      if (_rq > _it.sentQty) {
+        return { ok:false, error:`Received qty (${_rq}) exceeds sent (${_it.sentQty}) for ${UI.productName(_it.productId)}. Record an over-receipt as a stock adjustment, not a transfer receipt.` };
+      }
+    }
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
@@ -237,50 +248,7 @@ const Transfer = {
     if (!item) return { ok:false, error:'Flagged item not found' };
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
-    const d = DB.get();
-    item.resolvedBy = Auth.actor();
-    item.resolvedAction = action;
-    item.flagNote = note || '';
-    item.status = 'resolved';
-    // Tier 2 Fix #12: Collect all transactions, then write atomically
-    // F2-HIGH02: receive() now credits the physically-received qty IMMEDIATELY and
-    // records it in item.creditedAtReceive — resolution settles only the DIFFERENCE.
-    // Transfers flagged before this change carry no marker → alreadyCredited = 0 →
-    // the maths below collapses to the original behaviour (backward compatible).
-    const alreadyCredited = Number.isSafeInteger(item.creditedAtReceive)
-      ? Math.max(0, Math.min(item.sentQty, item.creditedAtReceive)) : 0;
-    const batchTxns = [];
-    if (action === 'accept_as_is') {
-      const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(item.receivedQty)) || 0));  // D-F1/SA-F-F1: clamp credit to [0, sentQty], integer (no phantom/negative)
-      const topUp = credit - alreadyCredited;
-      if (topUp > 0) {
-        batchTxns.push(this._txn('transfer_in', productId, topUp, t.toStoreId, transferId, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
-      }
-      const diff = item.sentQty - credit;
-      if (diff > 0) {
-        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Shortfall returned — ' + diff + ' units'));
-      }
-    } else if (action === 'adjust') {
-      const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(qty)) || 0));  // D-F1/SA-F-F1: clamp adjust to [0, sentQty], integer (no phantom/negative)
-      const delta = credit - alreadyCredited;
-      if (delta > 0) {
-        batchTxns.push(this._txn('transfer_in', productId, delta, t.toStoreId, transferId, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
-      } else if (delta < 0) {
-        // Director ruled fewer units than were credited at receive — book the
-        // difference OUT of the receiver so the ledger matches the ruling.
-        batchTxns.push(this._txn('adjustment_out', productId, -delta, t.toStoreId, transferId, 'Flag resolved — received qty adjusted down by Director'));  // adjustment category, NOT 'out' (= sale) — keeps sell-through reports clean
-      }
-      const diff = item.sentQty - credit;
-      if (diff > 0) {
-        batchTxns.push(this._txn('transfer_in', productId, diff, t.fromStoreId, transferId, 'Adjustment remainder returned — ' + diff + ' units'));
-      }
-    } else if (action === 'reject') {
-      if (alreadyCredited > 0) {
-        // Reverse the receive-time credit — on reject the receiver keeps nothing.
-        batchTxns.push(this._txn('adjustment_out', productId, alreadyCredited, t.toStoreId, transferId, 'Rejected — received units sent back to ' + UI.storeName(t.fromStoreId)));  // adjustment category, NOT 'out' (= sale)
-      }
-      batchTxns.push(this._txn('transfer_in', productId, item.sentQty, t.fromStoreId, transferId, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
-    }
+    const batchTxns = this._computeFlagResolution(t, item, action, qty, note);
     // Check if all items resolved
     const allDone = t.items.every(i => i.status === 'accepted' || i.status === 'resolved');
     if (allDone) {
@@ -291,6 +259,66 @@ const Transfer = {
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     // T3-M3r1: Notify AFTER successful atomic write (was before — would send ghost emails on write failure)
+    if (allDone) this._notifyCompleted(t);
+    return { ok:true };
+  },
+
+  // Wave H (H5 / GPT-15, GCLI-7 — H-02 all-or-nothing sibling): compute ONE flagged item's
+  // resolution — mutate its resolution state + RETURN its ledger rows WITHOUT writing — so the
+  // single-item resolveFlag() and the batch resolveAllFlags() share IDENTICAL settlement maths
+  // (no drift) and the batch path can write every line in ONE atomic transaction.
+  // F2-HIGH02 maths preserved: receive() credits the physically-received qty immediately
+  // (item.creditedAtReceive); resolution settles only the DIFFERENCE. Legacy pre-F2 transfers
+  // carry no marker → alreadyCredited = 0 → collapses to the original behaviour.
+  _computeFlagResolution(t, item, action, qty, note) {
+    item.resolvedBy = Auth.actor();
+    item.resolvedAction = action;
+    item.flagNote = note || '';
+    item.status = 'resolved';
+    const alreadyCredited = Number.isSafeInteger(item.creditedAtReceive)
+      ? Math.max(0, Math.min(item.sentQty, item.creditedAtReceive)) : 0;
+    const batchTxns = [];
+    const pid = item.productId, tid = t.id;
+    if (action === 'accept_as_is') {
+      const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(item.receivedQty)) || 0));  // clamp to [0, sentQty], integer
+      const topUp = credit - alreadyCredited;
+      if (topUp > 0) batchTxns.push(this._txn('transfer_in', pid, topUp, t.toStoreId, tid, 'Flag resolved — accepted as-is from ' + UI.storeName(t.fromStoreId)));
+      const diff = item.sentQty - credit;
+      if (diff > 0) batchTxns.push(this._txn('transfer_in', pid, diff, t.fromStoreId, tid, 'Shortfall returned — ' + diff + ' units'));
+    } else if (action === 'adjust') {
+      const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(qty)) || 0));  // clamp to [0, sentQty], integer
+      const delta = credit - alreadyCredited;
+      if (delta > 0) batchTxns.push(this._txn('transfer_in', pid, delta, t.toStoreId, tid, 'Flag resolved — adjusted qty from ' + UI.storeName(t.fromStoreId)));
+      else if (delta < 0) batchTxns.push(this._txn('adjustment_out', pid, -delta, t.toStoreId, tid, 'Flag resolved — received qty adjusted down by Director'));  // adjustment category, NOT 'out' (= sale)
+      const diff = item.sentQty - credit;
+      if (diff > 0) batchTxns.push(this._txn('transfer_in', pid, diff, t.fromStoreId, tid, 'Adjustment remainder returned — ' + diff + ' units'));
+    } else if (action === 'reject') {
+      if (alreadyCredited > 0) batchTxns.push(this._txn('adjustment_out', pid, alreadyCredited, t.toStoreId, tid, 'Rejected — received units sent back to ' + UI.storeName(t.fromStoreId)));  // reverse the receive-time credit
+      batchTxns.push(this._txn('transfer_in', pid, item.sentQty, t.fromStoreId, tid, 'Rejected — full qty returned to ' + UI.storeName(t.fromStoreId)));
+    }
+    return batchTxns;
+  },
+
+  // Wave H (H5): resolve ALL flagged items in ONE atomic write (the completeFlags path).
+  // resolutions = [{ productId, action, qty, note }]. All-or-nothing: one snapshot, one batch,
+  // one durable write — a mid-list failure rolls back EVERY line, not just the one that failed
+  // (the old per-item resolveFlag loop left the transfer half-resolved).
+  async resolveAllFlags(transferId, resolutions) {
+    if (!this._canResolve()) return { ok:false, error:'Permission denied' };
+    const t = this.get(transferId);
+    if (!t || (t.status !== 'received' && t.status !== 'in_transit')) return { ok:false, error:'Invalid transfer' };
+    const snapshot = JSON.parse(JSON.stringify(t));
+    const batchTxns = [];
+    for (const r of (resolutions || [])) {
+      const item = t.items.find(i => i.productId === r.productId && i.status === 'flagged');
+      if (!item) continue;
+      const qty = r.action === 'adjust' ? (r.qty || 0) : undefined;
+      batchTxns.push(...this._computeFlagResolution(t, item, r.action, qty, r.note || ''));
+    }
+    const allDone = t.items.every(i => i.status === 'accepted' || i.status === 'resolved');
+    if (allDone) { t.status = 'completed'; t.completedDate = new Date().toISOString(); }
+    const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
+    if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     if (allDone) this._notifyCompleted(t);
     return { ok:true };
   },
@@ -1327,6 +1355,7 @@ window.renderOptimumLevels = function() {
 // TransferUI — action handlers
 // ============================================================
 window._txState = _txState;  // SA-D-F2: inline onclick handlers reference _txState in global scope
+window.Transfer = Transfer;  // Wave H: expose the domain module (like TransferUI) so the harness can drive receive()/resolveAllFlags() directly — no security change (client is not the trust boundary, P-13)
 window.TransferUI = {
 
   openDetail(transferId) {
@@ -1544,14 +1573,15 @@ window.TransferUI = {
     UI.confirm('Complete this transfer with the resolved flags?', async function() {
       if (_txState._creating) return; _txState._creating = true;  // D-F4
       try {
-        for (const i of flagged) {
+        // Wave H (H5 / GPT-15, GCLI-7): resolve ALL flagged lines in ONE atomic write instead of
+        // the old per-line loop (which committed each line durably as it went, so a mid-loop
+        // failure left the transfer HALF-resolved). resolveAllFlags = one snapshot, one batch.
+        const resolutions = flagged.map(i => {
           const fa = _txState.flagActions[i.productId];
-          const action = fa.action; // 'accept_as_is' | 'adjust' | 'reject'
-          const qty = fa.action === 'adjust' ? (fa.qty || 0) : undefined;
-          const note = fa.notes || '';
-          const result = await Transfer.resolveFlag(transferId, i.productId, action, qty, note);
-          if (!result.ok) throw new Error(result.error);
-        }
+          return { productId: i.productId, action: fa.action, qty: fa.action === 'adjust' ? (fa.qty || 0) : undefined, note: fa.notes || '' };
+        });
+        const result = await Transfer.resolveAllFlags(transferId, resolutions);
+        if (!result.ok) throw new Error(result.error);
         _txState.flagActions = {};
         UI.toast('Transfer completed', 'success');
         navigateTo('transfers');

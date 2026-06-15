@@ -1237,7 +1237,7 @@ _toastQueue:[],
       ov.id = 'fatal-save-overlay';
       ov.setAttribute('role','alertdialog'); ov.setAttribute('aria-modal','true');
       ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(127,0,0,.97);display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;color:#fff;font-family:system-ui,-apple-system,Segoe UI,sans-serif';
-      ov.innerHTML = '<div style="max-width:520px"><div style="font-size:64px;line-height:1;margin-bottom:14px">&#9888;&#65039;</div><div style="font-size:26px;font-weight:800;letter-spacing:.5px;margin-bottom:12px">SAVE FAILED &mdash; DO NOT CONTINUE</div><div style="font-size:17px;line-height:1.5;margin-bottom:8px">This change was <b>not saved</b> on this device. Do not keep working here.</div><div id="fatal-save-detail" style="font-size:14px;opacity:.85;margin-bottom:18px"></div><div style="font-size:20px;font-weight:700">Please contact your administrator.</div><button type="button" onclick="document.getElementById(\'fatal-save-overlay\').style.display=\'none\'" style="margin-top:26px;background:#fff;color:#7f0000;border:none;border-radius:8px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer">Dismiss</button></div>';
+      ov.innerHTML = '<div style="max-width:520px"><div style="font-size:64px;line-height:1;margin-bottom:14px">&#9888;&#65039;</div><div style="font-size:26px;font-weight:800;letter-spacing:.5px;margin-bottom:12px">SAVE FAILED &mdash; DO NOT CONTINUE</div><div style="font-size:17px;line-height:1.5;margin-bottom:8px">This change was <b>not saved</b> on this device. Do not keep working here.</div><div id="fatal-save-detail" style="font-size:14px;opacity:.85;margin-bottom:18px"></div><div style="font-size:20px;font-weight:700">Please contact your administrator.</div><button type="button" onclick="location.reload()" style="margin-top:26px;background:#fff;color:#7f0000;border:none;border-radius:8px;padding:11px 22px;font-size:14px;font-weight:700;cursor:pointer">Reload App</button></div>';
       document.body.appendChild(ov);
     }
     var det = ov.querySelector('#fatal-save-detail'); if (det) det.textContent = detail || '';
@@ -2873,8 +2873,13 @@ const Pages = {
     if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change products','error');return;}
     if(!Stock._isSafeKey(id)){UI.toast('That product ID is reserved — choose another','error');return;}  // Wave D (GPT-ABC-001): reject reserved keys at the catalogue boundary, else this product's stock silently vanishes from the cache
     if(/[<>"'`]/.test(id)){UI.toast('Product ID cannot contain angle brackets, quotes or backticks','error');return;}  // F2-CRIT04 (Gemini): the load-time sanitizer strips these from CATALOGUE ids but not from ledger rows that reference them — a stored id with these chars detaches from its history on next load
+    // Wave H (H6 / GPTa-40): franchiseDiscount is PRICING (Director-only via editPricing), not
+    // ref-data. The inline editor _setProductFranDisc gates it on editPricing, but this add path
+    // wrote it under editRefData only — so Head Office could set franchise pricing on new products.
+    // Strip the discount unless the user can actually edit pricing (it can be set later by a Director).
+    const _franDisc = Auth.can('editPricing') ? franDisc : null;
     const d=DB.get();
-    d.products.push({id,name,catId,price,internalUse:false,weightGrams:null,franchiseDiscount:franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null});
+    d.products.push({id,name,catId,price,internalUse:false,weightGrams:null,franchiseDiscount:_franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null});
     if(!(await Pages._commitSettings()))return;
     UI.closeModal(); UI.toast(`"${name}" added`,'success'); Pages._refreshSettings('products');
   },
@@ -3180,8 +3185,18 @@ const Pages = {
     if(!Array.isArray(data.products)||!Array.isArray(data.stores)||!Array.isArray(data.transactions)||!Array.isArray(data.users)||!Array.isArray(data.categories)) return {ok:false,error:'Data fields must be arrays.'};
     if(!data.products.every(p=>p&&p.id&&p.name)) return {ok:false,error:'Invalid product data: each product needs id and name.'};
     if(!data.stores.every(s=>s&&s.id&&s.name)) return {ok:false,error:'Invalid store data: each store needs id and name.'};
-    if(typeof Stock!=='undefined'&&Stock._isSafeKey&&(!data.products.every(p=>Stock._isSafeKey(p.id))||!data.stores.every(s=>Stock._isSafeKey(s.id)))) return {ok:false,error:'Backup contains a reserved/invalid product or store ID.'};  // Wave D (GPT-ABC-001): reject reserved IDs at the import boundary
-    if([...data.products,...data.stores].some(o=>/[<>"'`]/.test(String(o.id)))) return {ok:false,error:'Backup contains a product/store ID with forbidden characters (angle brackets, quotes or backticks) — file rejected.'};  // F2-CRIT04 (Gemini, verified live): on-load sanitize mutates catalogue ids but NOT the ledger rows pointing at them — the product detaches from its history and stock reads zero
+    // Wave H (H4 / GPTC-D): the on-load _sanitizeNames strips forbidden chars from the ids of
+    // products, stores, CATEGORIES and PRODUCT-TYPES — but this gate only checked products+stores.
+    // A category/productType id with a forbidden char was accepted, then mutated on load while the
+    // product.catId / category.ptId pointing at it was NOT → the row detached (orphaned product,
+    // stock reads zero). Check ALL FOUR sanitised id collections, then verify referential integrity.
+    const _idColls = [data.products, data.stores, data.categories, data.productTypes || []];
+    if(typeof Stock!=='undefined'&&Stock._isSafeKey&&_idColls.some(coll=>!coll.every(o=>o&&Stock._isSafeKey(o.id)))) return {ok:false,error:'Backup contains a reserved/invalid product, store, category or product-type ID.'};  // Wave D (GPT-ABC-001) + Wave H (GPTC-D)
+    if(_idColls.some(coll=>coll.some(o=>/[<>"'`]/.test(String(o&&o.id))))) return {ok:false,error:'Backup contains a product/store/category/product-type ID with forbidden characters (angle brackets, quotes or backticks) — file rejected.'};  // F2-CRIT04 + Wave H (GPTC-D): on-load sanitize mutates catalogue ids but NOT the rows pointing at them → detach
+    // Referential integrity: every product.catId must resolve to a category in the backup, and every
+    // category.ptId (when product-types are present) to a product-type — else the row imports orphaned.
+    { const _catIds=new Set((data.categories||[]).map(c=>c&&c.id)); const _badCat=data.products.find(p=>p.catId!=null&&!_catIds.has(p.catId)); if(_badCat) return {ok:false,error:'Backup product "'+(_badCat.name||_badCat.id)+'" references a category not in the backup — file rejected.'};
+      if(Array.isArray(data.productTypes)&&data.productTypes.length){ const _ptIds=new Set(data.productTypes.map(p=>p&&p.id)); const _badPt=(data.categories||[]).find(c=>c.ptId!=null&&!_ptIds.has(c.ptId)); if(_badPt) return {ok:false,error:'Backup category "'+(_badPt.name||_badPt.id)+'" references a product-type not in the backup — file rejected.'}; } }
     // F1-H01 (GPT FINAL H-01): REJECT invalid quantities instead of coercing — a
     // negative ledger row survives ingest but the stock cache skips it, so ledger,
     // reports and cache disagree forever. Reject loudly; never quietly "fix" money data.

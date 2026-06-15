@@ -120,7 +120,7 @@ const Sync = {
       // need a Logic App endpoint — see SERVER-SIDE-REQUIREMENTS.md.
       try {
         const mdItem = data.items.find(i => i.ConfigType === 'master_data');
-        if (mdItem && mdItem.ConfigData) this._applyMasterData(mdItem.ConfigData);
+        if (mdItem && mdItem.ConfigData) await this._applyMasterData(mdItem.ConfigData);
       } catch (e) {
         console.warn('[Sync] master_data merge failed (catalogue unchanged):', e);
       }
@@ -172,7 +172,7 @@ const Sync = {
   //   - every row passes the same boundary rules as import: safe key, no
   //     sanitizer-stripped chars in ids, finite non-negative money. Bad rows are
   //     skipped + logged, never coerced.
-  _applyMasterData(raw) {
+  async _applyMasterData(raw) {
     const md = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!md || typeof md !== 'object') return;
     const version = Number(md.version);
@@ -228,6 +228,17 @@ const Sync = {
       return applied;
     };
 
+    // Wave H follow-up (GPT BLOCK P2): the upserts below mutate the LIVE cache before the durable
+    // write. If commitDurable fails we hold the version (H2) but must ALSO roll the cache back —
+    // otherwise a cache-only product/price survives in memory, and a transaction later saved against
+    // a cache-only product orphans on the next refresh (Dexie has no such product). Snapshot the four
+    // mutated collections so we can restore the exact pre-merge state on failure.
+    const _mdSnap = {
+      products: JSON.parse(JSON.stringify(d.products || [])),
+      stores: JSON.parse(JSON.stringify(d.stores || [])),
+      categories: JSON.parse(JSON.stringify(d.categories || [])),
+      productTypes: JSON.parse(JSON.stringify(d.productTypes || [])),
+    };
     const counts = {
       products: upsert('products', md.products, ['price', 'costPrice']),
       stores: upsert('stores', md.stores, []),
@@ -238,7 +249,39 @@ const Sync = {
       console.warn('[Sync] master_data skipped ' + skipped.length + ' invalid row(s): ' + skipped.join(', '));
       try { if (typeof Diag !== 'undefined') Diag.log('sync', 'master_data skipped rows: ' + skipped.join(', ')); } catch (e) {}
     }
-    DB.commit();  // runs _sanitizeNames + active normalization + ref-data persist
+    // Wave H (H2 / blind G1-12, ×2): persist DURABLY and advance the catalogue version ONLY if the
+    // write actually succeeded. The old fire-and-forget DB.commit() + immediate localStorage version
+    // bump meant a failed background persist still advanced the version → the next launch's
+    // `version<=lastApplied` gate skipped re-applying → catalogue desynced FOREVER, never retried.
+    const _ok = await DB.commitDurable();  // runs _sanitizeNames + ref-data persist; returns false on failure
+    if (!_ok) {
+      // Wave H follow-up (GPT + Gemini BLOCK P2): a durable persist failure must (a) hold the version,
+      // (b) roll the cache back so no cache-only catalogue survives, and (c) trip the same fatal
+      // "stop-on-durable-failure" gate as every other write path.
+      // (b) IN-PLACE rollback (NOT an array swap): restore each surviving row's fields and drop rows
+      // this merge inserted, so any module still holding a product object reference sees the restored
+      // values rather than the mutated ones (Gemini reference-drift finding — an array swap leaves the
+      // old, mutated objects alive for whoever captured them).
+      const _restoreColl = (coll) => {
+        const arr = d[coll]; if (!Array.isArray(arr)) return;
+        const snapById = new Map((_mdSnap[coll] || []).map(r => [r && r.id, r]));
+        for (let i = arr.length - 1; i >= 0; i--) { const o = arr[i]; if (!o || !snapById.has(o.id)) arr.splice(i, 1); }  // drop rows inserted by this failed merge
+        arr.forEach(o => { const snap = snapById.get(o.id); if (snap) { Object.keys(o).forEach(k => delete o[k]); Object.assign(o, snap); } });  // restore surviving rows IN PLACE
+      };
+      ['products', 'stores', 'categories', 'productTypes'].forEach(_restoreColl);
+      if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap();
+      if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();  // stock cache derives from products — rebuild against the restored catalogue
+      console.warn('[Sync] master_data v' + version + ' persist FAILED — version held at ' + lastApplied + ', cache rolled back (will re-apply on next config fetch).');
+      try { if (typeof Diag !== 'undefined') Diag.log('sync', 'master_data persist failed, version NOT advanced (held ' + lastApplied + '), cache rolled back'); } catch (e) {}
+      // (c) catalogue-specific fatal message. NOTE: DB.commitDurable()'s _retryWrite already trips the
+      // GENERIC fatal gate (db.js:185) on an exhausted durable write — so master-data failure was never
+      // silent (Gemini's "no fatal" was a false positive). This call OVERWRITES that generic message
+      // with a master-data-specific one, matching the per-call-site pattern every other durable path
+      // uses (transfer/movement/delivery/stock-take each set their own message on top of _retryWrite).
+      if (typeof UI !== 'undefined' && UI.fatalSaveError) UI.fatalSaveError('A catalogue update could not be saved to this device. Your data is unchanged — please reload, and contact your administrator if this keeps happening.');
+      this._rerender();  // reflect the rolled-back catalogue in the UI
+      return;
+    }
     try { localStorage.setItem('bob_catalogue_version', String(version)); } catch (e) {}
     if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap();
     this._rerender();
@@ -648,6 +691,13 @@ const Sync = {
       // the authoritative gate (SERVER-SIDE-REQUIREMENTS.md).
       const _egressOk = (t) => {
         if (!t) return false;
+        // Wave H (H1 / blind G1-22, ×4, P1): a tombstone is an offline delete queued as a
+        // type:'deleted' row (qty 0, no in/out direction). The in/out-only checks below
+        // rejected it, so offline deletes NEVER egressed → ghost stock on every other device.
+        // A well-formed tombstone (carries its TargetTransactionId) must propagate even if the
+        // referenced product/store is gone — it deletes by target id, not by stock movement.
+        // _toSharePoint already serialises it correctly (Type:'deleted' + TargetTransactionId).
+        if (String(t.type || '') === 'deleted') return !!t.targetTransactionId;
         if (typeof Validate !== 'undefined' && !Validate.qty(t.qty).ok) return false;
         const _dir = (typeof Txn !== 'undefined' && Txn.classify) ? Txn.classify({ type: String(t.type || '') }).direction : 'in';
         if (_dir !== 'in' && _dir !== 'out') return false;
@@ -738,25 +788,35 @@ const Sync = {
         // persist the batch stays unsynced and re-pushes (server dedup safe).
         const _marked = await DB.markTransactionsSynced(batchIds);
         if (!_marked) {
-          console.warn('[Sync] markSynced persist failed — batch stays unsynced for retry.');
+          // Wave H (H3 / GPTa-31): the server ack verified, but the LOCAL _synced write FAILED.
+          // The rows are still _synced=false and will re-push (server dedup makes replay safe) —
+          // but the old code fell through and cleared pending + showed "Synced ✓", a false-
+          // confidence lie. Keep pending, show a finalising status, and schedule a proactive
+          // retry (GPTa-32: these paths previously left pending=true with NO retry timer).
+          console.warn('[Sync] markSynced persist failed — keeping pending + scheduling retry (NOT showing Synced).');
+          this._showStatus('Saving sync state… will retry', 'warning');
+          Sync._setPending(true);
+          this._scheduleSyncRetry();
+        } else {
+          // SA-G-F2: do NOT advance the pull cursor from the device clock on push.
+          // _lastSyncAt is the pull "since" and must be driven ONLY by the server watermark in
+          // pull(); a fast client clock here would skip other stores' rows. Pushed rows get
+          // re-pulled and deduped (server dedup + client ID-merge), which is safe.
+          Sync._setPending(false);
+          this._retryCount = 0;
+          this._markRetryCount = 0;
+
+          this._showStatus('Synced ✓', 'success');
+          this._notifyFollowers();
+          console.log(`[Sync] Push complete: ${batchSize} transactions synced.`, result);
         }
-
-        // SA-G-F2: do NOT advance the pull cursor from the device clock on push.
-        // _lastSyncAt is the pull "since" and must be driven ONLY by the server watermark in
-        // pull(); a fast client clock here would skip other stores' rows. Pushed rows get
-        // re-pulled and deduped (server dedup + client ID-merge), which is safe.
-        Sync._setPending(false);
-        this._retryCount = 0;
-
-        this._showStatus('Synced ✓', 'success');
-        this._notifyFollowers();
-        console.log(`[Sync] Push complete: ${batchSize} transactions synced.`, result);
       } else {
         // Fail-safe: server response ambiguous or partial — leave unsynced, retry later
         // Server-side dedup (by TransactionId) ensures replayed rows are harmless
         console.warn('[Sync] Push response ambiguous — batch left unsynced for retry.', result);
-        this._showStatus('Sync uncertain — will verify on next cycle', 'warning');
+        this._showStatus('Sync uncertain — will retry', 'warning');
         Sync._setPending(true);
+        this._scheduleSyncRetry();  // Wave H (GPTa-32): the ambiguous branch used to schedule NO retry
       }
 
     } catch (err) {
@@ -1143,6 +1203,21 @@ const Sync = {
     this._debounceTimer = setTimeout(async () => {
       await this.push();
     }, this.DEBOUNCE_MS);
+  },
+
+  // Wave H (H3 / GPTa-31, GPTa-32): a bounded proactive retry for the push paths that leave the
+  // batch unsynced+pending without an immediate re-push (markSynced-fail + ambiguous ack). Fires
+  // AFTER the current push()'s finally releases the lock, then routes through the normal debounced
+  // scheduleSync() — no lock juggling. Bounded so a persistently-failing local write doesn't spin
+  // forever; the rows still re-push on the next user write or pull cycle. Reset on a clean sync.
+  _scheduleSyncRetry() {
+    if (this._markRetryTimer) return;
+    if ((this._markRetryCount || 0) >= 5) { this._markRetryCount = 0; return; }
+    this._markRetryCount = (this._markRetryCount || 0) + 1;
+    this._markRetryTimer = setTimeout(() => {
+      this._markRetryTimer = null;
+      this.scheduleSync();
+    }, 3000);
   },
 
   /**
