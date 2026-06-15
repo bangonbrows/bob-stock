@@ -381,18 +381,42 @@ const DB = {
     const idSet = ids instanceof Set ? ids : new Set(ids);
     const rows = (this._cache.transactions || []).filter(t => t && idSet.has(t.id));
     if (rows.length === 0) return true;
-    rows.forEach(t => { t._synced = true; });
+    const _now = Date.now();
+    rows.forEach(t => { t._synced = true; t._syncedAt = _now; });  // Wave I: stamp _syncedAt for the TTL tombstone prune
     _pendingWrites++;
     try {
       const ok = await _retryWrite(
         () => bobDB.transactions.bulkPut(rows),
         `Mark ${rows.length} transactions synced`
       );
-      if (!ok) rows.forEach(t => { t._synced = false; });  // cache must not claim what disk didn't confirm
+      if (!ok) rows.forEach(t => { t._synced = false; delete t._syncedAt; });  // cache must not claim what disk didn't confirm
       return ok;
     } finally {
       _pendingWrites--;
     }
+  },
+
+  // Wave I (Tier 2 / I-4): prune synced tombstones older than the TTL so type:'deleted' rows do not
+  // accumulate forever (they slow every O(N) cache/ledger loop). Prune by _syncedAt (when it was
+  // confirmed synced), falling back to createdAt. SharePoint remains the persistent cloud record, so
+  // a local prune NEVER loses a delete. Best-effort, fire-and-forget on launch.
+  async pruneSyncedTombstones(ttlDays) {
+    if (!this._cache) return 0;
+    const ttl = (ttlDays || 30) * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - ttl;
+    const stamp = t => (typeof t._syncedAt === 'number' ? t._syncedAt : (t.createdAt ? new Date(t.createdAt).getTime() : 0));
+    const staleIds = (this._cache.transactions || [])
+      .filter(t => t && t.type === 'deleted' && t._synced && stamp(t) < cutoff)
+      .map(t => t.id);
+    if (!staleIds.length) return 0;
+    const idSet = new Set(staleIds);
+    this._cache.transactions = this._cache.transactions.filter(t => !idSet.has(t.id));
+    _pendingWrites++;
+    try { await _retryWrite(() => bobDB.transactions.bulkDelete(staleIds), `Prune ${staleIds.length} synced tombstones`); }
+    catch (e) { console.error('[DB] Tombstone prune failed:', e); }
+    finally { _pendingWrites--; }
+    console.log('[DB] Pruned ' + staleIds.length + ' synced tombstone(s) older than ' + (ttlDays || 30) + 'd');
+    return staleIds.length;
   },
 
   // ─── Append-Only Record Methods (Hybrid Option C) ─────────────────
@@ -491,13 +515,43 @@ const DB = {
    * @param {object} options - Optional: { skipTombstone: true } to suppress sync
    *   (used when applying a remote tombstone — don't re-push what we just received)
    */
+  // Wave I (Tier 2): build the durable tombstone row written ATOMICALLY with a delete.
+  // type:'deleted' + targetTransactionId is what push()/_egressOk forward and pull() applies;
+  // DeletedBy/DeletedAt/DeleteReason carry the deletion audit trail to other devices. crypto id
+  // suffix (not Math.random — GPT-18). The tombstone is a normal unsynced row drained by push().
+  _makeTombstone(original, txnId, options) {
+    const rnd = (typeof crypto !== 'undefined' && crypto.getRandomValues)
+      ? Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('')
+      : String(_pendingWrites) + 'x';
+    const actor = (typeof Auth !== 'undefined' && Auth.user()) ? (Auth.user().name || Auth.user().username || '') : '';
+    return {
+      id: 'del_' + Date.now() + '_' + rnd,
+      date: new Date().toISOString().split('T')[0],
+      storeId: (original && original.storeId) || '',
+      productId: (original && original.productId) || '',
+      type: 'deleted',
+      qty: 0,
+      staffName: actor,
+      reason: 'Transaction deleted: ' + txnId,
+      deviceId: (typeof Sync !== 'undefined' && Sync._deviceId) ? Sync._deviceId : '',
+      transferId: '',
+      targetTransactionId: txnId,
+      deletedBy: (options && options.deletedBy) || actor,
+      deletedAt: (options && options.deletedAt) || new Date().toISOString(),
+      deleteReason: (options && options.deleteReason) || '',
+      createdAt: new Date().toISOString(),
+      _synced: false
+    };
+  },
+
   removeTransaction(txnId, options) {
     if (!this._cache) return false;
     // Grab the original transaction before removing (for tombstone context)
     const original = this._cache.transactions.find(t => t.id === txnId);
+    if (!original) return true;
     this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
     // Fix #9: Reverse delta to keep cache in sync
-    if (original && typeof Stock !== 'undefined' && Stock._applyDelta) {
+    if (typeof Stock !== 'undefined' && Stock._applyDelta) {
       // Reverse the direction: if original was 'in', we need to subtract (apply as 'out' equivalent)
       const reversedType = original.type === 'in' ? 'out' :
                            original.type === 'return_in' ? 'out' :
@@ -510,17 +564,32 @@ const DB = {
                            original.type === 'adjustment_out' ? 'adjustment_in' : original.type;
       Stock._applyDelta(original.storeId, original.productId, reversedType, original.qty);
     }
-    // GPT review: apply retry/warning to delete operations (not just writes)
+    // Wave I (Tier 2 / I-6): write the tombstone ATOMICALLY with the delete (one Dexie txn), then
+    // let normal push() drain it. skipTombstone = applying a remote tombstone, so write neither.
+    const ts = (options && options.skipTombstone) ? null : this._makeTombstone(original, txnId, options);
+    if (ts) this._cache.transactions.push(ts);
     _retryWrite(
-      () => bobDB.transactions.delete(txnId),
-      `Delete transaction ${txnId}`
-    ).catch(err => {
-      console.error('[DB] Background transaction delete failed after retries:', err);
+      () => bobDB.transaction('rw', bobDB.transactions, async () => {
+        await bobDB.transactions.delete(txnId);
+        if (ts) await bobDB.transactions.put(ts);
+      }),
+      `Delete transaction ${txnId}${ts ? ' + tombstone' : ''}`
+    ).then(ok => {
+      // Wave I follow-up (GPT + Gemini code re-audit): roll the cache back to match disk if the
+      // background delete+tombstone write fails — restore the original, drop the optimistic
+      // tombstone, rebuild stock. Without this, the non-durable path left a cache/disk tear
+      // (cache: deleted+tombstoned; disk: unchanged). Brings removeTransaction to parity with
+      // removeTransactionDurable. (_retryWrite returns false on exhausted retries, doesn't throw.)
+      if (!ok && this._cache) {
+        if (!this._cache.transactions.some(t => t.id === original.id)) this._cache.transactions.push(original);
+        if (ts) this._cache.transactions = this._cache.transactions.filter(t => t !== ts);
+        if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+        console.error('[DB] Background delete+tombstone failed — cache rolled back to match disk.');
+      }
+    }).catch(err => {
+      console.error('[DB] Background delete+tombstone error:', err);
     });
-    // Push tombstone to SharePoint (unless this IS a remote tombstone being applied)
-    if (!(options && options.skipTombstone) && typeof Sync !== 'undefined' && Sync.pushTombstone) {
-      Sync.pushTombstone(txnId, original || {}, options);
-    }
+    if (ts && typeof Sync !== 'undefined' && Sync.scheduleSync) Sync.scheduleSync();
     return true;
   },
 
@@ -684,23 +753,34 @@ const DB = {
     if (!this._cache) return false;
     const original = this._cache.transactions.find(t => t.id === txnId);
     if (!original) return true; // nothing to remove — idempotent success
+    // Wave I (Tier 2 / I-6): build the tombstone, then delete + put it in ONE Dexie transaction —
+    // atomic (both or neither). skipTombstone = applying a remote tombstone → write neither.
+    const ts = (options && options.skipTombstone) ? null : this._makeTombstone(original, txnId, options);
     this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
+    if (ts) this._cache.transactions.push(ts);
     // Rebuild from the ledger (avoids the move_out reverse-delta hazard, MFL-006)
     if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
     _pendingWrites++;
     let ok = false;
     try {
-      ok = await _retryWrite(() => bobDB.transactions.delete(txnId), `Delete transaction ${txnId} (durable)`);
+      ok = await _retryWrite(
+        () => bobDB.transaction('rw', bobDB.transactions, async () => {
+          await bobDB.transactions.delete(txnId);
+          if (ts) await bobDB.transactions.put(ts);
+        }),
+        `Delete transaction ${txnId} + tombstone (durable)`
+      );
     } finally { _pendingWrites--; }
     if (!ok) {
-      // Restore the removed row
+      // Roll back BOTH: restore the original, drop the optimistic tombstone
       this._cache.transactions.push(original);
+      if (ts) this._cache.transactions = this._cache.transactions.filter(t => t !== ts);  // durable: drop optimistic tombstone
       if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
       return false;
     }
-    if (!(options && options.skipTombstone) && typeof Sync !== 'undefined' && Sync.pushTombstone) {
-      Sync.pushTombstone(txnId, original || {}, options);
-    }
+    // Wave I: the tombstone is now a normal unsynced row — push() drains it (egress whitelists it,
+    // strict processedCount ack + retry inherited). No separate pushTombstone path.
+    if (ts && typeof Sync !== 'undefined' && Sync.scheduleSync) Sync.scheduleSync();
     return true;
   },
 
@@ -911,6 +991,7 @@ async function initDB(seedData) {
     // Step 3: Load everything into the synchronous cache
     DB._cache = await _loadFromDexie();
     DB._sanitizeNames();  // GPT-003: sanitize on initial load (covers localStorage migration + backup restore before first render)
+    DB.pruneSyncedTombstones().catch(() => {});  // Wave I (Tier 2 / I-4): best-effort TTL prune of old synced tombstones on launch
 
     console.log(`[DB] Ready. ${DB._cache.products.length} products, ${DB._cache.transactions.length} transactions, v${DB._cache._v}`);
     return true;

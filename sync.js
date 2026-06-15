@@ -429,10 +429,9 @@ const Sync = {
           }
           break;
 
-        case 'push-tombstone':
-          // SA-C-F3: a follower delegated a tombstone push; the leader (single pusher) sends it.
-          if (this._isLeader && msg.originalTxnId) this.pushTombstone(msg.originalTxnId, msg.originalTxn, msg.meta);
-          break;
+        // Wave I (Tier 2): the 'push-tombstone' delegation is GONE. A delete now writes a durable
+        // tombstone row atomically; the follower's 'local-write' below makes the leader refresh +
+        // push it (and leader poll() also drains pending), so no tombstone-specific channel is needed.
 
         case 'local-write':
           // A follower wrote to Dexie — leader refreshes cache and pushes.
@@ -563,9 +562,13 @@ const Sync = {
       Timestamp: ts,
       TransferId: t.transferId || ''
     };
-    // Tombstone support: include TargetTransactionId if present
+    // Tombstone support: include TargetTransactionId + the deletion audit metadata (Wave I / I-2 —
+    // was only TargetTransactionId, so other devices learned a row was deleted but not who/when/why).
     if (t.targetTransactionId) {
       sp.TargetTransactionId = t.targetTransactionId;
+      sp.DeletedBy = t.deletedBy || '';
+      sp.DeletedAt = t.deletedAt || '';
+      sp.DeleteReason = t.deleteReason || '';
     }
     return sp;
   },
@@ -1001,31 +1004,12 @@ const Sync = {
       let changed = false;
       let tombstoneDurable = true;  // SA-G-F3: gate the cursor on durable tombstone removal
 
-      // Process tombstones — remove deleted transactions from local DB
-      if (tombstones.length > 0) {
-        for (const ts of tombstones) {
-          // TargetTransactionId holds the original transaction ID that was deleted
-          // (dedicated field per GPT review — not overloading TransferId)
-          const originalId = ts.TargetTransactionId || ts.TransactionId;
-          if (originalId && localIds.has(originalId)) {
-            const _orig = DB.get().transactions.find(t => t.id === originalId);
-            // SA-G-F3: durable removal — if the delete isn't persisted, don't advance the cursor
-            const _okDel = await DB.removeTransactionDurable(originalId, { skipTombstone: true });
-            if (!_okDel) tombstoneDurable = false;
-            // MFL-004: record the deletion in THIS device's audit log from the synced metadata
-            if (_orig && DB.addDeletedTransaction && !((DB.get().deletedTransactions || []).some(x => x.id === originalId))) {
-              DB.addDeletedTransaction(Object.assign({}, _orig, {
-                _deletedBy: ts.DeletedBy || '', _deletedAt: ts.DeletedAt || new Date().toISOString(), _deleteReason: ts.DeleteReason || ''
-              }));
-            }
-            console.log(`[Sync] Tombstone applied: removed transaction ${originalId}`);
-            changed = true;
-          }
-        }
-      }
-
-      // Merge new transactions — DURABLE (MFL-001): the pull cursor must NOT advance
-      // past rows that aren't durably persisted, or those stock movements are lost forever.
+      // Wave I (Tier 2 / I-5 — ghost resurrection): merge new transactions FIRST, THEN apply
+      // tombstones against the POST-merge ledger. The old order (tombstones first, gated on the
+      // pre-merge localIds) dropped a same-batch create+delete: the tombstone's target wasn't local
+      // yet, so the delete was skipped and the create then merged = resurrected row.
+      // Merge new transactions — DURABLE (MFL-001): the pull cursor must NOT advance past rows that
+      // aren't durably persisted, or those stock movements are lost forever.
       let mergeDurable = true;
       if (newTransactions.length > 0) {
         mergeDurable = await DB.addTransactionsDurable(newTransactions);
@@ -1034,6 +1018,28 @@ const Sync = {
           changed = true;
         } else {
           console.error('[Sync] Durable persist of merged rows FAILED — leaving cursor unchanged so they re-pull next cycle.');
+        }
+      }
+
+      // Apply tombstones against the CURRENT ledger (post-merge), by TargetTransactionId ONLY
+      // (Wave I: dropped the `|| ts.TransactionId` fallback — a tombstone deletes its explicit target).
+      if (tombstones.length > 0) {
+        for (const ts of tombstones) {
+          const originalId = ts.TargetTransactionId;
+          if (!originalId) continue;  // malformed tombstone — skip; not a cursor blocker
+          const _orig = DB.get().transactions.find(t => t.id === originalId);
+          if (!_orig) continue;  // target not present (already deleted / never seen) — NO-OP, must NOT block the cursor (Wave I, GPT)
+          // SA-G-F3: durable removal — if the delete isn't persisted, don't advance the cursor.
+          const _okDel = await DB.removeTransactionDurable(originalId, { skipTombstone: true });
+          if (!_okDel) { tombstoneDurable = false; continue; }
+          // MFL-004: record the deletion in THIS device's audit log from the synced metadata
+          if (DB.addDeletedTransaction && !((DB.get().deletedTransactions || []).some(x => x.id === originalId))) {
+            DB.addDeletedTransaction(Object.assign({}, _orig, {
+              _deletedBy: ts.DeletedBy || '', _deletedAt: ts.DeletedAt || new Date().toISOString(), _deleteReason: ts.DeleteReason || ''
+            }));
+          }
+          console.log(`[Sync] Tombstone applied: removed transaction ${originalId}`);
+          changed = true;
         }
       }
 
@@ -1079,83 +1085,14 @@ const Sync = {
     }
   },
 
-  // ─── Tombstone Push (Tier 2 Fix #6) ─────────────────────────────────
-
-  /**
-   * Pushes a tombstone record to SharePoint when a transaction is deleted locally.
-   * The tombstone is an append-only record with Type='deleted' and TransferId
-   * pointing to the original transaction ID. Other devices will see this on their
-   * next pull and remove the corresponding transaction.
-   *
-   * @param {string} originalTxnId - The ID of the deleted transaction
-   * @param {object} originalTxn - The original transaction object (for context fields)
-   */
-  async pushTombstone(originalTxnId, originalTxn, meta) {
-    // SA-C-F3 / I-60: only the leader pushes. A follower delegates the tombstone to the leader.
-    if (!this._isLeader) {
-      if (this._bc) this._bc.postMessage({ type: 'push-tombstone', originalTxnId, originalTxn, meta });
-      return;
-    }
-    if (!this._pushUrl) {
-      console.warn('[Sync] No push URL — tombstone queued locally only.');
-      return;
-    }
-
-    const tombstone = {
-      TransactionId: 'del_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9),
-      Date: new Date().toISOString().split('T')[0],
-      StoreId: originalTxn?.storeId || '',
-      ProductId: originalTxn?.productId || '',
-      Type: 'deleted',
-      Qty: 0,
-      StaffName: (typeof Auth !== 'undefined' && Auth.user()) ? Auth.user().name || Auth.user().username || '' : '',
-      Reason: 'Transaction deleted: ' + originalTxnId,
-      DeviceId: this._deviceId || '',
-      Timestamp: Date.now(),
-      TransferId: '',
-      TargetTransactionId: originalTxnId,  // Dedicated field for tombstone target (GPT review)
-      // MFL-004: carry deletion audit metadata so other devices learn who/when/why
-      DeletedBy: (meta && meta.deletedBy) || ((typeof Auth !== 'undefined' && Auth.user()) ? (Auth.user().name || Auth.user().username || '') : ''),
-      DeletedAt: (meta && meta.deletedAt) || new Date().toISOString(),
-      DeleteReason: (meta && meta.deleteReason) || ''
-    };
-
-    try {
-      const payload = { data: { transactions: [tombstone] } };
-      const resp = await fetch(this._pushUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!resp.ok) {
-        throw new Error(`Tombstone push failed: ${resp.status}`);
-      }
-
-      console.log(`[Sync] Tombstone pushed for deleted transaction ${originalTxnId}`);
-    } catch (err) {
-      console.error('[Sync] Tombstone push failed:', err);
-      // Store tombstone locally for retry on next push cycle
-      if (typeof DB !== 'undefined') {
-        const localTombstone = {
-          id: tombstone.TransactionId,
-          date: tombstone.Date,
-          storeId: tombstone.StoreId,
-          productId: tombstone.ProductId,
-          type: 'deleted',
-          qty: 0,
-          staffName: tombstone.StaffName,
-          reason: tombstone.Reason,
-          deviceId: tombstone.DeviceId,
-          transferId: '',
-          targetTransactionId: originalTxnId,
-          createdAt: new Date().toISOString(),
-          _synced: false  // Will be picked up by next push() cycle
-        };
-        DB.addTransaction(localTombstone);
-      }
-    }
-  },
+  // ─── Tombstone handling (Wave I / Tier 2) ───────────────────────────
+  // The separate Sync.pushTombstone fetch path was REMOVED. A delete now writes a durable
+  // tombstone row (type:'deleted' + targetTransactionId + DeletedBy/At/Reason) ATOMICALLY with
+  // the delete (DB._makeTombstone / removeTransactionDurable), with _synced:false. The normal
+  // push() drains it — egress whitelists it (_egressOk), the strict processedCount ack + retry +
+  // offline-queue all apply, and there is no no-URL drop (it just waits like any unsynced row).
+  // Followers: the durable row + the 'local-write' leader-refresh (and leader poll() draining
+  // pending) propagate it — no tombstone-specific BroadcastChannel message.
 
   // ─── Merge Logic ────────────────────────────────────────────────────
 
@@ -1225,6 +1162,14 @@ const Sync = {
    */
   async poll() {
     await this.pull();
+    // Wave I (Tier 2, GPT): the leader's periodic poll also DRAINS pending writes. A delete now
+    // writes a durable tombstone row + relies on the 'local-write' BroadcastChannel signal to make
+    // the leader push it — but that signal can be missed (backgrounded/closed follower tab). Pushing
+    // on poll guarantees any unsynced row (incl. a tombstone) is eventually sent, with no
+    // tombstone-specific path. Leader-only + lock-guarded; a clean cycle with nothing pending is a no-op.
+    if (this._isLeader && this._getPending && this._getPending()) {
+      try { await this.push(); } catch (e) { /* push handles its own retry/status */ }
+    }
   },
 
   // ─── Initialization ─────────────────────────────────────────────────

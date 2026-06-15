@@ -1789,8 +1789,10 @@ const Pages = {
     UI.confirm('Undo Movement',`Undo ${icon} ${t.qty}× ${UI.esc(prodName)}? This will reverse the stock movement.`,async ()=>{
       const d2=DB.get();const t2=d2.transactions.find(tx=>tx.id===id);
       if(!t2){UI.toast('Movement not found','error');return;}
-      if(!(await DB.removeTransactionDurable(id))){ await DB.refresh(); UI.fatalSaveError('Undo could not be saved to this device.'); return; }
-      DB.addDeletedTransaction({...t2,_deletedAt:new Date().toISOString(),_deletedBy:Auth.user()?.name||Auth.user()?.username||'unknown',_deleteReason:'Undo — reversed within 5 min window'});  // A-F2
+      // Wave I (Tier 2 / I-2): pass deletion metadata so the tombstone (and other devices' audit log) record who/when/why — undo was previously anonymous cross-device.
+      const _undoMeta={deletedBy:Auth.user()?.name||Auth.user()?.username||'unknown', deletedAt:new Date().toISOString(), deleteReason:'Undo — reversed within 5 min window'};
+      if(!(await DB.removeTransactionDurable(id, _undoMeta))){ await DB.refresh(); UI.fatalSaveError('Undo could not be saved to this device.'); return; }
+      DB.addDeletedTransaction({...t2,_deletedAt:_undoMeta.deletedAt,_deletedBy:_undoMeta.deletedBy,_deleteReason:_undoMeta.deleteReason});  // A-F2
       UI.toast(`Movement undone — ${icon} ${t2.qty}× ${prodName}`,'success');
       Pages._renderTodayMovements();
     },'Undo');
