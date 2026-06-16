@@ -183,8 +183,8 @@ const Sync = {
 
     const d = DB.get();
     if (!d) return;
-    const badId = v => typeof v !== 'string' || v === '' || /[<>"'`]/.test(v) ||
-      (typeof Stock !== 'undefined' && Stock._isSafeKey && !Stock._isSafeKey(v));
+    const badId = v => typeof v !== 'string' || v === '' || !/^[A-Za-z0-9_-]+$/.test(v) ||
+      (typeof Stock !== 'undefined' && Stock._isSafeKey && !Stock._isSafeKey(v));  // Wave J (Tier 3): allowlist not denylist — catalogue hygiene + defence-in-depth, consistent with the UI add + backup gates. All real catalogue ids are [A-Za-z0-9_-] (pt_/cat_/MKU_1...), so this false-rejects nothing. NOTE: the original driver (a master_data product id embedded into cost-history ledger ids) was removed when those ids became opaque (ch_<ms>_<hex>, GPT FINAL deep audit); the allowlist is retained to keep catalogue ids clean.
     // F-followup (GPT-WF-03): money through the SHARED policy (rejects >MONEY_MAX
     // and non-finite/negative; normalises to 2dp), not the old finite+non-negative-only.
     const _money = v => (typeof Validate !== 'undefined') ? Validate.money(v, { optional: true }) : { ok: Number.isFinite(Number(v)) && Number(v) >= 0, value: Number(v) };
@@ -964,6 +964,15 @@ const Sync = {
       for (const spItem of allItems) {
         if (!spItem || typeof spItem !== 'object' || !spItem.TransactionId) continue;  // SA-C-F2: skip null/garbage rows (don't throw -> don't stall the device's sync)
 
+        // Wave J (Tier 3 — stored XSS): validate the raw row's ids BEFORE the tombstone split. Ledger
+        // ids render into inline handlers; a hostile TransactionId/TargetTransactionId/TransferId from
+        // the cloud would execute. MUST be checked here, not only in _fromSharePoint, because tombstone
+        // rows skip _fromSharePoint (the `Type==='deleted'` continue just below). Quarantine the row.
+        if (typeof Stock !== 'undefined' && Stock._isSafeLedgerId) {
+          const _idBad = ['TransactionId', 'TargetTransactionId', 'TransferId'].some(f => spItem[f] != null && spItem[f] !== '' && !Stock._isSafeLedgerId(String(spItem[f])));
+          if (_idBad) { quarantined.push(spItem.TransactionId); continue; }
+        }
+
         // Tombstone handling (Fix #6): Type === 'deleted' means remove the original
         if (spItem.Type === 'deleted') {
           tombstones.push(spItem);
@@ -993,7 +1002,7 @@ const Sync = {
       }
 
       if (quarantined.length > 0) {
-        console.warn(`[Sync] QUARANTINED ${quarantined.length} remote row(s) with negative qty (admin: fix at source): ${quarantined.join(', ')}`);
+        console.warn(`[Sync] QUARANTINED ${quarantined.length} remote row(s) (negative qty or unsafe ledger id — admin: fix at source): ${quarantined.join(', ')}`);
         try { if (typeof Diag !== 'undefined') Diag.log('sync', `quarantined ${quarantined.length} negative-qty remote rows: ${quarantined.join(', ')}`); } catch (e) {}
       }
 

@@ -350,6 +350,46 @@ const MUTATIONS = [
     find: "case 'deleted':        return { direction: 'none', category: 'deleted' };",
     repl: "case 'deleted':        return { direction: 'out', category: 'deleted' };",
     note: 'tombstone stops being inert -> a type:deleted row is treated as an active OUT movement and can leak into reports/sums (Wave I, GPT inertness)' },
+  { id: 'S-82', file: 'index.html',
+    find: 'const _ledgerBad = (arr,fields)=>(arr||[]).some(o=>o&&fields.some(f=>o[f]!=null&&!Stock._isSafeLedgerId(String(o[f]))));',
+    repl: 'const _ledgerBad = () => false;',
+    note: 'backup import stops rejecting ledger ids with breakout chars -> a hostile transaction/transfer id enters the ledger via restore = Layer-1 ingest hole (Wave J / Tier 3 stored-XSS)' },
+  { id: 'S-83', file: 'sync.js',
+    find: "const _idBad = ['TransactionId', 'TargetTransactionId', 'TransferId'].some(f => spItem[f] != null && spItem[f] !== '' && !Stock._isSafeLedgerId(String(spItem[f])));",
+    repl: 'const _idBad = false;',
+    note: 'sync pull stops quarantining hostile TransactionId/TargetTransactionId/TransferId -> a poisoned cloud row merges into the local ledger (incl. the tombstone path that skips _fromSharePoint) = Layer-1 ingest hole (Wave J / Tier 3)' },
+  { id: 'S-84', file: 'db.js',
+    find: 'const bad = v => v != null && v !== \'\' && !Stock._isSafeLedgerId(String(v));',
+    repl: 'const bad = () => false;',
+    note: 'load-time quarantine stops dropping already-stored hostile-id rows -> a device contaminated before the fix keeps feeding poisoned ids to render sinks = Layer-1 backstop hole (Wave J / Tier 3)' },
+  { id: 'S-85', file: 'index.html',
+    find: 'onclick="Pages._deleteLog(this.dataset.id)" data-id="${UI.esc(t.id)}"',
+    repl: 'onclick="Pages._deleteLog(\'${t.id}\')"',
+    note: 'movement-row delete reverts to inline JS-string interpolation of the ledger id -> a hostile id executes on click (the blind audit proved executed:true here) = Layer-2 render hole (Wave J / Tier 3, headline)' },
+  { id: 'S-86', file: 'db.js',
+    find: 'this.quarantineUnsafeLedgerIds();',
+    repl: 'void 0;  /* S-86 saboteur: refresh re-quarantine disabled */',
+    note: 'refresh() (post-sync-pull cache rehydrate) stops re-quarantining -> a pre-fix hostile on-disk row re-enters the active cache after any sync, defeating the load-time backstop (Wave J / Tier 3, GPT code re-audit F1)' },
+  { id: 'S-87', file: 'index.html',
+    find: "if(!/^[A-Za-z0-9_-]+$/.test(id)){UI.toast('Product ID can use letters, numbers, _ and - only','error');return;}",
+    repl: "if(false){UI.toast('Product ID can use letters, numbers, _ and - only','error');return;}",
+    note: 'product-id creation stops enforcing the ledger allowlist -> a product id with a dot/space/slash is accepted, then its cost-history ledger id (ch_<ms>_<productId>) fails _isSafeLedgerId and gets quarantined = data-availability divergence (Wave J / Tier 3, GPT code re-audit F2)' },
+  { id: 'S-88', file: 'index.html',
+    find: "if((data.products||[]).some(p=>p&&!/^[A-Za-z0-9_-]+$/.test(String(p.id)))) return {ok:false,error:'",
+    repl: "if(false) return {ok:false,error:'",
+    note: 'backup import stops applying the product-id allowlist -> a backup product id outside [A-Za-z0-9_-] is accepted (catalogue-hygiene gate defeated) (Wave J / Tier 3, GPT code re-audit F2-followup; message-agnostic find)' },
+  { id: 'S-89', file: 'sync.js',
+    find: "const badId = v => typeof v !== 'string' || v === '' || !/^[A-Za-z0-9_-]+$/.test(v) ||",
+    repl: "const badId = v => typeof v !== 'string' || v === '' || false ||",
+    note: 'master_data sync stops applying the product-id allowlist -> a synced product row with a loose id is merged, minting a cost-history ledger id that _isSafeLedgerId quarantines = data-availability divergence via the sync door (Wave J / Tier 3, GPT code re-audit F2-followup)' },
+  { id: 'S-90', file: 'index.html',
+    find: "id:'ch_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),productId:ln.productId,date,costPrice:Math.round(landedPerUnit*100)/100",
+    repl: "id:'ch_'+Date.now()+'_'+ln.productId,productId:ln.productId,date,costPrice:Math.round(landedPerUnit*100)/100",
+    note: 'delivery cost-history id (NEW delivery path) reverts to embedding the raw productId -> a long (>111 char) product id mints a >128-char ledger id that _isSafeLedgerId quarantines on refresh/load = data-availability divergence via the length-coupling (Wave J / Tier 3, GPT FINAL deep audit)' },
+  { id: 'S-91', file: 'index.html',
+    find: "id:'ch_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),productId:ln.productId,date:del.date,costPrice:newLanded",
+    repl: "id:'ch_'+Date.now()+'_'+ln.productId,productId:ln.productId,date:del.date,costPrice:newLanded",
+    note: 'cost-history id on the PACKAGING-EDIT path (_saveDeliveryPackaging) reverts to embedding the raw productId -> same >128-char length-coupling on the second cost-history write (Wave J / Tier 3, GPT FINAL deep audit INFO: harness symmetry with S-90)' },
 ];
 
 function copyRepoTo(dir) {
@@ -364,7 +404,7 @@ function copyRepoTo(dir) {
 // browser lifecycle so a Playwright teardown race can't crash the whole run (Round-10 harness note).
 function runSmokeChild(dir) {
   let out = '';
-  try { out = execFileSync('node', [SMOKE, dir], { encoding: 'utf8', timeout: 360000, stdio: ['ignore', 'pipe', 'pipe'] }); }  // Wave G: 58 sentinels no longer fit the old 180s child budget
+  try { out = execFileSync('node', [SMOKE, dir], { encoding: 'utf8', timeout: 600000, stdio: ['ignore', 'pipe', 'pipe'] }); }  // Wave G: 58 sentinels no longer fit the old 180s child budget. Wave J: 90 sentinels (~266s in-repo, slower in the copied temp dir) brushed the 360s ceiling → baseline killed at ~88 → bumped to 600s headroom.
   catch (e) { out = (e.stdout || '') + '\n' + (e.stderr || ''); }
   const res = [];
   for (const m of out.matchAll(/\[CLEAN-(PASS|FAIL)!?\]\s+(S-\d+)/g)) res.push({ id: m[2], cleanPass: m[1] === 'PASS' });

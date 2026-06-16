@@ -837,7 +837,7 @@ window.renderTransfersHub = function() {
           const items = t.items || [];
           const totalUnits = items.reduce((s, i) => s + (i.sentQty || i.qty || 0), 0);
           const statusLabel = (t.status || 'draft').replace(/_/g, ' ');
-          return `<div class="tx-row" onclick="TransferUI.openDetail('${t.id}')">
+          return `<div class="tx-row" onclick="TransferUI.openDetail(this.dataset.id)" data-id="${UI.esc(t.id)}">
             <div class="tx-date">${UI.fmtDate(t.createdAt)}</div>
             <div>
               <div class="tx-route">${UI.storeName(t.fromStoreId)} &rarr; ${UI.storeName(t.toStoreId)}</div>
@@ -1063,7 +1063,7 @@ window.renderDraftTransfer = function(transferId) {
             onChange: function(v) { _txState.draftQtys[i.productId] = v; }
           })}
           <button class="confirm-btn ${confirmed ? 'confirmed' : 'unconfirmed'}"
-            onclick="TransferUI.toggleDraftConfirm('${transferId}','${i.productId}')">
+            onclick="TransferUI.toggleDraftConfirm(this.dataset.tid,this.dataset.pid)" data-tid="${UI.esc(transferId)}" data-pid="${UI.esc(i.productId)}">
             ${confirmed ? 'Undo' : 'Confirm'}
           </button>
         </div>
@@ -1071,8 +1071,8 @@ window.renderDraftTransfer = function(transferId) {
     }).join('')}
 
     <div style="margin-top:16px;text-align:right">
-      ${Auth.is('director') ? `<button class="btn-grey" style="margin-right:8px" onclick="TransferUI.cancelTransfer('${transferId}')">Cancel Transfer</button>` : ''}
-      <button class="btn-rose" onclick="TransferUI.submitDraft('${transferId}')"
+      ${Auth.is('director') ? `<button class="btn-grey" style="margin-right:8px" onclick="TransferUI.cancelTransfer(this.dataset.tid)" data-tid="${UI.esc(transferId)}">Cancel Transfer</button>` : ''}
+      <button class="btn-rose" onclick="TransferUI.submitDraft(this.dataset.tid)" data-tid="${UI.esc(transferId)}"
         ${!allConfirmed ? 'disabled style="opacity:.5"' : ''}>
         Submit &amp; Send Transfer
       </button>
@@ -1152,14 +1152,14 @@ window.renderReceiveTransfer = function(transferId) {
             }
           })}
           <button class="match-btn ${btnClass}"
-            onclick="TransferUI.toggleMatch('${transferId}','${i.productId}')">${btnLabel}</button>
+            onclick="TransferUI.toggleMatch(this.dataset.tid,this.dataset.pid)" data-tid="${UI.esc(transferId)}" data-pid="${UI.esc(i.productId)}">${btnLabel}</button>
         </div>
       </div>`;
     }).join('')}
 
     <div style="margin-top:16px;text-align:right">
-      ${Auth.is('director') ? `<button class="btn-grey" style="margin-right:8px" onclick="TransferUI.cancelTransfer('${transferId}')">Cancel Transfer</button>` : ''}
-      <button class="btn-rose" onclick="TransferUI.submitReceive('${transferId}')"
+      ${Auth.is('director') ? `<button class="btn-grey" style="margin-right:8px" onclick="TransferUI.cancelTransfer(this.dataset.tid)" data-tid="${UI.esc(transferId)}">Cancel Transfer</button>` : ''}
+      <button class="btn-rose" onclick="TransferUI.submitReceive(this.dataset.tid)" data-tid="${UI.esc(transferId)}"
         ${!allMatched ? 'disabled style="opacity:.5"' : ''}>Submit Receipt</button>
     </div>
   `;
@@ -1227,11 +1227,11 @@ window.renderResolveFlags = function(transferId) {
         </div>
         <div class="flag-actions">
           <button class="btn-accept${fa.action === 'accept_as_is' ? ' active-action' : ''}"
-            onclick="TransferUI.setFlagAction('${transferId}','${i.productId}','accept_as_is')">Accept As-Is</button>
+            onclick="TransferUI.setFlagAction(this.dataset.tid,this.dataset.pid,'accept_as_is')" data-tid="${UI.esc(transferId)}" data-pid="${UI.esc(i.productId)}">Accept As-Is</button>
           <button class="btn-adjust${fa.action === 'adjust' ? ' active-action' : ''}"
-            onclick="TransferUI.setFlagAction('${transferId}','${i.productId}','adjust')">Adjust</button>
+            onclick="TransferUI.setFlagAction(this.dataset.tid,this.dataset.pid,'adjust')" data-tid="${UI.esc(transferId)}" data-pid="${UI.esc(i.productId)}">Adjust</button>
           <button class="btn-reject${fa.action === 'reject' ? ' active-action' : ''}"
-            onclick="TransferUI.setFlagAction('${transferId}','${i.productId}','reject')">Reject</button>
+            onclick="TransferUI.setFlagAction(this.dataset.tid,this.dataset.pid,'reject')" data-tid="${UI.esc(transferId)}" data-pid="${UI.esc(i.productId)}">Reject</button>
         </div>
         ${isAdjust ? `<div style="margin-bottom:6px">
           <label style="font-size:12px;color:#777">Adjusted quantity:</label>
@@ -1250,7 +1250,7 @@ window.renderResolveFlags = function(transferId) {
     }).join('')}
 
     <div style="margin-top:16px;text-align:right">
-      <button class="btn-rose" onclick="TransferUI.completeFlags('${transferId}')"
+      <button class="btn-rose" onclick="TransferUI.completeFlags(this.dataset.tid)" data-tid="${UI.esc(transferId)}"
         ${!allResolved ? 'disabled style="opacity:.5"' : ''}>Complete Transfer</button>
     </div>
   `;

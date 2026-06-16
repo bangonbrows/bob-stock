@@ -994,6 +994,14 @@ const Stock = {
   // Fix #9: Materialised view cache — O(1) qty lookups
   _qtyCache: Object.create(null),  // { storeId: { productId: qty } } — SA-E-F1: null-proto (no Object.prototype pollution)
   _isSafeKey(k){ return typeof k==='string' && k!=='__proto__' && k!=='constructor' && k!=='prototype'; },  // SA-E-F1/F2, I-02
+  // Wave J (Tier 3): a LEDGER id is safe iff it matches a strict ALLOWLIST (alphanumerics + _ -), isn't a
+  // reserved key, and is a sane length. Used to REJECT (never strip — stripping orphans references,
+  // F2-CRIT04) hostile ledger ids at the ingest boundaries (backup import, sync pull) and to quarantine
+  // already-stored contaminated rows at load. GPT re-audit P-rec: an allowlist is strictly safer than a
+  // breakout-char denylist (future-context + CSP proof). Every machine-gen ledger id fits it — txn_/tr_/
+  // del_/st_/ct_ + <ms> + hex, and ct_<productId> where product ids are e.g. MKU_1 — so it false-rejects
+  // nothing; render hardening (Safe Inline data-id) is the second layer.
+  _isSafeLedgerId(id){ return typeof id==='string' && id.length>0 && id.length<=128 && /^[A-Za-z0-9_-]+$/.test(id) && this._isSafeKey(id); },
 
   _buildCache() {
     this._qtyCache = Object.create(null);
@@ -1739,8 +1747,8 @@ const Pages = {
         <td style="color:#6b7280;font-size:.8rem">${UI.esc(t.reason||'—')}${t.returnCondition?`<br><span style="color:#92400e;font-size:.75rem;font-style:italic">${UI.esc(t.returnCondition)}</span>`:''}</td>
         <td style="font-size:.8rem">${fromTo(t)}</td>
         <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
-          ${(Date.now()-new Date(t.createdAt).getTime())<300000?`<button class="btn btn-sm" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700;padding:4px 10px" onclick="Pages._undoMovement('${t.id}')">↩ Undo</button>`:''}
-          <button class="btn btn-sm btn-danger" onclick="Pages._deleteLog('${t.id}')">Delete</button>
+          ${(Date.now()-new Date(t.createdAt).getTime())<300000?`<button class="btn btn-sm" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700;padding:4px 10px" onclick="Pages._undoMovement(this.dataset.id)" data-id="${UI.esc(t.id)}">↩ Undo</button>`:''}
+          <button class="btn btn-sm btn-danger" onclick="Pages._deleteLog(this.dataset.id)" data-id="${UI.esc(t.id)}">Delete</button>
         </td>
       </tr>`).join('')}</tbody></table>`;
   },
@@ -1760,7 +1768,7 @@ const Pages = {
          <input class="form-input" id="del-other" placeholder="Describe the issue..." style="max-width:280px">
        </div>`,
       `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button>
-       <button class="btn btn-danger" onclick="Pages._confirmDelete('${id}')">Delete</button>`
+       <button class="btn btn-danger" onclick="Pages._confirmDelete(this.dataset.id)" data-id="${UI.esc(id)}">Delete</button>`
     );
   },
   async _confirmDelete(id) {
@@ -1960,7 +1968,7 @@ const Pages = {
         const diff=val!==''?(Number.isNaN(UI.safeInt(val))?'':UI.safeInt(val)-sys):'';
         // Red=system>physical (diff<0), Green=match (diff=0), Yellow=physical>system (diff>0)
         const diffHtml=diff!==''?(diff===0?'<span class="badge badge-green">✓ Match</span>':diff>0?`<span class="badge badge-amber">+${diff} surplus</span>`:`<span class="badge badge-red">${diff} shortage</span>`):'';
-        return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td><strong>${sys}</strong></td><td><input type="number" class="form-input" value="${val}" min="0" style="max-width:100px" oninput="Pages._updateSTRow('${p.id}',this.value,${sys})" placeholder="Count"></td><td id="st-diff-${p.id}">${diffHtml}</td></tr>`;
+        return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td><td><strong>${sys}</strong></td><td><input type="number" class="form-input" value="${val}" min="0" style="max-width:100px" oninput="Pages._updateSTRow(this.dataset.pid,this.value,${sys})" data-pid="${UI.esc(p.id)}" placeholder="Count"></td><td id="st-diff-${p.id}">${diffHtml}</td></tr>`;
       }).join('')}</tbody></table>`;
   },
   _updateSTRow(productId,val,sys) {
@@ -2041,7 +2049,7 @@ const Pages = {
       <div style="font-weight:700;color:#b45309;margin-bottom:8px">⏳ Pending Stock-Take Approvals (${pend.length})</div>
       ${pend.map(t=>{const disc=t.items.filter(i=>i.difference!==0).length;const sn=UI.storeName(t.storeId);return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f3f4f6;flex-wrap:wrap">
         <div style="font-size:.85rem"><strong>${UI.esc(sn)}</strong> · ${t.date} · ${UI.esc(t.completedBy||'')} · <span style="color:#dc2626">${disc} discrepanc${disc>1?'ies':'y'}</span></div>
-        <button class="btn btn-sm btn-primary" onclick="Pages._reviewStockTake('${t.id}')">Review</button>
+        <button class="btn btn-sm btn-primary" onclick="Pages._reviewStockTake(this.dataset.id)" data-id="${UI.esc(t.id)}">Review</button>
       </div>`;}).join('')}
     </div></div>`;
   },
@@ -2052,7 +2060,7 @@ const Pages = {
     UI.modal(`Review Stock Take — ${UI.storeName(t.storeId)} (${t.date})`,
       `<div style="font-size:.82rem;color:#6b7280;margin-bottom:8px">Counted by ${UI.esc(t.completedBy||'')}. Approving creates adjustment entries so the system stock matches the count.</div>
        <div class="tbl-wrap"><table style="width:100%;font-size:.82rem;border-collapse:collapse"><thead><tr style="color:#6b7280;text-align:center"><th style="text-align:left;padding:4px 6px">Product</th><th>System</th><th>Counted</th><th>Diff</th><th style="text-align:left;padding:4px 6px">Reason</th></tr></thead><tbody>${rows}</tbody></table></div>`,
-      `<button class="btn btn-secondary" onclick="Pages._rejectStockTake('${t.id}')">Reject</button><button class="btn btn-primary" onclick="Pages._approveStockTake('${t.id}')">✓ Approve & Adjust</button>`);
+      `<button class="btn btn-secondary" onclick="Pages._rejectStockTake(this.dataset.id)" data-id="${UI.esc(t.id)}">Reject</button><button class="btn btn-primary" onclick="Pages._approveStockTake(this.dataset.id)" data-id="${UI.esc(t.id)}">✓ Approve & Adjust</button>`);
   },
   async _approveStockTake(takeId) {
     if(!Auth.is('director')){UI.toast('Director approval only','error');return;}
@@ -2874,7 +2882,7 @@ const Pages = {
   async _doAddProduct(id,name,catId,price,franDisc){
     if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change products','error');return;}
     if(!Stock._isSafeKey(id)){UI.toast('That product ID is reserved — choose another','error');return;}  // Wave D (GPT-ABC-001): reject reserved keys at the catalogue boundary, else this product's stock silently vanishes from the cache
-    if(/[<>"'`]/.test(id)){UI.toast('Product ID cannot contain angle brackets, quotes or backticks','error');return;}  // F2-CRIT04 (Gemini): the load-time sanitizer strips these from CATALOGUE ids but not from ledger rows that reference them — a stored id with these chars detaches from its history on next load
+    if(!/^[A-Za-z0-9_-]+$/.test(id)){UI.toast('Product ID can use letters, numbers, _ and - only','error');return;}  // Wave J (Tier 3): product ids must match the ledger allowlist — catalogue hygiene + defence-in-depth, and the old F2-CRIT04 detach guard (allowlist ⊂ the old denylist). NOTE: the original driver (productId embedded RAW into cost-history ledger ids) was removed when those ids became opaque (ch_<ms>_<hex>, GPT FINAL deep audit); the allowlist is retained to keep catalogue ids clean.
     // Wave H (H6 / GPTa-40): franchiseDiscount is PRICING (Director-only via editPricing), not
     // ref-data. The inline editor _setProductFranDisc gates it on editPricing, but this add path
     // wrote it under editRefData only — so Head Office could set franchise pricing on new products.
@@ -3195,10 +3203,25 @@ const Pages = {
     const _idColls = [data.products, data.stores, data.categories, data.productTypes || []];
     if(typeof Stock!=='undefined'&&Stock._isSafeKey&&_idColls.some(coll=>!coll.every(o=>o&&Stock._isSafeKey(o.id)))) return {ok:false,error:'Backup contains a reserved/invalid product, store, category or product-type ID.'};  // Wave D (GPT-ABC-001) + Wave H (GPTC-D)
     if(_idColls.some(coll=>coll.some(o=>/[<>"'`]/.test(String(o&&o.id))))) return {ok:false,error:'Backup contains a product/store/category/product-type ID with forbidden characters (angle brackets, quotes or backticks) — file rejected.'};  // F2-CRIT04 + Wave H (GPTC-D): on-load sanitize mutates catalogue ids but NOT the rows pointing at them → detach
+    if((data.products||[]).some(p=>p&&!/^[A-Za-z0-9_-]+$/.test(String(p.id)))) return {ok:false,error:'Backup contains a product ID with characters outside letters, numbers, _ and - — file rejected.'};  // Wave J (Tier 3): product ids must match the ledger allowlist (catalogue hygiene + defence-in-depth, consistent with _doAddProduct). NOTE: the original F2-followup driver — productId embedded into cost-history ledger ids — was removed when those ids became opaque (ch_<ms>_<hex>, GPT FINAL deep audit); the allowlist is retained to keep catalogue ids clean.
     // Referential integrity: every product.catId must resolve to a category in the backup, and every
     // category.ptId (when product-types are present) to a product-type — else the row imports orphaned.
     { const _catIds=new Set((data.categories||[]).map(c=>c&&c.id)); const _badCat=data.products.find(p=>p.catId!=null&&!_catIds.has(p.catId)); if(_badCat) return {ok:false,error:'Backup product "'+(_badCat.name||_badCat.id)+'" references a category not in the backup — file rejected.'};
       if(Array.isArray(data.productTypes)&&data.productTypes.length){ const _ptIds=new Set(data.productTypes.map(p=>p&&p.id)); const _badPt=(data.categories||[]).find(c=>c.ptId!=null&&!_ptIds.has(c.ptId)); if(_badPt) return {ok:false,error:'Backup category "'+(_badPt.name||_badPt.id)+'" references a product-type not in the backup — file rejected.'}; } }
+    // Wave J (Tier 3 — stored XSS): REJECT hostile LEDGER ids at the import boundary. Ledger ids
+    // (txn/transfer/stockTake/costHistory/delivery) are NOT sanitised on load (stripping would orphan
+    // their references — F2-CRIT04), and they render into inline handlers → a crafted backup id like
+    // `x');evil();//` executes. Reject the whole file if ANY ledger id carries a breakout char.
+    if(typeof Stock!=='undefined'&&Stock._isSafeLedgerId){
+      const _ledgerBad = (arr,fields)=>(arr||[]).some(o=>o&&fields.some(f=>o[f]!=null&&!Stock._isSafeLedgerId(String(o[f]))));
+      if(_ledgerBad(data.transactions,['id','targetTransactionId','transferId'])
+        ||_ledgerBad(data.deletedTransactions,['id','targetTransactionId','transferId'])
+        ||_ledgerBad(data.transfers,['id'])
+        ||_ledgerBad(data.stockTakes,['id'])
+        ||_ledgerBad(data.costHistory,['id','deliveryId'])
+        ||_ledgerBad(data.deliveries,['id']))
+        return {ok:false,error:'Backup contains a transaction/transfer/stock-take/cost/delivery ID with forbidden characters — file rejected.'};
+    }
     // F1-H01 (GPT FINAL H-01): REJECT invalid quantities instead of coercing — a
     // negative ledger row survives ingest but the stock cache skips it, so ledger,
     // reports and cache disagree forever. Reject loudly; never quietly "fix" money data.
@@ -4140,7 +4163,7 @@ const Pages = {
         </div>
         <div style="text-align:right">
           <div style="font-size:.8rem;color:#6b7280">${h.date}</div>
-          <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="Pages._deleteCostEntry('${h.id}','${productId}')">Remove</button>
+          <button class="btn btn-sm btn-danger" style="margin-top:4px" onclick="Pages._deleteCostEntry(this.dataset.id,this.dataset.pid)" data-id="${UI.esc(h.id)}" data-pid="${UI.esc(productId)}">Remove</button>
         </div>
       </div>`).join('')}`,
     '<button class="btn btn-secondary" onclick="UI.closeModal()">Close</button>');
@@ -4340,7 +4363,7 @@ const Pages = {
       const appliedCost=willUpdate?landedPerUnit:(prevCost||landedPerUnit);
       delivery.lines.push({productId:ln.productId,quantity:ln.qty,unitCost:ln.unitCost,weightGrams:ln.weightGrams||0,packaging:ln.packaging||0,labelling:ln.labelling||0,headerCostShare:Math.round(headerShare*100)/100,landedCostPerUnit:Math.round(landedPerUnit*100)/100,previousCost:prevCost,appliedCost:Math.round(appliedCost*100)/100,costUpdated:willUpdate,packagingUpdatedAt:null});
       if(willUpdate){
-        d.costHistory.push({id:'ch_'+Date.now()+'_'+ln.productId,productId:ln.productId,date,costPrice:Math.round(landedPerUnit*100)/100,notes:`Delivery: ${supplier}${invoiceNo?' #'+invoiceNo:''} — landed cost (incl. freight, shipping, tax, packaging, labelling)`,deliveryId:delivery.id});
+        d.costHistory.push({id:'ch_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),productId:ln.productId,date,costPrice:Math.round(landedPerUnit*100)/100,notes:`Delivery: ${supplier}${invoiceNo?' #'+invoiceNo:''} — landed cost (incl. freight, shipping, tax, packaging, labelling)`,deliveryId:delivery.id});
         const prod=d.products.find(p=>p.id===ln.productId);
         if(prod)prod.costPrice=Math.round(landedPerUnit*100)/100;
       }
@@ -4377,7 +4400,7 @@ const Pages = {
         <td>${del.lines.length} line${del.lines.length!==1?'s':''} ${linesWithUpdate>0?`<span style="font-size:.7rem;background:#dcfce7;color:#16a34a;padding:1px 6px;border-radius:10px">${linesWithUpdate} cost${linesWithUpdate>1?'s':''} updated</span>`:''}</td>
         <td>$${totalHeader.toFixed(2)}<br><span style="font-size:.7rem;color:#9ca3af">Freight:$${del.headerCosts.freight||0} Tax:$${del.headerCosts.tax||0} Shipping:$${del.headerCosts.shipping||0}${del.headerCosts.customs?` Customs:$${del.headerCosts.customs}`:''}</span></td>
         <td>${UI.esc(del.createdBy)}</td>
-        <td><button class="btn btn-sm btn-secondary" onclick="Pages._viewDeliveryDetail('${del.id}')">View</button> <button class="btn btn-sm" style="background:#eff6ff;color:#2563eb" onclick="Pages._editDeliveryPackaging('${del.id}')">Edit Packaging</button></td>
+        <td><button class="btn btn-sm btn-secondary" onclick="Pages._viewDeliveryDetail(this.dataset.id)" data-id="${UI.esc(del.id)}">View</button> <button class="btn btn-sm" style="background:#eff6ff;color:#2563eb" onclick="Pages._editDeliveryPackaging(this.dataset.id)" data-id="${UI.esc(del.id)}">Edit Packaging</button></td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
   },
@@ -4441,7 +4464,7 @@ const Pages = {
         </div>`;
       }).join('')}`,
     `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button>
-     <button class="btn btn-primary" onclick="Pages._saveDeliveryPackaging('${deliveryId}')">Save & Recalculate</button>`);
+     <button class="btn btn-primary" onclick="Pages._saveDeliveryPackaging(this.dataset.id)" data-id="${UI.esc(deliveryId)}">Save & Recalculate</button>`);
   },
   async _saveDeliveryPackaging(deliveryId){
     if(!Auth.can('recordDelivery')){UI.toast('Only a Director can record deliveries','error');return;}
@@ -4484,7 +4507,7 @@ const Pages = {
       if(prevCost===null||newLanded>prevCost){
         ln.costUpdated=true; ln.appliedCost=newLanded;
         if(!d.costHistory)d.costHistory=[];
-        d.costHistory.push({id:'ch_'+Date.now()+'_'+ln.productId,productId:ln.productId,date:del.date,costPrice:newLanded,notes:`Delivery ${del.supplier}${del.invoiceNo?' #'+del.invoiceNo:''} — packaging/labelling updated ${updatedAt.slice(0,10)}`,deliveryId});
+        d.costHistory.push({id:'ch_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),productId:ln.productId,date:del.date,costPrice:newLanded,notes:`Delivery ${del.supplier}${del.invoiceNo?' #'+del.invoiceNo:''} — packaging/labelling updated ${updatedAt.slice(0,10)}`,deliveryId});
         const prod=d.products.find(p=>p.id===ln.productId);
         if(prod)prod.costPrice=newLanded;
       }

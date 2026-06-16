@@ -419,6 +419,35 @@ const DB = {
     return staleIds.length;
   },
 
+  // Wave J (Tier 3): non-mutating load-time quarantine for ALREADY-contaminated devices — a hostile
+  // ledger id stored BEFORE the ingest guards existed would still render. Drop such rows from the
+  // ACTIVE cache so they never reach a render sink; Dexie is UNTOUCHED (non-destructive, never strips a
+  // key). New hostile ids can't arrive (backup import + sync pull now reject them). Belt-and-suspenders
+  // with the Safe-Inline render hardening.
+  quarantineUnsafeLedgerIds() {
+    if (!this._cache || !(typeof Stock !== 'undefined' && Stock._isSafeLedgerId)) return 0;
+    const bad = v => v != null && v !== '' && !Stock._isSafeLedgerId(String(v));
+    let removed = 0;
+    const _filterColl = (coll, fields) => {
+      const arr = this._cache[coll]; if (!Array.isArray(arr)) return;
+      const keep = arr.filter(o => !(o && fields.some(f => bad(o[f]))));
+      removed += arr.length - keep.length;
+      this._cache[coll] = keep;
+    };
+    _filterColl('transactions', ['id', 'targetTransactionId', 'transferId']);
+    _filterColl('deletedTransactions', ['id', 'targetTransactionId', 'transferId']);
+    _filterColl('transfers', ['id']);
+    _filterColl('stockTakes', ['id']);
+    _filterColl('costHistory', ['id', 'deliveryId']);
+    _filterColl('deliveries', ['id']);
+    if (removed > 0) {
+      if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+      console.warn('[DB] Quarantined ' + removed + ' cache row(s) with unsafe ledger id(s) (not rendered; disk untouched).');
+      try { if (typeof Diag !== 'undefined') Diag.log('security', 'quarantined ' + removed + ' unsafe-ledger-id row(s) at load'); } catch (e) {}
+    }
+    return removed;
+  },
+
   // ─── Append-Only Record Methods (Hybrid Option C) ─────────────────
 
   /**
@@ -874,6 +903,7 @@ const DB = {
   async refresh() {
     this._cache = await _loadFromDexie();
     this._sanitizeNames();  // GPT-003: sanitize on load (import/migrate/restore bypass commit-time sanitize)
+    this.quarantineUnsafeLedgerIds();  // Wave J (Tier 3, GPT code re-audit F1): refresh re-hydrates _cache from Dexie, and quarantine is non-destructive (disk keeps the row) — so a pre-fix hostile row would RE-ENTER the active cache after any sync-pull refresh unless we re-filter here too. Must run before _buildCache.
     // Fix #9: Rebuild cache after refresh from Dexie
     if (typeof Stock !== 'undefined' && Stock._buildCache) {
       Stock._buildCache();
@@ -992,6 +1022,7 @@ async function initDB(seedData) {
     DB._cache = await _loadFromDexie();
     DB._sanitizeNames();  // GPT-003: sanitize on initial load (covers localStorage migration + backup restore before first render)
     DB.pruneSyncedTombstones().catch(() => {});  // Wave I (Tier 2 / I-4): best-effort TTL prune of old synced tombstones on launch
+    DB.quarantineUnsafeLedgerIds();  // Wave J (Tier 3): drop already-stored hostile-ledger-id rows from the cache before first render
 
     console.log(`[DB] Ready. ${DB._cache.products.length} products, ${DB._cache.transactions.length} transactions, v${DB._cache._v}`);
     return true;
@@ -1004,6 +1035,7 @@ async function initDB(seedData) {
       try {
         DB._cache = JSON.parse(raw);
         DB._recoveryMode = true;  // M-01: this archive is frozen at migration time and may be weeks stale
+        DB.quarantineUnsafeLedgerIds();  // Wave J (Tier 3, GPT re-audit P5): the recovery path hydrates the cache from RAW localStorage, bypassing Step-3 quarantine — re-apply here so a contaminated local archive can't feed hostile ledger ids to render
         console.warn('[DB] Fell back to localStorage data (RECOVERY MODE — possibly stale).');
         // Never silently present stale stock as current — surface the blocking contact-admin warning.
         try { if (typeof UI !== 'undefined' && UI.fatalSaveError) UI.fatalSaveError('Local database could not open. The app is showing the LAST LOCAL BACKUP, which may be OUT OF DATE — do not rely on stock numbers. Please contact your administrator.'); } catch(e) {}
