@@ -17,11 +17,19 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, execFile } = require('child_process');
 const SMOKE = path.join(__dirname, 'smoke-test.js');
 
 const REPO = path.resolve(__dirname, '..');
 const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'phase2.js', 'sw.js'];
+// Per-child budget. Bumped from 600s: under parallel CPU contention a single smoke run (~266s
+// in-repo) slows down, so give generous headroom to avoid a contention timeout reading as a false BLIND.
+const SMOKE_TIMEOUT = 1200000;
+const MAXBUF = 64 * 1024 * 1024;
+// Mutations run in a bounded pool of fresh child processes (each still fully isolated in its own temp
+// copy — the isolation that fixed the teardown flakiness is preserved; we just run several at once).
+// Speedup ≈ concurrency. Tune with SABOTEUR_CONCURRENCY; default modest to keep per-child contention low.
+const CONCURRENCY = Math.max(1, parseInt(process.env.SABOTEUR_CONCURRENCY || '0', 10) || Math.min(6, Math.max(2, os.cpus().length - 1)));
 
 const MUTATIONS = [
   { id: 'S-01', file: 'db.js',
@@ -390,6 +398,26 @@ const MUTATIONS = [
     find: "id:'ch_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),productId:ln.productId,date:del.date,costPrice:newLanded",
     repl: "id:'ch_'+Date.now()+'_'+ln.productId,productId:ln.productId,date:del.date,costPrice:newLanded",
     note: 'cost-history id on the PACKAGING-EDIT path (_saveDeliveryPackaging) reverts to embedding the raw productId -> same >128-char length-coupling on the second cost-history write (Wave J / Tier 3, GPT FINAL deep audit INFO: harness symmetry with S-90)' },
+  { id: 'S-92', file: 'index.html',
+    find: "if (to === 'Wastage/Damage')                                  return 'wastage';",
+    repl: "if (false)                                  return 'wastage';",
+    note: "Txn.category stops recognising the wastage destination -> a Wastage/Damage out is mis-categorised (falls to other_out), the root-fix that separates wastage from sales is defeated (Wave K / Tier 4 #9)" },
+  { id: 'S-93', file: 'index.html',
+    find: "return p.internalUse === true ? 'consumable' : 'retail';",
+    repl: "return 'retail';",
+    note: "Stock.stockTypeOf stops deriving consumable from internalUse -> consumables are treated as retail and would leak into sell-through/gross-sales (Wave K / Tier 4 stock-type)" },
+  { id: 'S-94', file: 'index.html',
+    find: "_wastageTxns(d){ return (d.transactions||[]).filter(t=>Txn.isWastage(t)); },",
+    repl: "_wastageTxns(d){ return (d.transactions||[]).filter(t=>Txn.isOut(t)&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage')); },",
+    note: "wastage definition reverts to the old 'any OUT with a wastage reason' string-match -> a transfer_out / out+Store-Transfer carrying a 'Wastage' reason is wrongly counted as wastage (Wave K / Tier 4 #9)" },
+  { id: 'S-95', file: 'index.html',
+    find: "if (p.stockType != null && p.stockType !== '') return 'unknown';",
+    repl: "if (false) return 'unknown';",
+    note: "stockTypeOf stops surfacing an invalid explicit stockType -> a typo'd/garbage stockType silently becomes retail and could leak a non-retail product into sell-through/gross-sales (Wave K / Tier 4, GPT P3)" },
+  { id: 'S-96', sentinel: 'S-92', file: 'index.html',
+    find: "if (to === 'Wastage/Damage')                                  return 'wastage';",
+    repl: "if (to === 'Wastage/Damage' || t.reason === 'Wastage' || t.reason === 'Damaged/Expired')                                  return 'wastage';",
+    note: "Txn.category REINTRODUCES the reason-override bug (a 'Wastage' reason promotes a transfer/in-house out to 'wastage') -> proves S-92 catches the destination-authoritative regression directly, not just the missing-wastage-branch case (Wave K / Tier 4, GPT re-audit harness note)" },
 ];
 
 function copyRepoTo(dir) {
@@ -402,28 +430,50 @@ function copyRepoTo(dir) {
 
 // Run the sentinel suite in a FRESH child process per call — isolates each mutation's
 // browser lifecycle so a Playwright teardown race can't crash the whole run (Round-10 harness note).
-function runSmokeChild(dir) {
-  let out = '';
-  try { out = execFileSync('node', [SMOKE, dir], { encoding: 'utf8', timeout: 600000, stdio: ['ignore', 'pipe', 'pipe'] }); }  // Wave G: 58 sentinels no longer fit the old 180s child budget. Wave J: 90 sentinels (~266s in-repo, slower in the copied temp dir) brushed the 360s ceiling → baseline killed at ~88 → bumped to 600s headroom.
-  catch (e) { out = (e.stdout || '') + '\n' + (e.stderr || ''); }
+function parseSmoke(out) {
   const res = [];
   for (const m of out.matchAll(/\[CLEAN-(PASS|FAIL)!?\]\s+(S-\d+)/g)) res.push({ id: m[2], cleanPass: m[1] === 'PASS' });
-  return res;
+  // GPT P2: the summary line prints ONLY if the smoke ran to completion (a timeout/hard-crash kills the
+  // child before it). Its presence is our "the run actually finished" signal — absence = INFRA FAIL.
+  const sm = out.match(/====\s+(\d+)\/(\d+)\s+sentinels PASS/);
+  return { res, summary: sm ? { pass: +sm[1], total: +sm[2] } : null };
+}
+function runSmokeChild(dir) {  // SYNC — used once for the baseline
+  let out = '';
+  try { out = execFileSync('node', [SMOKE, dir], { encoding: 'utf8', timeout: SMOKE_TIMEOUT, maxBuffer: MAXBUF, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) { out = (e.stdout || '') + '\n' + (e.stderr || ''); }
+  return parseSmoke(out);
+}
+function runSmokeChildAsync(dir) {  // ASYNC — used by the parallel mutation pool
+  return new Promise((resolve) => {
+    execFile('node', [SMOKE, dir], { encoding: 'utf8', timeout: SMOKE_TIMEOUT, maxBuffer: MAXBUF }, (err, stdout, stderr) => {
+      resolve(parseSmoke((stdout || '') + '\n' + (stderr || '')));  // err on timeout/non-zero: partial stdout still parsed; a missing target id triggers the retry
+    });
+  });
 }
 
 (async () => {
   console.log('=== BOB Stock saboteur mutation runner ===\n');
 
-  // 0) Baseline: every sentinel must be green on clean code.
+  // GPT P2: a RUN-UNIQUE temp root so two saboteur processes (overlapping/leftover runs) can NEVER
+  // collide on temp dirs. Each mutation gets <RUN_ROOT>/<id>.
+  const RUN_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bob-sab-run-'));
+  // The number of DISTINCT sentinels the catalogue covers (a mutation may target another mutation's
+  // sentinel via `sentinel:`, so this is NOT just MUTATIONS.length). The clean baseline must run them all.
+  const EXPECTED_SENTINELS = new Set(MUTATIONS.map(m => m.sentinel || m.id)).size;
+
+  // 0) Baseline: every sentinel must be green on clean code, and the run must COMPLETE (no partial pass).
   console.log('[baseline] running sentinels against clean repo (isolated child process)...');
   let clean = runSmokeChild(REPO);
-  if (clean.length === 0) clean = runSmokeChild(REPO);  // retry once on a crashed run
-  const cleanGreen = clean.filter(o => o.cleanPass).length;
-  console.log(`[baseline] ${cleanGreen}/${clean.length} green on clean code\n`);
-  if (cleanGreen !== clean.length) {
-    console.error('BASELINE FAIL — a sentinel is red on clean code. Fix before mutation testing.');
+  if (!clean.summary) clean = runSmokeChild(REPO);  // retry once if the run didn't complete
+  // GPT P2: a partial/crashed run must NOT pass as baseline — require completion (summary present),
+  // ALL sentinels ran (total === full catalogue), and every one green.
+  if (!clean.summary || clean.summary.total !== EXPECTED_SENTINELS || clean.summary.pass !== clean.summary.total) {
+    console.error(`BASELINE FAIL/INFRA — clean run incomplete or a sentinel red (got ${clean.summary ? clean.summary.pass + '/' + clean.summary.total : 'NO SUMMARY'}, expected ${EXPECTED_SENTINELS}/${EXPECTED_SENTINELS}). Fix before mutation testing.`);
+    try { fs.rmSync(RUN_ROOT, { recursive: true, force: true }); } catch (e) {}
     process.exit(1);
   }
+  console.log(`[baseline] ${clean.summary.pass}/${clean.summary.total} green on clean code\n`);
 
   // 1) Each mutation must turn its sentinel red.
   // Targeted-first support: `SABOTEUR_ONLY=S-39,S-51 node saboteur-runner.js` runs
@@ -432,30 +482,60 @@ function runSmokeChild(dir) {
   const _only = (process.env.SABOTEUR_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
   const _muts = _only.length ? MUTATIONS.filter(m => _only.includes(m.id)) : MUTATIONS;
   if (_only.length) console.log(`[targeted] running only: ${_only.join(', ')}`);
-  let caught = 0, blind = 0, missingFind = 0;
-  for (const m of _muts) {
-    const dir = path.join(os.tmpdir(), 'bob-sab-' + m.id + '-' + Date.now());
-    copyRepoTo(dir);
-    const target = path.join(dir, m.file);
-    const before = fs.readFileSync(target, 'utf8');
-    if (before.indexOf(m.find) === -1) {
-      console.log(`  [SKIP-NOFIND] ${m.id} :: source string not found in ${m.file} (mutation needs updating)`);
-      missingFind++;
-      fs.rmSync(dir, { recursive: true, force: true });
-      continue;
+  console.log(`[parallel] ${_muts.length} mutations · concurrency ${CONCURRENCY} · ${SMOKE_TIMEOUT / 1000}s per-child budget`);
+  let caught = 0, blind = 0, missingFind = 0, infra = 0;
+  async function processMutation(m) {
+    const sid = m.sentinel || m.id;  // the SENTINEL this mutation must flip (defaults to the mutation id)
+    const dir = path.join(RUN_ROOT, m.id);  // run-unique root + mutation id -> collision-free across runs
+    try {
+      copyRepoTo(dir);
+      const target = path.join(dir, m.file);
+      const before = fs.readFileSync(target, 'utf8');
+      if (before.indexOf(m.find) === -1) {
+        missingFind++;
+        console.log(`  [SKIP-NOFIND] ${m.id} :: source string not found in ${m.file} (mutation needs updating)`);
+        return;
+      }
+      fs.writeFileSync(target, before.replace(m.find, m.repl), 'utf8');
+      // GPT P2 (re-audit): never count a result from an UNRELIABLE run. A COMPLETE run (summary present
+      // AND total === EXPECTED_SENTINELS) is trusted outright. A PARTIAL run is only trusted if the target's
+      // verdict is DETERMINISTIC — identical across the original + a retry. This admits the intentionally-early
+      // broad-mutation sentinels (e.g. S-37) that flip RED and THEN abort the rest of the suite (their mutation
+      // breaks clean boot, so a full run is impossible by design — but their verdict is deterministic), while
+      // rejecting flaky/contention partials whose verdict varies. Target absent, or verdicts disagree -> INFRA.
+      const tgt = (pp) => pp.res.find(o => o.id === sid);
+      const complete = (pp) => !!(pp.summary && pp.summary.total === EXPECTED_SENTINELS);
+      let p = await runSmokeChildAsync(dir);
+      let sentinel = null;
+      if (complete(p) && tgt(p)) {
+        sentinel = tgt(p);
+      } else {
+        const p2 = await runSmokeChildAsync(dir);  // retry
+        if (complete(p2) && tgt(p2)) {
+          sentinel = tgt(p2);
+        } else {
+          const t1 = tgt(p), t2 = tgt(p2);
+          if (t1 && t2 && t1.cleanPass === t2.cleanPass) {
+            sentinel = t1;  // partial both times but the target ran with the SAME verdict -> deterministic, trustworthy
+            console.log(`  [note]    ${m.id} :: ${sid} verdict from a deterministic PARTIAL run (broad mutation aborts the suite by design)`);
+          } else {
+            infra++;
+            console.log(`  [INFRA-FAIL] ${m.id} :: no complete run and ${sid} verdict not deterministic across retries (${p.summary ? p.summary.total : 'na'}/${p2.summary ? p2.summary.total : 'na'} of ${EXPECTED_SENTINELS}) — unreliable (re-run)`);
+            return;
+          }
+        }
+      }
+      if (sentinel.cleanPass === false) { caught++; console.log(`  [CAUGHT]  ${m.id} flipped ${sid} RED on saboteur (${m.note})`); }
+      else { blind++; console.log(`  [BLIND!]  ${m.id} left ${sid} GREEN with the bug applied — sentinel proves nothing (${m.note})`); }
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
     }
-    fs.writeFileSync(target, before.replace(m.find, m.repl), 'utf8');
-
-    let out = runSmokeChild(dir);
-    if (!out.find(o => o.id === m.id)) out = runSmokeChild(dir);  // retry once if the run crashed before reaching this sentinel
-    const sentinel = out.find(o => o.id === m.id);
-    const flippedRed = sentinel && sentinel.cleanPass === false;
-    if (flippedRed) { caught++; console.log(`  [CAUGHT]  ${m.id} flipped RED on saboteur (${m.note})`); }
-    else { blind++; console.log(`  [BLIND!]  ${m.id} stayed GREEN with the bug applied — sentinel proves nothing (${m.note})`); }
-
-    fs.rmSync(dir, { recursive: true, force: true });
   }
+  let _qi = 0;
+  const worker = async () => { while (_qi < _muts.length) { await processMutation(_muts[_qi++]); } };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, _muts.length) }, worker));
 
-  console.log(`\n==== mutation results: ${caught} CAUGHT, ${blind} BLIND, ${missingFind} skipped of ${MUTATIONS.length} ====`);
-  process.exit(blind === 0 && missingFind === 0 ? 0 : 1);
+  console.log(`\n==== mutation results: ${caught} CAUGHT, ${blind} BLIND, ${missingFind} skipped, ${infra} INFRA-FAIL of ${_muts.length} ====`);
+  try { fs.rmSync(RUN_ROOT, { recursive: true, force: true }); } catch (e) {}
+  process.exit(blind === 0 && missingFind === 0 && infra === 0 ? 0 : 1);
 })().catch(e => { console.error('RUNNER ERROR:', e); process.exit(2); });

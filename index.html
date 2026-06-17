@@ -986,7 +986,42 @@ const Txn = {
     if (c.direction === 'in')    return '▲';
     if (c.direction === 'out')   return '▼';
     return '—';
-  }
+  },
+  // ── Wave K (Tier 4): TRUE category for REPORTS ──────────────────────────────
+  // classify() gives DIRECTION (drives Stock.qty — never change it). category() gives
+  // what the movement ACTUALLY is: a coarse type:'out' is a sale / wastage / transfer /
+  // in-house-use depending on its DESTINATION (stockTo) — the log flow records that, but
+  // classify() ignored it, so wastage/transfers were all counted as 'sale' (blind-audit
+  // T4 #9/#13). Direction is untouched; this is read-only reporting metadata.
+  // Legacy / sync rows that carry no stockTo do NOT silently become 'sale' — they fall to
+  // 'other_out' (unclassified), so reports key off category==='sale' and stay forward-only
+  // from when stockTo began being recorded. (Auditor-confirmed: never silently a sale.)
+  category(t) {
+    if (!t || typeof t !== 'object') return 'unknown';
+    const type = t.type;
+    const to = t.stockTo;  // DESTINATION is authoritative (GPT P2): a 'reason' must NOT override a transfer/in-house/sale destination, and a no-stockTo out stays other_out (plan: forward-only — never silently wastage/sale).
+    switch (type) {
+      case 'in':             return 'delivery';
+      case 'return_in':      return 'return';
+      case 'transfer_in':    return 'transfer';
+      case 'transfer_out':   return 'transfer';
+      case 'move_out':       return 'internal';
+      case 'wastage':        return 'wastage';
+      case 'adjustment_in':
+      case 'adjustment_out': return 'adjustment';
+      case 'deleted':        return 'deleted';
+      case 'out':
+        if (to === 'Customer Sale')                                   return 'sale';
+        if (to === 'Wastage/Damage')                                  return 'wastage';
+        if (to === 'Store Transfer' || to === 'Franchise Transfer' || to === 'HO Warehouse') return 'transfer';
+        if (to === 'Same Store (In-House Use)')                       return 'internal';  // in-house / demo: a COST, not a sale
+        return 'other_out';  // 'Other', or legacy/sync row with no/unmapped stockTo — NEVER silently sale/wastage
+      default:               return 'unknown';
+    }
+  },
+  isSale(t)        { return this.category(t) === 'sale'; },
+  isConsumption(t) { return this.category(t) === 'internal'; },  // in-house / demo
+  isWastage(t)     { return this.category(t) === 'wastage'; }
 };
 
 // ── Stock Calculations ───────────────────────────
@@ -1002,6 +1037,20 @@ const Stock = {
   // del_/st_/ct_ + <ms> + hex, and ct_<productId> where product ids are e.g. MKU_1 — so it false-rejects
   // nothing; render hardening (Safe Inline data-id) is the second layer.
   _isSafeLedgerId(id){ return typeof id==='string' && id.length>0 && id.length<=128 && /^[A-Za-z0-9_-]+$/.test(id) && this._isSafeKey(id); },
+  // Wave K (Tier 4): stock TYPE — Retail (sellable) vs Consumable (in-house only, never sold to
+  // customers: wax, disposables, treatment product). Migration rule (GPT): explicit product.stockType
+  // wins; else derive from the existing `internalUse` flag (internalUse===true -> consumable). Reports
+  // use this to keep consumables OUT of sell-through / gross sales (they only generate cost), while
+  // STILL tracking them in on-hand value, wastage and (future) expiry/dead-stock. A retail product can
+  // still be CONSUMED in-house (demo) — that's a movement category ('internal'), not the product's type.
+  stockTypeOf(p){
+    if (!p) return 'retail';
+    if (p.stockType === 'retail' || p.stockType === 'consumable') return p.stockType;
+    if (p.stockType != null && p.stockType !== '') return 'unknown';  // GPT P3: an invalid explicit stockType is SURFACED, never silently retail
+    return p.internalUse === true ? 'consumable' : 'retail';
+  },
+  isConsumableProduct(p){ return this.stockTypeOf(p) === 'consumable'; },
+  isRetailProduct(p){ return this.stockTypeOf(p) === 'retail'; },
 
   _buildCache() {
     this._qtyCache = Object.create(null);
@@ -3157,7 +3206,7 @@ const Pages = {
   _exportWastageCSV() {
     const d=DB.get();
     const headers=['Date','Store','Product','Category','Qty','Reason','Staff','Sell Price','Est. Value Lost'];
-    const rows=d.transactions.filter(t=>Txn.isOut(t)&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage'))
+    const rows=Pages._wastageTxns(d)
       .sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const s=d.stores.find(st=>st.id===t.storeId);
@@ -3461,10 +3510,15 @@ const Pages = {
       </table></div>
       ${!withCostCount?'<div class="card card-body" style="margin-top:16px;color:#6b7280;font-size:.875rem">💡 No cost data yet — record deliveries via Cost Management to populate this report.</div>':''}`;
   },
+  // Wave K (Tier 4 #9): SINGLE wastage definition — a movement is wastage iff Txn.category==='wastage'
+  // (a type:'out' sent to Wastage/Damage, or a wastage reason). NOT "any OUT carrying a wastage-ish
+  // reason", which mis-counted a transfer_out / sale that happened to carry such a reason. Used by the
+  // report, the CSV export and the dashboard stat so they can never drift.
+  _wastageTxns(d){ return (d.transactions||[]).filter(t=>Txn.isWastage(t)); },
   dirWastage() {
     if(!Auth.is('director')){navigateTo('log-movement');return;}
     const d=DB.get();const el=document.getElementById('page-wastage');if(!el)return;
-    const allWaste=d.transactions.filter(t=>Txn.isOut(t)&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage'))
+    const allWaste=Pages._wastageTxns(d)
       .sort((a,b)=>b.date.localeCompare(a.date));
     const storeFilter=document.getElementById('waste-store-filter')?.value||'';
     const filtered=storeFilter?allWaste.filter(t=>t.storeId===storeFilter):allWaste;
@@ -3526,7 +3580,7 @@ const Pages = {
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
-    const wastageThisMonth=isDir?d.transactions.filter(t=>Txn.isOut(t)&&t.date>=monthStart&&(t.reason==='Wastage'||t.reason==='Damaged/Expired'||t.stockTo==='Wastage/Damage')).reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0):0;
+    const wastageThisMonth=isDir?Pages._wastageTxns(d).filter(t=>t.date>=monthStart).reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0):0;
     // Reorder count (director)
     const reorderCount=isDir?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)).reduce((total,s)=>{
       return total+d.products.filter(p=>p.active).filter(p=>{const thr=Stock.threshold(p.id,s.id);return thr&&Stock.qty(p.id,s.id)<=thr.minQty;}).length;
