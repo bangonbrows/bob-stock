@@ -999,9 +999,15 @@ const Txn = {
   category(t) {
     if (!t || typeof t !== 'object') return 'unknown';
     const type = t.type;
-    const to = t.stockTo;  // DESTINATION is authoritative (GPT P2): a 'reason' must NOT override a transfer/in-house/sale destination, and a no-stockTo out stays other_out (plan: forward-only — never silently wastage/sale).
+    // GPT K2-P2(round2): the log UI suffixes a store name onto store-specific labels ("Store Transfer — Booragoon",
+    // "Another Store — Booragoon"). Key the category off the BASE label (before " — ") so suffixed rows classify
+    // correctly. DESTINATION/SOURCE is authoritative (a 'reason' never overrides it; a no-stockTo out -> other_out).
+    const to = (t.stockTo || '').split(' — ')[0], from = (t.stockFrom || '').split(' — ')[0];
     switch (type) {
-      case 'in':             return 'delivery';
+      case 'in':
+        // GPT K2-P2: a manual STOCK-IN FROM another of our locations is a TRANSFER-in, not a supplier delivery.
+        if (from === 'HO Warehouse' || from === 'Another Store' || from === 'Franchise Office') return 'transfer';
+        return 'delivery';  // supplier delivery (Supplier / 'Other' / none — incl. _saveDelivery, which records no stockFrom)
       case 'return_in':      return 'return';
       case 'transfer_in':    return 'transfer';
       case 'transfer_out':   return 'transfer';
@@ -2627,9 +2633,14 @@ const Pages = {
       const uChg=pctChg(aD.units,bD.units); const vChg=pctChg(aD.val,bD.val);
       let dirCols='';
       if(isDir){
-        const calcProfit=(from,to)=>d.transactions.filter(t=>t.storeId===s.id&&Txn.isOut(t)&&(!from||t.date>=from)&&(!to||t.date<=to)).reduce((a,t)=>{const p=d.products.find(pr=>pr.id===t.productId);const c=Stock.costAtDate(t.productId,t.date);return p&&c!=null&&p.price!=null?a+(p.price-c)*t.qty:a;},0);
-        const aP=calcProfit(aFrom,aTo); const bP=calcProfit(bFrom,bTo); const pChg=pctChg(aP,bP);
-        dirCols=`<td>${UI.fmt(aP)}</td><td>${UI.fmt(bP)}</td><td style="color:${chgColor(pChg)};font-weight:700">${chgTxt(pChg)}</td>`;
+        // Wave K (Tier 4): NO profit/P&L. Show Gross Sales (sales−returns) + Total Cost (stock used, at
+        // cost-at-time) per period, plus current On-hand value at cost. Replaces the old calc that wrongly
+        // counted EVERY outflow (wastage/transfers/in-house) as profit (blind-audit T4 #9d).
+        const periodTxns=(from,to)=>d.transactions.filter(t=>t.storeId===s.id&&(!from||t.date>=from)&&(!to||t.date<=to));
+        const aGS=Pages._grossSales(periodTxns(aFrom,aTo)); const bGS=Pages._grossSales(periodTxns(bFrom,bTo)); const gsChg=pctChg(aGS,bGS);
+        const aTC=Pages._costUsed(periodTxns(aFrom,aTo)); const bTC=Pages._costUsed(periodTxns(bFrom,bTo)); const tcChg=pctChg(aTC,bTC);
+        const onHand=Pages._stockOnHandCost(s.id);
+        dirCols=`<td>${UI.fmt(aGS)}</td><td>${UI.fmt(bGS)}</td><td style="color:${chgColor(gsChg)};font-weight:700;text-align:center">${chgTxt(gsChg)}</td><td>${UI.fmt(aTC)}</td><td>${UI.fmt(bTC)}</td><td style="color:${chgColor(tcChg)};font-weight:700;text-align:center">${chgTxt(tcChg)}</td><td>${UI.fmt(onHand)}</td>`;
       }
       return `<tr><td><strong>${s.name}</strong>${s.isFranchise?' <span class="franchise-badge">Franchise</span>':''}</td>
         <td style="text-align:center">${aD.units}</td><td style="text-align:center">${bD.units}</td>
@@ -2638,11 +2649,11 @@ const Pages = {
         <td style="color:${chgColor(vChg)};font-weight:700;text-align:center">${chgTxt(vChg)}</td>
         ${dirCols}</tr>`;
     });
-    const dirTH=isDir?'<th>A Profit</th><th>B Profit</th><th>Profit Δ</th>':'';
+    const dirTH=isDir?'<th>A Gross Sales</th><th>B Gross Sales</th><th>Sales Δ</th><th>A Cost</th><th>B Cost</th><th>Cost Δ</th><th>On-hand (cost)</th>':'';
     document.getElementById('comp-table').innerHTML=`<table><thead><tr>
       <th>Store</th><th>A Units</th><th>B Units</th><th>Unit Δ</th>
       <th>A Value</th><th>B Value</th><th>Value Δ</th>${dirTH}
-    </tr><tr style="font-size:.7rem;color:#9ca3af"><td></td><td colspan="3" style="padding:2px 8px">${tLabel}</td><td colspan="3" style="padding:2px 8px">Retail Value</td>${isDir?'<td colspan="3" style="padding:2px 8px">Est. Profit</td>':''}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+    </tr><tr style="font-size:.7rem;color:#9ca3af"><td></td><td colspan="3" style="padding:2px 8px">${tLabel}</td><td colspan="3" style="padding:2px 8px">Retail Value</td>${isDir?'<td colspan="3" style="padding:2px 8px">Gross Sales (sales − returns)</td><td colspan="3" style="padding:2px 8px">Total Cost (stock used, at cost)</td><td style="padding:2px 8px">At cost, now</td>':''}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
     setTimeout(()=>{
       UI.makeChart('chart-comp-units',{type:'bar',data:{labels:storeNames,datasets:[
         {label:`Period A`,data:aUnits,backgroundColor:'#86efac',borderRadius:4},
@@ -3515,6 +3526,50 @@ const Pages = {
   // reason", which mis-counted a transfer_out / sale that happened to carry such a reason. Used by the
   // report, the CSV export and the dashboard stat so they can never drift.
   _wastageTxns(d){ return (d.transactions||[]).filter(t=>Txn.isWastage(t)); },
+  // ── Wave K (Tier 4): shared money-report helpers (NO profit/P&L — just honest Gross Sales + Total Cost) ──
+  // Gross Sales = real customer SALES minus RETURNS (a refund reverses the sale). Sales are always retail.
+  // (Sale price is current product.price for now; sub-wave K4 stamps price-at-sale so history can't be rewritten.)
+  _grossSales(txns){
+    const prods=DB.get().products;
+    return (txns||[]).reduce((a,t)=>{
+      const cat=Txn.category(t); if(cat!=='sale'&&cat!=='return')return a;
+      const p=prods.find(pr=>pr.id===t.productId); if(!p||!Stock.isRetailProduct(p))return a;  // GPT K2-P1: sales are RETAIL-only (a consumable can't be sold)
+      if(cat==='return'&&t.stockFrom!=='Customer')return a;  // GPT K2-P1: only a CUSTOMER return reverses a sale; store/franchise/supplier returns are not refunds
+      const v=(p.price||0)*(Stock._safeQty(t.qty)||0);
+      return cat==='sale'?a+v:a-v;  // customer returns REDUCE gross sales
+    },0);
+  },
+  // Total Cost (period) = cost-AT-TIME of stock actually CONSUMED: sale + in-house/demo + wastage.
+  // Transfers/adjustments are NOT a cost (stock moving between our own locations / corrections).
+  _costUsed(txns){
+    return (txns||[]).reduce((a,t)=>{
+      const cat=Txn.category(t); if(cat!=='sale'&&cat!=='internal'&&cat!=='wastage')return a;
+      const c=Stock.costAtDate(t.productId,t.date); return c!=null?a+c*(Stock._safeQty(t.qty)||0):a;
+    },0);
+  },
+  // On-hand value AT COST = current stock × current cost, per store (a point-in-time figure, not a period).
+  _stockOnHandCost(storeId){
+    const d=DB.get();
+    return d.products.reduce((a,p)=>{ const q=Stock.qty(p.id,storeId); if(!q)return a; const c=Stock.currentCost(p.id); return c!=null?a+c*q:a; },0);
+  },
+  // Wave K (Tier 4 #13): sell-through aggregation, extracted so it's directly testable. Per product:
+  // out = customer SALES only (not every outflow); in = RECEIVED, topology-aware (single store = transfer-in;
+  // company-wide = deliveries into HO). CONSUMABLES excluded (used, never sold).
+  _sellThroughAgg(d, storeSet, cutoffStr, companyWide){
+    const retailIds=new Set(d.products.filter(p=>Stock.isRetailProduct(p)).map(p=>p.id));
+    const _agg=Object.create(null);
+    for(const t of d.transactions){
+      if(t.date<cutoffStr||!storeSet.has(t.storeId)||!retailIds.has(t.productId))continue;
+      const _q=Stock._safeQty(t.qty); if(_q===null)continue;
+      const cat=Txn.category(t);
+      const isSold=cat==='sale';
+      const isReceived=companyWide ? (cat==='delivery') : (cat==='transfer'&&Txn.isIn(t));
+      if(!isSold&&!isReceived)continue;
+      const a=_agg[t.productId]||(_agg[t.productId]={in:0,out:0});
+      if(isSold)a.out+=_q; if(isReceived)a.in+=_q;
+    }
+    return _agg;
+  },
   dirWastage() {
     if(!Auth.is('director')){navigateTo('log-movement');return;}
     const d=DB.get();const el=document.getElementById('page-wastage');if(!el)return;
@@ -3812,19 +3867,17 @@ const Pages = {
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
     const cutoffStr=UI.dateLocal(cutoff);
     const filterStores=storeFilter?visibleStores.filter(s=>s.id===storeFilter):visibleStores;
-    // MFL-016: single O(T) pass instead of products x stores x transactions
+    // Wave K (Tier 4 #13): sell-through = % of RECEIVED retail stock that SOLD. "Sold" = customer SALES only
+    // (category 'sale') — NOT every outflow. "Received" is topology-aware: a single store receives via
+    // TRANSFER-IN; company-wide (HO, no store filter) receives via DELIVERIES into HO (the sole external entry).
+    const companyWide = isHO && !storeFilter;
     const _storeSet=new Set(filterStores.map(s=>s.id));
-    const _agg=Object.create(null);
-    for(const t of d.transactions){
-      if(t.date<cutoffStr||!_storeSet.has(t.storeId))continue;
-      const isIn=Txn.isIn(t),isOut=Txn.isOut(t);
-      if(!isIn&&!isOut)continue;
-      const a=_agg[t.productId]||(_agg[t.productId]={in:0,out:0});
-      const _q=Stock._safeQty(t.qty); if(_q===null)continue;  // SA-E-F1: match cache
-      if(isIn)a.in+=_q;else a.out+=_q;
-    }
+    // GPT K2-P1: company-wide DELIVERIES are booked against HO (storeId 'head_office', a warehouse excluded
+    // from visibleStores) — add HO/warehouse ids so those deliveries enter the company-wide denominator.
+    if(companyWide){ d.stores.filter(s=>s.type==='warehouse'&&!s.isFranchiseOffice).forEach(s=>_storeSet.add(s.id)); _storeSet.add('head_office'); }
+    const _agg=Pages._sellThroughAgg(d, _storeSet, cutoffStr, companyWide);
     const results=[];
-    d.products.filter(p=>p.active).forEach(p=>{
+    d.products.filter(p=>p.active&&Stock.isRetailProduct(p)).forEach(p=>{  // consumables excluded — they're used, never sold
       const a=_agg[p.id];if(!a)return;
       const totalIn=a.in,totalOut=a.out;
       if(totalIn>0||totalOut>0)results.push({product:p,inQty:totalIn,outQty:totalOut,rate:totalIn>0?(totalOut/totalIn*100):null});
