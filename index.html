@@ -1251,6 +1251,20 @@ const Validate = {
     if (!Number.isSafeInteger(n)) return { ok: false, error: 'magnitude too large' };
     if (n < 0) return { ok: false, error: 'cannot be negative' };
     return { ok: true, value: n };
+  },
+  // Wave K4 (Tier 4): FX conversion rate (1 foreign currency unit = N AUD). Deliberately NOT money():
+  // money() rounds to 2 decimals (which mangles a rate like 0.6523) and uses the $-amount ceiling.
+  // A rate is finite, strictly > 0, carries more precision, and has its own sane upper bound. The
+  // CONVERTED AUD amounts are re-checked against MONEY_MAX separately, after multiplication.
+  rate(x) {
+    const s = String(x == null ? '' : x).trim();
+    if (s === '') return { ok: false, error: 'exchange rate required' };
+    if (!/^\d+(\.\d+)?$/.test(s)) return { ok: false, error: 'not a valid rate' };  // decimal notation only — no sign/exponent/hex (same trust-boundary policy as money)
+    const n = Number(s);
+    if (!Number.isFinite(n)) return { ok: false, error: 'not a valid rate' };
+    if (n <= 0) return { ok: false, error: 'must be greater than zero' };
+    if (n > 100000) return { ok: false, error: 'rate too large' };
+    return { ok: true, value: n };
   }
 };
 
@@ -1765,6 +1779,15 @@ const Pages = {
       returnCondition:isReturnSub?(this._logData.returnCondition||null):null,
       editLog:[], createdAt:new Date().toISOString()
     };
+    // Wave K4 (Tier 4): freeze the sell price AT LOG TIME so a later catalogue price edit can't
+    // retroactively rewrite historical Gross Sales. Stamp on customer SALES and customer RETURNS
+    // (a return reverses a sale, so it must value at the same frozen price, not today's). Local-only
+    // for now — the snapshot is NOT pushed to SharePoint yet (deferred to the Azure schema, like stockTo).
+    const _k4cat=Txn.category(txn);
+    if(_k4cat==='sale'||(_k4cat==='return'&&txn.stockFrom==='Customer')){
+      const _k4p=d.products.find(pr=>pr.id===txn.productId);
+      if(_k4p&&Number.isFinite(_k4p.price))txn.unitPriceAtTime=_k4p.price;
+    }
     if(Txn.isOut(txn)){
       const avail=Stock.qty(txn.productId,txn.storeId);
       if(avail<txn.qty){UI.toast(`⚠ Insufficient stock — only ${avail} unit${avail!==1?'s':''} available`,'error');return;}
@@ -2466,6 +2489,7 @@ const Pages = {
     const allCompStores=d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)&&(!storeIds||storeIds.includes(s.id)));
     el.innerHTML=`
       <div class="page-header"><div class="page-title">Store Comparison</div><div class="page-sub">Compare stores across periods — MOM &amp; YOY analysis</div></div>
+      <div style="font-size:.76rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:14px">ℹ Updated Jun 2026: stores are now compared on <strong>Gross Sales</strong> and <strong>Total Cost</strong> (cost-at-time of stock used), not profit. Consumables are excluded from sales.</div>
       <div class="card card-body" style="margin-bottom:16px">
         <div style="font-weight:600;font-size:.85rem;margin-bottom:12px">Comparison Periods</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px">
@@ -2903,7 +2927,7 @@ const Pages = {
       const franStore=d.stores.find(s=>s.isFranchise&&s.active);
       const discPct=p.franchiseDiscount??franStore?.franchiseDiscount??null;
       const franPrice=p.price&&discPct!=null?p.price*(1-discPct/100):null;
-      return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td><td>${p.price?UI.fmt(p.price):(p.internalUse?'<span style="color:#9ca3af;font-size:.75rem">Internal use</span>':'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>')}</td>${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
+      return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td><td>${p.price?UI.fmt(p.price):(Stock.isConsumableProduct(p)?'<span style="color:#9ca3af;font-size:.75rem">Consumable</span>':'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>')}</td>${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
     }).join('')}</tbody></table>`;
   },
   async _setProductFranDisc(productId, val) {
@@ -2914,7 +2938,7 @@ const Pages = {
   },
   _addProductModal() {
     const d=DB.get();
-    UI.modal('Add Product',`<div class="form-group"><label class="form-label">Product ID *</label><input class="form-input" id="np-id" placeholder="e.g. EXT_22"></div><div class="form-group"><label class="form-label">Product Name *</label><input class="form-input" id="np-name"></div><div class="form-group"><label class="form-label">Category *</label><select class="form-select" id="np-cat">${d.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">Sell Price (AUD)</label><input type="number" class="form-input" id="np-price" step="0.01" style="max-width:160px"></div><div class="form-group"><label class="form-label">Franchise Discount</label><select class="form-select" id="np-fran-disc" style="max-width:260px"><option value="">No product-level discount (use store default)</option><option value="5">5% off sell price</option><option value="10">10% off sell price</option><option value="20">20% off sell price</option><option value="25">25% off sell price</option><option value="50">50% off sell price</option><option value="75">75% off sell price</option><option value="100">100% off (free)</option></select><div style="font-size:.72rem;color:#6b7280;margin-top:4px">Overrides the store-level franchise discount for this product.</div></div>`,
+    UI.modal('Add Product',`<div class="form-group"><label class="form-label">Product ID *</label><input class="form-input" id="np-id" placeholder="e.g. EXT_22"></div><div class="form-group"><label class="form-label">Product Name *</label><input class="form-input" id="np-name"></div><div class="form-group"><label class="form-label">Category *</label><select class="form-select" id="np-cat">${d.categories.map(c=>`<option value="${c.id}">${c.name}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">Sell Price (AUD)</label><input type="number" class="form-input" id="np-price" step="0.01" style="max-width:160px"></div><div class="form-group"><label class="form-label">Stock Type</label><select class="form-select" id="np-stocktype" style="max-width:260px"><option value="retail">Retail — sold to customers</option><option value="consumable">Consumable — in-house use only</option></select><div style="font-size:.72rem;color:#6b7280;margin-top:4px">Consumables (wax, disposables, treatment product) are used in-house, never sold — they stay out of sales &amp; sell-through reports.</div></div><div class="form-group"><label class="form-label">Franchise Discount</label><select class="form-select" id="np-fran-disc" style="max-width:260px"><option value="">No product-level discount (use store default)</option><option value="5">5% off sell price</option><option value="10">10% off sell price</option><option value="20">20% off sell price</option><option value="25">25% off sell price</option><option value="50">50% off sell price</option><option value="75">75% off sell price</option><option value="100">100% off (free)</option></select><div style="font-size:.72rem;color:#6b7280;margin-top:4px">Overrides the store-level franchise discount for this product.</div></div>`,
       `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._saveNewProduct()">Add</button>`);
   },
   _saveNewProduct() {  // NB (D-044): the editRefData role gate lives on the inner _doAddProduct() called below — keep it there; do NOT assume this wrapper is gated
@@ -2924,12 +2948,13 @@ const Pages = {
     if(!_price.ok){UI.toast('Sell price '+_price.error,'error');return;}
     const price=_price.value;
     const franDisc=parseFloat(document.getElementById('np-fran-disc')?.value)||null;
+    const stockType=document.getElementById('np-stocktype')?.value==='consumable'?'consumable':'retail';  // K4: explicit Retail/Consumable
     if(!id||!name){UI.toast('ID and Name required','error');return;}
     const d=DB.get(); if(d.products.find(p=>p.id===id)){UI.toast('Product ID exists','error');return;}
     const _nameLower=name.toLowerCase();
     const _dup=d.products.find(p=>p.active&&p.name.toLowerCase()===_nameLower);
-    if(_dup){UI.confirm('Duplicate Product',`A product named "${UI.esc(_dup.name)}" already exists. Add anyway?`,()=>Pages._doAddProduct(id,name,catId,price,franDisc),'Add Anyway',false);return;}
-    Pages._doAddProduct(id,name,catId,price,franDisc);
+    if(_dup){UI.confirm('Duplicate Product',`A product named "${UI.esc(_dup.name)}" already exists. Add anyway?`,()=>Pages._doAddProduct(id,name,catId,price,franDisc,stockType),'Add Anyway',false);return;}
+    Pages._doAddProduct(id,name,catId,price,franDisc,stockType);
   },
   // W1c (MFL-002): durable settings commit. Returns true only on confirmed save.
   // On failure, reloads the last durable state from disk (rollback) + shows the
@@ -2939,7 +2964,7 @@ const Pages = {
     if(!ok){ try{ await DB.refresh(); }catch(e){} UI.fatalSaveError(detail||'This change could not be saved.'); return false; }
     return true;
   },
-  async _doAddProduct(id,name,catId,price,franDisc){
+  async _doAddProduct(id,name,catId,price,franDisc,stockType){
     if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change products','error');return;}
     if(!Stock._isSafeKey(id)){UI.toast('That product ID is reserved — choose another','error');return;}  // Wave D (GPT-ABC-001): reject reserved keys at the catalogue boundary, else this product's stock silently vanishes from the cache
     if(!/^[A-Za-z0-9_-]+$/.test(id)){UI.toast('Product ID can use letters, numbers, _ and - only','error');return;}  // Wave J (Tier 3): product ids must match the ledger allowlist — catalogue hygiene + defence-in-depth, and the old F2-CRIT04 detach guard (allowlist ⊂ the old denylist). NOTE: the original driver (productId embedded RAW into cost-history ledger ids) was removed when those ids became opaque (ch_<ms>_<hex>, GPT FINAL deep audit); the allowlist is retained to keep catalogue ids clean.
@@ -2949,13 +2974,14 @@ const Pages = {
     // Strip the discount unless the user can actually edit pricing (it can be set later by a Director).
     const _franDisc = Auth.can('editPricing') ? franDisc : null;
     const d=DB.get();
-    d.products.push({id,name,catId,price,internalUse:false,weightGrams:null,franchiseDiscount:_franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null});
+    const _stockType=stockType==='consumable'?'consumable':'retail';  // K4: explicit type is authoritative; internalUse stays false (legacy flag retired)
+    d.products.push({id,name,catId,price,stockType:_stockType,internalUse:false,weightGrams:null,franchiseDiscount:_franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null});
     if(!(await Pages._commitSettings()))return;
     UI.closeModal(); UI.toast(`"${name}" added`,'success'); Pages._refreshSettings('products');
   },
   _editProductModal(productId) {
     const p=DB.get().products.find(p=>p.id===productId); const d=DB.get();
-    UI.modal('Edit Product',`<div class="form-group"><label class="form-label">Product Name *</label><input class="form-input" id="ep-name" value="${p.name}"></div><div class="form-group"><label class="form-label">Category</label><select class="form-select" id="ep-cat">${d.categories.map(c=>`<option value="${c.id}" ${c.id===p.catId?'selected':''}>${c.name}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">Sell Price (AUD)</label><input type="number" class="form-input" id="ep-price" value="${p.price||''}" step="0.01" style="max-width:160px"></div><div class="form-group" style="display:flex;align-items:center;gap:10px;margin-top:8px"><input type="checkbox" id="ep-internal" ${p.internalUse?'checked':''} style="width:16px;height:16px;cursor:pointer"><label for="ep-internal" class="form-label" style="margin:0;cursor:pointer">Internal use only (hides sell price warning)</label></div>`,
+    UI.modal('Edit Product',`<div class="form-group"><label class="form-label">Product Name *</label><input class="form-input" id="ep-name" value="${p.name}"></div><div class="form-group"><label class="form-label">Category</label><select class="form-select" id="ep-cat">${d.categories.map(c=>`<option value="${c.id}" ${c.id===p.catId?'selected':''}>${c.name}</option>`).join('')}</select></div><div class="form-group"><label class="form-label">Sell Price (AUD)</label><input type="number" class="form-input" id="ep-price" value="${p.price||''}" step="0.01" style="max-width:160px"></div><div class="form-group"><label class="form-label">Stock Type</label><select class="form-select" id="ep-stocktype" style="max-width:260px"><option value="retail" ${Stock.stockTypeOf(p)!=='consumable'?'selected':''}>Retail — sold to customers</option><option value="consumable" ${Stock.stockTypeOf(p)==='consumable'?'selected':''}>Consumable — in-house use only</option></select><div style="font-size:.72rem;color:#6b7280;margin-top:4px">Consumables stay out of sales &amp; sell-through reports.</div></div>`,
       `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._saveEditProduct('${productId}')">Save</button>`);
   },
   async _saveEditProduct(productId) {
@@ -2966,7 +2992,10 @@ const Pages = {
     p.name=document.getElementById('ep-name')?.value.trim()||p.name;
     p.catId=document.getElementById('ep-cat')?.value||p.catId;
     p.price=_price.value;
-    p.internalUse=document.getElementById('ep-internal')?.checked||false;
+    // K4: stockType dropdown is now authoritative; write it and clear the legacy internalUse flag so
+    // stockTypeOf reads the explicit value (a stale internalUse:true could otherwise force consumable).
+    p.stockType=document.getElementById('ep-stocktype')?.value==='consumable'?'consumable':'retail';
+    p.internalUse=false;
 
     if(!(await Pages._commitSettings()))return; UI.closeModal(); UI.toast('Updated','success'); this._refreshSettings('products');
   },
@@ -3299,6 +3328,13 @@ const Pages = {
         if(p[k]!=null){ const _m=Validate.money(p[k],{optional:true}); if(!_m.ok) return {ok:false,error:'Backup contains an invalid product '+k+' ('+p.id+'): '+_m.error+' — file rejected.'}; p[k]=_m.value; }
       }
     }
+    // GPT K4-P1 (re-audit, second ingress): validate cost-HISTORY costPrice too. Stock.costAtDate PREFERS a
+    // cost-history row over product.costPrice, so a crafted/corrupt backup with an over-MONEY_MAX (or non-finite)
+    // costHistory.costPrice would feed K2/K3 cost reports an out-of-policy figure even though product.costPrice
+    // is validated. Reject the whole file on any invalid cost-history money, same policy as products.
+    for(const h of (data.costHistory||[])){
+      if(h&&h.costPrice!=null){ const _m=Validate.money(h.costPrice,{optional:true}); if(!_m.ok) return {ok:false,error:'Backup contains an invalid cost-history costPrice ('+(h.id||'unknown')+'): '+_m.error+' — file rejected.'}; h.costPrice=_m.value; }
+    }
     this._scrubBackupSecrets(data);  // C1: import cannot inject a live session token / config material -> import cannot restore an active login
     delete data._meta;
     return {ok:true,data};
@@ -3538,7 +3574,10 @@ const Pages = {
       const cat=Txn.category(t); if(cat!=='sale'&&cat!=='return')return a;
       const p=prods.find(pr=>pr.id===t.productId); if(!p||!Stock.isRetailProduct(p))return a;  // GPT K2-P1: sales are RETAIL-only (a consumable can't be sold)
       if(cat==='return'&&t.stockFrom!=='Customer')return a;  // GPT K2-P1: only a CUSTOMER return reverses a sale; store/franchise/supplier returns are not refunds
-      const v=(p.price||0)*(Stock._safeQty(t.qty)||0);
+      // K4: value at the price FROZEN on the transaction (unitPriceAtTime); fall back to the current
+      // catalogue price only for pre-K4 rows that were never stamped.
+      const unit=Number.isFinite(t.unitPriceAtTime)?t.unitPriceAtTime:(p.price||0);
+      const v=unit*(Stock._safeQty(t.qty)||0);
       return cat==='sale'?a+v:a-v;  // customer returns REDUCE gross sales
     },0);
   },
@@ -3589,6 +3628,7 @@ const Pages = {
         <div><div class="page-title">Wastage & Damage Report</div><div class="page-sub">Stock flagged as wastage/damage — valued at cost (what it cost us), not retail</div></div>
         <button class="btn btn-secondary" onclick="Pages._exportWastageCSV()">⬇ Export CSV</button>
       </div>
+      <div style="font-size:.76rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:14px">ℹ Updated Jun 2026: wastage is now valued at <strong>cost-at-time</strong> (what it cost us), not retail. Items with no cost on file are flagged, never counted as $0.</div>
       <div class="filter-row" style="margin-bottom:16px">
         <select class="form-select" id="waste-store-filter" style="max-width:220px" onchange="Pages.dirWastage()">
           <option value="">All Stores (${allWaste.length} events)</option>
@@ -3892,6 +3932,7 @@ const Pages = {
     const avgRate=withRate.length?withRate.reduce((s,r)=>s+r.rate,0)/withRate.length:null;
     el.innerHTML=`
       <div class="page-header"><div><div class="page-title">Sell-Through Rate</div><div class="page-sub">% of received stock that has been sold in the selected period</div></div></div>
+      <div style="font-size:.76rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:14px">ℹ Updated Jun 2026: "sold" counts <strong>customer sales only</strong> (not transfers or in-house use); "received" is deliveries (company-wide) or transfers-in (per store). Consumables are excluded.</div>
       <div class="filter-row" style="margin-bottom:16px">
         <select class="form-select" id="str-days" style="max-width:150px" onchange="Pages.sellThrough()">
           <option value="30" ${days===30?'selected':''}>Last 30 days</option>
@@ -4328,12 +4369,14 @@ const Pages = {
         <div class="form-group" style="grid-column:1/-1"><label class="form-label" for="del-supplier">Supplier *</label><input class="form-input" id="del-supplier" placeholder="e.g. ABC Beauty Supply"></div>
           <div class="form-group"><label class="form-label" for="del-date">Delivery Date *</label><input type="date" class="form-input" id="del-date" value="${UI.todayLocal()}" data-utc="true"></div>
           <div class="form-group"><label class="form-label" for="del-invoice">Invoice #</label><input class="form-input" id="del-invoice" placeholder="optional"></div>
-          <div class="form-group"><label class="form-label" for="del-currency">Currency</label><select class="form-input" id="del-currency"><option value="AUD">AUD</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option></select></div>
-          <div class="form-group"><label class="form-label" for="del-shipping">Shipping Cost ($)</label><input type="number" class="form-input" id="del-shipping" value="0" step="0.01"></div>
+          <div class="form-group"><label class="form-label" for="del-currency">Currency</label><select class="form-input" id="del-currency" onchange="Pages._onDelCurrencyChange()"><option value="AUD">AUD</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option></select></div>
+          <div class="form-group" id="del-rate-wrap" style="display:none"><label class="form-label" for="del-rate">Exchange Rate <span id="del-rate-cur">(1 unit = ? AUD)</span></label><input type="number" class="form-input" id="del-rate" value="" min="0" step="0.0001" placeholder="e.g. 1.52" onchange="Pages._updateDeliveryCalc()"></div>
+          <div class="form-group"><label class="form-label" for="del-shipping">Shipping Cost</label><input type="number" class="form-input" id="del-shipping" value="0" step="0.01"></div>
           <div class="form-group"><label class="form-label" for="del-freight">Freight Cost ($)</label><input type="number" class="form-input" id="del-freight" value="0" step="0.01"></div>
           <div class="form-group"><label class="form-label" for="del-tax">Tax & Duty ($)</label><input type="number" class="form-input" id="del-tax" value="0" step="0.01"></div>
           <div class="form-group" style="grid-column:1/-1"><label class="form-label" for="del-notes">Notes</label><textarea class="form-input" id="del-notes" rows="2" placeholder="optional"></textarea></div>
       </div>
+      <div id="del-fx-note" style="display:none;font-size:.78rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:10px"></div>
       <div id="del-header-total" style="font-size:.8rem;color:#999;margin-bottom:10px">Total header costs: $0.00</div>
       <div style="font-weight:600;font-size:.85rem;margin-bottom:10px;color:var(--rose)">\u{1F4E6} PRODUCT LINES</div>
       <div id="del-lines-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:12px"></div>
@@ -4393,17 +4436,40 @@ const Pages = {
     this._renderDeliveryLines();
     this._updateDeliveryCalc();
   },
+  // Wave K4 (Tier 4, Kunal option A "app converts"): a foreign-currency delivery enters all costs in the
+  // foreign currency + a single delivery RATE; the app multiplies → AUD for every landed-cost calc and
+  // stores AUD as the canonical (so K2/K3 reports stay AUD). AUD remains the default (rate 1, no convert).
+  _onDelCurrencyChange(){
+    const cur=document.getElementById('del-currency')?.value||'AUD';
+    const foreign=cur!=='AUD';
+    const wrap=document.getElementById('del-rate-wrap'); if(wrap)wrap.style.display=foreign?'block':'none';
+    const curLbl=document.getElementById('del-rate-cur'); if(curLbl)curLbl.textContent=`(1 ${cur} = ? AUD)`;
+    const note=document.getElementById('del-fx-note');
+    if(note){note.style.display=foreign?'block':'none';note.textContent=foreign?`Enter all costs below in ${cur}. They are converted to AUD at the rate above; the app stores AUD.`:'';}
+    this._updateDeliveryCalc();
+  },
+  // Returns {ok, code, rate} for the delivery currency. AUD → rate 1 (no rate field required). Foreign →
+  // the rate field validated by the dedicated Validate.rate (NOT money — see that validator's note).
+  _delRate(){
+    const code=document.getElementById('del-currency')?.value||'AUD';
+    if(code==='AUD')return {ok:true,code:'AUD',rate:1};
+    const r=Validate.rate(document.getElementById('del-rate')?.value);
+    if(!r.ok)return {ok:false,code,error:'Exchange rate '+r.error};
+    return {ok:true,code,rate:r.value};
+  },
   _updateDeliveryCalc(){
-    const freight=parseFloat(document.getElementById('del-freight')?.value)||0;
-    const tax=parseFloat(document.getElementById('del-tax')?.value)||0;
+    // K4: live preview converts foreign → AUD with the entered rate (1 if AUD or rate not yet valid).
+    const _r=this._delRate(); const rate=_r.ok?_r.rate:1;
+    const freight=(parseFloat(document.getElementById('del-freight')?.value)||0)*rate;
+    const tax=(parseFloat(document.getElementById('del-tax')?.value)||0)*rate;
     // Wave G (blind audit ×5, runtime-proven): the Shipping field was never read — the code read a
     // 'del-customs' input that doesn't exist in the form, so user-entered shipping vanished from landed cost.
-    const shipping=parseFloat(document.getElementById('del-shipping')?.value)||0;
+    const shipping=(parseFloat(document.getElementById('del-shipping')?.value)||0)*rate;
     const totalHeader=freight+tax+shipping;
     const htEl=document.getElementById('del-header-total');
     if(htEl)htEl.textContent=`Total header costs: $${totalHeader.toFixed(2)}`;
     const lines=this._delLines||[];
-    const totalLineVal=lines.reduce((a,ln)=>a+(ln.unitCost||0)*(ln.qty||1),0);
+    const totalLineVal=lines.reduce((a,ln)=>a+(ln.unitCost||0)*rate*(ln.qty||1),0);
     const summaryEl=document.getElementById('del-summary');
     const summaryRows=document.getElementById('del-summary-rows');
     let hasValidLine=false;
@@ -4418,15 +4484,15 @@ const Pages = {
         return;
       }
       hasValidLine=true;
-      const lineVal=(ln.unitCost||0)*(ln.qty||1);
-      const lineWeight=(ln.weightGrams||0)*(ln.qty||1);
+      const lineVal=(ln.unitCost||0)*rate*(ln.qty||1);  // K4: foreign → AUD
+      const lineWeight=(ln.weightGrams||0)*(ln.qty||1);  // weight is grams, never currency — not scaled
       // Freight+shipping: weight-based if all have weight, else value-based
       const freightShip=freight+shipping;
       const freightShipShare=allHaveWeight&&totalWeight>0?(lineWeight/totalWeight)*freightShip:(totalLineVal>0?(lineVal/totalLineVal)*freightShip:0);
       // Tax: value-based
       const taxShare=totalLineVal>0?(lineVal/totalLineVal)*tax:0;
       const headerShare=freightShipShare+taxShare;
-      const landedTotal=lineVal+(ln.packaging||0)+(ln.labelling||0)+headerShare;
+      const landedTotal=lineVal+(ln.packaging||0)*rate+(ln.labelling||0)*rate+headerShare;  // K4: packaging/labelling foreign → AUD
       const landedPerUnit=landedTotal/(ln.qty||1);
       ln._landed=Math.round(landedPerUnit*100)/100; ln._headerShare=Math.round(headerShare*100)/100;
       const el=document.getElementById('del-landed-'+i);
@@ -4458,6 +4524,9 @@ const Pages = {
     const date=document.getElementById('del-date')?.value;
     const invoiceNo=(document.getElementById('del-invoice')?.value||'').trim();
     if(!supplier||!date){UI.toast('Supplier and date are required','error');return;}
+    // K4: resolve the FX rate FIRST (AUD → 1). Validated by the dedicated rate validator, never money().
+    const _rate=this._delRate(); if(!_rate.ok){UI.toast(_rate.error,'error');return;}
+    const fxRate=_rate.rate, curCode=_rate.code;
     const lines=this._delLines||[];
     const validLines=lines.filter(ln=>ln.productId&&ln.qty&&ln.unitCost);
     if(!validLines.length){UI.toast('Add at least one complete product line','error');return;}
@@ -4466,36 +4535,69 @@ const Pages = {
     const _tx=UI.money(document.getElementById('del-tax')?.value,{optional:true});
     const _sh=UI.money(document.getElementById('del-shipping')?.value,{optional:true});  // Wave G: shipping was typed by the user but never read (the code read a non-existent del-customs)
     if(!_fr.ok||!_tx.ok||!_sh.ok){UI.toast('Header costs '+(_fr.ok?(_tx.ok?_sh.error:_tx.error):_fr.error),'error');return;}
-    const freight=_fr.value==null?0:_fr.value, tax=_tx.value==null?0:_tx.value, shipping=_sh.value==null?0:_sh.value;
-    if(validLines.some(ln=>!(Number.isFinite(ln.unitCost)&&ln.unitCost>=0)||!(Number.isFinite(ln.packaging||0)&&(ln.packaging||0)>=0)||!(Number.isFinite(ln.labelling||0)&&(ln.labelling||0)>=0)||!(Number.isFinite(ln.weightGrams||0)&&(ln.weightGrams||0)>=0))){UI.toast('Unit cost, packaging, labelling and weight cannot be negative','error');return;}  // Wave D (GPT-ABC-002): reject negative/non-finite line costs (not just header costs)
+    // K4: these are the amounts AS ENTERED — foreign currency when curCode!=='AUD' (validated, 2dp).
+    const freightRaw=_fr.value==null?0:_fr.value, taxRaw=_tx.value==null?0:_tx.value, shippingRaw=_sh.value==null?0:_sh.value;
+    if(validLines.some(ln=>!(Number.isFinite(ln.unitCost)&&ln.unitCost>=0)||!(Number.isFinite(ln.packaging||0)&&(ln.packaging||0)>=0)||!(Number.isFinite(ln.labelling||0)&&(ln.labelling||0)>=0)||!(Number.isFinite(ln.weightGrams||0)&&(ln.weightGrams||0)>=0))){UI.toast('Unit cost, packaging, labelling and weight cannot be negative','error');return;}  // Wave D (GPT-ABC-002): reject negative/non-finite line costs (not just header costs) — runs on the RAW (foreign) inputs, BEFORE conversion
+    // K4: convert header costs foreign → AUD (canonical), then re-check the CONVERTED AUD against the $-ceiling
+    // (a valid foreign amount × a large rate could exceed it). MONEY_MAX policed post-conversion, not on the rate.
+    const freight=Math.round(freightRaw*fxRate*100)/100, tax=Math.round(taxRaw*fxRate*100)/100, shipping=Math.round(shippingRaw*fxRate*100)/100;
+    if([freight,tax,shipping].some(v=>!Number.isFinite(v)||v>Validate.MONEY_MAX)){UI.toast('A converted header cost is too large — check the exchange rate; nothing was saved','error');return;}
+    // K4: convert each line foreign → AUD (per-line MONEY_MAX recheck) and keep the foreign originals for the
+    // invoice audit trail (Kunal: store per-line foreign amounts). _aud* drive all maths; _for* are stored too.
+    const convLines=[];
+    for(const ln of validLines){
+      const _audUnit=Math.round(ln.unitCost*fxRate*100)/100;
+      const _audPkg=Math.round((ln.packaging||0)*fxRate*100)/100;
+      const _audLab=Math.round((ln.labelling||0)*fxRate*100)/100;
+      if([_audUnit,_audPkg,_audLab].some(v=>!Number.isFinite(v)||v>Validate.MONEY_MAX)){UI.toast('A converted line cost is too large — check the exchange rate; nothing was saved','error');return;}
+      convLines.push({productId:ln.productId,qty:ln.qty,weightGrams:ln.weightGrams||0,_audUnit,_audPkg,_audLab,_forUnit:ln.unitCost,_forPkg:ln.packaging||0,_forLab:ln.labelling||0});
+    }
     const totalHeader=freight+tax+shipping;
-    const totalLineVal=validLines.reduce((a,ln)=>a+ln.unitCost*ln.qty,0);
+    const totalLineVal=convLines.reduce((a,ln)=>a+ln._audUnit*ln.qty,0);  // AUD
+    const allHaveWeightSave=convLines.every(ln=>(ln.weightGrams||0)>0);
+    const totalWeightSave=allHaveWeightSave?convLines.reduce((a,ln)=>(ln.weightGrams||0)*ln.qty+a,0):0;
+    // GPT K4-P1 (BLOCK): the per-component MONEY_MAX checks above cap each part individually, but the
+    // AGGREGATE landed cost (unit + packaging + labelling + allocated header share) can still exceed the
+    // ceiling and would persist into landedCostPerUnit / costHistory.costPrice / product.costPrice — which
+    // K2/K3 on-hand/cost-used/wastage reports read. Validate the FINAL per-unit landed cost for EVERY line
+    // BEFORE mutating anything (same allocation the write loop uses; reject the whole save on any overflow).
+    for(const ln of convLines){
+      const lineVal=ln._audUnit*ln.qty;
+      const lineWeight=(ln.weightGrams||0)*ln.qty;
+      const freightShip=freight+shipping;
+      const freightShipShare=allHaveWeightSave&&totalWeightSave>0?(lineWeight/totalWeightSave)*freightShip:(totalLineVal>0?(lineVal/totalLineVal)*freightShip:0);
+      const taxShare=totalLineVal>0?(lineVal/totalLineVal)*tax:0;
+      const landedPerUnit=(lineVal+ln._audPkg+ln._audLab+freightShipShare+taxShare)/ln.qty;
+      if(!Number.isFinite(landedPerUnit)||landedPerUnit>Validate.MONEY_MAX){UI.toast('A line’s total landed cost is too large — reduce the costs or check the exchange rate; nothing was saved','error');return;}
+    }
     const d=DB.get();
     if(!d.deliveries)d.deliveries=[];
     if(!d.costHistory)d.costHistory=[];
+    // K4: foreignTotal = the audit-trail sum in the ORIGINAL currency (lines + header), for invoice reconciliation.
+    const foreignLineTotal=convLines.reduce((a,ln)=>a+ln._forUnit*ln.qty+ln._forPkg+ln._forLab,0);
+    const foreignTotal=Math.round((foreignLineTotal+freightRaw+taxRaw+shippingRaw)*100)/100;
     const delivery={
       id:'del_'+Date.now(), supplier, date, invoiceNo,
-      headerCosts:{freight,tax,shipping},  // Wave G: shipping now stored; legacy records may carry a customs key instead (display handles both)
+      headerCosts:{freight,tax,shipping},  // AUD canonical (K4: converted from foreign at fxRate). Wave G: shipping now stored; legacy records may carry a customs key instead (display handles both)
+      currency:{code:curCode,rate:fxRate,foreignHeaderCosts:{freight:freightRaw,tax:taxRaw,shipping:shippingRaw},foreignTotal},  // K4 audit trail: AUD==='AUD'/rate 1 for domestic; foreign originals for invoice reconciliation
       lines:[],
       createdAt:new Date().toISOString(),
       createdBy:Auth.user()?.username||'director'
     };
-    const allHaveWeightSave=validLines.every(ln=>(ln.weightGrams||0)>0);
-    const totalWeightSave=allHaveWeightSave?validLines.reduce((a,ln)=>(ln.weightGrams||0)*ln.qty+a,0):0;
     const _dlvTxns=[];
-    validLines.forEach(ln=>{
-      const lineVal=ln.unitCost*ln.qty;
+    convLines.forEach(ln=>{
+      const lineVal=ln._audUnit*ln.qty;  // K4: all maths in AUD
       const lineWeight=(ln.weightGrams||0)*ln.qty;
       const freightShip=freight+shipping;
       const freightShipShare=allHaveWeightSave&&totalWeightSave>0?(lineWeight/totalWeightSave)*freightShip:(totalLineVal>0?(lineVal/totalLineVal)*freightShip:0);
       const taxShare=totalLineVal>0?(lineVal/totalLineVal)*tax:0;
       const headerShare=freightShipShare+taxShare;
-      const landedTotal=lineVal+(ln.packaging||0)+(ln.labelling||0)+headerShare;
+      const landedTotal=lineVal+ln._audPkg+ln._audLab+headerShare;
       const landedPerUnit=landedTotal/ln.qty;
       const prevCost=Stock.currentCost(ln.productId);
       const willUpdate=prevCost===null||landedPerUnit>prevCost;
       const appliedCost=willUpdate?landedPerUnit:(prevCost||landedPerUnit);
-      delivery.lines.push({productId:ln.productId,quantity:ln.qty,unitCost:ln.unitCost,weightGrams:ln.weightGrams||0,packaging:ln.packaging||0,labelling:ln.labelling||0,headerCostShare:Math.round(headerShare*100)/100,landedCostPerUnit:Math.round(landedPerUnit*100)/100,previousCost:prevCost,appliedCost:Math.round(appliedCost*100)/100,costUpdated:willUpdate,packagingUpdatedAt:null});
+      delivery.lines.push({productId:ln.productId,quantity:ln.qty,unitCost:ln._audUnit,weightGrams:ln.weightGrams||0,packaging:ln._audPkg,labelling:ln._audLab,foreignUnitCost:ln._forUnit,foreignPackaging:ln._forPkg,foreignLabelling:ln._forLab,headerCostShare:Math.round(headerShare*100)/100,landedCostPerUnit:Math.round(landedPerUnit*100)/100,previousCost:prevCost,appliedCost:Math.round(appliedCost*100)/100,costUpdated:willUpdate,packagingUpdatedAt:null});
       if(willUpdate){
         d.costHistory.push({id:'ch_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),productId:ln.productId,date,costPrice:Math.round(landedPerUnit*100)/100,notes:`Delivery: ${supplier}${invoiceNo?' #'+invoiceNo:''} — landed cost (incl. freight, shipping, tax, packaging, labelling)`,deliveryId:delivery.id});
         const prod=d.products.find(p=>p.id===ln.productId);
@@ -4582,16 +4684,16 @@ const Pages = {
     if(!del)return;
     UI.modal(`Edit Packaging & Labelling — ${del.supplier} (${del.date})`,`
       <div style="background:#eff6ff;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.82rem">
-        📝 Update packaging or labelling costs for any product line. The landed cost will be recalculated and the higher-wins rule re-applied.
+        📝 Update packaging or labelling costs for any product line. The landed cost will be recalculated and the higher-wins rule re-applied.${del.currency&&del.currency.code&&del.currency.code!=='AUD'?` <strong>Note:</strong> this was a ${UI.esc(del.currency.code)} delivery — enter these edits in <strong>AUD</strong> (the foreign exchange rate is not re-applied here).`:''}
       </div>
       ${del.lines.map((ln,i)=>{
         const p=d.products.find(pr=>pr.id===ln.productId);
         return `<div style="padding:10px 0;border-bottom:1px solid #f3f4f6">
           <div style="font-weight:600;margin-bottom:8px;font-size:.85rem">${UI.esc(p?.name||ln.productId)}</div>
           <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-            <div><label style="font-size:.72rem;color:#6b7280;font-weight:600;display:block">PACKAGING ($)</label>
+            <div><label style="font-size:.72rem;color:#6b7280;font-weight:600;display:block">PACKAGING (AUD)</label>
               <input type="number" class="form-input" id="epkg-${i}" value="${ln.packaging||0}" min="0" step="0.01" style="width:100px"></div>
-            <div><label style="font-size:.72rem;color:#6b7280;font-weight:600;display:block">LABELLING ($)</label>
+            <div><label style="font-size:.72rem;color:#6b7280;font-weight:600;display:block">LABELLING (AUD)</label>
               <input type="number" class="form-input" id="elab-${i}" value="${ln.labelling||0}" min="0" step="0.01" style="width:100px"></div>
             <div style="font-size:.78rem;color:#6b7280">Current landed: $${ln.landedCostPerUnit.toFixed(2)}/unit${ln.packagingUpdatedAt?`<br>Last edited: ${ln.packagingUpdatedAt.slice(0,10)}`:''}</div>
           </div>
@@ -4618,7 +4720,15 @@ const Pages = {
       const _p=UI.money(document.getElementById('epkg-'+i)?.value,{optional:true});
       const _l=UI.money(document.getElementById('elab-'+i)?.value,{optional:true});
       if(!_p.ok||!_l.ok){UI.toast('Line '+(i+1)+': packaging/labelling '+(_p.ok?_l.error:_p.error)+' — nothing was saved','error');return;}
-      _parsed.push({pkg:_p.value==null?0:_p.value,lab:_l.value==null?0:_l.value});
+      const _pkg=_p.value==null?0:_p.value, _lab=_l.value==null?0:_l.value;
+      // GPT K4-P1 (BLOCK): same aggregate-overflow class as _saveDelivery — the per-field money check caps
+      // packaging/labelling individually, but the recomputed landed cost (unitCost×qty + pkg + lab + header
+      // share) can exceed MONEY_MAX and would persist into landedCostPerUnit / costHistory / product.costPrice.
+      // Validate the prospective per-unit landed cost here, BEFORE the mutation loop touches anything.
+      const _ln=del.lines[i];
+      const _newLanded=(_ln.unitCost*_ln.quantity+_pkg+_lab+(_ln.headerCostShare||0))/_ln.quantity;
+      if(!Number.isFinite(_newLanded)||_newLanded>Validate.MONEY_MAX){UI.toast('Line '+(i+1)+': the recalculated landed cost is too large — nothing was saved','error');return;}
+      _parsed.push({pkg:_pkg,lab:_lab});
     }
     const updatedAt=new Date().toISOString();
     del.lines.forEach((ln,i)=>{
