@@ -601,7 +601,7 @@ const SEED = {
     { id:'booragoon',   name:'Booragoon',            type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
     { id:'bunbury',     name:'Bunbury',              type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
     { id:'cockburn',    name:'Cockburn',             type:'franchise', active:true,  isFranchise:true,  franchiseDiscount:25 },
-    { id:'cockburn_office', name:'Cockburn Franchise Office', type:'warehouse', active:true, isFranchise:true, isFranchiseOffice:true, franchiseDiscount:null },
+    { id:'cockburn_office', name:'Cockburn Franchise Office', type:'warehouse', active:true, isFranchise:true, isFranchiseOffice:true, franchiseDiscount:25 },
     { id:'claremont',   name:'Claremont',            type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
     { id:'karrinyup',   name:'Karrinyup',            type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
     { id:'whitford',    name:'Whitford City',        type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
@@ -3216,14 +3216,14 @@ const Pages = {
   },
   _exportWastageCSV() {
     const d=DB.get();
-    const headers=['Date','Store','Product','Category','Qty','Reason','Staff','Sell Price','Est. Value Lost'];
+    const headers=['Date','Store','Product','Category','Qty','Reason','Staff','Unit Cost (at time)','Cost of Loss'];
     const rows=Pages._wastageTxns(d)
       .sort((a,b)=>b.date.localeCompare(a.date)).map(t=>{
         const p=d.products.find(pr=>pr.id===t.productId);
         const s=d.stores.find(st=>st.id===t.storeId);
         const cat=d.categories.find(c=>c.id===p?.catId);
-        const val=(p?.price||0)*t.qty;
-        return[t.date,s?.name||t.storeId,p?.name||t.productId,cat?.name||'',t.qty,t.reason||t.stockTo||'',t.staffName||'',p?.price!=null?p.price.toFixed(2):'',val?val.toFixed(2):''];
+        const c=Stock.costAtDate(t.productId,t.date); const val=c==null?null:c*t.qty;  // Wave K3: wastage at cost-at-time, not retail
+        return[t.date,s?.name||t.storeId,p?.name||t.productId,cat?.name||'',t.qty,t.reason||t.stockTo||'',t.staffName||'',c!=null?c.toFixed(2):'(no cost)',val!=null?val.toFixed(2):'(no cost)'];
       });
     this._downloadCSV(`bob-wastage-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
   },
@@ -3526,6 +3526,9 @@ const Pages = {
   // reason", which mis-counted a transfer_out / sale that happened to carry such a reason. Used by the
   // report, the CSV export and the dashboard stat so they can never drift.
   _wastageTxns(d){ return (d.transactions||[]).filter(t=>Txn.isWastage(t)); },
+  // Wave K3: wastage valued at COST-at-time (not retail). Rows with no cost on file are counted (missing),
+  // never silently $0 (GPT K3). Shared by the report + dashboard so they can't drift.
+  _wastageCostTotal(txns){ let total=0,missing=0; (txns||[]).forEach(t=>{const c=Stock.costAtDate(t.productId,t.date); if(c==null)missing++; else total+=c*(Stock._safeQty(t.qty)||0);}); return {total,missing}; },
   // ── Wave K (Tier 4): shared money-report helpers (NO profit/P&L — just honest Gross Sales + Total Cost) ──
   // Gross Sales = real customer SALES minus RETURNS (a refund reverses the sale). Sales are always retail.
   // (Sale price is current product.price for now; sub-wave K4 stamps price-at-sale so history can't be rewritten.)
@@ -3578,11 +3581,12 @@ const Pages = {
     const storeFilter=document.getElementById('waste-store-filter')?.value||'';
     const filtered=storeFilter?allWaste.filter(t=>t.storeId===storeFilter):allWaste;
     const totalUnits=filtered.reduce((s,t)=>s+t.qty,0);
-    const totalVal=filtered.reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0);
+    // Wave K3: wastage valued at COST-at-time (what it cost us), not retail; missing-cost rows surfaced.
+    const _wc=Pages._wastageCostTotal(filtered); const totalVal=_wc.total; const wasteMissingCost=_wc.missing;
     const allStores=d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
     el.innerHTML=`
       <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-        <div><div class="page-title">Wastage & Damage Report</div><div class="page-sub">All OUT movements flagged as wastage or damaged</div></div>
+        <div><div class="page-title">Wastage & Damage Report</div><div class="page-sub">Stock flagged as wastage/damage — valued at cost (what it cost us), not retail</div></div>
         <button class="btn btn-secondary" onclick="Pages._exportWastageCSV()">⬇ Export CSV</button>
       </div>
       <div class="filter-row" style="margin-bottom:16px">
@@ -3594,16 +3598,16 @@ const Pages = {
       <div class="grid-4" style="margin-bottom:20px">
         <div class="stat-card"><div class="stat-val">${filtered.length}</div><div class="stat-lbl">Wastage Events</div></div>
         <div class="stat-card"><div class="stat-val">${totalUnits}</div><div class="stat-lbl">Total Units Lost</div></div>
-        <div class="stat-card"><div class="stat-val text-red">$${totalVal.toFixed(2)}</div><div class="stat-lbl">Est. Retail Value Lost</div></div>
+        <div class="stat-card"><div class="stat-val text-red">$${totalVal.toFixed(2)}</div><div class="stat-lbl">Cost of Stock Lost${wasteMissingCost?` <span style="color:#b45309">(⚠ ${wasteMissingCost} w/o cost)</span>`:''}</div></div>
         <div class="stat-card"><div class="stat-val">${[...new Set(filtered.map(t=>t.productId))].length}</div><div class="stat-lbl">Products Affected</div></div>
       </div>
       ${!filtered.length?'<div class="card card-body empty-state"><p>No wastage or damage movements found.</p></div>':
       `<div style="overflow-x:auto"><table class="data-table">
-        <thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Qty</th><th>Reason</th><th>Staff</th><th>Est. Value</th></tr></thead>
+        <thead><tr><th>Date</th><th>Store</th><th>Product</th><th>Qty</th><th>Reason</th><th>Staff</th><th>Cost (at time)</th></tr></thead>
         <tbody>${filtered.map(t=>{
           const p=d.products.find(pr=>pr.id===t.productId);
           const s=d.stores.find(st=>st.id===t.storeId);
-          const val=(p?.price||0)*t.qty;
+          const c=Stock.costAtDate(t.productId,t.date); const val=c==null?null:c*t.qty;
           return`<tr>
             <td style="white-space:nowrap">${t.date}</td>
             <td>${s?.name||t.storeId}</td>
@@ -3611,7 +3615,7 @@ const Pages = {
             <td><strong>${t.qty}</strong></td>
             <td><span class="badge badge-red" style="font-size:.75rem">${UI.esc(t.reason||t.stockTo||'—')}</span></td>
             <td style="color:#6b7280">${UI.esc(t.staffName||'—')}</td>
-            <td>$${val.toFixed(2)}</td>
+            <td>${val==null?'<span style="color:#b45309">— no cost</span>':'$'+val.toFixed(2)}</td>
           </tr>`;}).join('')}
         </tbody>
       </table></div>`}`;
@@ -3635,7 +3639,8 @@ const Pages = {
     const stockVal=visibleStores.reduce((s,st)=>s+Stock.totalValue(st.id),0)+(isHO?Stock.totalValue('head_office'):0);
     // Wastage this month (director)
     const monthStart=today.slice(0,7)+'-01';
-    const wastageThisMonth=isDir?Pages._wastageTxns(d).filter(t=>t.date>=monthStart).reduce((s,t)=>{const p=d.products.find(pr=>pr.id===t.productId);return s+(p?.price||0)*t.qty;},0):0;
+    const _wmWaste=isDir?Pages._wastageCostTotal(Pages._wastageTxns(d).filter(t=>t.date>=monthStart)):{total:0,missing:0};
+    const wastageThisMonth=_wmWaste.total;
     // Reorder count (director)
     const reorderCount=isDir?d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)).reduce((total,s)=>{
       return total+d.products.filter(p=>p.active).filter(p=>{const thr=Stock.threshold(p.id,s.id);return thr&&Stock.qty(p.id,s.id)<=thr.minQty;}).length;
@@ -3664,7 +3669,7 @@ const Pages = {
       </div>
       ${isDir?`<div class="grid-4" style="margin-bottom:24px">
         <div class="stat-card"><div class="stat-val">$${Stock.totalValue('head_office').toLocaleString('en-AU',{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div class="stat-lbl">HO Warehouse Value</div></div>
-        <div class="stat-card"><div class="stat-val text-red">$${wastageThisMonth.toFixed(2)}</div><div class="stat-lbl">Wastage This Month</div></div>
+        <div class="stat-card"><div class="stat-val text-red">$${wastageThisMonth.toFixed(2)}</div><div class="stat-lbl">Wastage This Month (at cost)${_wmWaste.missing?` <span style="color:#b45309">⚠ ${_wmWaste.missing} w/o cost</span>`:''}</div></div>
         <div class="stat-card"><div class="stat-val">${d.stores.filter(s=>s.active&&s.isFranchise&&!s.isFranchiseOffice).length}</div><div class="stat-lbl">Franchise Stores</div></div>
         <div class="stat-card"><div class="stat-val">${(d.deliveries||[]).length}</div><div class="stat-lbl">Deliveries Recorded</div></div>
       </div>`:''}
@@ -3997,19 +4002,54 @@ const Pages = {
   },
 
   // ── Franchise Invoice Report (Director only) ──
+  // ── Wave K3 (Tier 4 #10): franchise billing = what HO actually SUPPLIED to the franchise OFFICE ──
+  // Kunal (A): bill only stock WE supplied. A genuine HO supply row = stock that came FROM head office.
+  _isHOSupply(t){
+    // GPT K3: trust STRUCTURED source first; the free-text reason fallback is for LEGACY rows ONLY (no
+    // structured source) — else a "from Head Office" note on a Supplier row would be mis-billed as HO supply.
+    if (t.stockFromStoreId) return t.stockFromStoreId === 'head_office';
+    const fromBase = (t.stockFrom || '').split(' — ')[0];
+    if (fromBase) return fromBase === 'HO Warehouse';
+    return /head\s*office|from ho\b/i.test(t.reason || '');  // legacy/seed rows ("Received from Head Office", no stockFrom)
+  },
+  // Per franchise OFFICE: the incoming SUPPLY from HO in the period — category delivery/transfer only
+  // (excludes returns + adjustments by construction) AND _isHOSupply (excludes non-HO/self-sourced stock).
+  // Discount: per-product franchiseDiscount overrides the office's franchise default; 100% = complimentary.
+  // discMissing flags an office with no franchise discount set (billed at 0% but surfaced, never silent).
+  _franchiseInvoiceData(d, fromDate, toDate){
+    const offices = d.stores.filter(s=>s.active && s.isFranchise && s.isFranchiseOffice);
+    const deleted = d.deletedTransactions || [];
+    return offices.map(office=>{
+      const officeDisc = office.franchiseDiscount;
+      const discMissing = officeDisc == null;
+      const baseDisc = officeDisc || 0;
+      const lines = d.transactions.filter(t =>
+        t.storeId === office.id && Txn.isIn(t)
+        && (Txn.category(t) === 'delivery' || Txn.category(t) === 'transfer')
+        && Pages._isHOSupply(t)
+        && t.date >= fromDate && t.date <= toDate
+        && !deleted.some(x => x.id === t.id)
+      ).map(t=>{
+        const p = d.products.find(pr=>pr.id===t.productId);
+        const sell = p?.price || 0;
+        const prodDisc = (p && p.franchiseDiscount != null) ? p.franchiseDiscount : baseDisc;
+        const full = sell * t.qty, discAmt = full * (prodDisc/100);
+        return { product:p, date:t.date, qty:t.qty, sell, prodDisc, full, discAmt, owed: full - discAmt };
+      });
+      const totalFull = lines.reduce((s,l)=>s+l.full,0);
+      const totalDisc = lines.reduce((s,l)=>s+l.discAmt,0);
+      const totalOwed = lines.reduce((s,l)=>s+l.owed,0);
+      return { office, lines, totalFull, totalDisc, totalOwed, baseDisc, discMissing };
+    }).filter(sd => sd.lines.length > 0);
+  },
   _exportFICSV(){  // Wave D: real Pages method (not a stringified closure) so the button works on click
     const d=DB.get(); const dt=this._fiDates||{}; const fromDate=dt.fromDate, toDate=dt.toDate;
     if(!fromDate||!toDate){UI.toast('Open the report first','info');return;}
-    const franStores=d.stores.filter(s=>s.active&&s.isFranchise&&!s.isFranchiseOffice);
-    const headers=['Franchise Store','Product','Date','Qty','Sell Price','Store Discount %','Product Discount %','Disc Applied','Full Value','Discount Amt','Amount Owed'];
+    const headers=['Franchise Office','Product','Date','Qty','Sell Price','Franchise Discount %','Product Discount %','Disc Applied','Full Value','Discount Amt','Amount Owed'];
     const rows=[];
-    franStores.forEach(store=>{
-      const storeDisc=store.franchiseDiscount||0;
-      d.transactions.filter(t=>t.storeId===store.id&&Txn.isIn(t)&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).forEach(t=>{
-        const p=d.products.find(pr=>pr.id===t.productId);
-        const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
-        const full=sell*t.qty;const discAmt=full*(prodDisc/100);
-        rows.push([store.name,p?.name||t.productId,t.date,t.qty,sell.toFixed(2),storeDisc+'%',p?.franchiseDiscount!=null?p.franchiseDiscount+'%':'(store default)',prodDisc+'%',full.toFixed(2),discAmt.toFixed(2),(full-discAmt).toFixed(2)]);
+    Pages._franchiseInvoiceData(d, fromDate, toDate).forEach(sd=>{
+      sd.lines.forEach(l=>{
+        rows.push([sd.office.name, l.product?.name||'—', l.date, l.qty, l.sell.toFixed(2), (sd.discMissing?'0% (NOT SET)':sd.baseDisc+'%'), (l.product&&l.product.franchiseDiscount!=null)?l.product.franchiseDiscount+'%':'(office default)', l.prodDisc+'%', l.full.toFixed(2), l.discAmt.toFixed(2), l.owed.toFixed(2)]);
       });
     });
     this._downloadCSV(`bob-franchise-invoice-${fromDate}-to-${toDate}.csv`,headers,rows);
@@ -4021,27 +4061,14 @@ const Pages = {
     const defaultFrom=UI.dateLocal(new Date(Date.now()-30*86400000));
     const fromDate=document.getElementById('fi-from')?.value||defaultFrom;
     const toDate=document.getElementById('fi-to')?.value||today;
-    const franStores=d.stores.filter(s=>s.active&&s.isFranchise&&!s.isFranchiseOffice);
-    this._fiDates={fromDate,toDate};  // Wave D (Gemini dead-button): stash for the Pages method — a stringified closure in onclick loses franStores/fromDate/toDate
-    const storeData=franStores.map(store=>{
-      const storeDisc=store.franchiseDiscount||0;
-      const lines=d.transactions.filter(t=>t.storeId===store.id&&Txn.isIn(t)&&t.date>=fromDate&&t.date<=toDate&&!(d.deletedTransactions||[]).some(dt=>dt.id===t.id)).map(t=>{
-        const p=d.products.find(pr=>pr.id===t.productId);
-        const sell=p?.price||0;const prodDisc=p?.franchiseDiscount??storeDisc;
-        const full=sell*t.qty;const discAmt=full*(prodDisc/100);
-        return{product:p,date:t.date,qty:t.qty,sell,prodDisc,full,discAmt,owed:full-discAmt};
-      });
-      const totalFull=lines.reduce((s,l)=>s+l.full,0);
-      const totalDisc=lines.reduce((s,l)=>s+l.discAmt,0);
-      const totalOwed=lines.reduce((s,l)=>s+l.owed,0);
-      return{store,lines,totalFull,totalDisc,totalOwed,storeDisc};
-    }).filter(sd=>sd.lines.length>0);
+    this._fiDates={fromDate,toDate};  // Wave D: stash for the CSV export Pages method
+    const storeData=Pages._franchiseInvoiceData(d, fromDate, toDate);  // Wave K3 (#10): per franchise OFFICE, genuine HO supply only
     const grandFull=storeData.reduce((s,sd)=>s+sd.totalFull,0);
     const grandDisc=storeData.reduce((s,sd)=>s+sd.totalDisc,0);
     const grandOwed=storeData.reduce((s,sd)=>s+sd.totalOwed,0);
     el.innerHTML=`
       <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
-        <div><div class="page-title">Franchise Invoice Report</div><div class="page-sub">Stock received by franchise stores with discount applied</div></div>
+        <div><div class="page-title">Franchise Invoice Report</div><div class="page-sub">Stock supplied by Head Office to each franchise office — what we billed them (returns/credits handled separately)</div></div>
         <button class="btn btn-secondary" onclick="Pages._exportFICSV()">⬇ Export CSV</button>
       </div>
       <div class="filter-row" style="margin-bottom:20px;align-items:flex-end">
@@ -4049,7 +4076,7 @@ const Pages = {
         <div><label class="form-label">To</label><input type="date" class="form-input" id="fi-to" value="${toDate}" onchange="Pages.franchiseInvoice()" style="max-width:160px"></div>
       </div>
       <div class="grid-4" style="margin-bottom:20px">
-        <div class="stat-card"><div class="stat-val">${storeData.length}</div><div class="stat-lbl">Franchise Stores Active</div></div>
+        <div class="stat-card"><div class="stat-val">${storeData.length}</div><div class="stat-lbl">Franchise Offices Billed</div></div>
         <div class="stat-card"><div class="stat-val">$${grandFull.toFixed(2)}</div><div class="stat-lbl">Total Retail Value</div></div>
         <div class="stat-card"><div class="stat-val text-green">$${grandDisc.toFixed(2)}</div><div class="stat-lbl">Total Discount Given</div></div>
         <div class="stat-card"><div class="stat-val">$${grandOwed.toFixed(2)}</div><div class="stat-lbl">Total Amount Owed</div></div>
@@ -4058,7 +4085,7 @@ const Pages = {
       storeData.map(sd=>`
         <div class="card" style="margin-bottom:16px">
           <div style="padding:12px 16px;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <div style="font-weight:700;font-size:1rem">${sd.store.name} <span style="font-size:.75rem;color:#6b7280;font-weight:400">— Store discount: ${sd.storeDisc}%</span></div>
+            <div style="font-weight:700;font-size:1rem">${sd.office.name} <span style="font-size:.75rem;color:#6b7280;font-weight:400">— Franchise discount: ${sd.baseDisc}%${sd.discMissing?' ⚠ NOT SET — billed at 0%':''}</span></div>
             <div style="display:flex;gap:16px;font-size:.825rem">
               <span>Retail: <strong>$${sd.totalFull.toFixed(2)}</strong></span>
               <span style="color:#16a34a">Discount: <strong>-$${sd.totalDisc.toFixed(2)}</strong></span>
