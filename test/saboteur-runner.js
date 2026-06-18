@@ -17,8 +17,37 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync, execFile } = require('child_process');
+const { execFileSync, execFile, execSync } = require('child_process');
 const SMOKE = path.join(__dirname, 'smoke-test.js');
+
+// ── Orphan-process hygiene (2026-06 harness hardening) ───────────────────────────
+// Each mutation spawns a child `node` (smoke-test.js) which launches a headless Chromium.
+// A NORMAL finish closes the browser (smoke-test.js finally) + frees the child. But if THIS
+// runner is killed/interrupted/superseded, Windows does NOT kill those grandchildren — the
+// Chromium browsers orphan and burn CPU/RAM for hours (observed: stale node at 2.8h / 57 CPUs,
+// starving later sweeps). Fix: (1) track live children and kill their WHOLE process tree on any
+// exit/interrupt; (2) a single-instance lock so overlapping sweeps can't pile up orphans.
+const _liveChildren = new Set();   // ChildProcess handles currently in flight
+let _lockPath = null;              // single-instance lockfile (set in main)
+let _cleanedUp = false;
+function _killTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') execSync('taskkill /F /T /PID ' + pid, { stdio: 'ignore' });
+    else process.kill(-pid, 'SIGKILL');
+  } catch (e) { /* already gone */ }
+}
+function _cleanup() {
+  if (_cleanedUp) return; _cleanedUp = true;
+  for (const cp of _liveChildren) { try { _killTree(cp.pid); } catch (e) {} }
+  _liveChildren.clear();
+  if (_lockPath) { try { fs.rmSync(_lockPath, { force: true }); } catch (e) {} }
+}
+// Sync cleanup on normal exit; signal handlers also exit so 'exit' fires the same path.
+process.on('exit', _cleanup);
+['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'].forEach(sig => {
+  try { process.on(sig, () => { _cleanup(); process.exit(130); }); } catch (e) {}
+});
 
 const REPO = path.resolve(__dirname, '..');
 const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'phase2.js', 'sw.js'];
@@ -550,14 +579,29 @@ function runSmokeChild(dir) {  // SYNC — used once for the baseline
 }
 function runSmokeChildAsync(dir) {  // ASYNC — used by the parallel mutation pool
   return new Promise((resolve) => {
-    execFile('node', [SMOKE, dir], { encoding: 'utf8', timeout: SMOKE_TIMEOUT, maxBuffer: MAXBUF }, (err, stdout, stderr) => {
+    const cp = execFile('node', [SMOKE, dir], { encoding: 'utf8', timeout: SMOKE_TIMEOUT, maxBuffer: MAXBUF }, (err, stdout, stderr) => {
+      _liveChildren.delete(cp);  // done (or timed out) — node exits; on timeout also kill its Chromium tree so it can't orphan
+      if (err && err.killed) { try { _killTree(cp.pid); } catch (e) {} }
       resolve(parseSmoke((stdout || '') + '\n' + (stderr || '')));  // err on timeout/non-zero: partial stdout still parsed; a missing target id triggers the retry
     });
+    _liveChildren.add(cp);
   });
 }
 
 (async () => {
   console.log('=== BOB Stock saboteur mutation runner ===\n');
+
+  // Single-instance lock: refuse to start if another sweep is already running (overlapping sweeps were
+  // the source of orphaned Chromium/CPU starvation). Stale lock from a crashed run (dead PID) is reclaimed.
+  _lockPath = path.join(os.tmpdir(), 'bob-saboteur.lock');
+  if (fs.existsSync(_lockPath)) {
+    const otherPid = parseInt(fs.readFileSync(_lockPath, 'utf8'), 10);
+    let alive = false;
+    try { process.kill(otherPid, 0); alive = true; } catch (e) { alive = false; }  // signal 0 = liveness probe
+    if (alive) { console.error(`REFUSING TO START — another saboteur run is active (PID ${otherPid}). Wait for it or kill it; overlapping sweeps orphan browsers and starve CPU.`); process.exit(3); }
+    console.log(`[lock] reclaiming stale lock from dead PID ${otherPid}`);
+  }
+  try { fs.writeFileSync(_lockPath, String(process.pid)); } catch (e) {}
 
   // GPT P2: a RUN-UNIQUE temp root so two saboteur processes (overlapping/leftover runs) can NEVER
   // collide on temp dirs. Each mutation gets <RUN_ROOT>/<id>.
