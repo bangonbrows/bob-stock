@@ -69,16 +69,37 @@ const Transfer = {
     // T3-03: Add random suffix to prevent ID collision from concurrent devices
     const id = 'tr_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('');
     const now = new Date().toISOString();
+    // Wave L1 (GPT-14): reject invalid/blank/zero qty in the DOMAIN, not only the UI. The old
+    // `Math.max(0, UI.safeInt(i.qty)||0)` coerced a blank/garbage qty into a 0-unit transfer line +
+    // a 0-qty ledger row. Every line must be a positive whole number.
+    const _items = [];
+    for (const i of items) {
+      const _q = Validate.qty(i.qty);
+      if (!_q.ok || _q.value <= 0) return { ok:false, error:'Each transfer line needs a whole quantity of 1 or more (' + UI.productName(i.productId) + ')' };
+      _items.push({ productId: i.productId, qty: _q.value });
+    }
+    // Wave L1 (GPTa-22, Kunal: HARD-BLOCK): a non-draft transfer deducts origin stock NOW, so refuse to send
+    // more than the origin holds — the domain can't be driven negative (the screen already caps this; this
+    // closes the back-door for stale replica / console / regression). A draft is just a plan (no ledger rows
+    // yet), so the source check waits until submitDraft. Client-side guard only (P-13): not authoritative
+    // cross-device — the server idempotency in SERVER-SIDE-REQUIREMENTS is the real fix.
+    if (!opt.isDraft) {
+      for (const i of _items) {
+        const _avail = Stock.qty(i.productId, fromStoreId);
+        if (i.qty > _avail) return { ok:false, error:`Cannot send ${i.qty} × ${UI.productName(i.productId)} — ${UI.storeName(fromStoreId)} only has ${_avail} on record. Sync or run a stock-take, then try again.` };
+      }
+    }
     const transfer = {
       id, date: now, createdAt: now, fromStoreId, toStoreId,
       createdBy: Auth.actor(),
       createdByName: Auth.user()?.name || Auth.user()?.username || 'unknown',
       status: opt.isDraft ? 'draft' : 'in_transit',
+      type: opt.type || (opt.returnReason ? 'return' : 'standard'),  // Wave L1 (GPTa-27): tag returns so the hub stops rendering every transfer as "Standard"
       returnReason: opt.returnReason || null,
       returnNote: opt.returnNote || '',
-      items: items.map(i => ({
-        productId: i.productId, sentQty: Math.max(0, UI.safeInt(i.qty) || 0), receivedQty: null,
-        status: opt.isDraft ? 'pending' : 'pending',
+      items: _items.map(i => ({
+        productId: i.productId, sentQty: i.qty, receivedQty: null,
+        status: 'pending',
         flagNote: '', resolvedBy: null, resolvedAction: null
       })),
       receivedBy: null, receivedDate: null, completedDate: null,
@@ -148,6 +169,18 @@ const Transfer = {
         if (draftQtys[i.productId] !== undefined) i.sentQty = Math.max(0, UI.safeInt(draftQtys[i.productId]) || 0);
       });
     }
+    // Wave L1 (GPT-14): every line must be a positive whole number before we write transfer_out ledger rows.
+    // (GPTa-22, HARD-BLOCK): and never send more than the origin holds. Restore the snapshot on any reject —
+    // t is the live cached object and we've already mutated it (filtered items / applied draftQtys).
+    for (const i of t.items) {
+      const _q = Validate.qty(i.sentQty);
+      if (!_q.ok || _q.value <= 0) { Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot); return { ok:false, error:'Each line needs a whole quantity of 1 or more before submitting (' + UI.productName(i.productId) + ')' }; }
+      i.sentQty = _q.value;
+    }
+    for (const i of t.items) {
+      const _avail = Stock.qty(i.productId, t.fromStoreId);
+      if (i.sentQty > _avail) { Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot); return { ok:false, error:`Cannot send ${i.sentQty} × ${UI.productName(i.productId)} — ${UI.storeName(t.fromStoreId)} only has ${_avail} on record. Sync or run a stock-take, then try again.` }; }
+    }
     t.items.forEach(i => { i.status = 'pending'; });
     t.status = 'in_transit';
     t.date = new Date().toISOString();
@@ -188,16 +221,20 @@ const Transfer = {
       const _already = (_d.transactions || []).some(x => x && x.transferId === transferId && x.type === 'transfer_in');
       if (_already) return { ok:false, error:'This transfer was already received (possibly on another device). Sync and reopen it.' };
     }
-    // Wave H (H5 / GPTc-4): reject OVER-receipt at the boundary, before any mutation. Receiving
-    // MORE than was sent silently lost the excess — receivedQty stored as e.g. 12 but every credit
-    // path clamps to sentQty (10), so the extra 2 units vanished from the ledger. A genuine surplus
-    // is a stock adjustment, not a transfer receipt — reject and tell the user.
+    // Wave L1 (GPT L1-P2 + Wave H GPTc-4): VALIDATE every received qty up front, BEFORE any mutation —
+    // per Validate.qty's no-truncation contract: reject fractions/negative/garbage; whole non-negative
+    // (incl 0) allowed. Truncating instead of validating silently COMPLETED a transfer on bad input
+    // (e.g. '2.9' -> 2 == sent). Then reject OVER-receipt (a genuine surplus is a stock adjustment, not a
+    // receipt). Build a validated qty map keyed by productId for the credit loop below.
+    const _rq = {};
     for (const _it of t.items) {
       const _ri = receivedItems.find(r => r.productId === _it.productId);
-      const _rq = _ri ? (Math.trunc(Number(_ri.receivedQty)) || 0) : 0;
-      if (_rq > _it.sentQty) {
-        return { ok:false, error:`Received qty (${_rq}) exceeds sent (${_it.sentQty}) for ${UI.productName(_it.productId)}. Record an over-receipt as a stock adjustment, not a transfer receipt.` };
+      const _qv = Validate.qty(_ri ? _ri.receivedQty : 0);
+      if (!_qv.ok) return { ok:false, error:`Received quantity for ${UI.productName(_it.productId)} must be a whole number (0 or more) — nothing was saved` };
+      if (_qv.value > _it.sentQty) {
+        return { ok:false, error:`Received qty (${_qv.value}) exceeds sent (${_it.sentQty}) for ${UI.productName(_it.productId)}. Record an over-receipt as a stock adjustment, not a transfer receipt.` };
       }
+      _rq[_it.productId] = _qv.value;
     }
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
@@ -207,8 +244,9 @@ const Transfer = {
     // Tier 2 Fix #12: Collect all transactions, then write atomically
     const batchTxns = [];
     t.items.forEach(item => {
-      const ri = receivedItems.find(r => r.productId === item.productId);
-      const rQty = ri ? ri.receivedQty : 0;
+      // Wave L1 (GPT L1-P2 / GPTa-23): use the up-front VALIDATED qty (whole, non-negative, <= sentQty) —
+      // the raw receivedQty (string/fraction/negative) is no longer trusted; invalid input was rejected above.
+      const rQty = _rq[item.productId];
       item.receivedQty = rQty;
       if (rQty === item.sentQty) {
         item.status = 'accepted';
@@ -362,6 +400,16 @@ const Transfer = {
     const t = this.get(transferId);
     if (!t || (t.status !== 'in_transit' && t.status !== 'draft')) return { ok:false, error:'Cannot cancel this transfer' };
     if (!(Auth.isHO() || Auth.is('director'))) { const _mine=Auth.storeIds()||[]; if(!_mine.includes(t.fromStoreId)||!_mine.includes(t.toStoreId)) return { ok:false, error:'You can only cancel transfers between stores you manage' }; }  // D-018 store-scope
+    // Wave L1 (GPTa-21, interim client guard; full fix = server idempotency by (TransferId,Type)): if ANY
+    // transfer_in already exists for this transfer, another device RECEIVED it — cancelling would reverse
+    // stock to the origin that was legitimately credited at the destination (phantom stock on both sides).
+    // Refuse and tell the user to sync. Same class as receive's double-receive guard (F2-CRIT02).
+    if (t.status === 'in_transit') {
+      const _d = DB.get();
+      if ((_d.transactions || []).some(x => x && x.transferId === transferId && x.type === 'transfer_in')) {
+        return { ok:false, error:'This transfer was already received (possibly on another device) — it can no longer be cancelled. Sync and reopen it.' };
+      }
+    }
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
     // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
