@@ -704,6 +704,15 @@ const DB = {
   // surface a failure to the user when it is `false`.
   // Additive: the legacy methods above are untouched; nothing calls these yet.
 
+  // Wave L2 (#8 / GPTa-29): the durable ATOMIC ledger writers (transfer/delivery) + the bulk add never
+  // scheduled a sync, so transfer/delivery stock movements sat UNSYNCED until some unrelated commit fired
+  // ("stranded stock"). Schedule a push after a SUCCESSFUL durable ledger write — same as commit()/
+  // commitDurable(). Wrapped in try/catch so a sync-scheduling error can NEVER make an already-successful
+  // local durable write look failed (the disk write has already committed by the time we get here).
+  _afterLedgerWrite() {
+    try { if (typeof Sync !== 'undefined' && Sync.scheduleSync) Sync.scheduleSync(); } catch (e) {}
+  },
+
   async addTransactionDurable(txn) {
     if (!this._cache) return false;
     if (txn && this._cache.transactions.some(t => t.id === txn.id)) return true; // MFL-023 dedupe
@@ -720,7 +729,7 @@ const DB = {
     return ok;
   },
 
-  async addTransactionsDurable(txns) {
+  async addTransactionsDurable(txns, opts) {
     if (!this._cache || !txns || txns.length === 0) return false;
     const _seen = new Set(this._cache.transactions.map(t => t.id));
     txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // MFL-023/DA-1: dedupe vs cache AND within the batch (running set)
@@ -735,6 +744,10 @@ const DB = {
       this._cache.transactions = this._cache.transactions.filter(t => !added.has(t));
       if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
     }
+    // Wave L2 (#8): bulk ledger add triggers a push. Wave L2r1 (GPT P3): EXCEPT for a remote pull-merge
+    // (opts.remote) — those rows arrive already _synced:true, so scheduling a push is redundant churn
+    // (pull() already commits/notifies). Local bulk adds still schedule.
+    if (ok && !(opts && opts.remote)) this._afterLedgerWrite();
     return ok;
   },
 
@@ -847,6 +860,7 @@ const DB = {
         Object.assign(transfer, transferSnapshot);
       }
     }
+    if (ok) this._afterLedgerWrite();  // Wave L2 (#8): transfer ledger write now triggers a push (was stranded)
     return ok;
   },
 
@@ -880,6 +894,7 @@ const DB = {
       }
       try { await this.refresh(); } catch(e) {}  // G-F1: revert ref-table cache mutations too (symmetric rollback)
     }
+    if (ok) this._afterLedgerWrite();  // Wave L2 (#8): delivery ledger write now triggers a push (was stranded)
     return ok;
   },
 

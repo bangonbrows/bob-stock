@@ -140,13 +140,17 @@ const Transfer = {
     return this.create('head_office', storeId, items, { isDraft:true, notes:'Auto-generated from stock take' });
   },
 
-  confirmDraftItem(transferId, productId) {
+  async confirmDraftItem(transferId, productId) {
     const t = this.get(transferId);
     if (!t || t.status !== 'draft') return { ok:false, error:'Invalid transfer or not a draft' };
     const item = t.items.find(i => i.productId === productId);
     if (!item) return { ok:false, error:'Item not found' };
+    // Wave L2 (#2 / GPT-12): was fire-and-forget (DB.updateTransfer + DB.commit, returned ok before disk
+    // confirmed). Now durable: snapshot, toggle, await the durable write, restore + report on failure.
+    const snap = JSON.parse(JSON.stringify(t));
     item.status = item.status === 'confirmed' ? 'pending' : 'confirmed';
-    DB.updateTransfer(t); DB.commit();
+    const ok = await DB.updateTransferDurable(t, snap);
+    if (!ok) { UI.fatalSaveError('Draft change could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     return { ok:true };
   },
 
@@ -1528,13 +1532,12 @@ window.TransferUI = {
   submitDraft(transferId) {
     const t = Transfer.get(transferId);
     if (!t || t.status !== 'draft') return;
-    // Confirm all items first via Transfer module
+    // Wave L2 (#2, GPT/Gemini convergent): mark confirmed items IN MEMORY only — Transfer.submitDraft()
+    // below persists the whole transfer in ONE atomic durable write, so calling the now-async
+    // confirmDraftItem() per item here would fire N concurrent durable writes on the same transfer row,
+    // racing that atomic write. (T2-06: sentQty is still NOT mutated here — draftQtys flow into the atomic boundary.)
     t.items.forEach(i => {
-      if (_txState.draftConfirmed[i.productId] && i.status !== 'confirmed') {
-        Transfer.confirmDraftItem(transferId, i.productId);
-      }
-      // T2-06: Do NOT mutate sentQty here — pass draftQtys to Transfer.submitDraft()
-      // so the mutation happens inside the atomic write boundary
+      if (_txState.draftConfirmed[i.productId] && i.status !== 'confirmed') i.status = 'confirmed';
     });
     const allConfirmed = t.items.every(i => i.status === 'confirmed');
     if (!allConfirmed) { UI.toast('Confirm all items first', 'warning'); return; }

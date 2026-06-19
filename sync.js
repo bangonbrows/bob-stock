@@ -38,6 +38,8 @@ const Sync = {
   _localWriteDebounce: null,  // MFL-018: debounce leader refresh on follower writes
   _configUrl: null,
   _syncLock: false,  // Unified lock — serialises push and pull operations
+  _syncing: false,    // Wave L2 (#3): a manual syncNow cycle (push→pull) is in flight on THIS (leader) tab
+  _syncQueued: false, // Wave L2 (#3): a syncNow arrived mid-cycle → run exactly one more cycle after
   _retryCount: 0,
   _maxRetries: 3,
   _debounceTimer: null,
@@ -295,6 +297,12 @@ const Sync = {
   // SA-D-F1/G-F4: localStorage can throw (Safari Private, quota) — never let a pending-flag op crash a save.
   _setPending(on) { try { if (on) localStorage.setItem('bob_sync_pending', 'true'); else localStorage.removeItem('bob_sync_pending'); } catch (e) {} },
   _getPending() { try { return localStorage.getItem('bob_sync_pending') === 'true'; } catch (e) { return false; } },
+  // Wave L2 (#5, GPT+Gemini P0): the nav "Stock last synced" indicator's DISPLAY timestamp. DELIBERATELY
+  // SEPARATE from bob_last_sync — that key is the PULL CURSOR (loaded into _lastSyncAt, the "fetch server
+  // rows newer than this" watermark); stamping it on push with the device clock would skip server rows and
+  // cause silent data loss. This key is display-only and never read back as a cursor. Stamped on any sync
+  // success (push or pull); shared across tabs via localStorage so followers' indicators update too.
+  _stampUiSync() { try { localStorage.setItem('bob_ui_last_sync', String(Date.now())); } catch (e) {} },
 
   saveConfig(pushUrl, pullUrl, configUrl) {
     const config = { pushUrl, pullUrl };
@@ -441,6 +449,15 @@ const Sync = {
             this._localWriteDebounce = setTimeout(() => {
               DB.refresh().then(() => this.scheduleSync());
             }, 400);
+          }
+          break;
+
+        case 'request-sync':
+          // Wave L2 (#3): a follower tapped "Sync now" / reconnected — ONLY the leader runs the actual
+          // push+pull cycle (single-syncer invariant). Refresh first so the leader pushes the follower's
+          // latest durable writes, then run the queued cycle.
+          if (this._isLeader && typeof DB !== 'undefined' && DB.refresh) {
+            DB.refresh().then(() => this._runSyncCycle());
           }
           break;
       }
@@ -717,7 +734,7 @@ const Sync = {
 
       if (unsynced.length === 0) {
         console.log('[Sync] No unsynced transactions to push.');
-        this._showStatus('Synced ✓', 'success');
+        this._showStatus('Synced ✓', 'success'); this._stampUiSync();
         Sync._setPending(false);
         return;
       }
@@ -809,7 +826,7 @@ const Sync = {
           this._retryCount = 0;
           this._markRetryCount = 0;
 
-          this._showStatus('Synced ✓', 'success');
+          this._showStatus('Synced ✓', 'success'); this._stampUiSync();
           this._notifyFollowers();
           console.log(`[Sync] Push complete: ${batchSize} transactions synced.`, result);
         }
@@ -843,6 +860,7 @@ const Sync = {
     } finally {
       if (!this._skipLockRelease) {
         this._syncLock = false;
+        this._drainSyncQueue();  // Wave L2r1 (GPT P2): run a manual/reconnect cycle that collided with this raw push
       }
       this._skipLockRelease = false;
     }
@@ -1021,7 +1039,7 @@ const Sync = {
       // aren't durably persisted, or those stock movements are lost forever.
       let mergeDurable = true;
       if (newTransactions.length > 0) {
-        mergeDurable = await DB.addTransactionsDurable(newTransactions);
+        mergeDurable = await DB.addTransactionsDurable(newTransactions, { remote: true });  // L2r1 (GPT P3): remote rows already _synced — don't schedule a redundant push
         if (mergeDurable) {
           console.log(`[Sync] Merged ${newTransactions.length} new transactions from remote.`);
           changed = true;
@@ -1084,13 +1102,14 @@ const Sync = {
       localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
 
       // Clear any stale-data warning since sync succeeded
-      this._showStatus('Synced \u2713', 'success');
+      this._showStatus('Synced \u2713', 'success'); this._stampUiSync();
 
     } catch (err) {
       console.error('[Sync] Pull error:', err);
       this._showStatus('Data may be stale \u2014 last sync failed', 'warning', 0);
     } finally {
       this._syncLock = false;
+      this._drainSyncQueue();  // Wave L2r1 (GPT P2): run a manual/reconnect cycle that collided with this raw pull
     }
   },
 
@@ -1149,6 +1168,49 @@ const Sync = {
     this._debounceTimer = setTimeout(async () => {
       await this.push();
     }, this.DEBOUNCE_MS);
+  },
+
+  // Wave L2 (#3, GPT+Gemini convergent design): the entry point for the manual "Sync now" button AND
+  // auto-sync-on-reconnect. The single-syncer invariant MUST hold — _syncLock is PER-TAB (in-memory), so
+  // a follower must NOT run push()/pull() directly while the leader polls (duplicate pushes, concurrent
+  // pulls, cursor/status regression). The LEADER owns the cycle; a follower DELEGATES over BroadcastChannel.
+  // If no live leader responds, this tab claims leadership (existing election path) and runs it itself.
+  async syncNow() {
+    if (this._isLeader) return this._runSyncCycle();
+    // Follower: ask the leader to run the cycle; it broadcasts 'db-updated' when done → our cache refreshes.
+    if (this._bc) { try { this._bc.postMessage({ type: 'request-sync', tabId: this._tabId }); } catch (e) {} }
+    const leaderAlive = this._lastLeaderPing > 0 && (Date.now() - this._lastLeaderPing) < this.LEADER_TIMEOUT;
+    if (!leaderAlive) { this._becomeLeader(); return this._runSyncCycle(); }  // no leader → promote + run
+    this._showStatus('Syncing…', 'info', 2500);  // transient; the leader surfaces the real progress
+    return { ok: true, delegated: true };
+  },
+  // Leader-only: serialise the manual push→pull cycle ("send my work, then catch up"). If one is already
+  // running, queue EXACTLY ONE follow-up rather than overlapping (or dropping a genuinely newer request).
+  // Wave L2r1 (GPT P2): ALSO queue when _syncLock is held by a RAW push()/pull() (a background poll or the
+  // scheduleSync debounce) — those hold _syncLock WITHOUT setting _syncing, so without this guard the cycle's
+  // own push/pull would both silently skip and the manual/reconnect sync would no-op while reporting success.
+  async _runSyncCycle() {
+    if (this._syncing || this._syncLock) { this._syncQueued = true; return { ok: true, queued: true }; }
+    this._syncing = true;
+    try {
+      do {
+        this._syncQueued = false;
+        await this.push();   // local → server first
+        await this.pull();   // then server → local
+      } while (this._syncQueued);
+    } finally { this._syncing = false; }
+    return { ok: true };
+  },
+  // Wave L2r1 (GPT P2 fix): a raw push()/pull() (the background poll or the scheduleSync debounce) holds
+  // _syncLock WITHOUT setting _syncing. A manual "Sync now" / reconnect cycle that arrives in that window
+  // queues itself (see the _runSyncCycle guard) instead of silently no-opping; this runs that ONE queued
+  // cycle the moment the raw op releases the lock. Guarded on !_syncing so an in-flight cycle's own
+  // push/pull releases don't re-enter (the do-while already drains requests that arrive mid-cycle).
+  _drainSyncQueue() {
+    if (this._syncQueued && !this._syncing) {
+      this._syncQueued = false;
+      this._runSyncCycle();
+    }
   },
 
   // Wave H (H3 / GPTa-31, GPTa-32): a bounded proactive retry for the push paths that leave the
