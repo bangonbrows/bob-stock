@@ -45,7 +45,7 @@ const Transfer = {
   _canResolve() { return Auth.is('director'); },  // D-018: resolve (write-off) = director only
   _canSetThresholds() { return Auth.is('director') || Auth.is('head_office'); },
   _canCancel() { return Auth.is('director'); },  // D-044: cancel = Director ONLY (tightened from the D-018 franchisee&above set)
-  _canViewHistory() { return Auth.isAtLeast('store_manager') && !Auth.is('staff'); },
+  _canViewHistory() { return Auth.can('viewTransferHistory'); },  // L3 #10: central cap (was isAtLeast('store_manager') which wrongly denied franchisee — ranks below store_manager)
 
   _txn(type, productId, qty, storeId, transferId, reason) {
     const u = Auth.user();
@@ -388,10 +388,8 @@ const Transfer = {
       if (filters.storeId) list = list.filter(t => t.fromStoreId === filters.storeId || t.toStoreId === filters.storeId);
     }
     // Store-level users only see their store's transfers
-    if (Auth.isStoreLevel() && !Auth.isMgmt()) {
-      const sid = Auth.storeId();
-      list = list.filter(t => t.fromStoreId === sid || t.toStoreId === sid);
-    }
+    // L3 #6: multi-store users (franchisee) see ALL their stores' transfers, not just storeIds[0]
+    if (Auth.isStoreLevel() && !Auth.isMgmt()) { const mine = Auth.storeIds() || []; list = list.filter(t => mine.includes(t.fromStoreId) || mine.includes(t.toStoreId)); }
     return list.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
@@ -843,8 +841,13 @@ window.renderTransfersHub = function() {
     return myStores.includes(t.fromStoreId) || myStores.includes(t.toStoreId);
   });
 
+  // L3 #10: staff may use the hub to RECEIVE in-transit transfers but must NOT browse completed history.
+  const canViewHistory = Auth.can('viewTransferHistory');
+  if (!canViewHistory) visible = visible.filter(t => t.status !== 'completed');
+
   // Status filter
-  const f = _txState.hubFilter;
+  let f = _txState.hubFilter;
+  if (f === 'completed' && !canViewHistory) f = 'all';
   const statusFilters = {
     all: () => true,
     in_transit: t => t.status === 'in_transit',
@@ -870,7 +873,7 @@ window.renderTransfersHub = function() {
     { key: 'in_transit', label: 'In Transit' },
     { key: 'needs_receiving', label: 'Needs Receiving' },
     { key: 'flagged', label: 'Flagged' },
-    { key: 'completed', label: 'Completed' },
+    ...(canViewHistory ? [{ key: 'completed', label: 'Completed' }] : []),  // L3 #10: hide completed-history tab from staff
     { key: 'drafts', label: 'Drafts' }
   ];
 
@@ -942,10 +945,14 @@ window.renderCreateTransfer = function() {
   const totalSelected = Object.values(_txState.createItems).filter(q => q > 0).length;
   const totalUnits = Object.values(_txState.createItems).reduce((s, q) => s + (q > 0 ? q : 0), 0);
 
-  const storeOpts = stores.map(s =>
+  // L3 #6b: scope From/To options to stores the user owns (store-level non-mgmt = franchisee/TM); HO/director see all.
+  // Mirrors the domain rule (Transfer.create phase2.js:66 requires both stores in the user's storeIds) — closes the
+  // visibility gap so the screen never offers a store the submit would reject.
+  const _visibleStores = Auth.isHO() ? stores : stores.filter(s => ((Auth.storeIds && Auth.storeIds()) || []).includes(s.id));
+  const storeOpts = _visibleStores.map(s =>
     `<option value="${s.id}"${s.id === from ? ' selected' : ''}>${UI.storeName(s.id)}</option>`
   ).join('');
-  const storeOptsTo = stores.map(s =>
+  const storeOptsTo = _visibleStores.map(s =>
     `<option value="${s.id}"${s.id === to ? ' selected' : ''}>${UI.storeName(s.id)}</option>`
   ).join('');
 
@@ -1414,6 +1421,9 @@ window.TransferUI = {
     const data = DB.get();
     const t = (data.transfers || []).find(x => x.id === transferId);
     if (!t) return;
+    // L3 #10: a completed transfer is "history" — block users without the viewTransferHistory cap (staff)
+    // even via a direct openDetail call. Receiving/resolving in-progress transfers is unaffected.
+    if (t.status === 'completed' && !Transfer._canViewHistory()) { if (typeof UI !== 'undefined' && UI.toast) UI.toast("You don't have access to transfer history", 'error'); return; }
 
     if (t.status === 'draft') {
       _txState.draftConfirmed = {};

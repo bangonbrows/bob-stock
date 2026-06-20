@@ -931,7 +931,8 @@ function generateDemoTransactions() {
     manageUsers:        ['director'],
     editRefData:        ['head_office','director'],                                            // products, categories, product types, stores, thresholds, optimum levels
     editSuppliers:      ['director'],
-    viewReports:        ['director']                                                           // profit / margin / cost-bearing reports
+    viewReports:        ['director'],                                                          // profit / margin / cost-bearing reports
+    viewTransferHistory:['store_manager','franchisee','territory_manager','head_office','director'] // everyone above staff (L3 #10; staff = shared store computer, excluded)
   },
   can(cap) {
     const set = this._caps[cap];
@@ -1128,6 +1129,9 @@ const Stock = {
   qty(productId, storeId) {
     return (this._qtyCache[storeId] && this._qtyCache[storeId][productId]) || 0;
   },
+  // L3 #11r1: DISPLAY-floored on-hand — never negative. Use at every staff/non-director render AND at value/total
+  // sums (Option A). Stock.qty() stays RAW for reorder, sell-through, negativeStock + the director-only alert.
+  dispQty(productId, storeId) { return Math.max(0, this.qty(productId, storeId)); },
   storeStock(storeId) {
     return DB.get().products.filter(p=>p.active).map(p=>({ product:p, qty:this.qty(p.id, storeId) }));
   },
@@ -1160,17 +1164,31 @@ const Stock = {
         const thr = this.threshold(product.id, store.id);
         if (!thr) return;
         const qty = this.qty(product.id, store.id);
-        if (qty<=thr.minQty) results.push({store,product,qty,minQty:thr.minQty,leadDays:thr.leadDays,critical:qty===0});
+        if (qty<=thr.minQty) results.push({store,product,qty,minQty:thr.minQty,leadDays:thr.leadDays,critical:qty<=0});  // L3 #11r1: negative on-hand is OUT (critical), not amber LOW
       });
     });
     return results.sort((a,b)=>a.qty-b.qty);
+  },
+  // L3 #11: enumerate RAW negative on-hand (a summed counting glitch — OUTs exceeded INs). Reads the raw
+  // cache (qty() is never floored); used ONLY for the DIRECTOR negative-stock alert. Never surfaced to staff.
+  negativeStock(storeIds) {
+    const d = DB.get();
+    const results = [];
+    const stores = storeIds ? d.stores.filter(s=>s.active && storeIds.includes(s.id)) : d.stores.filter(s=>s.active);
+    stores.forEach(store=>{
+      d.products.filter(p=>p.active).forEach(product=>{
+        const qty = this.qty(product.id, store.id);
+        if (qty<0) results.push({store,product,qty});
+      });
+    });
+    return results.sort((a,b)=>a.qty-b.qty);  // most-negative first
   },
   totalValue(storeId) {
     const d = DB.get();
     let total = 0;
     d.stores.filter(s=>s.active&&(!storeId||s.id===storeId)).forEach(store=>{
       d.products.filter(p=>p.active&&p.price).forEach(product=>{
-        total += this.qty(product.id,store.id)*product.price;
+        total += Math.max(0,this.qty(product.id,store.id))*product.price;  // L3 #11 Option A: a negative on-hand (counting glitch) contributes $0, never negative dollars
       });
     });
     return total;
@@ -1338,10 +1356,14 @@ _toastQueue:[],
   storeName(id)   { return UI.esc(DB.get().stores.find(s=>s.id===id)?.name||id); },  // SA-B-F1
   productName(id) { return UI.esc(DB.get().products.find(p=>p.id===id)?.name||id); },  // SA-B-F1
   stockBadge(qty,minQty) {
-    if (minQty==null) return `<span class="badge badge-gray">${qty}</span>`;
-    if (qty===0)      return `<span class="badge badge-red">0 — OUT</span>`;
-    if (qty<=minQty)  return `<span class="badge badge-amber">${qty} — LOW</span>`;
-    return `<span class="badge badge-green">${qty}</span>`;
+    // L3 #11: NEVER display a negative on-hand (a summed counting glitch) — floor to 0 and show red "OUT"
+    // (was: a negative fell into the amber "LOW" branch). Stock.qty() stays raw; the real negative is
+    // surfaced to the DIRECTOR via the dedicated negative-stock alert (banner + drill-down), not here.
+    const q = (typeof qty==='number' && qty<0) ? 0 : qty;
+    if (minQty==null) return `<span class="badge badge-gray">${q}</span>`;
+    if (q===0)        return `<span class="badge badge-red">0 — OUT</span>`;
+    if (q<=minQty)    return `<span class="badge badge-amber">${q} — LOW</span>`;
+    return `<span class="badge badge-green">${q}</span>`;
   },
   destroyChart(id) { if(this._charts[id]){this._charts[id].destroy();delete this._charts[id];} },
   makeChart(id,cfg) { this.destroyChart(id); const ctx=document.getElementById(id); if(!ctx)return; const wrap=ctx.parentElement; let spin=wrap?.querySelector('.chart-spinner'); if(!spin){spin=document.createElement('div');spin.className='chart-spinner';spin.style.cssText='text-align:center;padding:20px;color:#9ca3af;font-size:.8rem';spin.textContent='Loading chart…';wrap?.insertBefore(spin,ctx);} try{this._charts[id]=new Chart(ctx,cfg);}catch(e){console.error('[Chart]',e);if(spin)spin.textContent='Chart failed to load';return;}finally{if(spin)spin.remove();} },
@@ -1538,7 +1560,7 @@ const Pages = {
       this._filterProducts();
     } else if (step===3) {
       const prod=DB.get().products.find(p=>p.id===this._logData.productId);
-      const curQty=Stock.qty(this._logData.productId,this._getLogStoreId());
+      const curQty=Math.max(0,Stock.qty(this._logData.productId,this._getLogStoreId()));  // L3 #11: never show staff a negative on-hand (display floor; Stock.qty stays raw)
       const fromOpts=FROM_OPTIONS[this._logData.type]||[];
       const toOpts=TO_OPTIONS[this._logData.type]||[];
       const isReturn=this._logData.type==='return_in';
@@ -1885,8 +1907,22 @@ const Pages = {
     },'Undo');
   },
 
+  // L3 #6c: storeStock/storeHistory assume exactly ONE store (Auth.storeId()=storeIds[0]); a multi-store
+  // user (franchisee) would see only their first store here. Block and point them to the multi-store views
+  // (the nav already hides these for them — this guards direct/stale navigation). Kunal: block, no picker.
+  _requiresSingleStore(elId) {
+    if ((Auth.storeIds() || []).length === 1) return false;
+    const el = document.getElementById(elId);
+    if (el) el.innerHTML = `<div class="page-header"><div class="page-title">Multiple stores</div></div>`
+      + `<div class="card card-body" style="text-align:center;padding:40px;color:#6b7280">`
+      + `<p>You manage multiple stores, so this single-store view isn't available.</p>`
+      + `<p style="margin-top:8px">Use <strong>Comparison</strong>, <strong>Alerts</strong> or <strong>Reports</strong> to see all your stores.</p></div>`;
+    return true;
+  },
+
   // ── Store Stock (Manager/Franchisee) ──
   storeStock() {
+    if (this._requiresSingleStore('page-store-stock')) return;  // L3 #6c
     const storeId=Auth.storeId(); const d=DB.get();
     const alerts=Stock.alerts([storeId]).filter(a=>a.store.id===storeId);
     const el=document.getElementById('page-store-stock');
@@ -1918,8 +1954,8 @@ const Pages = {
     const rows=prods.map(p=>{
       const qty=Stock.qty(p.id,storeId); const thr=Stock.threshold(p.id,storeId);
       if(this._ssLow&&(!thr||qty>thr.minQty))return null;
-      const pct=thr?Math.min(100,(qty/(thr.minQty*3))*100):null;
-      const pctClass=!thr?'':qty===0?'low':qty<=thr.minQty?'warn':'ok';
+      const pct=thr?Math.min(100,(Math.max(0,qty)/(thr.minQty*3))*100):null;  // L3 #11r1: no negative progress width
+      const pctClass=!thr?'':qty<=0?'low':qty<=thr.minQty?'warn':'ok';  // L3 #11r1: negative = out (low class)
       return `<tr><td><span style="font-size:.7rem;color:#9ca3af">${p.id}</span></td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td style="min-width:100px">${pct!=null?`<div class="progress-bar"><div class="progress-fill ${pctClass}" style="width:${pct}%"></div></div>`:''}</td><td>${thr?thr.minQty:'<span style="color:#d1d5db">—</span>'}</td><td>${p.price?UI.fmt(p.price):'<span style="color:#d1d5db">—</span>'}</td></tr>`;
     }).filter(Boolean);
     const ssTbl=document.getElementById('ss-table'); if(!ssTbl)return;
@@ -1928,6 +1964,7 @@ const Pages = {
 
   // ── Store History ──
   storeHistory() {
+    if (this._requiresSingleStore('page-store-history')) return;  // L3 #6c
     const storeId=Auth.storeId();
     const el=document.getElementById('page-store-history');
     el.innerHTML=`
@@ -2272,7 +2309,7 @@ const Pages = {
             <div class="alert-icon">${a.critical?'🚨':'⚠️'}</div>
             <div class="alert-info">
               <div class="alert-name">${a.product.name} <span style="color:#9ca3af;font-weight:400;font-size:.75rem">— ${UI.catName(a.product.catId)}</span></div>
-              <div class="alert-detail">${a.store.name} · Current: <strong>${a.qty}</strong> · Min: ${a.minQty}${a.leadDays?` · Lead: ${a.leadDays} days`:''}</div>
+              <div class="alert-detail">${a.store.name} · Current: <strong>${Math.max(0,a.qty)}</strong> · Min: ${a.minQty}${a.leadDays?` · Lead: ${a.leadDays} days`:''}</div>
             </div>
             <div>${UI.stockBadge(a.qty,a.minQty)}</div>
           </div>`).join('')}
@@ -2297,12 +2334,12 @@ const Pages = {
     let text=`BANG ON BROWS — LOW STOCK REPORT\n${dateStr}\n${'='.repeat(40)}\n\n`;
     if(critical.length){
       text+=`🚨 OUT OF STOCK (${critical.length} item${critical.length!==1?'s':''})\n`;
-      critical.forEach(a=>{text+=`  • ${a.product.name} — ${a.store.name} (${a.qty} in stock, min: ${a.minQty})\n`;});
+      critical.forEach(a=>{text+=`  • ${a.product.name} — ${a.store.name} (${Math.max(0,a.qty)} in stock, min: ${a.minQty})\n`;});
       text+='\n';
     }
     if(warning.length){
       text+=`⚠️ RUNNING LOW (${warning.length} item${warning.length!==1?'s':''})\n`;
-      warning.forEach(a=>{text+=`  • ${a.product.name} — ${a.store.name} (${a.qty} in stock, min: ${a.minQty})\n`;});
+      warning.forEach(a=>{text+=`  • ${a.product.name} — ${a.store.name} (${Math.max(0,a.qty)} in stock, min: ${a.minQty})\n`;});
     }
     text+='\n'+'-'.repeat(40)+'\nGenerated by BOB Stock Manager';
     if(navigator.clipboard){
@@ -2312,6 +2349,19 @@ const Pages = {
     } else {
       const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);UI.toast('Summary copied','success');
     }
+  },
+
+  // L3 #11: DIRECTOR-ONLY negative-stock alert (banner + drill-down list). Reads RAW Stock.negativeStock
+  // (never floored); staff/franchisee never see this (Kunal: director only). Underlying ledger untouched —
+  // the fix is a stock-take, not a rewrite.
+  _negativeStockBanner(storeIds) {
+    const negs = Stock.negativeStock(storeIds);
+    if (!negs.length) return '';
+    const rows = negs.map(n=>`<li><strong>${UI.esc(n.product.name)}</strong> — ${UI.storeName(n.store.id)}: <span style="color:#dc2626;font-weight:600">${n.qty}</span></li>`).join('');
+    return `<div style="margin-bottom:20px;padding:14px 16px;background:#fef2f2;border-radius:10px;border-left:4px solid #dc2626">`
+      + `<div style="color:#dc2626;font-weight:600;margin-bottom:6px">⚠ ${negs.length} product${negs.length>1?'s':''} with NEGATIVE stock — a counting error needs a stock-take</div>`
+      + `<ul style="margin:0;padding-left:20px;color:#6b7280;font-size:.85rem">${rows}</ul>`
+      + `<div style="color:#9ca3af;font-size:.75rem;margin-top:6px">Staff see these as 0 / OUT. The underlying ledger is unchanged — reconcile via a stock-take.</div></div>`;
   },
 
   // ── HO: All Stock ──
@@ -2329,6 +2379,7 @@ const Pages = {
     const el=document.getElementById('page-all-stock');
     el.innerHTML=`
       <div class="page-header"><div class="page-title">Stock Overview${isFran?' — My Locations':' — All Locations'}</div></div>
+      ${Auth.is('director')?Pages._negativeStockBanner((isFran||isSL)?storeIds:null):''}
       ${!isFran?`<div class="grid-3" style="margin-bottom:24px">
         <div class="stat-card"><div class="stat-val font-serif" id="hs-stat-ho">${UI.fmt(hoTotal)}</div><div class="stat-lbl" id="hs-stat-ho-lbl">HO Warehouse Value (AUD)</div></div>
         <div class="stat-card"><div class="stat-val font-serif" id="hs-stat-instore">${UI.fmt(inStoreTotal)}</div><div class="stat-lbl" id="hs-stat-instore-lbl">In-Store Total Value (AUD)</div></div>
@@ -2389,7 +2440,7 @@ const Pages = {
       const ptStatCatIds=ptFilter?d.categories.filter(c=>c.ptId===ptFilter).map(c=>c.id):null;
       const statProds=d.products.filter(p=>p.active&&(!catFilter||p.catId===catFilter)&&(!ptStatCatIds||ptStatCatIds.includes(p.catId)));
       const allVisibleStores=d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
-      const calcVal=(sIds)=>statProds.reduce((sum,p)=>sum+sIds.reduce((s2,sId)=>s2+Stock.qty(p.id,sId)*(p.price||0),0),0);
+      const calcVal=(sIds)=>statProds.reduce((sum,p)=>sum+sIds.reduce((s2,sId)=>s2+Stock.dispQty(p.id,sId)*(p.price||0),0),0);  // L3 #11r1: Option A — floor negative to $0
       let hoVal,inStoreVal,totalVal,hoLbl,inStoreLbl,totalLbl;
       if(storeFilter==='head_office'){
         hoVal=calcVal(['head_office']); inStoreVal=0; totalVal=hoVal;
@@ -2423,15 +2474,15 @@ const Pages = {
     }
     if(storeFilter){
       document.getElementById('hs-table').innerHTML=`<table><thead><tr><th>Ref</th><th>Product</th><th>Category</th><th>Stock</th><th>Status</th><th>Value (AUD)</th></tr></thead><tbody>${prods.map(p=>{
-        const qty=Stock.qty(p.id,storeFilter); const thr=Stock.threshold(p.id,storeFilter); const val=p.price?qty*p.price:null;
-        return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td>${!thr?'<span class="badge badge-gray">No threshold</span>':qty===0?'<span class="badge badge-red">Out of Stock</span>':qty<=thr.minQty?'<span class="badge badge-amber">Low</span>':'<span class="badge badge-green">OK</span>'}</td><td>${val!=null?UI.fmt(val):'—'}</td></tr>`;
+        const qty=Stock.qty(p.id,storeFilter); const thr=Stock.threshold(p.id,storeFilter); const val=p.price?Math.max(0,qty)*p.price:null;  // L3 #11r1: Option A floor
+        return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td>${UI.stockBadge(qty,thr?.minQty)}</td><td>${!thr?'<span class="badge badge-gray">No threshold</span>':qty<=0?'<span class="badge badge-red">Out of Stock</span>':qty<=thr.minQty?'<span class="badge badge-amber">Low</span>':'<span class="badge badge-green">OK</span>'}</td><td>${val!=null?UI.fmt(val):'—'}</td></tr>`;
       }).join('')}</tbody></table>`;
     } else {
       const displayStores=allStores.filter(s=>s);
       document.getElementById('hs-table').innerHTML=`<table><thead><tr><th>Product</th>${displayStores.map(s=>`<th>${s.name}${s.type==='warehouse'?' 🏭':s.isFranchise?' 🔗':''}</th>`).join('')}<th>Total</th></tr></thead><tbody>
         ${prods.map(p=>{
           const qtys=displayStores.map(s=>Stock.qty(p.id,s.id));
-          const total=qtys.reduce((a,b)=>a+b,0);
+          const total=qtys.reduce((a,b)=>a+Math.max(0,b),0);  // L3 #11r1: total floors each store's negative to 0 (cells already floored via stockBadge)
           return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${p.id}</span></td>${qtys.map((q,i)=>{const thr=Stock.threshold(p.id,displayStores[i].id);return `<td>${UI.stockBadge(q,thr?.minQty)}</td>`;}).join('')}<td><strong>${total}</strong></td></tr>`;
         }).join('')}</tbody></table>`;
     }
@@ -2777,7 +2828,7 @@ const Pages = {
       let valProds=d.products.filter(p=>p.active);
       if(f.pt){const catIds=d.categories.filter(c=>c.ptId===f.pt).map(c=>c.id);valProds=valProds.filter(p=>catIds.includes(p.catId));}
       if(f.cat) valProds=valProds.filter(p=>p.catId===f.cat);
-      const totalVal=valProds.reduce((sum,p)=>sum+valStores.reduce((s2,sId)=>s2+(Stock.qty(p.id,sId)*(Stock.currentCost(p.id)||0)),0),0);
+      const totalVal=valProds.reduce((sum,p)=>sum+valStores.reduce((s2,sId)=>s2+(Stock.dispQty(p.id,sId)*(Stock.currentCost(p.id)||0)),0),0);  // L3 #11r1: Option A floor
       const valLabel=(f.cat||f.pt||f.store)?'Filtered Stock Value':'Total Stock Value';
       const alerts=Stock.alerts(f.store?[f.store]:storeIds).length;
       const ins=txns.filter(t=>Txn.isIn(t)).reduce((a,t)=>a+t.qty,0);
@@ -2785,7 +2836,7 @@ const Pages = {
       const catBreakdown=d.categories.map(cat=>{
         const catProds=d.products.filter(p=>p.catId===cat.id&&(!f.cat||p.catId===f.cat));
         const stores=f.store?[f.store]:(storeIds||d.stores.filter(s=>s.active).map(s=>s.id));
-        const total=catProds.reduce((sum,p)=>sum+stores.reduce((s2,sId)=>s2+Stock.qty(p.id,sId),0),0);
+        const total=catProds.reduce((sum,p)=>sum+stores.reduce((s2,sId)=>s2+Stock.dispQty(p.id,sId),0),0);  // L3 #11r1: floor negative
         return {name:cat.name,total};
       }).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
       el.innerHTML=`
@@ -2824,7 +2875,7 @@ const Pages = {
             : d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)));
       let prods=d.products.filter(p=>p.active&&(!f.cat||p.catId===f.cat));
       if(f.pt){const catIds=d.categories.filter(c=>c.ptId===f.pt).map(c=>c.id);prods=prods.filter(p=>catIds.includes(p.catId));}
-      el.innerHTML=`<div class="tbl-wrap card"><table><thead><tr><th>Product</th>${stores.map(s=>`<th>${s.name}</th>`).join('')}<th>Total</th></tr></thead><tbody>${prods.map(p=>{const qtys=stores.map(s=>Stock.qty(p.id,s.id));const total=qtys.reduce((a,b)=>a+b,0);return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${UI.catName(p.catId)}</span></td>${qtys.map((q,i)=>{const thr=Stock.threshold(p.id,stores[i].id);return `<td>${UI.stockBadge(q,thr?.minQty)}</td>`;}).join('')}<td><strong>${total}</strong></td></tr>`;}).join('')}</tbody></table></div>`;
+      el.innerHTML=`<div class="tbl-wrap card"><table><thead><tr><th>Product</th>${stores.map(s=>`<th>${s.name}</th>`).join('')}<th>Total</th></tr></thead><tbody>${prods.map(p=>{const qtys=stores.map(s=>Stock.qty(p.id,s.id));const total=qtys.reduce((a,b)=>a+Math.max(0,b),0);return `<tr><td><strong>${p.name}</strong><br><span style="color:#9ca3af;font-size:.7rem">${UI.catName(p.catId)}</span></td>${qtys.map((q,i)=>{const thr=Stock.threshold(p.id,stores[i].id);return `<td>${UI.stockBadge(q,thr?.minQty)}</td>`;}).join('')}<td><strong>${total}</strong></td></tr>`;}).join('')}</tbody></table></div>`;
     } else if(this._repTab==='category'){
       const cats=f.cat?d.categories.filter(c=>c.id===f.cat):d.categories;
       const stores=f.store?[f.store]:(storeIds||d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)).map(s=>s.id));
@@ -2834,7 +2885,7 @@ const Pages = {
         const catTxns=txns.filter(t=>catProds.map(p=>p.id).includes(t.productId));
         const ins=catTxns.filter(t=>Txn.isIn(t)).reduce((a,t)=>a+t.qty,0);
         const outs=catTxns.filter(t=>Txn.isOut(t)).reduce((a,t)=>a+t.qty,0);
-        const stockNow=catProds.reduce((sum,p)=>sum+stores.reduce((s2,sId)=>s2+Stock.qty(p.id,sId),0),0);
+        const stockNow=catProds.reduce((sum,p)=>sum+stores.reduce((s2,sId)=>s2+Stock.dispQty(p.id,sId),0),0);  // L3 #11r1: floor negative
         return `<tr><td><strong>${cat.name}</strong></td><td>${catProds.length}</td><td>${stockNow}</td><td>${ins}</td><td>${outs}</td></tr>`;
       });
       // Build pie data
@@ -2883,24 +2934,6 @@ const Pages = {
     txns.forEach(t=>{ const prod=DB.get().products.find(p=>p.id===t.productId); rows.push([t.date,(DB.get().stores.find(s=>s.id===t.storeId)?.name||t.storeId),t.productId,(prod?.name||t.productId),(DB.get().categories.find(c=>c.id===prod?.catId)?.name||''),t.type,t.qty,t.staffName,t.reason||'']); });  // SA-B-F1: raw names for CSV
     this._downloadCSV('BOB_Transactions_'+new Date().toISOString().slice(0,10)+'.csv', rows[0], rows.slice(1));  // SA-B-F6: live _downloadCSV signature is (filename,headers,rows)
   },
-  _exportStockCSV() {
-    const d=DB.get();
-    const rows=[['Product ID','Product','Category',...d.stores.filter(s=>s.active).map(s=>s.name)]];
-    d.products.filter(p=>p.active).forEach(p=>{
-      const row=[p.id,p.name,UI.catName(p.catId)];
-      d.stores.filter(s=>s.active).forEach(s=>row.push(Stock.qty(p.id,s.id)));
-      rows.push(row);
-    });
-    this._downloadCSV(rows,'BOB_StockLevels_'+new Date().toISOString().slice(0,10)+'.csv');
-  },
-  _downloadCSV(rows,filename) {
-    const _csvCell=v=>{let s=String(v==null?'':v);if(/^[=+\-@\t\r]/.test(s)&&isNaN(Number(s)))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';};
-    const csv=rows.map(r=>r.map(_csvCell).join(',')).join('\n');
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=filename; a.click();
-    UI.toast('CSV downloaded','success');
-  },
-
   // ── Settings: Products ──
   settingsProducts(elId) {
     const d=DB.get(); const el=document.getElementById(elId||'page-products');
@@ -3223,14 +3256,19 @@ const Pages = {
   },
   _exportStockCSV() {
     const d=DB.get();
-    const stores=d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
-    const headers=['Product','Category','Sell Price',...stores.map(s=>s.name),'HO Warehouse','Total Units'];
+    // L3r1 (GPT re-audit): the LIVE stock CSV must (a) floor negatives via dispQty, (b) scope columns to the
+    // user's OWN stores for a franchisee/store-level user (no cross-store leak); HO column only for non-franchisee.
+    const isFran=Auth.isFranchisee(); const isHO=Auth.isHO(); const isSL=Auth.isStoreLevel();
+    const myIds=(isFran||isSL)?Auth.storeIds():null;
+    const stores=myIds?d.stores.filter(s=>s.active&&myIds.includes(s.id)):d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
+    const showHO=isHO||!isFran;
+    const headers=['Product','Category','Sell Price',...stores.map(s=>s.name),...(showHO?['HO Warehouse']:[]),'Total Units'];
     const rows=d.products.filter(p=>p.active).sort((a,b)=>a.name.localeCompare(b.name)).map(p=>{
       const cat=d.categories.find(c=>c.id===p.catId)?.name||'';
-      const storeQtys=stores.map(s=>Stock.qty(p.id,s.id));
-      const hoQty=Stock.qty(p.id,'head_office');
-      const total=storeQtys.reduce((a,b)=>a+b,0)+hoQty;
-      return[p.name,cat,p.price!=null?p.price.toFixed(2):'',...storeQtys,hoQty,total];
+      const storeQtys=stores.map(s=>Stock.dispQty(p.id,s.id));
+      const hoQty=showHO?Stock.dispQty(p.id,'head_office'):0;
+      const total=storeQtys.reduce((a,b)=>a+b,0)+(showHO?hoQty:0);
+      return[p.name,cat,p.price!=null?p.price.toFixed(2):'',...storeQtys,...(showHO?[hoQty]:[]),total];
     });
     this._downloadCSV(`bob-stock-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
   },
@@ -3593,7 +3631,7 @@ const Pages = {
   // On-hand value AT COST = current stock × current cost, per store (a point-in-time figure, not a period).
   _stockOnHandCost(storeId){
     const d=DB.get();
-    return d.products.reduce((a,p)=>{ const q=Stock.qty(p.id,storeId); if(!q)return a; const c=Stock.currentCost(p.id); return c!=null?a+c*q:a; },0);
+    return d.products.reduce((a,p)=>{ const q=Stock.dispQty(p.id,storeId); if(!q)return a; const c=Stock.currentCost(p.id); return c!=null?a+c*q:a; },0);  // L3 #11r1 Option A: negative on-hand contributes $0 (via central dispQty)
   },
   // Wave K (Tier 4 #13): sell-through aggregation, extracted so it's directly testable. Per product:
   // out = customer SALES only (not every outflow); in = RECEIVED, topology-aware (single store = transfer-in;
@@ -3730,7 +3768,7 @@ const Pages = {
           <div style="font-weight:700;margin-bottom:12px;font-size:.875rem">Top Alerts ${alerts.length>5?`<span style="color:#6b7280;font-weight:400;font-size:.75rem">(showing 5 of ${alerts.length})</span>`:''}</div>
           ${topAlerts.length?topAlerts.map(a=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f3f4f6">
             <span>${a.critical?'🚨':'⚠️'}</span>
-            <div style="flex:1;min-width:0"><div style="font-size:.8rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.product.name}</div><div style="font-size:.75rem;color:#6b7280">${a.store.name} · ${a.qty} in stock</div></div>
+            <div style="flex:1;min-width:0"><div style="font-size:.8rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${a.product.name}</div><div style="font-size:.75rem;color:#6b7280">${a.store.name} · ${Math.max(0,a.qty)} in stock</div></div>
             ${UI.stockBadge(a.qty,a.minQty)}
           </div>`).join(''):'<div style="color:#9ca3af;font-size:.825rem">✓ All stock levels healthy.</div>'}
           ${alerts.length?`<div style="margin-top:8px"><button class="btn btn-sm btn-secondary" onclick="navigateTo('${isHO?'ho-alerts':'store-alerts'}')">View all ${alerts.length} alerts →</button></div>`:''}
