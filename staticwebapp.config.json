@@ -1,4 +1,8 @@
 {
+  "routes": [
+    { "route": "/*.{md,py}", "statusCode": 404 },
+    { "route": "/test/*", "statusCode": 404 }
+  ],
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": ["/*.{js,css,json,png,ico,svg,webmanifest,woff,woff2,map}", "/icons/*"]
