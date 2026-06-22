@@ -12,6 +12,7 @@
 
 const { chromium } = require('playwright');
 const path = require('path');
+const fs = require('fs');
 
 const DEFAULT_REPO = path.resolve(__dirname, '..');
 
@@ -916,6 +917,257 @@ async function runSmoke(repo) {
     { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
       const r = await page.evaluate((s) => { const d = DB.get(); const fr = (d.users||[]).find(u => u.role==='franchisee'); Auth._user = fr; const ids = fr.storeIds || []; const sid = ids[0]; const cur = Stock.qty(s.productId, sid); d.transactions.push({ id:'l142x_'+Date.now(), storeId:sid, productId:s.productId, type:'transfer_out', qty: cur+777, date:'2026-06-01', createdAt:new Date().toISOString() }); if (Stock._buildCache) Stock._buildCache(); let cap = null; const real = Pages._downloadCSV; Pages._downloadCSV = (...a) => { cap = a; }; Pages._exportStockCSV(); Pages._downloadCSV = real; const headers = cap ? cap[1] : []; const flat = JSON.stringify(cap); const other = ((d.stores.find(st => st.active && !ids.includes(st.id)))||{}).name; const ownNames = ids.map(id => (d.stores.find(st => st.id===id)||{}).name).filter(Boolean); return { raw: Stock.qty(s.productId, sid), noNeg: flat.indexOf('-777') === -1, hasOwn: ownNames.length>0 && ownNames.every(n => headers.includes(n)), noHO: !headers.includes('HO Warehouse'), noOther: other ? !headers.includes(other) : true }; }, s);
       rec('S-142', 'live stock CSV floors negatives + scopes columns to a franchisee own stores (no other store, no HO)', r.raw < 0 && r.noNeg && r.hasOwn && r.noHO && r.noOther, `raw=${r.raw} noNeg=${r.noNeg} hasOwn=${r.hasOwn} noHO=${r.noHO} noOther=${r.noOther} (clean: all true)`); await ctx.close(); }
+
+    // S-143 (Wave M1 / GPTa-37): delete-movement is gated by the deleteMovement cap — staff (the shared
+    // store-computer account) cannot delete; store_manager+ can. Drives the LIVE Pages._confirmDelete guard.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        const d = DB.get(); const dir = d.users.find(u => u.role === 'director') || d.users[0];
+        Pages._renderTodayMovements = () => {}; UI.closeModal = () => {};
+        document.body.insertAdjacentHTML('beforeend', '<input id="del-name" value="Tester"><select id="del-reason"><option value="Mistake" selected>Mistake</option></select>');
+        const mk = () => { const id = 'm143_' + Date.now() + '_' + Math.floor(Math.random() * 1e6); d.transactions.push({ id, storeId: s.storeId, productId: s.productId, type: 'in', qty: 1, date: '2026-06-01', editLog: [], createdAt: new Date().toISOString() }); return id; };
+        Auth._user = { ...dir, role: 'staff' }; const staffCan = Auth.can('deleteMovement');
+        const idA = mk(); await Pages._confirmDelete(idA); const staffBlocked = DB.get().transactions.some(t => t.id === idA);
+        Auth._user = { ...dir, role: 'store_manager' }; const mgrCan = Auth.can('deleteMovement');
+        const idB = mk(); await Pages._confirmDelete(idB); const mgrDeleted = !DB.get().transactions.some(t => t.id === idB);
+        return { staffCan, staffBlocked, mgrCan, mgrDeleted };
+      }, s);
+      rec('S-143', 'delete-movement cap blocks staff, allows store_manager+ (live _confirmDelete)', r.staffCan === false && r.staffBlocked && r.mgrCan === true && r.mgrDeleted, `staffCan=${r.staffCan} staffBlocked=${r.staffBlocked} mgrCan=${r.mgrCan} mgrDeleted=${r.mgrDeleted} (clean: false/true/true/true)`); await ctx.close(); }
+
+    // S-144 (Wave M1 / GPTa-36): editing a user cannot take a username already held by another user (the EDIT
+    // path lacked the uniqueness check the ADD path has). Drives the LIVE Pages._updateUser guard.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); Auth._user = d.users.find(u => u.role === 'director') || d.users[0];
+        Pages._refreshSettings = () => {}; UI.closeModal = () => {};
+        d.users.push({ id: 'u144a', username: 'alice144', name: 'Alice', role: 'staff', storeIds: [], password: 'x', pin: 'y' }, { id: 'u144b', username: 'bob144', name: 'Bob', role: 'staff', storeIds: [], password: 'x', pin: 'y' });
+        document.body.insertAdjacentHTML('beforeend', '<input id="eu-name" value="Alice"><input id="eu-user" value="bob144"><input id="eu-pass" value=""><input id="eu-pin" value=""><select id="eu-role"><option value="staff" selected>staff</option></select>');
+        await Pages._updateUser('u144a');
+        const after = DB.get().users.find(u => u.id === 'u144a');
+        return { username: after ? after.username : 'GONE' };
+      });
+      rec('S-144', 'user edit rejects a username already taken by another user', r.username === 'alice144', `username=${r.username} (clean: alice144 kept; bug: bob144)`); await ctx.close(); }
+
+    // S-145 (Wave M1 / GPTa-36): the last Director cannot be demoted (or self-deleted) — admin-lockout guard.
+    // Drives LIVE Pages._updateUser (demote, mutation-proven) + Pages._deleteUser (self-delete, defence-in-depth).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); const dir = d.users.find(u => u.role === 'director') || d.users[0];
+        d.users.forEach(u => { if (u !== dir && u.role === 'director') u.role = 'store_manager'; }); // exactly one director
+        Auth._user = dir;
+        Pages._refreshSettings = () => {}; UI.closeModal = () => {}; UI.confirm = (t, m, cb) => { if (typeof cb === 'function') return cb(); };
+        document.body.insertAdjacentHTML('beforeend', '<input id="eu-name" value="D"><input id="eu-user" value="' + dir.username + '"><input id="eu-pass" value=""><input id="eu-pin" value=""><select id="eu-role"><option value="staff" selected>staff</option></select>');
+        await Pages._updateUser(dir.id);
+        const roleAfterDemote = DB.get().users.find(u => u.id === dir.id).role;
+        await Pages._deleteUser(dir.id);
+        const stillPresent = DB.get().users.some(u => u.id === dir.id);
+        return { roleAfterDemote, stillPresent };
+      });
+      rec('S-145', 'last Director cannot be demoted or self-deleted (lockout guard)', r.roleAfterDemote === 'director' && r.stillPresent, `roleAfterDemote=${r.roleAfterDemote} stillPresent=${r.stillPresent} (clean: director/true)`); await ctx.close(); }
+
+    // S-146 (Wave M1 / GPTa-42): a REJECTED stock-take cannot be approved — no adjustments written, status stays rejected.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        const d = DB.get(); Auth._user = d.users.find(u => u.role === 'director') || d.users[0];
+        UI.closeModal = () => {}; Pages.stockTake = () => {};
+        const takeId = 'st146_' + Date.now(); d.stockTakes = d.stockTakes || [];
+        d.stockTakes.push({ id: takeId, date: '2026-06-01', storeId: s.storeId, completedBy: 't', status: 'rejected', items: [{ productId: s.productId, systemCount: 0, physicalCount: 5, difference: 5 }] });
+        await Pages._approveStockTake(takeId);
+        const t = DB.get().stockTakes.find(x => x.id === takeId);
+        return { status: t.status, adjustmentMade: DB.get().transactions.some(x => x.stockTakeId === takeId) };
+      }, s);
+      rec('S-146', 'rejected stock-take cannot be approved (no adjustment, status stays rejected)', r.status === 'rejected' && r.adjustmentMade === false, `status=${r.status} adjustmentMade=${r.adjustmentMade} (clean: rejected/false)`); await ctx.close(); }
+
+    // S-147 (Wave M1 / GPTa-43 + GPT P3): the AUTHORITATIVE in-use re-check INSIDE the confirm callback blocks
+    // an orphaning delete even in the stale-modal race (a dependency appears AFTER the modal opened, so the
+    // pre-check passed). An unused one (no race) still deletes. Drives LIVE Pages._deletePT / Pages._deleteCat.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); Auth._user = d.users.find(u => u.role === 'director') || d.users[0];
+        UI.closeModal = () => {}; Pages._refreshSettings = () => {};
+        d.productTypes.push({ id: 'pt147u', name: 'PT Used' });
+        d.categories.push({ id: 'cat147u', name: 'Cat Used', ptId: 'pt147f' }, { id: 'cat147f', name: 'Cat Free', ptId: 'pt147f' });
+        // PT: pre-check passes (no category uses pt147u yet); a referencing category appears before the destructive write
+        UI.confirm = (t, m, cb) => { DB.get().categories.push({ id: 'cat147race', name: 'Race', ptId: 'pt147u' }); return cb(); };
+        await Pages._deletePT('pt147u'); const ptUsedKept = DB.get().productTypes.some(p => p.id === 'pt147u');
+        // Cat: pre-check passes (no product in cat147u yet); a referencing product appears before the destructive write
+        UI.confirm = (t, m, cb) => { DB.get().products.push({ id: 'P147race', name: 'P', catId: 'cat147u', active: true }); return cb(); };
+        await Pages._deleteCat('cat147u'); const catUsedKept = DB.get().categories.some(c => c.id === 'cat147u');
+        // unused category (no race) still deletes
+        UI.confirm = (t, m, cb) => { if (typeof cb === 'function') return cb(); };
+        await Pages._deleteCat('cat147f'); const catFreeGone = !DB.get().categories.some(c => c.id === 'cat147f');
+        return { ptUsedKept, catUsedKept, catFreeGone };
+      });
+      rec('S-147', 'in-use re-check inside the delete callback blocks orphaning (stale-modal race); unused still deletes', r.ptUsedKept && r.catUsedKept && r.catFreeGone, `ptUsedKept=${r.ptUsedKept} catUsedKept=${r.catUsedKept} catFreeGone=${r.catFreeGone} (clean: all true)`); await ctx.close(); }
+
+    // S-148 (Wave M1 / GPTa-45): a multi-store NON-franchisee (store_manager/TM) gets the location picker in
+    // Log Movement; a single-store user does not. Drives the LIVE Pages.logMovement render.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); const dir = d.users.find(u => u.role === 'director') || d.users[0];
+        if (!document.getElementById('page-log-movement')) document.body.insertAdjacentHTML('beforeend', '<div id="page-log-movement"></div>');
+        Pages._renderLogStep = () => {}; Pages._renderTodayMovements = () => {};
+        const twoIds = d.stores.filter(st => st.active && st.type !== 'warehouse').slice(0, 2).map(st => st.id);
+        Auth._user = { ...dir, role: 'store_manager', storeIds: twoIds };
+        Pages.logMovement();
+        const sel = document.getElementById('ho-store-sel');
+        const multiHasPicker = !!sel, optCount = sel ? sel.options.length : 0, defaultPinnedOk = Pages._logData ? Pages._logData.selectedStoreId === twoIds[0] : false;
+        Auth._user = { ...dir, role: 'store_manager', storeIds: [twoIds[0]] };
+        Pages.logMovement();
+        const singleHasPicker = !!document.getElementById('ho-store-sel');
+        return { multiHasPicker, optCount, singleHasPicker, defaultPinnedOk };
+      });
+      rec('S-148', 'multi-store non-franchisee gets the location picker; single-store does not', r.multiHasPicker && r.optCount === 2 && r.singleHasPicker === false && r.defaultPinnedOk, `multiPicker=${r.multiHasPicker} opts=${r.optCount} singlePicker=${r.singleHasPicker} defaultOk=${r.defaultPinnedOk} (clean: true/2/false/true)`); await ctx.close(); }
+
+    // S-149 (Wave M1 / GPTa-37 [1b] + GPT P3): every deletion audit row carries the verified account
+    // (_deletedByUser = Auth.actor()) — both the hard-delete path and the staff Undo path.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        const d = DB.get(); const dir = d.users.find(u => u.role === 'director') || d.users[0];
+        Pages._renderTodayMovements = () => {}; UI.closeModal = () => {};
+        document.body.insertAdjacentHTML('beforeend', '<input id="del-name" value="Mgr"><select id="del-reason"><option value="Mistake" selected>Mistake</option></select>');
+        Auth._user = { ...dir, role: 'store_manager', id: 'mgr149', username: 'mgr149', name: 'Mgr' };
+        const idH = 'h149_' + Date.now(); d.transactions.push({ id: idH, storeId: s.storeId, productId: s.productId, type: 'in', qty: 1, date: '2026-06-01', editLog: [], createdAt: new Date().toISOString() });
+        await Pages._confirmDelete(idH);
+        const hardRow = DB.get().deletedTransactions.find(x => x.id === idH);
+        const hardStamped = !!(hardRow && hardRow._deletedByUser && hardRow._deletedByUser.username === 'mgr149');
+        let undoDone = null; UI.confirm = (t, m, cb) => { undoDone = (typeof cb === 'function') ? cb() : null; return undoDone; }; // _undoMovement is sync + fire-and-forget; await the callback's async work
+        Auth._user = { ...dir, role: 'staff', id: 'stf149', username: 'stf149', name: 'Stf' };
+        const idU = 'u149_' + Date.now(); d.transactions.push({ id: idU, storeId: s.storeId, productId: s.productId, type: 'in', qty: 1, date: '2026-06-01', editLog: [], createdAt: new Date().toISOString() });
+        if (Stock._buildCache) Stock._buildCache();
+        Pages._undoMovement(idU); await undoDone;
+        const undoRow = DB.get().deletedTransactions.find(x => x.id === idU);
+        const undoStamped = !!(undoRow && undoRow._deletedByUser && undoRow._deletedByUser.username === 'stf149');
+        return { hardStamped, undoStamped };
+      }, s);
+      rec('S-149', 'deletion audit rows carry the verified account on both hard-delete and Undo paths', r.hardStamped && r.undoStamped, `hardStamped=${r.hardStamped} undoStamped=${r.undoStamped} (clean: both true)`); await ctx.close(); }
+
+    // S-150 (Wave M2 / GPTa-41): clearing a franchise discount stores null (inherits the store default), a value
+    // stores that number, AND a legacy stored 0 is treated as "not set" in billing (inherits, not full price).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        const d = DB.get(); Auth._user = d.users.find(u => u.role === 'director') || d.users[0];
+        Pages._renderProductsTable = () => {};
+        const p = d.products.find(x => x.id === s.productId); p.price = 100;
+        await Pages._setProductFranDisc(p.id, '10'); const setVal = DB.get().products.find(x => x.id === p.id).franchiseDiscount;
+        await Pages._setProductFranDisc(p.id, ''); const cleared = DB.get().products.find(x => x.id === p.id).franchiseDiscount;
+        const office = d.stores.find(x => x.isFranchise && x.isFranchiseOffice); const hasOffice = !!office;
+        let owed = null, prodDisc = null;
+        if (office) {
+          office.franchiseDiscount = 25;
+          DB.get().products.find(x => x.id === p.id).franchiseDiscount = 0; // legacy polluted value
+          if (Stock._buildCache) Stock._buildCache();
+          d.transactions.push({ id: 'fi150', type: 'in', qty: 10, reason: 'Received from Head Office', storeId: office.id, productId: p.id, date: '2026-06-16', createdAt: new Date().toISOString() });
+          const data = Pages._franchiseInvoiceData(d, '2026-06-01', '2026-06-30');
+          const off = data.find(sd => sd.office.id === office.id);
+          owed = off ? off.totalOwed : null; prodDisc = (off && off.lines[0]) ? off.lines[0].prodDisc : null;
+        }
+        return { setVal, cleared, owed, prodDisc, hasOffice };
+      }, s);
+      rec('S-150', 'clear stores null (inherit); a value stores the number; a legacy 0 bills at the office default (25%) not full price', r.setVal === 10 && r.cleared === null && r.hasOffice && r.owed === 750 && r.prodDisc === 25, `setVal=${r.setVal} cleared=${r.cleared} owed=${r.owed} prodDisc=${r.prodDisc} (clean: 10/null/750/25)`); await ctx.close(); }
+
+    // S-151 (Wave M2 / GPTa-38): a delivery listing the same product on two lines is rejected (nothing saved);
+    // a distinct-product delivery still saves. Drives LIVE Pages._saveDelivery.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); Auth._user = d.users.find(u => u.role === 'director') || d.users[0];
+        UI.closeModal = () => {}; Pages.directorCosts = () => {};
+        const prods = d.products.filter(p => p.active); const pA = prods[0].id, pB = prods[1].id;
+        document.body.insertAdjacentHTML('beforeend', '<input id="del-supplier" value="TestSup"><input id="del-date" value="2026-06-20"><input id="del-invoice" value=""><input id="del-freight" value=""><input id="del-tax" value=""><input id="del-shipping" value=""><select id="del-currency"><option value="AUD" selected>AUD</option></select><input id="del-rate" value="">');
+        const before = (DB.get().deliveries || []).length;
+        Pages._delLines = [{ productId: pA, qty: 2, unitCost: 10, weightGrams: 0, packaging: 0, labelling: 0 }, { productId: pA, qty: 3, unitCost: 12, weightGrams: 0, packaging: 0, labelling: 0 }];
+        Pages._delSaving = false; await Pages._saveDelivery();
+        const dupRejected = (DB.get().deliveries || []).length === before;
+        Pages._delLines = [{ productId: pA, qty: 2, unitCost: 10, weightGrams: 0, packaging: 0, labelling: 0 }, { productId: pB, qty: 3, unitCost: 12, weightGrams: 0, packaging: 0, labelling: 0 }];
+        Pages._delSaving = false; await Pages._saveDelivery();
+        const cleanSaved = (DB.get().deliveries || []).length === before + 1;
+        return { dupRejected, cleanSaved };
+      });
+      rec('S-151', 'duplicate-product delivery is rejected (nothing saved); a distinct-product delivery saves', r.dupRejected && r.cleanSaved, `dupRejected=${r.dupRejected} cleanSaved=${r.cleanSaved} (clean: both true)`); await ctx.close(); }
+
+    // S-152 (Wave M2 / GPTa-24): a never-synced device (_lastSyncAt===0) pulls immediately at Sync.init() and
+    // shows the syncing indicator. Drives the LIVE boot path (config via sessionStorage fallback → leader → pull).
+    { let SID = '', PID = ''; const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', processedCount: 0 } : { items: [{ TransactionId: 'sp_m152', Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-20', DeviceId: 'OTHER_DEVICE', SyncTimestamp: 1000 }], serverTimestamp: 1000, status: 'ok' }) }); });
+      await waitBoot(page, repo); const s = await setup(page); SID = s.storeId; PID = s.productId;
+      const r = await page.evaluate(async () => {
+        sessionStorage.setItem('bob_sync_config', JSON.stringify({ pushUrl: 'https://x.logic.azure.com/push', pullUrl: 'https://x.logic.azure.com/pull' }));
+        localStorage.setItem('bob_last_sync', '0'); Sync._lastSyncAt = 0;
+        Sync._startPolling = () => {}; // don't leave a 30s interval running in the test
+        Sync._initLeaderElection = () => { Sync._isLeader = true; }; // make this tab leader synchronously (leader election is covered by S-124/S-128); we test the first-run pull branch
+        const statuses = []; Sync._showStatus = (msg) => { statuses.push(String(msg)); };
+        Sync.init(); // do NOT await: init() later awaits navigator.serviceWorker.ready, which never resolves under headless file:// — the first-run pull runs well before that
+        await new Promise(r => setTimeout(r, 1800)); // 600ms leader wait + the mocked pull + margin
+        return { cursorAdvanced: Sync._lastSyncAt > 0, merged: DB.get().transactions.some(t => t.id === 'sp_m152'), showedSyncing: statuses.some(m => /syncing/i.test(m)) };
+      });
+      rec('S-152', 'never-synced device pulls immediately at init + shows the syncing indicator', r.cursorAdvanced && r.merged && r.showedSyncing, `cursorAdvanced=${r.cursorAdvanced} merged=${r.merged} showedSyncing=${r.showedSyncing} (clean: all true)`); await ctx.close(); }
+
+    // S-153 (Wave M3 / GPT-9): restore takes a REAL snapshot of current data; "Undo last restore" is director-gated
+    // and round-trips (writes the snapshot back to DB.KEY, clears _prerestore). Drives LIVE _snapshotForUndo + _undoRestore.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const dir = DB.get().users.find(u => u.role === 'director') || DB.get().users[0];
+        Auth._user = dir; UI.confirm = (t, m, cb) => { if (typeof cb === 'function') return cb(); };
+        localStorage.removeItem(DB.KEY); localStorage.removeItem(DB.KEY + '_prerestore');
+        Pages._snapshotForUndo();
+        let snap = null; try { snap = JSON.parse(localStorage.getItem(DB.KEY + '_prerestore')); } catch (e) {}
+        const snapReal = !!(snap && Array.isArray(snap.products) && snap.products.length > 0);
+        const snapScrubbed = !!(snap && (!Array.isArray(snap.users) || snap.users.every(u => !u.currentSession && !u.token)));
+        const snapStr = localStorage.getItem(DB.KEY + '_prerestore');
+        Auth._user = { ...dir, role: 'staff' }; Pages._undoRestore();
+        const staffBlocked = localStorage.getItem(DB.KEY) === null;
+        Auth._user = dir; Pages._undoRestore();
+        const undoWroteKey = localStorage.getItem(DB.KEY) === snapStr;
+        const prerestoreCleared = localStorage.getItem(DB.KEY + '_prerestore') === null;
+        return { snapReal, snapScrubbed, staffBlocked, undoWroteKey, prerestoreCleared };
+      });
+      rec('S-153', 'restore snapshots real current data; Undo is director-gated + round-trips (writes snapshot back, clears _prerestore)', r.snapReal && r.snapScrubbed && r.staffBlocked && r.undoWroteKey && r.prerestoreCleared, `snapReal=${r.snapReal} scrubbed=${r.snapScrubbed} staffBlocked=${r.staffBlocked} undoWrote=${r.undoWroteKey} cleared=${r.prerestoreCleared} (clean: all true)`); await ctx.close(); }
+
+    // S-154 (Wave M3 / GPT-10): a clean backup passes the checksum, a body edited after the checksum is rejected,
+    // a legacy backup (no checksum) is accepted. Drives LIVE Pages._verifyBackupChecksum.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const clean = Pages._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get()))));
+        const checksum = await sha256(JSON.stringify(clean));
+        const good = Object.assign({}, clean, { _meta: { app: 'bob-stock', checksum } });
+        const cleanOk = await Pages._verifyBackupChecksum(good);
+        const tampered = JSON.parse(JSON.stringify(good)); tampered.products.push({ id: 'TAMPER', name: 'x' });
+        const tamperRejected = !(await Pages._verifyBackupChecksum(tampered));
+        const legacy = Object.assign({}, clean, { _meta: { app: 'bob-stock' } });
+        const legacyAccepted = await Pages._verifyBackupChecksum(legacy);
+        return { cleanOk, tamperRejected, legacyAccepted };
+      });
+      rec('S-154', 'backup checksum: clean passes, tampered rejected, legacy (no checksum) accepted', r.cleanOk && r.tamperRejected && r.legacyAccepted, `cleanOk=${r.cleanOk} tamperRejected=${r.tamperRejected} legacyAccepted=${r.legacyAccepted} (clean: all true)`); await ctx.close(); }
+
+    // S-155 (Wave M3 / GPT-5c + GPT-5b): SW install caches the core shell (required) and tolerates CDN misses
+    // (not an atomic addAll of everything), and the push icon path points at ./icons/. SW install is not cleanly
+    // driveable under headless file://, so this is a source-level check against the (possibly-mutated) repo copy.
+    { const sw = fs.readFileSync(path.join(repo, 'sw.js'), 'utf8');
+      const resilientInstall = sw.includes('cache.addAll(CORE_URLS)') && sw.includes('cache.add(u).catch') && !sw.includes('cache.addAll(PRECACHE_URLS)');
+      const iconPath = sw.includes("'./icons/icon-192.png'") && !sw.includes("'./icon-192.png'");
+      rec('S-155', 'SW install caches core (required) + tolerates CDN misses; push icon path is ./icons/ (source check)', resilientInstall && iconPath, `resilientInstall=${resilientInstall} iconPath=${iconPath} (clean: both true)`); }
+
+    // S-156 (Wave M3 / GPT-18): device/tab/stepper IDs use crypto.getRandomValues, not Math.random (source check).
+    { const p2 = fs.readFileSync(path.join(repo, 'phase2.js'), 'utf8'); const sj = fs.readFileSync(path.join(repo, 'sync.js'), 'utf8');
+      const stepperCrypto = /'stp_'\s*\+\s*Array\.from\(crypto\.getRandomValues/.test(p2);
+      const devCrypto = /'dev_'[\s\S]{0,80}crypto\.getRandomValues/.test(sj);
+      const tabCrypto = /'tab_'[\s\S]{0,80}crypto\.getRandomValues/.test(sj);
+      rec('S-156', 'device/tab/stepper IDs use crypto.getRandomValues, not Math.random (source check)', stepperCrypto && devCrypto && tabCrypto, `stepper=${stepperCrypto} dev=${devCrypto} tab=${tabCrypto} (clean: all true)`); }
+
+    // S-157 (Wave M3 / date-preset): _subMonths clamps month-end overflow (no 31 May −3mo → early March). Live.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const d = Pages._subMonths(new Date(2026, 4, 31), 3);  // 31 May 2026 − 3mo → Feb (2026 not leap → 28)
+        const d2 = Pages._subMonths(new Date(2026, 2, 31), 1); // 31 Mar 2026 − 1mo → Feb 28
+        return { month: d.getMonth(), date: d.getDate(), month2: d2.getMonth(), date2: d2.getDate() };
+      });
+      rec('S-157', '_subMonths clamps month-end (31 May −3mo → Feb 28; 31 Mar −1mo → Feb 28), no month overflow', r.month === 1 && r.date === 28 && r.month2 === 1 && r.date2 === 28, `mayMinus3=${r.month}/${r.date} marMinus1=${r.month2}/${r.date2} (clean: 1/28 and 1/28)`); await ctx.close(); }
+
+    // S-158 (Wave M3 / Ca-M17): staticwebapp.config navigationFallback has an exclude list (static assets not
+    // rewritten to HTML → no HTML-under-JS sticky offline breakage). Source check (config, not runtime).
+    { const cfg = fs.readFileSync(path.join(repo, 'staticwebapp.config.json'), 'utf8'); let parsed = null; try { parsed = JSON.parse(cfg); } catch (e) {}
+      const hasExclude = !!(parsed && parsed.navigationFallback && Array.isArray(parsed.navigationFallback.exclude) && parsed.navigationFallback.exclude.length > 0);
+      rec('S-158', 'staticwebapp.config navigationFallback has an exclude list (static assets not rewritten to HTML)', hasExclude, `hasExclude=${hasExclude} (clean: true)`); }
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;

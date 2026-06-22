@@ -932,7 +932,8 @@ function generateDemoTransactions() {
     editRefData:        ['head_office','director'],                                            // products, categories, product types, stores, thresholds, optimum levels
     editSuppliers:      ['director'],
     viewReports:        ['director'],                                                          // profit / margin / cost-bearing reports
-    viewTransferHistory:['store_manager','franchisee','territory_manager','head_office','director'] // everyone above staff (L3 #10; staff = shared store computer, excluded)
+    viewTransferHistory:['store_manager','franchisee','territory_manager','head_office','director'], // everyone above staff (L3 #10; staff = shared store computer, excluded)
+    deleteMovement:     ['store_manager','franchisee','territory_manager','head_office','director']  // Wave M1 / GPTa-37: hard-delete a logged movement; staff use the 5-min Undo instead
   },
   can(cap) {
     const set = this._caps[cap];
@@ -1464,7 +1465,7 @@ const Pages = {
     const isFran = Auth.isFranchisee();
     const d = DB.get();
     const userStoreIds = Auth.storeIds();
-    const hasMultiLoc = isHO || (isFran && userStoreIds.length > 1);
+    const hasMultiLoc = isHO || (userStoreIds.length > 1); // Wave M1 / GPTa-45: any multi-store user (incl. non-franchisee managers/TMs) gets the location picker
     const storeLabel = hasMultiLoc ? 'Select Location' : UI.storeName(Auth.storeId());
     // Build location options for HO or franchisee
     const buildLocOptions = () => {
@@ -1472,6 +1473,8 @@ const Pages = {
         return `<option value="head_office">Head Office (Warehouse)</option>${d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice)).map(s=>`<option value="${s.id}">${s.name}${s.isFranchise?' 🔗':''}</option>`).join('')}`;
       } else if(isFran){
         return userStoreIds.map(sid=>{const s=d.stores.find(st=>st.id===sid);return s?`<option value="${s.id}">${s.name}${s.isFranchiseOffice?' (Franchise Office)':''}</option>`:''}).join('');
+      } else if(userStoreIds.length>1){ // Wave M1 / GPTa-45: multi-store non-franchisee (store_manager / territory_manager)
+        return userStoreIds.map(sid=>{const s=d.stores.find(st=>st.id===sid);return s?`<option value="${s.id}">${s.name}</option>`:''}).join('');
       }
       return '';
     };
@@ -1849,11 +1852,12 @@ const Pages = {
         <td style="font-size:.8rem">${fromTo(t)}</td>
         <td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
           ${(Date.now()-new Date(t.createdAt).getTime())<300000?`<button class="btn btn-sm" style="background:#fef3c7;color:#92400e;border:1px solid #fbbf24;font-weight:700;padding:4px 10px" onclick="Pages._undoMovement(this.dataset.id)" data-id="${UI.esc(t.id)}">↩ Undo</button>`:''}
-          <button class="btn btn-sm btn-danger" onclick="Pages._deleteLog(this.dataset.id)" data-id="${UI.esc(t.id)}">Delete</button>
+          ${Auth.can('deleteMovement')?`<button class="btn btn-sm btn-danger" onclick="Pages._deleteLog(this.dataset.id)" data-id="${UI.esc(t.id)}">Delete</button>`:''}
         </td>
       </tr>`).join('')}</tbody></table>`;
   },
   _deleteLog(id) {
+    if(!Auth.can('deleteMovement')){UI.toast('You do not have permission to delete movements — use Undo within 5 minutes instead','error');return;} // Wave M1 / GPTa-37
     const delReasons=['Mistake','Double Entry','Wrong Entry','Other'];
     UI.modal('Delete Movement',
       `<p style="color:#6b7280;font-size:.85rem;margin-bottom:16px">This action is recorded in the audit log.</p>
@@ -1873,6 +1877,7 @@ const Pages = {
     );
   },
   async _confirmDelete(id) {
+    if(!Auth.can('deleteMovement')){UI.toast('You do not have permission to delete movements','error');return;} // Wave M1 / GPTa-37 (defence-in-depth)
     const name=document.getElementById('del-name')?.value.trim();
     const reasonSel=document.getElementById('del-reason')?.value;
     const reasonOther=document.getElementById('del-other')?.value.trim();
@@ -1883,7 +1888,7 @@ const Pages = {
     if(txn){
       txn.editLog.push({action:'deleted',by:name,reason:reason,at:new Date().toISOString()});if(txn.editLog.length>10)txn.editLog=txn.editLog.slice(-10);
       if(!(await DB.removeTransactionDurable(id, {deletedBy:name, deletedAt:new Date().toISOString(), deleteReason:reason}))){ await DB.refresh(); UI.fatalSaveError('Deletion could not be saved to this device.'); return; }
-      DB.addDeletedTransaction({...txn,_deletedAt:new Date().toISOString(),_deletedBy:name,_deleteReason:reason});  // A-F2: audit row only AFTER durable remove
+      DB.addDeletedTransaction({...txn,_deletedAt:new Date().toISOString(),_deletedBy:name,_deletedByUser:Auth.actor(),_deleteReason:reason});  // A-F2: audit row only AFTER durable remove. Wave M1/GPTa-37: _deletedByUser = verified account (typed name is fakeable); cross-device carry = Azure phase
       UI.closeModal(); UI.toast('Movement deleted','info'); this._renderTodayMovements();
     }
   },
@@ -1901,7 +1906,7 @@ const Pages = {
       // Wave I (Tier 2 / I-2): pass deletion metadata so the tombstone (and other devices' audit log) record who/when/why — undo was previously anonymous cross-device.
       const _undoMeta={deletedBy:Auth.user()?.name||Auth.user()?.username||'unknown', deletedAt:new Date().toISOString(), deleteReason:'Undo — reversed within 5 min window'};
       if(!(await DB.removeTransactionDurable(id, _undoMeta))){ await DB.refresh(); UI.fatalSaveError('Undo could not be saved to this device.'); return; }
-      DB.addDeletedTransaction({...t2,_deletedAt:_undoMeta.deletedAt,_deletedBy:_undoMeta.deletedBy,_deleteReason:_undoMeta.deleteReason});  // A-F2
+      DB.addDeletedTransaction({...t2,_deletedAt:_undoMeta.deletedAt,_deletedBy:_undoMeta.deletedBy,_deletedByUser:Auth.actor(),_deleteReason:_undoMeta.deleteReason});  // A-F2; Wave M1 GPT P3: stamp verified account on the Undo path too
       UI.toast(`Movement undone — ${icon} ${t2.qty}× ${prodName}`,'success');
       Pages._renderTodayMovements();
     },'Undo');
@@ -2185,6 +2190,7 @@ const Pages = {
       const d=DB.get(); const t=(d.stockTakes||[]).find(x=>x.id===takeId);
       if(!t){UI.toast('Stock take not found','error');return;}
       if(t.status==='approved'){UI.toast('Already approved','info');UI.closeModal();return;}
+      if(t.status!=='pending'){UI.toast('This count was '+t.status+' — it can no longer be approved','info');UI.closeModal();return;} // Wave M1 / GPTa-42: reject approving a rejected (or non-pending) take
       // idempotency: if adjustments for this take already exist (a prior approve half-completed), never double-apply
       const already=(d.transactions||[]).some(x=>x.stockTakeId===takeId);
       if(!already){
@@ -2626,21 +2632,26 @@ const Pages = {
     this._compAllStores=allCompStores; this._compIsDir=isDir; this._compStores=allCompStores;
     this._renderComparisonData();
   },
+  _subMonths(date,n){  // Wave M3 (date-preset): subtract n months, clamping the day to the target month's last day (no 31 May −3mo → 3 Mar overflow). Never mutates the input.
+    const y=date.getFullYear(), m=date.getMonth()-n, d=date.getDate();
+    const t=new Date(y,m,1); const last=new Date(t.getFullYear(),t.getMonth()+1,0).getDate();
+    t.setDate(Math.min(d,last)); return t;
+  },
   _setCompPeriods(preset){
     const now=new Date();
     let aFrom,aTo,bFrom,bTo;
     if(preset==='3m'){
-      aTo=new Date(); aFrom=new Date(now.getFullYear(),now.getMonth()-3,now.getDate());
-      bTo=new Date(aFrom.getTime()-86400000); bFrom=new Date(bTo.getFullYear(),bTo.getMonth()-3,bTo.getDate());
+      aTo=new Date(); aFrom=this._subMonths(now,3);
+      bTo=new Date(aFrom.getTime()-86400000); bFrom=this._subMonths(bTo,3);
     } else if(preset==='6m'){
-      aTo=new Date(); aFrom=new Date(now.getFullYear(),now.getMonth()-6,now.getDate());
-      bTo=new Date(aFrom.getTime()-86400000); bFrom=new Date(bTo.getFullYear(),bTo.getMonth()-6,bTo.getDate());
+      aTo=new Date(); aFrom=this._subMonths(now,6);
+      bTo=new Date(aFrom.getTime()-86400000); bFrom=this._subMonths(bTo,6);
     } else if(preset==='1y'){
-      aTo=new Date(); aFrom=new Date(now.getFullYear()-1,now.getMonth(),now.getDate());
-      bTo=new Date(aFrom.getTime()-86400000); bFrom=new Date(bTo.getFullYear()-1,bTo.getMonth(),bTo.getDate());
+      aTo=new Date(); aFrom=this._subMonths(now,12);
+      bTo=new Date(aFrom.getTime()-86400000); bFrom=this._subMonths(bTo,12);
     } else if(preset==='yoy'){
-      aTo=new Date(); aFrom=new Date(now.getFullYear(),now.getMonth()-6,now.getDate());
-      bTo=new Date(aTo.getFullYear()-1,aTo.getMonth(),aTo.getDate()); bFrom=new Date(aFrom.getFullYear()-1,aFrom.getMonth(),aFrom.getDate());
+      aTo=new Date(); aFrom=this._subMonths(now,6);
+      bTo=this._subMonths(aTo,12); bFrom=this._subMonths(aFrom,12);
     }
     const fmt=d2=>UI.dateLocal(d2);
     document.getElementById('comp-a-from').value=fmt(aFrom);
@@ -2959,16 +2970,19 @@ const Pages = {
     _sp('sp-table').innerHTML=`<table><thead><tr><th>Ref</th><th>Product</th><th>Category</th><th>Type</th><th>Sell Price</th>${isDir?'<th>Cost Price</th><th style="min-width:130px">Franchise Discount</th><th>Franchise Price</th>':''}<th>Actions</th></tr></thead><tbody>${prods.map(p=>{
       const costPrice=Stock.currentCost(p.id);
       const franStore=d.stores.find(s=>s.isFranchise&&s.active);
-      const discPct=p.franchiseDiscount??franStore?.franchiseDiscount??null;
+      const discPct=(p.franchiseDiscount||null)??franStore?.franchiseDiscount??null;  // Wave M2 / GPTa-41: a stored 0 means "not set" → inherit store default
       const franPrice=p.price&&discPct!=null?p.price*(1-discPct/100):null;
       return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td><td>${p.price?UI.fmt(p.price):(Stock.isConsumableProduct(p)?'<span style="color:#9ca3af;font-size:.75rem">Consumable</span>':'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>')}</td>${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
     }).join('')}</tbody></table>`;
   },
   async _setProductFranDisc(productId, val) {
     if(!Auth.can('editPricing')){UI.toast('Only a Director can change pricing','error');return;}
-    val=String(Math.max(0,Math.min(100,parseFloat(val)||0)));
     const d=DB.get(); const p=d.products.find(pr=>pr.id===productId);
-    if(p){ p.franchiseDiscount=val?parseFloat(val):null; if(!(await this._commitSettings('Discount could not be saved.')))return; UI.toast('Discount updated','success'); this._renderProductsTable(); }
+    if(!p)return;
+    const raw=String(val==null?'':val).trim();  // Wave M2 / GPTa-41: blank = clear → inherit store default (was stored as 0, which blocked the ?? fallback → full price)
+    if(raw===''){ p.franchiseDiscount=null; }
+    else { const n=Math.max(0,Math.min(100,parseFloat(raw))); p.franchiseDiscount=(Number.isFinite(n)&&n>0)?n:null; }  // no UI 0% option → 0 means inherit, stored as null
+    if(!(await this._commitSettings('Discount could not be saved.')))return; UI.toast('Discount updated','success'); this._renderProductsTable();
   },
   _addProductModal() {
     const d=DB.get();
@@ -3053,12 +3067,12 @@ const Pages = {
   async _savePT(){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}const name=document.getElementById('npt-name')?.value.trim();if(!name)return;const d=DB.get();d.productTypes.push({id:'pt_'+Date.now(),name});if(!(await Pages._commitSettings()))return;UI.closeModal();UI.toast('Added','success');this._refreshSettings('categories');},
   _editPTModal(id){const pt=DB.get().productTypes.find(p=>p.id===id);UI.modal('Edit Product Type',`<div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="ept-name" value="${pt.name}"></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._updatePT(\''+id+'\')">Save</button>');},
   async _updatePT(id){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}const name=document.getElementById('ept-name')?.value.trim();if(!name)return;const d=DB.get();const pt=d.productTypes.find(p=>p.id===id);pt.name=name;if(!(await Pages._commitSettings()))return;UI.closeModal();UI.toast('Updated','success');this._refreshSettings('categories');},
-  async _deletePT(id){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}UI.confirm('Remove Product Type','Remove this product type?',async ()=>{const d=DB.get();d.productTypes=d.productTypes.filter(p=>p.id!==id);if(!(await Pages._commitSettings()))return;UI.toast('Removed','info');Pages._refreshSettings('categories');},'Remove');},
+  async _deletePT(id){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}const _inUse=(DB.get().categories||[]).filter(c=>c.ptId===id).length;if(_inUse){UI.toast(`Cannot remove — ${_inUse} categor${_inUse===1?'y':'ies'} still use this product type. Reassign or remove them first.`,'error');return;} /* Wave M1 / GPTa-43 */ UI.confirm('Remove Product Type','Remove this product type?',async ()=>{const d=DB.get();if((d.categories||[]).some(c=>c.ptId===id)){UI.toast('Cannot remove — categories still use this product type','error');return;}/* GPT P3: re-check before the destructive write (stale-modal race) */d.productTypes=d.productTypes.filter(p=>p.id!==id);if(!(await Pages._commitSettings()))return;UI.toast('Removed','info');Pages._refreshSettings('categories');},'Remove');},
   _addCatModal(){const d=DB.get();UI.modal('Add Category',`<div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="nc-name"></div><div class="form-group"><label class="form-label">Product Type *</label><select class="form-select" id="nc-pt">${d.productTypes.map(pt=>`<option value="${pt.id}">${pt.name}</option>`).join('')}</select></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._saveCat()">Add</button>');},
   async _saveCat(){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}const name=document.getElementById('nc-name')?.value.trim();const ptId=document.getElementById('nc-pt')?.value;if(!name)return;const d=DB.get();d.categories.push({id:'cat_'+Date.now(),name,ptId});if(!(await Pages._commitSettings()))return;UI.closeModal();UI.toast('Added','success');this._refreshSettings('categories');},
   _editCatModal(id){const c=DB.get().categories.find(c=>c.id===id);const d=DB.get();UI.modal('Edit Category',`<div class="form-group"><label class="form-label">Name *</label><input class="form-input" id="ec-name" value="${c.name}"></div><div class="form-group"><label class="form-label">Product Type</label><select class="form-select" id="ec-pt">${d.productTypes.map(pt=>`<option value="${pt.id}" ${pt.id===c.ptId?'selected':''}>${pt.name}</option>`).join('')}</select></div>`,'<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._updateCat(\''+id+'\')">Save</button>');},
   async _updateCat(id){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}const d=DB.get();const c=d.categories.find(c=>c.id===id);c.name=document.getElementById('ec-name')?.value.trim()||c.name;c.ptId=document.getElementById('ec-pt')?.value||c.ptId;if(!(await Pages._commitSettings()))return;UI.closeModal();UI.toast('Updated','success');this._refreshSettings('categories');},
-  async _deleteCat(id){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}UI.confirm('Remove Category','Remove this category?',async ()=>{const d=DB.get();d.categories=d.categories.filter(c=>c.id!==id);if(!(await Pages._commitSettings()))return;UI.toast('Removed','info');Pages._refreshSettings('categories');},'Remove');},
+  async _deleteCat(id){if(!Auth.can('editRefData')){UI.toast('Only Head Office or a Director can change this','error');return;}const _inUse=(DB.get().products||[]).filter(p=>p.catId===id).length;if(_inUse){UI.toast(`Cannot remove — ${_inUse} product${_inUse===1?'':'s'} still in this category. Move or remove them first.`,'error');return;} /* Wave M1 / GPTa-43 */ UI.confirm('Remove Category','Remove this category?',async ()=>{const d=DB.get();if((d.products||[]).some(p=>p.catId===id)){UI.toast('Cannot remove — products are still in this category','error');return;}/* GPT P3: re-check before the destructive write (stale-modal race) */d.categories=d.categories.filter(c=>c.id!==id);if(!(await Pages._commitSettings()))return;UI.toast('Removed','info');Pages._refreshSettings('categories');},'Remove');},
 
   // ── Settings: Stores ──
   settingsStores(elId) {
@@ -3209,11 +3223,19 @@ const Pages = {
     if(btn){btn.disabled=true;btn.textContent='Saving...';}
     try{
       const d=DB.get(); const u=d.users.find(u=>u.id===id);
+      if(!u){UI.toast('User not found','error');return;}
+      const newUsername=document.getElementById('eu-user')?.value.trim()||u.username;
+      const newRole=document.getElementById('eu-role')?.value||u.role;
+      const newPin=document.getElementById('eu-pin')?.value;
+      // Wave M1 / GPTa-36: validate BEFORE any mutation (collision, last-Director lockout, PIN format)
+      if(d.users.some(x=>x.id!==id && x.username===newUsername)){UI.toast('Username already exists','error');return;}
+      if(u.role==='director' && newRole!=='director' && d.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot change the last Director — promote another Director first','error');return;}
+      if(newPin&&!/^\d{4}$/.test(newPin)){UI.toast('PIN must be exactly 4 digits','error');return;}
       u.name=document.getElementById('eu-name')?.value.trim()||u.name;
-      u.username=document.getElementById('eu-user')?.value.trim()||u.username;
+      u.username=newUsername;
       const np=document.getElementById('eu-pass')?.value;if(np)u.password=await sha256(np);
-      const newPin=document.getElementById('eu-pin')?.value;if(newPin&&!/^\d{4}$/.test(newPin)){UI.toast('PIN must be exactly 4 digits','error');return;}if(newPin)u.pin=await sha256(newPin);
-      u.role=document.getElementById('eu-role')?.value||u.role;
+      if(newPin)u.pin=await sha256(newPin);
+      u.role=newRole;
       u.storeIds=[...document.querySelectorAll('.eu-store-cb:checked')].map(cb=>cb.value);
       if(!(await this._commitSettings('User could not be updated.')))return;UI.closeModal();UI.toast('Updated','success');this._refreshSettings('users');
     }catch(e){console.error('[Users] Update failed:',e);UI.toast('Failed to update user — please try again','error');}
@@ -3221,9 +3243,18 @@ const Pages = {
   },
   _deleteUser(id){
     if(!Auth.can('manageUsers')){UI.toast('Only a Director can manage users','error');return;}
-    const u=DB.get().users.find(u=>u.id===id);
+    const _d0=DB.get(); const u=_d0.users.find(u=>u.id===id);
+    if(!u){UI.toast('User not found','error');return;}
+    // Wave M1 / GPTa-36: prevent self-delete + last-Director lockout (guard before confirm)
+    if(Auth.user()?.id===id){UI.toast('You cannot delete your own account','error');return;}
+    if(u.role==='director' && _d0.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot delete the last Director','error');return;}
     UI.confirm('Delete User',`Delete user "${u?.name}"? This cannot be undone.`,async()=>{
-      const d=DB.get();d.users=d.users.filter(u2=>u2.id!==id);
+      const d=DB.get();
+      const target=d.users.find(x=>x.id===id); // GPT P3: re-fetch fresh target state inside the callback
+      if(!target){UI.toast('User not found','error');return;}
+      if(Auth.user()?.id===id){UI.toast('You cannot delete your own account','error');return;} // defence-in-depth
+      if(target.role==='director' && d.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot delete the last Director','error');return;}
+      d.users=d.users.filter(u2=>u2.id!==id);
       if(!(await Pages._commitSettings('User could not be deleted.')))return;UI.toast('Deleted','info');Pages._refreshSettings('users');
     },'Delete');
   },
@@ -3385,12 +3416,14 @@ const Pages = {
     UI.confirm('Restore Backup','⚠ This will REPLACE all current app data with the backup. A safety copy of your current data is saved first.',()=>{
     if(file.size>5*1024*1024){UI.toast('Backup file too large (max 5MB)','error');return;}
     const reader=new FileReader();
-    reader.onload=e=>{
+    reader.onload=async e=>{
       let parsed; try{ parsed=JSON.parse(e.target.result); }catch(err){ UI.toast('Restore failed: file is not valid JSON','error'); return; }
+      // GPT-10 (Wave M3): verify the integrity checksum BEFORE _validateAndScrubBackup mutates/strips _meta. Older backups (no checksum) are accepted.
+      if(!(await Pages._verifyBackupChecksum(parsed))){ UI.toast('Restore failed: backup failed its integrity check — the file may be corrupted or edited.','error'); return; }
       const res=Pages._validateAndScrubBackup(parsed);
       if(!res.ok){ UI.toast('Restore failed: '+res.error,'error'); return; }
       try{
-        const _cur=localStorage.getItem(DB.KEY); if(_cur!=null) localStorage.setItem(DB.KEY+'_prerestore',_cur);  // C1: safety-net copy before overwrite
+        if(!Pages._snapshotForUndo()){ UI.toast('Restore cancelled — could not save a safety snapshot first (device storage may be full). Free up space and try again.','error'); return; }  // GPT-9 (Wave M3, GPT P2): never overwrite current data without a usable undo snapshot
         localStorage.setItem(DB.KEY,JSON.stringify(res.data));DB._cache=null;
         UI.toast('Data restored — reloading in 2 seconds...','success');
         setTimeout(()=>location.reload(),2000);
@@ -3398,6 +3431,27 @@ const Pages = {
     };
     reader.readAsText(file);
     },'Restore');
+  },
+  _snapshotForUndo(){  // GPT-9 (Wave M3): snapshot the CURRENT live data (scrubbed) so a restore can be undone. Returns true on success. (The old inline copied the post-migration-absent localStorage[DB.KEY] = a no-op.)
+    try{ const _snap=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get())))); localStorage.setItem(DB.KEY+'_prerestore',JSON.stringify(_snap)); return true; }catch(_e){ return false; }
+  },
+  async _verifyBackupChecksum(parsed){  // GPT-10 (Wave M3): true if no checksum (legacy backup) OR the checksum matches the body; false on mismatch/error
+    if(!(parsed&&parsed._meta&&parsed._meta.checksum)) return true;
+    try{ const _c=Object.assign({},parsed); delete _c._meta; const _actual=await sha256(JSON.stringify(_c)); return _actual===parsed._meta.checksum; }catch(_e){ return false; }
+  },
+  _undoRestore(){  // GPT-9 (Wave M3): roll back to the snapshot taken just before the last restore
+    if(!Auth.is('director')){UI.toast('Only a Director can undo a restore','error');return;}
+    const snap=localStorage.getItem(DB.KEY+'_prerestore');
+    if(snap==null){UI.toast('No restore to undo','info');return;}
+    UI.confirm('Undo Last Restore','↩ Roll back to the data snapshot taken just before your last restore? The current data will be replaced.',()=>{
+      try{
+        localStorage.setItem(DB.KEY,snap);
+        localStorage.removeItem(DB.KEY+'_prerestore');  // clear ONLY after the DB.KEY write succeeded
+        DB._cache=null;
+        UI.toast('Rolling back — reloading in 2 seconds...','success');
+        setTimeout(()=>location.reload(),2000);
+      }catch(err){UI.toast('Undo failed: '+err.message,'error');}
+    },'Undo Restore');
   },
   _downloadDiagnostics(){
     const txt=Diag.text()||'(no diagnostics recorded)';
@@ -3421,9 +3475,10 @@ const Pages = {
         </div>
         <div class="card card-body" style="border:2px solid #fecaca">
           <div style="font-weight:700;margin-bottom:6px;font-size:.95rem;color:#dc2626">⚠ Restore from Backup</div>
-          <div style="color:#6b7280;font-size:.8rem;margin-bottom:10px">Replaces ALL current data. Cannot be undone.</div>
+          <div style="color:#6b7280;font-size:.8rem;margin-bottom:10px">Replaces ALL current data — a safety snapshot is saved first, so you can undo the last restore.</div>
           <input type="file" id="backup-file-input" accept=".json" style="font-size:.8rem;margin-bottom:10px;width:100%">
           <button class="btn btn-danger" onclick="Pages._importBackup()">⬆ Restore from File</button>
+          ${localStorage.getItem(DB.KEY+'_prerestore')!=null?`<button class="btn btn-secondary" style="margin-top:8px" onclick="Pages._undoRestore()">↩ Undo Last Restore</button>`:''}
         </div>
       </div>
       <div class="card card-body" style="margin-bottom:24px">
@@ -3853,13 +3908,14 @@ const Pages = {
       </div>
       ${!filtered.length?'<div class="card card-body empty-state"><p>No deleted movements on record.</p></div>':
       `<div class="tbl-wrap card"><table class="data-table">
-        <thead><tr><th>Deleted At</th><th>Deleted By</th><th>Reason</th><th>Original Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>Staff</th></tr></thead>
+        <thead><tr><th>Deleted At</th><th>Deleted By</th><th>Account</th><th>Reason</th><th>Original Date</th><th>Store</th><th>Product</th><th>Type</th><th>Qty</th><th>Staff</th></tr></thead>
         <tbody>${filtered.map(t=>{
           const store=d.stores.find(s=>s.id===t.storeId);
           const typeLabel=Txn.badgeShort(t);
           return`<tr>
             <td style="white-space:nowrap;font-size:.8rem">${new Date(t._deletedAt).toLocaleString('en-AU',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td>
             <td><strong>${UI.esc(t._deletedBy||'—')}</strong></td>
+            <td style="font-size:.8rem;color:#6b7280">${t._deletedByUser?UI.esc((t._deletedByUser.username||t._deletedByUser.name||'?')+(t._deletedByUser.role?' ('+t._deletedByUser.role+')':'')):'—'}</td>
             <td><span style="color:#dc2626;font-size:.8rem">${UI.esc(t._deleteReason||'—')}</span></td>
             <td>${t.date}</td>
             <td style="font-size:.8rem">${UI.esc(store?.name||t.storeId)}</td>  <!-- B-F2 -->
@@ -4112,7 +4168,7 @@ const Pages = {
       ).map(t=>{
         const p = d.products.find(pr=>pr.id===t.productId);
         const sell = p?.price || 0;
-        const prodDisc = (p && p.franchiseDiscount != null) ? p.franchiseDiscount : baseDisc;
+        const prodDisc = (p && p.franchiseDiscount) ? p.franchiseDiscount : baseDisc;  // Wave M2 / GPTa-41: a stored 0 (no UI 0% option) = inherit the office default, not full price
         const full = sell * t.qty, discAmt = full * (prodDisc/100);
         return { product:p, date:t.date, qty:t.qty, sell, prodDisc, full, discAmt, owed: full - discAmt };
       });
@@ -4129,7 +4185,7 @@ const Pages = {
     const rows=[];
     Pages._franchiseInvoiceData(d, fromDate, toDate).forEach(sd=>{
       sd.lines.forEach(l=>{
-        rows.push([sd.office.name, l.product?.name||'—', l.date, l.qty, l.sell.toFixed(2), (sd.discMissing?'0% (NOT SET)':sd.baseDisc+'%'), (l.product&&l.product.franchiseDiscount!=null)?l.product.franchiseDiscount+'%':'(office default)', l.prodDisc+'%', l.full.toFixed(2), l.discAmt.toFixed(2), l.owed.toFixed(2)]);
+        rows.push([sd.office.name, l.product?.name||'—', l.date, l.qty, l.sell.toFixed(2), (sd.discMissing?'0% (NOT SET)':sd.baseDisc+'%'), (l.product&&l.product.franchiseDiscount)?l.product.franchiseDiscount+'%':'(office default)', l.prodDisc+'%', l.full.toFixed(2), l.discAmt.toFixed(2), l.owed.toFixed(2)]);
       });
     });
     this._downloadCSV(`bob-franchise-invoice-${fromDate}-to-${toDate}.csv`,headers,rows);
@@ -4569,6 +4625,8 @@ const Pages = {
     const lines=this._delLines||[];
     const validLines=lines.filter(ln=>ln.productId&&ln.qty&&ln.unitCost);
     if(!validLines.length){UI.toast('Add at least one complete product line','error');return;}
+    const _dupId=validLines.map(l=>l.productId).find((id,i,arr)=>arr.indexOf(id)!==i);  // Wave M2 / GPTa-38: same product on two lines is always a typo (manual entry) — block, no merge
+    if(_dupId){UI.toast(`"${UI.productName(_dupId)}" is listed on more than one line — combine it into a single line and try again`,'error');return;}
     if(lines.some(ln=>ln.productId&&ln.qty<=0)){UI.toast('All product quantities must be greater than zero','error');return;}
     const _fr=UI.money(document.getElementById('del-freight')?.value,{optional:true});  // F1-C02: Infinity<0 is false — the old negative check let 1e309 through
     const _tx=UI.money(document.getElementById('del-tax')?.value,{optional:true});

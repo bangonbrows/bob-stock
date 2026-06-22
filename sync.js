@@ -341,7 +341,7 @@ const Sync = {
    * Generates a unique device ID for this browser/device.
    */
   _generateDeviceId() {
-    const id = 'dev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);
+    const id = 'dev_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');  // GPT-18 (Wave M3): crypto, not Math.random
     localStorage.setItem('bob_device_id', id);
     return id;
   },
@@ -370,7 +370,7 @@ const Sync = {
     }
 
     this._tabStartedAt = Date.now();
-    this._tabId = 'tab_' + this._tabStartedAt + '_' + Math.random().toString(36).substring(2, 7);
+    this._tabId = 'tab_' + this._tabStartedAt + '_' + Array.from(crypto.getRandomValues(new Uint8Array(3)), b => b.toString(16).padStart(2, '0')).join('');  // GPT-18 (Wave M3): crypto, not Math.random
     this._bc = new BroadcastChannel('bob-sync-leader');
     this._pendingClaim = false;  // T2-07: track if we have an active claim in flight
 
@@ -1285,8 +1285,18 @@ const Sync = {
       await this.push();
     }
 
-    // Check if data is stale
-    if (this._lastSyncAt > 0 && (Date.now() - this._lastSyncAt) > this.STALE_THRESHOLD) {
+    // GPTa-24: a brand-new (never-synced) device renders the bundled seed until the first 30s poll —
+    // pull immediately so staff act on real data, not seed. Non-blocking to app use; offline-safe.
+    // pull() does NOT reliably throw on failure (failed HTTP returns internally), so confirm success by
+    // the advanced cursor (_lastSyncAt>0), never by a catch — otherwise we'd show "Up to date" on seed.
+    if (this._lastSyncAt === 0) {
+      console.log('[Sync] First run on this device — pulling initial data...');
+      this._showStatus('↻ Syncing latest data…', 'info', 0);
+      try { await this.pull(); } catch (e) {}
+      if (this._lastSyncAt > 0) { this._showStatus('✓ Up to date', 'success', 2500); }
+      else { this._showStatus('⚠ Could not sync yet — showing local data; will retry automatically', 'error', 0); }
+    } else if (this._lastSyncAt > 0 && (Date.now() - this._lastSyncAt) > this.STALE_THRESHOLD) {
+      // Check if data is stale
       console.log('[Sync] Data is stale, pulling fresh...');
       await this.pull();
     }

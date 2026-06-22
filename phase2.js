@@ -713,7 +713,7 @@ document.head.appendChild(style);
 const _stepperTimers = {};
 
 window.createStepper = function(opts) {
-  const id = opts.id || ('stp_' + Math.random().toString(36).slice(2,8));
+  const id = opts.id || ('stp_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2,'0')).join(''));  // GPT-18 (Wave M3): crypto, not Math.random
   const val = opts.value ?? 0;
   const min = opts.min ?? 0;
   const max = opts.max ?? 9999;

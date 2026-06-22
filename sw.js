@@ -12,7 +12,7 @@
 
 const CACHE_NAME = 'bob-stock-v10';  // D-044: precache Dexie URL realigned to the page's pinned+SRI jsdelivr build
 
-const PRECACHE_URLS = [
+const CORE_URLS = [
   './',
   './index.html',
   './db.js',
@@ -22,17 +22,25 @@ const PRECACHE_URLS = [
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
+];
+// CDN-hosted libs — cached for offline, but a transient CDN miss must NOT fail the whole install (GPT-5c, Wave M3)
+const OPTIONAL_URLS = [
   'https://cdn.jsdelivr.net/npm/dexie@3.2.7/dist/dexie.min.js',  // D-044: match the page's pinned+SRI Dexie build (was unpkg unmin — never cache-hit, broke first-load-offline)
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js',  // MFL-022: charts work offline
 ];
+const PRECACHE_URLS = [...CORE_URLS, ...OPTIONAL_URLS];  // kept for reference
 
 // ─── Install ──────────────────────────────────────────────────────────────────
 self.addEventListener('install', (event) => {
   console.log('[SW] Installing', CACHE_NAME);
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE_URLS))
-      .then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then(async (cache) => {
+      // GPT-5c (Wave M3): the app shell is REQUIRED — fail the install if any core file is missing,
+      // so a broken deploy never replaces a working cache with an incomplete one.
+      await cache.addAll(CORE_URLS);
+      // CDN libs are best-effort — a transient miss is non-fatal (fetched/cached on first use instead).
+      await Promise.all(OPTIONAL_URLS.map((u) => cache.add(u).catch((e) => console.warn('[SW] optional precache miss (non-fatal):', u, e))));
+    }).then(() => self.skipWaiting())
   );
 });
 
@@ -113,8 +121,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'BOB Stock';
   const options = {
     body: data.body || 'Stock data updated',
-    icon: data.icon || './icon-192.png',
-    badge: './icon-192.png',
+    icon: data.icon || './icons/icon-192.png',
+    badge: './icons/icon-192.png',
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

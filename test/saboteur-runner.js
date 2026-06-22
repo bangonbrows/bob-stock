@@ -50,7 +50,7 @@ process.on('exit', _cleanup);
 });
 
 const REPO = path.resolve(__dirname, '..');
-const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'phase2.js', 'sw.js'];
+const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'phase2.js', 'sw.js', 'staticwebapp.config.json'];
 // Per-child budget. Bumped from 600s: under parallel CPU contention a single smoke run (~266s
 // in-repo) slows down, so give generous headroom to avoid a contention timeout reading as a false BLIND.
 const SMOKE_TIMEOUT = 1200000;
@@ -214,9 +214,10 @@ const MUTATIONS = [
     repl: "const _cost=(function(){const c=parseFloat(document.getElementById('nc-cost')?.value);return {ok:!(isNaN(c)||c<0),value:c};})();",
     note: 'cost entry reverts to ad-hoc parseFloat -> 1e309 saves a $Infinity cost row (F1-C02 / GPT FINAL C-02)' },
   { id: 'S-39', file: 'index.html',
-    find: "if (!Number.isSafeInteger(n)) return { ok: false, error: 'magnitude too large' };\n    if (n < 0) return { ok: false, error: 'cannot be negative' };",
-    repl: "if (!Number.isSafeInteger(n)) return { ok: false, error: 'magnitude too large' };",
-    note: 'shared Validate.qty stops rejecting negative qty -> backup import (+ sync pull) accept negative ledger rows: ledger/cache disagree after restore (F1-H01 / GPT FINAL H-01). Retargeted at the shared validator after the F-followup replaced the inline backup check (find-string was orphaned -> SKIPPED in run #1).' },
+    find: "error: 'magnitude too large' };\r\n    if (n < 0) return { ok: false, error: 'cannot be negative' };",
+    repl: "error: 'magnitude too large' };",
+    note: "shared Validate.qty stops rejecting negative qty -> backup import (+ sync pull) accept negative ledger rows: ledger/cache disagree after restore (F1-H01 / GPT FINAL H-01). Anchored on the UNIQUE 'magnitude too large' line of Validate.qty (money has an identical 'cannot be negative' line) and uses \\r\\n because index.html is CRLF in the working tree (a bare \\n find SKIPPED in the 2026-06-22 full sweep).",
+    altFind: "error: 'magnitude too large' };\n    if (n < 0) return { ok: false, error: 'cannot be negative' };" },
   { id: 'S-40', file: 'index.html',
     find: "if(!_p.ok||!_l.ok){UI.toast('Line '+(i+1)",
     repl: "if(!_p.ok&&!_l.ok){UI.toast('Line '+(i+1)",
@@ -643,6 +644,90 @@ const MUTATIONS = [
     find: "const stores=myIds?d.stores.filter(s=>s.active&&myIds.includes(s.id)):d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));",
     repl: "const stores=d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));",
     note: "the LIVE stock CSV stops scoping to the user's stores -> a franchisee CSV exports every store's column + HO (cross-store visibility footgun) (GPT L3 re-audit) (Wave L3r2 / Tier 5 #6)" },
+  { id: 'S-143', file: 'index.html',
+    find: "if(!Auth.can('deleteMovement')){UI.toast('You do not have permission to delete movements','error');return;} // Wave M1 / GPTa-37 (defence-in-depth)",
+    repl: "",
+    note: "_confirmDelete drops the deleteMovement gate -> staff (shared store computer) can permanently delete any movement (Wave M1 / GPTa-37)" },
+  { id: 'S-144', file: 'index.html',
+    find: "if(d.users.some(x=>x.id!==id && x.username===newUsername)){UI.toast('Username already exists','error');return;}",
+    repl: "",
+    note: "_updateUser drops the username-collision check -> editing a user can duplicate another user's username (Wave M1 / GPTa-36)" },
+  { id: 'S-145', file: 'index.html',
+    find: "if(u.role==='director' && newRole!=='director' && d.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot change the last Director — promote another Director first','error');return;}",
+    repl: "",
+    note: "_updateUser drops the last-Director demote guard -> the only Director can be demoted = admin lockout (Wave M1 / GPTa-36)" },
+  { id: 'S-146', file: 'index.html',
+    find: "if(t.status!=='pending'){UI.toast('This count was '+t.status+' — it can no longer be approved','info');UI.closeModal();return;} // Wave M1 / GPTa-42: reject approving a rejected (or non-pending) take",
+    repl: "",
+    note: "_approveStockTake drops the pending guard -> a rejected stock-take can be approved and posts adjustments (Wave M1 / GPTa-42)" },
+  { id: 'S-147', file: 'index.html',
+    find: "if((d.products||[]).some(p=>p.catId===id)){UI.toast('Cannot remove — products are still in this category','error');return;}",
+    repl: "",
+    note: "_deleteCat drops the in-callback in-use re-check -> a stale-modal race orphans products under a deleted category (Wave M1 / GPTa-43 + GPT P3)" },
+  { id: 'S-147b', sentinel: 'S-147', file: 'index.html',
+    find: "if((d.categories||[]).some(c=>c.ptId===id)){UI.toast('Cannot remove — categories still use this product type','error');return;}",
+    repl: "",
+    note: "_deletePT drops the in-callback in-use re-check -> a stale-modal race orphans categories under a deleted product type (Wave M1 / GPTa-43 + GPT P3)" },
+  { id: 'S-148', file: 'index.html',
+    find: "const hasMultiLoc = isHO || (userStoreIds.length > 1); // Wave M1 / GPTa-45: any multi-store user (incl. non-franchisee managers/TMs) gets the location picker",
+    repl: "const hasMultiLoc = isHO || (isFran && userStoreIds.length > 1);",
+    note: "logMovement reverts hasMultiLoc -> a multi-store store_manager/TM gets no picker, pinned to storeIds[0] (Wave M1 / GPTa-45)" },
+  { id: 'S-149', file: 'index.html',
+    find: "_deletedByUser:Auth.actor(),_deleteReason:reason}",
+    repl: "_deleteReason:reason}",
+    note: "_confirmDelete drops the verified-account stamp -> hard-delete audit rows lose the trusted Account (Wave M1 / GPTa-37 [1b])" },
+  { id: 'S-149b', sentinel: 'S-149', file: 'index.html',
+    find: "_deletedByUser:Auth.actor(),_deleteReason:_undoMeta.deleteReason}",
+    repl: "_deleteReason:_undoMeta.deleteReason}",
+    note: "_undoMovement drops the verified-account stamp -> staff Undo audit rows lose the trusted Account (Wave M1 / GPT P3)" },
+  { id: 'S-150', file: 'index.html',
+    find: "if(raw===''){ p.franchiseDiscount=null; }",
+    repl: "if(raw===''){ p.franchiseDiscount=0; }",
+    note: "_setProductFranDisc stores 0 (not null) on clear -> blocks the store-default fallback -> franchisee billed full price (Wave M2 / GPTa-41)" },
+  { id: 'S-150b', sentinel: 'S-150', file: 'index.html',
+    find: "const prodDisc = (p && p.franchiseDiscount) ? p.franchiseDiscount : baseDisc;  // Wave M2 / GPTa-41: a stored 0 (no UI 0% option) = inherit the office default, not full price",
+    repl: "const prodDisc = (p && p.franchiseDiscount != null) ? p.franchiseDiscount : baseDisc;",
+    note: "franchise billing treats a legacy stored 0 as a real 0% discount -> office charged full price instead of inheriting its default (Wave M2 / GPTa-41)" },
+  { id: 'S-151', file: 'index.html',
+    find: "const _dupId=validLines.map(l=>l.productId).find((id,i,arr)=>arr.indexOf(id)!==i);",
+    repl: "const _dupId=null;",
+    note: "_saveDelivery drops the duplicate-product guard -> the same product on two lines muddles the saved cost (Wave M2 / GPTa-38)" },
+  { id: 'S-152', file: 'sync.js',
+    find: "if (this._lastSyncAt === 0) {\n      console.log('[Sync] First run on this device — pulling initial data...');",
+    repl: "if (false) {\n      console.log('[Sync] First run on this device — pulling initial data...');",
+    note: "Sync.init drops the never-synced immediate pull -> a brand-new device acts on bundled seed until the 30s poll (Wave M2 / GPTa-24)" },
+  { id: 'S-153', file: 'index.html',
+    find: "try{ const _snap=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get())))); localStorage.setItem(DB.KEY+'_prerestore',JSON.stringify(_snap)); return true; }catch(_e){ return false; }",
+    repl: "try{ const _cur=localStorage.getItem(DB.KEY); if(_cur!=null) localStorage.setItem(DB.KEY+'_prerestore',_cur); return true; }catch(_e){ return false; }",
+    note: "_snapshotForUndo reverts to copying the post-migration-absent localStorage[DB.KEY] -> no real snapshot taken (Wave M3 / GPT-9)" },
+  { id: 'S-153b', sentinel: 'S-153', file: 'index.html',
+    find: "if(!Auth.is('director')){UI.toast('Only a Director can undo a restore','error');return;}",
+    repl: "",
+    note: "_undoRestore drops the director gate -> a non-director can roll back/replace all data (Wave M3 / GPT-9 + GPT P3)" },
+  { id: 'S-154', file: 'index.html',
+    find: "try{ const _c=Object.assign({},parsed); delete _c._meta; const _actual=await sha256(JSON.stringify(_c)); return _actual===parsed._meta.checksum; }catch(_e){ return false; }",
+    repl: "return true;",
+    note: "_verifyBackupChecksum stops comparing -> a corrupted/edited backup passes the integrity check (Wave M3 / GPT-10)" },
+  { id: 'S-155', file: 'sw.js',
+    find: "await cache.addAll(CORE_URLS);",
+    repl: "await cache.addAll(PRECACHE_URLS);",
+    note: "SW install reverts to an atomic addAll of all URLs -> one CDN miss fails the whole install, offline support silently absent (Wave M3 / GPT-5c)" },
+  { id: 'S-155b', sentinel: 'S-155', file: 'sw.js',
+    find: "icon: data.icon || './icons/icon-192.png',",
+    repl: "icon: data.icon || './icon-192.png',",
+    note: "SW push icon path reverts to ./icon-192.png (wrong dir) -> notification icon 404s (Wave M3 / GPT-5b)" },
+  { id: 'S-156', file: 'sync.js',
+    find: "const id = 'dev_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');  // GPT-18 (Wave M3): crypto, not Math.random",
+    repl: "const id = 'dev_' + Date.now() + '_' + Math.random().toString(36).substring(2, 11);",
+    note: "device id reverts to Math.random (predictable/collision-prone) (Wave M3 / GPT-18)" },
+  { id: 'S-157', file: 'index.html',
+    find: "t.setDate(Math.min(d,last)); return t;",
+    repl: "t.setDate(d); return t;",
+    note: "_subMonths drops the day-clamp -> month-end dates overflow into the next month (Wave M3 / date-preset)" },
+  { id: 'S-158', file: 'staticwebapp.config.json',
+    find: "\"rewrite\": \"/index.html\",\n    \"exclude\": [\"/*.{js,css,json,png,ico,svg,webmanifest,woff,woff2,map}\", \"/icons/*\"]",
+    repl: "\"rewrite\": \"/index.html\"",
+    note: "navigationFallback loses its exclude list -> a missing .js is rewritten to HTML and can be cached under the .js URL (Wave M3 / Ca-M17)" },
 ];
 
 function copyRepoTo(dir) {
@@ -731,12 +816,14 @@ function runSmokeChildAsync(dir) {  // ASYNC — used by the parallel mutation p
       copyRepoTo(dir);
       const target = path.join(dir, m.file);
       const before = fs.readFileSync(target, 'utf8');
-      if (before.indexOf(m.find) === -1) {
+      let useFind = m.find;
+      if (before.indexOf(useFind) === -1 && m.altFind && before.indexOf(m.altFind) !== -1) useFind = m.altFind;  // CRLF/LF resilience: fall back to an alternate (e.g. \r\n vs \n) find string
+      if (before.indexOf(useFind) === -1) {
         missingFind++;
         console.log(`  [SKIP-NOFIND] ${m.id} :: source string not found in ${m.file} (mutation needs updating)`);
         return;
       }
-      fs.writeFileSync(target, before.replace(m.find, m.repl), 'utf8');
+      fs.writeFileSync(target, before.replace(useFind, m.repl), 'utf8');
       // GPT P2 (re-audit): never count a result from an UNRELIABLE run. A COMPLETE run (summary present
       // AND total === EXPECTED_SENTINELS) is trusted outright. A PARTIAL run is only trusted if the target's
       // verdict is DETERMINISTIC — identical across the original + a retry. This admits the intentionally-early
