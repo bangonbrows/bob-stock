@@ -60,15 +60,15 @@ async function runSmoke(repo) {
       await page.evaluate(async (s) => { Sync._emailUrl = 'https://x.logic.azure.com/email'; UI.confirm = (a, b, c) => { const cb = (typeof b === 'function') ? b : (typeof c === 'function' ? c : null); if (cb) return cb(); }; const d = DB.get(); const toStore = d.stores.find(x => x.id !== s.storeId && x.type !== 'warehouse') || d.stores.find(x => x.id !== s.storeId); const trId = 'c03_' + Date.now(); const tr = { id: trId, date: new Date().toISOString(), createdAt: new Date().toISOString(), fromStoreId: s.storeId, toStoreId: toStore.id, createdBy: Auth.user(), createdByName: 't', status: 'draft', items: [{ productId: s.productId, sentQty: 2, receivedQty: null, status: 'confirmed', flagNote: '' }], receivedBy: null, notes: '' }; d.transfers = d.transfers || []; d.transfers.push(tr); await DB.updateTransferDurable(tr, null); d.transactions.push({ id: 'c03in', storeId: s.storeId, productId: s.productId, type: 'in', qty: 5, date: '2026-06-01', createdAt: new Date().toISOString() }); if (Stock._buildCache) Stock._buildCache(); /* Wave L1: origin needs >=2 on hand or the new submitDraft over-send guard rejects before the notify/write path this sentinel tests (would mask the S-03 mutation -> BLIND) */ bobDB.transaction = () => Promise.reject(new Error('forced')); try { await Transfer.submitDraft(trId, { [s.productId]: 2 }); } catch (e) {} await new Promise(r => setTimeout(r, 500)); }, s);
       await page.waitForTimeout(200); rec('S-03', 'no email on failed write', emailCalls === 0, `emailCalls=${emailCalls} (clean must be 0)`); await ctx.close(); }
 
-    // S-04 (BEHAVIOURAL): drive the real Sync.pull() carrying ONE new row + an OLDER server watermark
-    // (1000) while the cursor is at 5000. The row forces the merge path (past the empty-page early
-    // return) so the live Math.max clamp (sync.js:843) actually executes; it must NOT rewind the
-    // cursor. A behaviour-equivalent rewrite of the clamp still flips this red (round-6 SA-F-F1-R7).
+    // S-04 (BEHAVIOURAL): drive the real Sync.pull() carrying ONE new row + a LOWER frozen maxId (1000)
+    // while the ID cursor is at 5000. The row forces the merge path (past the empty-page early return)
+    // so the live Math.max ID-cursor clamp actually executes; it must NOT rewind the cursor to 1000.
+    // A behaviour-equivalent rewrite of the clamp still flips this red (round-6 SA-F-F1-R7).
     { let SID = '', PID = ''; const { ctx, page } = await newPage(b);
-      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', processedCount: 0 } : { items: [{ TransactionId: 'sp_s04_1', Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-04', DeviceId: 'PROBE_OTHER_DEVICE', SyncTimestamp: 900 }], serverTimestamp: 1000, status: 'ok' }) }); });
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', processedCount: 0 } : { items: [{ ID: 4000, TransactionId: 'sp_s04_1', Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-04', DeviceId: 'PROBE_OTHER_DEVICE', SyncTimestamp: 900 }], maxId: '1000', count: 1, status: 'ok' }) }); });
       await waitBoot(page, repo); const s = await setup(page); SID = s.storeId; PID = s.productId;
-      const r = await page.evaluate(async () => { Sync._pullUrl = 'https://x.logic.azure.com/pull'; Sync._syncLock = false; Sync._lastSyncAt = 5000; const before = Sync._lastSyncAt; try { await Sync.pull(); } catch (e) {} await new Promise(r => setTimeout(r, 300)); return { before, after: Sync._lastSyncAt, merged: DB.get().transactions.some(t => t.id === 'sp_s04_1') }; });
-      rec('S-04', 'live pull clamp prevents cursor rewind', r.merged && r.after >= r.before, `${r.before}->${r.after} merged=${r.merged} (clean: merged + no rewind to 1000)`); await ctx.close(); }
+      const r = await page.evaluate(async () => { Sync._pullUrl = 'https://x.logic.azure.com/pull'; Sync._syncLock = false; Sync._lastSyncId = 5000; const before = Sync._lastSyncId; try { await Sync.pull(); } catch (e) {} await new Promise(r => setTimeout(r, 300)); return { before, after: Sync._lastSyncId, merged: DB.get().transactions.some(t => t.id === 'sp_s04_1') }; });
+      rec('S-04', 'live pull ID-cursor clamp prevents cursor rewind', r.merged && r.after >= r.before, `${r.before}->${r.after} merged=${r.merged} (clean: merged + no rewind to 1000)`); await ctx.close(); }
 
     // S-05: UI.esc neutralises an injected onerror (live UI.esc)
     { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
@@ -147,10 +147,10 @@ async function runSmoke(repo) {
       const r = await page.evaluate(() => { const RealDate=Date; const fixed=new RealDate('2026-06-05T01:00:00+08:00'); class FakeDate extends RealDate { constructor(...a){ if(a.length===0) super(fixed.getTime()); else super(...a); } static now(){ return fixed.getTime(); } } window.Date=FakeDate; let tl; try{ tl=UI.todayLocal(); } finally { window.Date=RealDate; } return { tl }; });
       rec('S-19', 'date is Perth-local not UTC slice', r.tl==='2026-06-05', `01:00 AWST -> ${r.tl} (clean: 2026-06-05, not UTC 2026-06-04)`); await ctx.close(); }
 
-    // S-20: an empty pull still advances the cursor to the server watermark (Gemini-1/I-89)
-    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body=r.request().postData()||''; const isPush=body.includes('"transactions"'); return r.fulfill({ status:200, contentType:'application/json', body: JSON.stringify(isPush?{status:'ok'}:{items:[],serverTimestamp:7777,status:'ok'}) }); }); await waitBoot(page, repo);
-      const r = await page.evaluate(async () => { Sync._pullUrl='https://x.logic.azure.com/pull'; Sync._syncLock=false; Sync._lastSyncAt=100; const before=Sync._lastSyncAt; try{ await Sync.pull(); }catch(e){} await new Promise(r=>setTimeout(r,200)); return { before, after:Sync._lastSyncAt }; });
-      rec('S-20', 'empty pull advances cursor to watermark', r.after>=7777, `${r.before}->${r.after} (clean: advances to 7777)`); await ctx.close(); }
+    // S-20: an empty pull still advances the ID cursor to the frozen maxId (Gemini-1/I-89 — sync stagnation)
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body=r.request().postData()||''; const isPush=body.includes('"transactions"'); return r.fulfill({ status:200, contentType:'application/json', body: JSON.stringify(isPush?{status:'ok'}:{items:[],maxId:'7777',count:0,status:'ok'}) }); }); await waitBoot(page, repo);
+      const r = await page.evaluate(async () => { Sync._pullUrl='https://x.logic.azure.com/pull'; Sync._syncLock=false; Sync._lastSyncId=100; const before=Sync._lastSyncId; try{ await Sync.pull(); }catch(e){} await new Promise(r=>setTimeout(r,200)); return { before, after:Sync._lastSyncId }; });
+      rec('S-20', 'empty pull advances ID cursor to frozen maxId', r.after>=7777, `${r.before}->${r.after} (clean: advances to 7777)`); await ctx.close(); }
 
     // S-21: deep actor-slim removes NESTED credential objects (SA-I-F1)
     { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo);
@@ -988,17 +988,26 @@ async function runSmoke(repo) {
         d.productTypes.push({ id: 'pt147u', name: 'PT Used' });
         d.categories.push({ id: 'cat147u', name: 'Cat Used', ptId: 'pt147f' }, { id: 'cat147f', name: 'Cat Free', ptId: 'pt147f' });
         // PT: pre-check passes (no category uses pt147u yet); a referencing category appears before the destructive write
-        UI.confirm = (t, m, cb) => { DB.get().categories.push({ id: 'cat147race', name: 'Race', ptId: 'pt147u' }); return cb(); };
-        await Pages._deletePT('pt147u'); const ptUsedKept = DB.get().productTypes.some(p => p.id === 'pt147u');
+        let cbPT = Promise.resolve();
+        UI.confirm = (t, m, cb) => { DB.get().categories.push({ id: 'cat147race', name: 'Race', ptId: 'pt147u' }); cbPT = Promise.resolve(cb()); };
+        await Pages._deletePT('pt147u'); await cbPT;
+        // C2 makes delete = deactivate, so "still exists" is blind — assert the in-use PT stays ACTIVE.
+        const ptU = DB.get().productTypes.find(p => p.id === 'pt147u'); const ptUsedActive = !!ptU && ptU.active !== false;
         // Cat: pre-check passes (no product in cat147u yet); a referencing product appears before the destructive write
-        UI.confirm = (t, m, cb) => { DB.get().products.push({ id: 'P147race', name: 'P', catId: 'cat147u', active: true }); return cb(); };
-        await Pages._deleteCat('cat147u'); const catUsedKept = DB.get().categories.some(c => c.id === 'cat147u');
-        // unused category (no race) still deletes
-        UI.confirm = (t, m, cb) => { if (typeof cb === 'function') return cb(); };
-        await Pages._deleteCat('cat147f'); const catFreeGone = !DB.get().categories.some(c => c.id === 'cat147f');
-        return { ptUsedKept, catUsedKept, catFreeGone };
+        let cbU = Promise.resolve();
+        UI.confirm = (t, m, cb) => { DB.get().products.push({ id: 'P147race', name: 'P', catId: 'cat147u', active: true }); cbU = Promise.resolve(cb()); };
+        await Pages._deleteCat('cat147u'); await cbU;
+        // C2 makes delete = deactivate, so "still exists" is true either way — the discriminator is that the
+        // in-use cat stays ACTIVE (the re-check blocks any change); the bug (re-check removed) DEACTIVATES it.
+        const catU = DB.get().categories.find(c => c.id === 'cat147u'); const catUsedActive = !!catU && catU.active !== false;
+        // unused category (no race) is now DEACTIVATED (Chunk 7 C2 — was hard-deleted), still exists w/ active:false
+        let cbP = Promise.resolve();
+        UI.confirm = (t, m, cb) => { cbP = Promise.resolve(typeof cb === 'function' ? cb() : undefined); };
+        await Pages._deleteCat('cat147f'); await cbP;
+        const catFree = DB.get().categories.find(c => c.id === 'cat147f'); const catFreeDeactivated = !!catFree && catFree.active === false;
+        return { ptUsedActive, catUsedActive, catFreeDeactivated };
       });
-      rec('S-147', 'in-use re-check inside the delete callback blocks orphaning (stale-modal race); unused still deletes', r.ptUsedKept && r.catUsedKept && r.catFreeGone, `ptUsedKept=${r.ptUsedKept} catUsedKept=${r.catUsedKept} catFreeGone=${r.catFreeGone} (clean: all true)`); await ctx.close(); }
+      rec('S-147', 'in-use re-check blocks orphaning (in-use cat/PT stay ACTIVE in the stale-modal race); an unused cat is DEACTIVATED not removed (Chunk 7 C2)', r.ptUsedActive && r.catUsedActive && r.catFreeDeactivated, `ptUsedActive=${r.ptUsedActive} catUsedActive=${r.catUsedActive} catFreeDeactivated=${r.catFreeDeactivated} (clean: all true)`); await ctx.close(); }
 
     // S-148 (Wave M1 / GPTa-45): a multi-store NON-franchisee (store_manager/TM) gets the location picker in
     // Log Movement; a single-store user does not. Drives the LIVE Pages.logMovement render.
@@ -1085,20 +1094,20 @@ async function runSmoke(repo) {
       });
       rec('S-151', 'duplicate-product delivery is rejected (nothing saved); a distinct-product delivery saves', r.dupRejected && r.cleanSaved, `dupRejected=${r.dupRejected} cleanSaved=${r.cleanSaved} (clean: both true)`); await ctx.close(); }
 
-    // S-152 (Wave M2 / GPTa-24): a never-synced device (_lastSyncAt===0) pulls immediately at Sync.init() and
+    // S-152 (Wave M2 / GPTa-24): a never-synced device (_lastSyncId===0) pulls immediately at Sync.init() and
     // shows the syncing indicator. Drives the LIVE boot path (config via sessionStorage fallback → leader → pull).
     { let SID = '', PID = ''; const { ctx, page } = await newPage(b);
-      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', processedCount: 0 } : { items: [{ TransactionId: 'sp_m152', Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-20', DeviceId: 'OTHER_DEVICE', SyncTimestamp: 1000 }], serverTimestamp: 1000, status: 'ok' }) }); });
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', processedCount: 0 } : { items: [{ ID: 1000, TransactionId: 'sp_m152', Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-20', DeviceId: 'OTHER_DEVICE', SyncTimestamp: 1000 }], maxId: '1000', count: 1, status: 'ok' }) }); });
       await waitBoot(page, repo); const s = await setup(page); SID = s.storeId; PID = s.productId;
       const r = await page.evaluate(async () => {
         sessionStorage.setItem('bob_sync_config', JSON.stringify({ pushUrl: 'https://x.logic.azure.com/push', pullUrl: 'https://x.logic.azure.com/pull' }));
-        localStorage.setItem('bob_last_sync', '0'); Sync._lastSyncAt = 0;
+        localStorage.setItem('bob_last_sp_id', '0'); Sync._lastSyncId = 0;
         Sync._startPolling = () => {}; // don't leave a 30s interval running in the test
         Sync._initLeaderElection = () => { Sync._isLeader = true; }; // make this tab leader synchronously (leader election is covered by S-124/S-128); we test the first-run pull branch
         const statuses = []; Sync._showStatus = (msg) => { statuses.push(String(msg)); };
         Sync.init(); // do NOT await: init() later awaits navigator.serviceWorker.ready, which never resolves under headless file:// — the first-run pull runs well before that
         await new Promise(r => setTimeout(r, 1800)); // 600ms leader wait + the mocked pull + margin
-        return { cursorAdvanced: Sync._lastSyncAt > 0, merged: DB.get().transactions.some(t => t.id === 'sp_m152'), showedSyncing: statuses.some(m => /syncing/i.test(m)) };
+        return { cursorAdvanced: Sync._lastSyncId > 0, merged: DB.get().transactions.some(t => t.id === 'sp_m152'), showedSyncing: statuses.some(m => /syncing/i.test(m)) };
       });
       rec('S-152', 'never-synced device pulls immediately at init + shows the syncing indicator', r.cursorAdvanced && r.merged && r.showedSyncing, `cursorAdvanced=${r.cursorAdvanced} merged=${r.merged} showedSyncing=${r.showedSyncing} (clean: all true)`); await ctx.close(); }
 
@@ -1168,6 +1177,533 @@ async function runSmoke(repo) {
     { const cfg = fs.readFileSync(path.join(repo, 'staticwebapp.config.json'), 'utf8'); let parsed = null; try { parsed = JSON.parse(cfg); } catch (e) {}
       const hasExclude = !!(parsed && parsed.navigationFallback && Array.isArray(parsed.navigationFallback.exclude) && parsed.navigationFallback.exclude.length > 0);
       rec('S-158', 'staticwebapp.config navigationFallback has an exclude list (static assets not rewritten to HTML)', hasExclude, `hasExclude=${hasExclude} (clean: true)`); }
+
+    // S-159 (Azure pull-hardening): pull issues an ID-CURSOR request (body carries lastId, NOT since/$skip)
+    // and advances the bob_last_sp_id cursor to the frozen maxId after a normal merge. Drives LIVE Sync.pull().
+    { let SID = '', PID = ''; const reqs = []; const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); if (!isPush) reqs.push(body); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok' } : { items: [{ ID: 600, TransactionId: 'sp_s159', Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-20', DeviceId: 'OTHER_DEVICE', SyncTimestamp: 600 }], maxId: '600', count: 1, status: 'ok' }) }); });
+      await waitBoot(page, repo); const s = await setup(page); SID = s.storeId; PID = s.productId;
+      const r = await page.evaluate(async () => { Sync._pullUrl = 'https://x.logic.azure.com/pull'; Sync._syncLock = false; Sync._lastSyncId = 500; localStorage.removeItem('bob_last_sp_id'); try { await Sync.pull(); } catch (e) {} await new Promise(r => setTimeout(r, 300)); return { after: Sync._lastSyncId, persisted: localStorage.getItem('bob_last_sp_id'), merged: DB.get().transactions.some(t => t.id === 'sp_s159') }; });
+      let p0 = {}; try { p0 = JSON.parse(reqs[0] || '{}'); } catch (e) {}
+      const idCursorReq = p0.lastId !== undefined && p0.since === undefined && p0['$skip'] === undefined;
+      rec('S-159', 'pull uses ID-cursor request (lastId, no since/$skip) + advances bob_last_sp_id on merge', idCursorReq && r.after === 600 && r.persisted === '600' && r.merged, `idCursorReq=${idCursorReq} after=${r.after} persisted=${r.persisted} merged=${r.merged} (clean: true/600/600/true)`); await ctx.close(); }
+
+    // S-160 (Azure pull-hardening / C2 phantom-read): pull starts each cycle from (cursor - PULL_ID_LOOKBACK)
+    // so async-committed rows from the previous cycle are re-seen (deduped locally). Drives LIVE Sync.pull().
+    { const reqs = []; const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); if (!isPush) reqs.push(body); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok' } : { items: [], maxId: '9000', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo);
+      await page.evaluate(async () => { Sync._pullUrl = 'https://x.logic.azure.com/pull'; Sync._syncLock = false; Sync._lastSyncId = 5000; try { await Sync.pull(); } catch (e) {} await new Promise(r => setTimeout(r, 150)); });
+      let p0 = {}; try { p0 = JSON.parse(reqs[0] || '{}'); } catch (e) {}
+      rec('S-160', 'pull applies the C2 phantom-read lookback (requests lastId = cursor - PULL_ID_LOOKBACK)', p0.lastId === '4900', `reqLastId=${p0.lastId} (clean: 4900 = 5000-100)`); await ctx.close(); }
+
+    // S-161 (Azure pull-hardening / C1 freeze): across a 2-page pull, page 1 sends NO maxId (server freezes it),
+    // and page 2 echoes that frozen maxId + advances lastId to the page max — so concurrent inserts can't extend
+    // the cycle. Drives LIVE Sync.pull() with a forced full first page (1000 rows).
+    { let SID = '', PID = ''; const reqs = []; let pageNo = 0; const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); if (isPush) return r.fulfill({ status: 200, contentType: 'application/json', body: '{"status":"ok"}' }); reqs.push(body); pageNo++; if (pageNo === 1) { const items = []; for (let i = 1; i <= 1000; i++) items.push({ ID: i, TransactionId: 'sp_p1_' + i, Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-20', DeviceId: 'OTHER_DEVICE', SyncTimestamp: i }); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, maxId: '12345', count: 1000, status: 'ok' }) }); } return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: '12345', count: 0, status: 'ok' }) }); });
+      await waitBoot(page, repo); const s = await setup(page); SID = s.storeId; PID = s.productId;
+      await page.evaluate(async () => { Sync._pullUrl = 'https://x.logic.azure.com/pull'; Sync._syncLock = false; Sync._lastSyncId = 0; try { await Sync.pull(); } catch (e) {} await new Promise(r => setTimeout(r, 500)); });
+      let p1 = {}, p2 = {}; try { p1 = JSON.parse(reqs[0] || '{}'); } catch (e) {} try { p2 = JSON.parse(reqs[1] || '{}'); } catch (e) {}
+      const twoPages = reqs.length >= 2; const page1NoMax = p1.maxId === undefined; const page2Echo = p2.maxId === '12345' && p2.lastId === '1000';
+      rec('S-161', 'C1 freeze: page1 omits maxId; page2 echoes frozen maxId + advances lastId to page max', twoPages && page1NoMax && page2Echo, `pages=${reqs.length} p1NoMax=${page1NoMax} p2Echo=${page2Echo} (clean: all true)`); await ctx.close(); }
+
+    // S-162 (Azure pull-hardening / Codex P2 — fail closed): a FULL page (1000) whose max ID does NOT advance
+    // past the cursor = a malformed server page. pull() must ABORT the cycle without merging or advancing the
+    // cursor (no infinite loop, no half-applied cycle). Cursor starts high; items have low IDs (no progress);
+    // frozen maxId is high — so a non-fail-closed impl would wrongly advance the cursor to it. Drives LIVE pull().
+    { let SID = '', PID = ''; const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); if (isPush) return r.fulfill({ status: 200, contentType: 'application/json', body: '{"status":"ok"}' }); const items = []; for (let i = 1; i <= 1000; i++) items.push({ ID: i, TransactionId: 'sp_fc_' + i, Type: 'in', Qty: 1, StoreId: SID, ProductId: PID, Date: '2026-06-20', DeviceId: 'OTHER_DEVICE', SyncTimestamp: i }); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items, maxId: '200000', count: 1000, status: 'ok' }) }); });
+      await waitBoot(page, repo); const s = await setup(page); SID = s.storeId; PID = s.productId;
+      const r = await page.evaluate(async () => { Sync._pullUrl = 'https://x.logic.azure.com/pull'; Sync._syncLock = false; Sync._lastSyncId = 100000; const before = Sync._lastSyncId; try { await Sync.pull(); } catch (e) {} await new Promise(r => setTimeout(r, 300)); return { before, after: Sync._lastSyncId, merged: DB.get().transactions.some(t => String(t.id).indexOf('sp_fc_') === 0) }; });
+      rec('S-162', 'pull fails closed on a no-forward-progress full page (cursor unchanged, nothing merged)', r.after === r.before && r.merged === false, `before=${r.before} after=${r.after} merged=${r.merged} (clean: 100000/100000/false)`); await ctx.close(); }
+
+    // S-163 (Azure Chunk 2 — honest ingest contract): a row the SERVER permanently REJECTS (validation
+    // failure) is NOT marked _synced and IS surfaced — a durable _rejected flag + reason persists so an
+    // admin can see it and push() excludes it from re-push. The old processedCount ack would have marked
+    // the whole batch synced = silent data loss. Drives the LIVE Sync.push() against the v2 contract.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: [], duplicates: [], rejected: [{ index: 0, TransactionId: 'sb163', reasonCode: 'BAD_ID', reason: 'hostile id' }], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb163', type: 'in', qty: 3, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); await Sync.push(); await new Promise(r => setTimeout(r, 400)); await DB.refresh(); const t = DB.get().transactions.find(x => x.id === 'sb163'); return { synced: t ? !!t._synced : 'GONE', rejected: t ? t._rejected === true : 'GONE', code: t ? t._rejectCode : '' }; }, s);
+      rec('S-163', 'server-rejected row is NOT synced + is flagged/surfaced (no silent data loss)', r.synced === false && r.rejected === true && r.code === 'BAD_ID', `synced=${r.synced} rejected=${r.rejected} code=${r.code} (clean: false+true+BAD_ID)`); await ctx.close(); }
+
+    // S-164 (Azure Chunk 2): a DUPLICATE id returned in `duplicates` (server already has it / 409 idempotent)
+    // is treated as synced — re-sending an already-landed row must clear, not loop forever unsynced.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: [], duplicates: ['sb164'], rejected: [], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb164', type: 'in', qty: 3, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); await Sync.push(); await new Promise(r => setTimeout(r, 400)); await DB.refresh(); const t = DB.get().transactions.find(x => x.id === 'sb164'); return { synced: t ? !!t._synced : 'GONE' }; }, s);
+      rec('S-164', 'duplicate (409 idempotent) id is treated as synced', r.synced === true, `synced=${r.synced} (clean: true)`); await ctx.close(); }
+
+    // S-165 (Azure Chunk 2): an ACCEPTED id is marked _synced — the normal success path under the new
+    // contract (proves accepted rows are honoured, complementing the reject/dup/failed paths).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: ['sb165'], duplicates: [], rejected: [], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb165', type: 'in', qty: 3, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); await Sync.push(); await new Promise(r => setTimeout(r, 400)); await DB.refresh(); const t = DB.get().transactions.find(x => x.id === 'sb165'); return { synced: t ? !!t._synced : 'GONE', rejected: t ? t._rejected === true : false }; }, s);
+      rec('S-165', 'accepted id is marked synced (and not flagged rejected)', r.synced === true && r.rejected === false, `synced=${r.synced} rejected=${r.rejected} (clean: true+false)`); await ctx.close(); }
+
+    // S-166 (Azure Chunk 2): a row the server reports as `failed` (retryable: 429/5xx/transient create)
+    // is left UNSYNCED and NOT quarantined (not _rejected) and triggers a pending retry — a recoverable
+    // failure must never be lost (marked synced) NOR permanently quarantined like a validation reject.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: [], duplicates: [], rejected: [], failed: [{ index: 0, TransactionId: 'sb166', reason: 'throttled 429', retryable: true }], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { Sync._setPending(false); Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb166', type: 'in', qty: 3, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); await Sync.push(); await new Promise(r => setTimeout(r, 400)); await DB.refresh(); const t = DB.get().transactions.find(x => x.id === 'sb166'); return { synced: t ? !!t._synced : 'GONE', rejected: t ? t._rejected === true : 'GONE', pending: Sync._getPending() }; }, s);
+      rec('S-166', 'retryable failed row left unsynced + not quarantined + pending retry', r.synced === false && r.rejected !== true && r.pending === true, `synced=${r.synced} rejected=${r.rejected} pending=${r.pending} (clean: false+notTrue+true)`); await ctx.close(); }
+
+    // S-167 (Azure Chunk 2 — v2 H3 parity): under the new contract, when the server ACCEPTS a row but the
+    // LOCAL _synced write fails, the UI must NOT lie "Synced ✓" and must keep pending=true (the Wave-H/H3
+    // guarantee, on the v2 path). The v2 ack is gated by a single `_clean` invariant (all durable writes
+    // ok + nothing failed/unaccounted/conflicting); a failed markSynced makes _clean false → retry.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: ['sb167'], duplicates: [], rejected: [], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { let lastStatus = ''; Sync._showStatus = (msg) => { lastStatus = String(msg || ''); }; DB.markTransactionsSynced = async () => false; Sync._setPending(false); Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb167', type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); try { await Sync.push(); } catch (e) {} await new Promise(r2 => setTimeout(r2, 300)); return { lastStatus, pending: Sync._getPending() }; }, s);
+      rec('S-167', 'v2 markSynced-fail does not lie "Synced" + keeps pending', r.lastStatus.indexOf('Synced ✓') === -1 && r.pending === true, `status="${r.lastStatus}" pending=${r.pending} (clean: not-Synced + pending true)`); await ctx.close(); }
+
+    // S-168 (Azure Chunk 2 — GPT audit P2, coverage): a sent row the server returns in NO bucket
+    // (accepted/duplicate/rejected/failed all omit it — e.g. a partial 2xx) must stay unsynced AND force a
+    // retry (pending true) — never a clean "Synced ✓" with pending cleared that strands the row.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: [], duplicates: [], rejected: [], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { let lastStatus = ''; Sync._showStatus = (msg) => { lastStatus = String(msg || ''); }; Sync._setPending(false); Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb168', type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); try { await Sync.push(); } catch (e) {} await new Promise(r2 => setTimeout(r2, 300)); await DB.refresh(); const t = DB.get().transactions.find(x => x.id === 'sb168'); return { synced: t ? !!t._synced : 'GONE', rejected: t ? t._rejected === true : false, pending: Sync._getPending(), lastStatus }; }, s);
+      rec('S-168', 'no-bucket sent row stays unsynced + forces retry (not falsely Synced)', r.synced === false && r.rejected !== true && r.pending === true && r.lastStatus.indexOf('Synced ✓') === -1, `synced=${r.synced} rejected=${r.rejected} pending=${r.pending} status="${r.lastStatus}" (clean: false/notTrue/true/not-Synced)`); await ctx.close(); }
+
+    // S-169 (Azure Chunk 2 — GPT audit P2): if the durable quarantine write (markTransactionsRejected)
+    // FAILS, push must keep pending + retry and NOT report a clean "Synced" — else the rejected row is
+    // stranded (un-flagged, un-synced, no proactive retry).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: [], duplicates: [], rejected: [{ index: 0, TransactionId: 'sb169', reasonCode: 'BAD_ID', reason: 'x' }], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { let lastStatus = ''; Sync._showStatus = (msg) => { lastStatus = String(msg || ''); }; DB.markTransactionsRejected = async () => false; Sync._setPending(false); Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb169', type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); try { await Sync.push(); } catch (e) {} await new Promise(r2 => setTimeout(r2, 300)); return { pending: Sync._getPending(), lastStatus }; }, s);
+      rec('S-169', 'failed quarantine write keeps pending + retry (not falsely Synced)', r.pending === true && r.lastStatus.indexOf('Synced ✓') === -1, `pending=${r.pending} status="${r.lastStatus}" (clean: true + not-Synced)`); await ctx.close(); }
+
+    // S-170 (Azure Chunk 2 — GPT audit P2, fail-closed; round-2 strengthened): if the server returns the SAME
+    // id in BOTH a "landed" bucket (accepted/duplicate) AND rejected/failed, the response is contradictory.
+    // The client must make NO durable change to that row — NOT _synced AND NOT quarantined (_rejected) — and
+    // keep pending + retry, so the row genuinely re-sends next cycle. (Round-1 quarantined it, which silently
+    // removed it from the retry set — GPT's round-2 BLOCK. Asserting rejected!==true captures that.)
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPush = body.includes('"transactions"'); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isPush ? { status: 'ok', inputCount: 1, accepted: ['sb170'], duplicates: [], rejected: [{ index: 0, TransactionId: 'sb170', reasonCode: 'BAD_ID', reason: 'x' }], failed: [], serverTimestamp: 1 } : { items: [], maxId: '0', count: 0, status: 'ok' }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { Sync._setPending(false); Sync._pushUrl = 'https://x.logic.azure.com/push'; Sync._isLeader = true; Sync._syncLock = false; const txn = { id: 'sb170', type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2026-06-24', createdAt: new Date().toISOString(), _synced: false }; await DB.addTransactionDurable(txn); try { await Sync.push(); } catch (e) {} await new Promise(r2 => setTimeout(r2, 300)); await DB.refresh(); const t = DB.get().transactions.find(x => x.id === 'sb170'); return { synced: t ? !!t._synced : 'GONE', rejected: t ? t._rejected === true : 'GONE', pending: Sync._getPending() }; }, s);
+      rec('S-170', 'conflicting-bucket id: not synced AND not quarantined (retries) + keeps pending', r.synced === false && r.rejected !== true && r.pending === true, `synced=${r.synced} rejected=${r.rejected} pending=${r.pending} (clean: false + notTrue + true)`); await ctx.close(); }
+
+    // ───────── Azure Chunk 4 — multi-table record sync (records.js) ─────────
+    // S-171: submitting a transfer ALSO emits a `submit` record-step (additive), carrying the
+    // transfer_out ledger ids as expectedLedgerKeys (R1). Drives the LIVE Transfer.create path.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { const d = DB.get(); const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir; const to = (d.stores.find(x => x.id !== s.storeId && x.active) || {}).id; await DB.addTransactionDurable({ id: 'seed171_' + Date.now(), type: 'in', qty: 50, storeId: s.storeId, productId: s.productId, date: '2026-07-01', createdAt: new Date().toISOString() }); if (Stock._buildCache) Stock._buildCache(); const res = await Transfer.create(s.storeId, to, [{ productId: s.productId, qty: 5 }]); await new Promise(r => setTimeout(r, 200)); const sub = (DB.get().recordSteps || []).find(x => x.recordId === res.transferId && x.stepType === 'submit'); return { ok: res.ok, hasSubmit: !!sub, type: sub ? sub.recordType : '', keys: sub ? (sub.payload.expectedLedgerKeys || []).length : 0 }; }, s);
+      rec('S-171', 'submitting a transfer emits a submit record-step (with ledger keys for R1)', r.ok && r.hasSubmit && r.type === 'transfer' && r.keys > 0, `ok=${r.ok} submit=${r.hasSubmit} type=${r.type} keys=${r.keys} (clean: true/true/transfer/>0)`); await ctx.close(); }
+
+    // S-172: receiving a transfer emits a `receive` step keyed on the STABLE receiveAttemptId (D4-E),
+    // carrying the transfer_in ledger ids. Drives the LIVE Transfer.receive path.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { const d = DB.get(); const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir; const to = s.storeId; const from = (d.stores.find(x => x.id !== to && x.active) || {}).id; const tid = 'r172_' + Date.now(); const tr = { id: tid, date: new Date().toISOString(), createdAt: new Date().toISOString(), fromStoreId: from, toStoreId: to, createdBy: Auth.actor(), createdByName: 't', status: 'in_transit', type: 'standard', items: [{ productId: s.productId, sentQty: 5, receivedQty: null, status: 'pending', flagNote: '' }], receivedBy: null, notes: '' }; d.transfers = d.transfers || []; d.transfers.push(tr); await DB.updateTransferDurable(tr, null); const res = await Transfer.receive(tid, [{ productId: s.productId, receivedQty: 5 }]); await new Promise(r => setTimeout(r, 200)); const step = (DB.get().recordSteps || []).find(x => x.recordId === tid && x.stepType === 'receive'); return { ok: res.ok, hasReceive: !!step, keyed: step ? step.stepId.indexOf(':receive:' + to + ':') > 0 : false, attempt: step ? !!step.payload.receiveAttemptId : false, keys: step ? (step.payload.expectedLedgerKeys || []).length : 0 }; }, s);
+      rec('S-172', 'receiving emits a receive step keyed on receiveAttemptId + ledger keys', r.ok && r.hasReceive && r.keyed && r.attempt && r.keys > 0, `ok=${r.ok} recv=${r.hasReceive} keyed=${r.keyed} attempt=${r.attempt} keys=${r.keys} (clean: all true/>0)`); await ctx.close(); }
+
+    // S-173: the fold rebuilds a transfer from its steps and is ORDER-INDEPENDENT (sort Seq→Timestamp→StepId).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { const tid = 't173'; const submit = { stepId: 'tr:' + tid + ':submit', recordType: 'transfer', recordId: tid, stepType: 'submit', seq: 10, fromStoreId: 'a', toStoreId: 'b', status: 'in_transit', timestamp: 1000, payload: { fromStoreId: 'a', toStoreId: 'b', type: 'standard', items: [{ productId: 'p1', sentQty: 5 }], expectedLedgerKeys: [] } }; const receive = { stepId: 'tr:' + tid + ':receive:b:ra1', recordType: 'transfer', recordId: tid, stepType: 'receive', seq: 20, fromStoreId: 'a', toStoreId: 'b', status: 'completed', timestamp: 2000, deviceId: 'D1', payload: { receiveAttemptId: 'ra1', lines: [{ productId: 'p1', receivedQty: 5, flagged: false }], completed: true, expectedLedgerKeys: [] } }; const a = Records.foldRecord([submit, receive]); const b = Records.foldRecord([receive, submit]); return { statusA: a && a.status, qtyA: a && a.items[0].receivedQty, sameStatus: !!a && !!b && a.status === b.status, sameQty: !!a && !!b && a.items[0].receivedQty === b.items[0].receivedQty }; });
+      rec('S-173', 'fold rebuilds a transfer from steps, order-independent', r.statusA === 'completed' && r.qtyA === 5 && r.sameStatus && r.sameQty, `status=${r.statusA} qty=${r.qtyA} sameStatus=${r.sameStatus} sameQty=${r.sameQty} (clean: completed/5/true/true)`); await ctx.close(); }
+
+    // S-174: double-receive conflict detection — two receive attempts with DIFFERENT per-line qty → status
+    // 'conflict'; SAME qty → NOT a conflict (benign duplicate, silent). Pure Records.foldRecord logic.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { const mk = (att, qty, ts, dev) => ({ stepId: 'tr:t174:receive:b:' + att, recordType: 'transfer', recordId: 't174', stepType: 'receive', seq: 20, fromStoreId: 'a', toStoreId: 'b', status: 'completed', timestamp: ts, deviceId: dev, payload: { receiveAttemptId: att, lines: [{ productId: 'p1', receivedQty: qty, flagged: false }], completed: true, expectedLedgerKeys: [] } }); const submit = { stepId: 'tr:t174:submit', recordType: 'transfer', recordId: 't174', stepType: 'submit', seq: 10, fromStoreId: 'a', toStoreId: 'b', status: 'in_transit', timestamp: 1000, payload: { fromStoreId: 'a', toStoreId: 'b', items: [{ productId: 'p1', sentQty: 10 }], expectedLedgerKeys: [] } }; const diff = Records.foldRecord([submit, mk('ra1', 5, 2000, 'D1'), mk('ra2', 3, 2100, 'D2')]); const same = Records.foldRecord([submit, mk('ra1', 5, 2000, 'D1'), mk('ra2', 5, 2100, 'D2')]); return { diffStatus: diff && diff.status, sameStatus: same && same.status }; });
+      rec('S-174', 'double-receive: different qty → conflict, same qty → no conflict (silent)', r.diffStatus === 'conflict' && r.sameStatus !== 'conflict', `diff=${r.diffStatus} same=${r.sameStatus} (clean: conflict / not-conflict)`); await ctx.close(); }
+
+    // S-175: R1 stock-state derivation — 'confirmed' (ledger rows present + not rejected), 'mismatch' (any
+    // expected key server-rejected), 'pending' (any key not yet seen). Pure Records.stockStateFor logic.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { const d = DB.get(); d.transactions.push({ id: 'k_ok', type: 'in', qty: 1, storeId: 'x', productId: 'p', date: '2026-07-01', createdAt: new Date().toISOString(), _synced: true }); d.transactions.push({ id: 'k_rej', type: 'in', qty: 1, storeId: 'x', productId: 'p', date: '2026-07-01', createdAt: new Date().toISOString(), _synced: false, _rejected: true }); return { confirmed: Records.stockStateFor(['k_ok']), mismatch: Records.stockStateFor(['k_ok', 'k_rej']), pending: Records.stockStateFor(['k_missing']) }; });
+      rec('S-175', 'R1 stock state: confirmed / mismatch (rejected) / pending (missing)', r.confirmed === 'confirmed' && r.mismatch === 'mismatch' && r.pending === 'pending', `confirmed=${r.confirmed} mismatch=${r.mismatch} pending=${r.pending} (clean: confirmed/mismatch/pending)`); await ctx.close(); }
+
+    // S-176: pushSteps R1 FAIL-CLOSED ordering — a stock-effecting step is HELD (not pushed) until ALL its
+    // expectedLedgerKeys are durably _synced; once they are, it becomes eligible. Drives LIVE Sync.pushSteps.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; let steps = []; try { steps = (JSON.parse(body).data.steps) || []; } catch (e) {} const ids = steps.map(x => x.StepId); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', inputCount: ids.length, accepted: ids, duplicates: [], rejected: [], failed: [], serverTimestamp: 1 }) }); }); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { Sync._stepsPushUrl = 'https://x.logic.azure.com/steps-push'; Sync._isLeader = true; Sync._syncLock = false; const lk = 'lk176'; await DB.addTransactionDurable({ id: lk, type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2026-07-01', createdAt: new Date().toISOString(), _synced: false }); const step = { stepId: 'tr:t176:receive:b:ra', recordType: 'transfer', recordId: 't176', stepType: 'receive', seq: 20, fromStoreId: 'a', toStoreId: 'b', status: 'completed', timestamp: 1, payload: { receiveAttemptId: 'ra', lines: [], expectedLedgerKeys: [lk] }, _synced: false }; await DB.addStepDurable(step); await Sync.pushSteps(); await new Promise(r => setTimeout(r, 200)); const heldStep = DB.get().recordSteps.find(x => x.stepId === step.stepId); const held = heldStep ? heldStep._synced !== true : false; await DB.markTransactionsSynced(new Set([lk])); Sync._syncLock = false; await Sync.pushSteps(); await new Promise(r => setTimeout(r, 200)); const after = DB.get().recordSteps.find(x => x.stepId === step.stepId); return { held, eligibleAfter: after ? after._synced === true : false }; }, s);
+      rec('S-176', 'pushSteps R1 fail-closed: step held until ledger synced, then eligible', r.held && r.eligibleAfter, `held=${r.held} eligibleAfter=${r.eligibleAfter} (clean: both true)`); await ctx.close(); }
+
+    // S-177: pushSteps honours the honest contract — a server-rejected step is durably quarantined
+    // (_rejected) and NOT marked _synced (no silent data loss). Drives LIVE Sync.pushSteps.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; let steps = []; try { steps = (JSON.parse(body).data.steps) || []; } catch (e) {} const ids = steps.map(x => x.StepId); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', inputCount: ids.length, accepted: [], duplicates: [], rejected: ids.map((id, i) => ({ index: i, StepId: id, reasonCode: 'BAD_STEP', reason: 'x' })), failed: [], serverTimestamp: 1 }) }); }); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => { Sync._stepsPushUrl = 'https://x.logic.azure.com/steps-push'; Sync._isLeader = true; Sync._syncLock = false; const step = { stepId: 'st:t177:reject', recordType: 'stocktake', recordId: 't177', stepType: 'reject', seq: 30, ownerStoreId: 'x', status: 'rejected', timestamp: 1, payload: { rejectedBy: 'd' }, _synced: false }; await DB.addStepDurable(step); await Sync.pushSteps(); await new Promise(r => setTimeout(r, 200)); const s2 = DB.get().recordSteps.find(x => x.stepId === step.stepId); return { synced: s2 ? s2._synced === true : 'GONE', rejected: s2 ? s2._rejected === true : 'GONE', code: s2 ? s2._rejectCode : '' }; });
+      rec('S-177', 'pushSteps: server-rejected step quarantined (_rejected) + NOT synced', r.synced === false && r.rejected === true && r.code === 'BAD_STEP', `synced=${r.synced} rejected=${r.rejected} code=${r.code} (clean: false+true+BAD_STEP)`); await ctx.close(); }
+
+    // S-178: pullSteps merges a remote step and FOLDS it into a materialised local record (a transfer this
+    // device never created becomes visible). Drives LIVE Sync.pullSteps + Records.applyFold.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; const isPull = body.includes('lastId'); if (!isPull) return r.fulfill({ status: 200, contentType: 'application/json', body: '{"status":"ok"}' }); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ ID: 10, StepId: 'tr:p178:submit', RecordType: 'transfer', RecordId: 'p178', StepType: 'submit', Seq: 10, OwnerStoreId: 'a', FromStoreId: 'a', ToStoreId: 'b', Status: 'in_transit', Payload: JSON.stringify({ fromStoreId: 'a', toStoreId: 'b', type: 'standard', items: [{ productId: 'p', sentQty: 3 }], expectedLedgerKeys: [] }), ActorId: '', ActorName: 'x', DeviceId: 'OTHER', Timestamp: 1000, Deleted: false }], maxId: '10', count: 1, status: 'ok' }) }); }); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => { Sync._stepsPullUrl = 'https://x.logic.azure.com/steps-pull'; Sync._syncLock = false; Sync._lastStepSyncId = 0; localStorage.removeItem('bob_last_step_sp_id'); try { await Sync.pullSteps(); } catch (e) {} await new Promise(r => setTimeout(r, 300)); const stepStored = (DB.get().recordSteps || []).some(x => x.stepId === 'tr:p178:submit'); const tr = (DB.get().transfers || []).find(x => x.id === 'p178'); return { stepStored, materialised: !!tr, status: tr ? tr.status : '' }; });
+      rec('S-178', 'pullSteps merges a remote step + folds it into a materialised record', r.stepStored && r.materialised && r.status === 'in_transit', `stepStored=${r.stepStored} materialised=${r.materialised} status=${r.status} (clean: true/true/in_transit)`); await ctx.close(); }
+
+    // S-179: automatic backfill (D4-I) emits ONE deterministic snapshot step per pre-existing local record and
+    // runs ONCE (guarded by the migration flag). Drives LIVE Records.runBackfillOnce.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => { localStorage.removeItem('bob_records_backfilled'); const d = DB.get(); d.transfers = d.transfers || []; const tid = 'bf179_' + Date.now(); const tr = { id: tid, fromStoreId: 'a', toStoreId: 'b', status: 'completed', items: [{ productId: 'p', sentQty: 1 }] }; d.transfers.push(tr); await DB.updateTransferDurable(tr); const first = await Records.runBackfillOnce(); const step = (DB.get().recordSteps || []).find(x => x.recordId === tid && x.stepType === 'backfill'); const second = await Records.runBackfillOnce(); const count = (DB.get().recordSteps || []).filter(x => x.recordId === tid && x.stepType === 'backfill').length; return { first, hasStep: !!step, detId: step ? step.stepId.indexOf('tr:' + tid + ':backfill:') === 0 : false, flag: localStorage.getItem('bob_records_backfilled') === '1', count }; });
+      rec('S-179', 'backfill emits one deterministic snapshot step per record, runs once', r.first && r.hasStep && r.detId && r.flag && r.count === 1, `first=${r.first} step=${r.hasStep} detId=${r.detId} flag=${r.flag} count=${r.count} (clean: true×4 + count 1)`); await ctx.close(); }
+
+    // S-180 (D4-M): new delivery + stock-take ids carry a crypto suffix (Records.genId), not bare Date.now()
+    // — required for cross-device id uniqueness once records sync. Source check against the (mutated) repo copy.
+    { const idx = fs.readFileSync(path.join(repo, 'index.html'), 'utf8');
+      const delCrypto = idx.includes("Records.genId('del_')") && !/id:'del_'\+Date\.now\(\),/.test(idx);
+      const stCrypto = idx.includes("Records.genId('st_')");
+      rec('S-180', 'new delivery/stocktake ids use a crypto suffix (Records.genId), not bare Date.now() (source check)', delCrypto && stCrypto, `delCrypto=${delCrypto} stCrypto=${stCrypto} (clean: both true)`); }
+
+    // S-181: Director resolveConflict applies ONLY the delta adjustment (chosen − already-credited), emits a
+    // resolve step at a BUMPED generation that NAMES the settled attempts, and completes the transfer.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { const d = DB.get(); const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir; const to = s.storeId; const pid = s.productId; const tid = 'c181_' + Date.now(); await DB.addTransactionDurable({ id: 'cin181_' + Date.now(), type: 'transfer_in', qty: 5, storeId: to, productId: pid, transferId: tid, date: '2026-07-01', createdAt: new Date().toISOString(), _synced: true }); if (Stock._buildCache) Stock._buildCache(); const from = (d.stores.find(x => x.id !== to && x.active) || {}).id; const tr = { id: tid, fromStoreId: from, toStoreId: to, status: 'conflict', type: 'standard', items: [{ productId: pid, sentQty: 10, receivedQty: 5, status: 'accepted' }], _conflict: { kind: 'qty_disagreement', generation: 0, attempts: [{ attemptId: 'ra1', deviceId: 'D1', lines: [{ productId: pid, receivedQty: 5 }] }, { attemptId: 'ra2', deviceId: 'D2', lines: [{ productId: pid, receivedQty: 3 }] }] } }; d.transfers = d.transfers || []; d.transfers.push(tr); await DB.updateTransferDurable(tr, null); const res = await Transfer.resolveConflict(tid, { [pid]: 3 }); await new Promise(r => setTimeout(r, 200)); const adj = (DB.get().transactions || []).filter(t => t.transferId === tid && (t.type === 'adjustment_out' || t.type === 'adjustment_in')); const step = (DB.get().recordSteps || []).find(x => x.recordId === tid && x.stepType === 'resolve'); const t2 = DB.get().transfers.find(x => x.id === tid); return { ok: res.ok, adjType: adj[0] && adj[0].type, adjQty: adj[0] && adj[0].qty, gen: step ? step.payload.generation : 0, names: step ? (step.payload.resolvesAttemptIds || []).length : 0, status: t2 && t2.status }; }, s);
+      rec('S-181', 'resolveConflict applies ONLY the delta adjustment + bumped-generation resolve naming attempts', r.ok && r.adjType === 'adjustment_out' && r.adjQty === 2 && r.gen === 1 && r.names === 2 && r.status === 'completed', `ok=${r.ok} adj=${r.adjType}/${r.adjQty} gen=${r.gen} names=${r.names} status=${r.status} (clean: ok/adjustment_out/2/1/2/completed)`); await ctx.close(); }
+
+    // S-182 (Chunk 4 / D4-E ledger dedup): receiving a transfer TAGS the initial transfer_in ledger row with the
+    // deterministic per-product receive key, and _toSharePoint carries it as IdempotencyKey; a non-receive row
+    // falls back to its TransactionId. (Two offline devices compute the SAME key → the server's Enforce-Unique 409s
+    // the 2nd → stock can't double.) Drives LIVE Transfer.receive + Sync._toSharePoint.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { const d = DB.get(); const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir; const to = s.storeId; const from = (d.stores.find(x => x.id !== to && x.active) || {}).id; const tid = 'r182_' + Date.now(); const tr = { id: tid, date: new Date().toISOString(), createdAt: new Date().toISOString(), fromStoreId: from, toStoreId: to, createdBy: Auth.actor(), createdByName: 't', status: 'in_transit', type: 'standard', items: [{ productId: s.productId, sentQty: 5, receivedQty: null, status: 'pending', flagNote: '' }], receivedBy: null, notes: '' }; d.transfers = d.transfers || []; d.transfers.push(tr); await DB.updateTransferDurable(tr, null); await Transfer.receive(tid, [{ productId: s.productId, receivedQty: 5 }]); const rin = (DB.get().transactions || []).find(t => t.transferId === tid && t.type === 'transfer_in'); const sp = Sync._toSharePoint(rin); const otherSp = Sync._toSharePoint({ id: 'oo182', type: 'in', qty: 1, storeId: to, productId: s.productId, date: '2026-07-01', createdAt: new Date().toISOString() }); const expected = 'transfer:' + tid + ':receive:' + to + ':' + s.productId; return { tagged: rin ? rin.idempotencyKey : '', spKey: sp.IdempotencyKey, expected, otherKey: otherSp.IdempotencyKey }; }, s);
+      rec('S-182', 'receive tags the ledger row + _toSharePoint carries the per-product receive idempotency key (else TransactionId)', r.tagged === r.expected && r.spKey === r.expected && r.otherKey === 'oo182', `tagged=${r.tagged === r.expected} spKey=${r.spKey === r.expected} otherKey=${r.otherKey} (clean: true/true/oo182)`); await ctx.close(); }
+
+    // S-183 (GPT Chunk-4 BLOCK #1 / R1): the FOLD must not present a clean completed receive whose stock hasn't
+    // landed — a receive step with a missing ledger key folds to status 'stock_pending', a rejected one to
+    // 'stock_mismatch' (NOT 'completed'). A confirmed receive stays 'completed'. Pure Records logic.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const d = DB.get(); d.transactions.push({ id: 'r183_ok', type: 'transfer_in', qty: 5, storeId: 'b', productId: 'p1', date: '2026-07-02', createdAt: new Date().toISOString(), _synced: true }); d.transactions.push({ id: 'r183_rej', type: 'transfer_in', qty: 5, storeId: 'b', productId: 'p1', date: '2026-07-02', createdAt: new Date().toISOString(), _synced: false, _rejected: true });
+        const mk = keys => { const submit = { stepId: 'tr:x:submit', recordType: 'transfer', recordId: 'x', stepType: 'submit', seq: 10, fromStoreId: 'a', toStoreId: 'b', status: 'in_transit', timestamp: 1000, payload: { fromStoreId: 'a', toStoreId: 'b', items: [{ productId: 'p1', sentQty: 5 }], expectedLedgerKeys: [] } }; const receive = { stepId: 'tr:x:receive:b:ra1', recordType: 'transfer', recordId: 'x', stepType: 'receive', seq: 20, fromStoreId: 'a', toStoreId: 'b', status: 'completed', timestamp: 2000, deviceId: 'D1', payload: { receiveAttemptId: 'ra1', lines: [{ productId: 'p1', receivedQty: 5, flagged: false }], completed: true, expectedLedgerKeys: keys } }; return Records.foldRecord([submit, receive]); };
+        return { confirmed: mk(['r183_ok']).status, pending: mk(['r183_missing']).status, mismatch: mk(['r183_ok', 'r183_rej']).status };
+      });
+      rec('S-183', 'R1: receive without landed stock folds to stock_pending / stock_mismatch, not clean completed', r.confirmed === 'completed' && r.pending === 'stock_pending' && r.mismatch === 'stock_mismatch', `confirmed=${r.confirmed} pending=${r.pending} mismatch=${r.mismatch} (clean: completed/stock_pending/stock_mismatch)`); await ctx.close(); }
+
+    // S-184 (GPT Chunk-4 BLOCK #2): a resolve step that covers all conflicting receive attempts CLEARS the
+    // conflict — the record folds to completed, not back to 'conflict'. A late uncovered receive reopens it.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const submit = { stepId: 'tr:c:submit', recordType: 'transfer', recordId: 'c', stepType: 'submit', seq: 10, fromStoreId: 'a', toStoreId: 'b', status: 'in_transit', timestamp: 1000, payload: { fromStoreId: 'a', toStoreId: 'b', items: [{ productId: 'p1', sentQty: 10 }], expectedLedgerKeys: [] } };
+        const recv = (att, qty, ts) => ({ stepId: 'tr:c:receive:b:' + att, recordType: 'transfer', recordId: 'c', stepType: 'receive', seq: 20, fromStoreId: 'a', toStoreId: 'b', status: 'received', timestamp: ts, deviceId: att, payload: { receiveAttemptId: att, lines: [{ productId: 'p1', receivedQty: qty, flagged: false }], completed: true, expectedLedgerKeys: [] } });
+        const resolve = { stepId: 'tr:c:resolve:1:h', recordType: 'transfer', recordId: 'c', stepType: 'resolve', seq: 40, fromStoreId: 'a', toStoreId: 'b', status: 'completed', timestamp: 3000, payload: { generation: 1, resolvesAttemptIds: ['ra1', 'ra2'], resolutions: [{ productId: 'p1', action: 'conflict_resolved', qty: 5 }], expectedLedgerKeys: [] } };
+        const unresolved = Records.foldRecord([submit, recv('ra1', 5, 2000), recv('ra2', 3, 2100)]).status;
+        const resolved = Records.foldRecord([submit, recv('ra1', 5, 2000), recv('ra2', 3, 2100), resolve]).status;
+        const reopened = Records.foldRecord([submit, recv('ra1', 5, 2000), recv('ra2', 3, 2100), resolve, recv('ra3', 7, 4000)]).status;
+        return { unresolved, resolved, reopened };
+      });
+      rec('S-184', 'resolve covering all attempts clears the conflict (folds completed); a late receive reopens it', r.unresolved === 'conflict' && r.resolved === 'completed' && r.reopened === 'conflict', `unresolved=${r.unresolved} resolved=${r.resolved} reopened=${r.reopened} (clean: conflict/completed/conflict)`); await ctx.close(); }
+
+    // S-185 (GPT Chunk-4 BLOCK #3 / D4-I): two backfill snapshots for one record with DIFFERENT content hashes
+    // fold to 'conflict' (backfill_divergence) — not a silent last-writer-wins. Same hash → not a conflict.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const bf = (hash, status) => ({ stepId: 'tr:z:backfill:' + hash, recordType: 'transfer', recordId: 'z', stepType: 'backfill', seq: 5, fromStoreId: 'a', toStoreId: 'b', status: status, timestamp: 1000, payload: { snapshot: { id: 'z', fromStoreId: 'a', toStoreId: 'b', status: status, items: [{ productId: 'p1', sentQty: 5 }] }, hash: hash } });
+        const diverge = Records.foldRecord([bf('aaa1', 'completed'), bf('bbb2', 'cancelled')]);
+        const same = Records.foldRecord([bf('aaa1', 'completed'), bf('aaa1', 'completed')]);
+        return { divergeStatus: diverge && diverge.status, divergeKind: diverge && diverge._conflict && diverge._conflict.kind, sameStatus: same && same.status };
+      });
+      rec('S-185', 'divergent backfill snapshots (different content hash) fold to conflict, not silent first-writer-wins', r.divergeStatus === 'conflict' && r.divergeKind === 'backfill_divergence' && r.sameStatus !== 'conflict', `diverge=${r.divergeStatus}/${r.divergeKind} same=${r.sameStatus} (clean: conflict/backfill_divergence/not-conflict)`); await ctx.close(); }
+
+    // S-186 (Chunk 5 / D2d): Sync._withAuth attaches the auth envelope from the device keys — and with NO
+    // keys stored the request body is byte-identical to pre-Chunk-5 (D6 phase-1 compatibility).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        localStorage.setItem('bob_auth_store_id', 'karrinyup'); localStorage.setItem('bob_auth_store_key', 'bsk_t186'); localStorage.setItem('bob_auth_director_key', 'bdk_t186');
+        Sync._deviceId = 'dev186';
+        const withKeys = Sync._withAuth({ data: { x: 1 } });
+        localStorage.removeItem('bob_auth_store_id'); localStorage.removeItem('bob_auth_store_key'); localStorage.removeItem('bob_auth_director_key');
+        const without = Sync._withAuth({ data: { x: 1 } });
+        return { a: withKeys.auth && withKeys.auth.storeId === 'karrinyup' && withKeys.auth.storeKey === 'bsk_t186' && withKeys.auth.directorKey === 'bdk_t186' && withKeys.auth.deviceId === 'dev186' && withKeys.data.x === 1, b: !('auth' in without) && without.data.x === 1 };
+      });
+      rec('S-186', 'Chunk 5: _withAuth attaches the auth envelope from device keys; NO keys = unchanged pre-Chunk-5 body', r.a && r.b, `withKeys=${r.a} without=${r.b} (clean: true/true)`); await ctx.close(); }
+
+    // S-187 (Chunk 5 / D6): a 401 on push is TERMINAL for the cycle — unauthorized state set, cached config
+    // cleared, batch left pending, and NO retry timer (never a retry-loop against an auth wall).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 401, contentType: 'application/json', body: '{"status":"unauthorized","authRequired":true}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        localStorage.setItem('bob_auth_store_id', s.storeId); localStorage.setItem('bob_auth_store_key', 'bsk_wrong187');
+        sessionStorage.setItem('bob_sync_config', JSON.stringify({ pushUrl: 'https://prod-00.westus.logic.azure.com/p', pullUrl: 'https://prod-00.westus.logic.azure.com/q' }));
+        Sync._loadConfig();
+        await DB.addTransactionDurable({ id: 't187_' + Date.now(), type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2026-07-04', createdAt: new Date().toISOString(), _synced: false });
+        await Sync.push();
+        const out = { unauth: Sync._unauthorized === true, cfgCleared: sessionStorage.getItem('bob_sync_config') === null, noRetry: !Sync._syncRetryTimer, pending: Sync._getPending() === true };
+        localStorage.removeItem('bob_auth_store_id'); localStorage.removeItem('bob_auth_store_key');
+        return out;
+      }, s);
+      rec('S-187', 'Chunk 5: push 401 -> unauthorized state + config cache cleared + pending kept + NO retry-loop', r.unauth && r.cfgCleared && r.noRetry && r.pending, `unauth=${r.unauth} cfgCleared=${r.cfgCleared} noRetry=${r.noRetry} pending=${r.pending} (clean: all true)`); await ctx.close(); }
+
+    // S-188 (Chunk 5 / D6): while unauthorized the sync cycle is PAUSED (no fetch storm from the 30s poll);
+    // saving keys clears the pause and re-bootstraps config.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', items: [{ ConfigType: 'sync_config', ConfigData: JSON.stringify({ pushUrl: 'https://prod-00.westus.logic.azure.com/p', pullUrl: 'https://prod-00.westus.logic.azure.com/q' }) }] }) })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        Sync._unauthorized = true;
+        let pushed = false; const origPush = Sync.push; Sync.push = async () => { pushed = true; };
+        const res = await Sync._runSyncCycle();
+        Sync.push = origPush;
+        const paused = res && res.unauthorized === true && !pushed;
+        Sync.CONFIG_URL = 'https://prod-00.westus.logic.azure.com/cfg';
+        const ok = await Sync.saveAuthKeys('karrinyup', 'bsk_t188', '');
+        const cleared = Sync._unauthorized === false;
+        localStorage.removeItem('bob_auth_store_id'); localStorage.removeItem('bob_auth_store_key'); localStorage.removeItem('bob_auth_director_key');
+        return { paused, ok: !!ok, cleared };
+      });
+      rec('S-188', 'Chunk 5: unauthorized pauses the sync cycle; saveAuthKeys clears the pause + re-bootstraps config', r.paused && r.ok && r.cleared, `paused=${r.paused} rebootstrap=${r.ok} cleared=${r.cleared} (clean: all true)`); await ctx.close(); }
+
+    // S-189 (Chunk 5 / D2d + L36): sync keys NEVER survive into a backup — the scrubber strips auth/storeKey/
+    // directorKey (and steps URLs) wherever they appear, so a backup can never carry a device credential.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const hostile = { settings: { auth: { storeKey: 'bsk_leak189', directorKey: 'bdk_leak189' }, storeKey: 'bsk_leak189b' }, nested: [{ directorKey: 'bdk_leak189c', stepsPushUrl: 'https://x/leak' }] };
+        const clean = Pages._scrubBackupSecrets(JSON.parse(JSON.stringify(hostile)));
+        const s = JSON.stringify(clean);
+        return { noKeys: !s.includes('bsk_leak189') && !s.includes('bdk_leak189') && !s.includes('https://x/leak') };
+      });
+      rec('S-189', 'Chunk 5: backup scrubber strips sync keys + steps URLs everywhere (backup can never carry a credential)', r.noKeys, `noKeys=${r.noKeys} (clean: true)`); await ctx.close(); }
+
+    // S-190 (Chunk 5 / C5 canary): a sync key logged into diagnostics is REDACTED in the export.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Diag.clear(); Diag.log('auth', 'boom key bsk_deadbeefcafe1234 and bdk_deadbeefcafe5678 leaked');
+        const t = Diag.text(); Diag.clear();
+        return { redacted: t.includes('[synckey-redacted]') && !t.includes('bsk_deadbeef') && !t.includes('bdk_deadbeef') };
+      });
+      rec('S-190', 'Chunk 5: Diag redacts bsk_/bdk_ sync keys (canary — a leaked key never reaches the export)', r.redacted, `redacted=${r.redacted} (clean: true)`); await ctx.close(); }
+
+    // S-191 (Chunk 5 / D2): sync-key entry is Director-gated — a staff/manager session cannot write keys.
+    // The DOM inputs are INJECTED with a valid store + key so the ONLY thing between a staff session and a
+    // written key is the Director gate: clean code blocks (key stays null); ungated code would write it.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        localStorage.removeItem('bob_auth_store_key'); localStorage.removeItem('bob_auth_store_id');
+        const mk = (id, val) => { let e = document.getElementById(id); if (!e) { e = document.createElement('input'); e.id = id; document.body.appendChild(e); } e.value = val; };
+        mk('auth-store-id', 'karrinyup'); mk('auth-store-key', 'bsk_staff191'); mk('auth-director-key', '');
+        const origDS = Pages.dirSettings; Pages.dirSettings = () => {};   // avoid a re-render into the bare test DOM
+        const d = DB.get(); const staff = (d.users || []).find(u => u.role === 'staff') || (d.users || []).find(u => u.role === 'store_manager');
+        if (staff) Auth._user = staff;
+        try { await Pages._saveAuthKeys(); } catch (e) {}
+        const blocked = localStorage.getItem('bob_auth_store_key') === null;   // clean: gate blocked the write
+        Pages.dirSettings = origDS;
+        ['auth-store-id', 'auth-store-key', 'auth-director-key'].forEach(id => { const e = document.getElementById(id); if (e) e.remove(); });
+        const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir;
+        localStorage.removeItem('bob_auth_store_key'); localStorage.removeItem('bob_auth_store_id');
+        return { blocked, hadStaff: !!staff };
+      });
+      rec('S-191', 'Chunk 5: sync-key entry is Director-gated (staff/manager session cannot write keys)', r.blocked && r.hadStaff, `blocked=${r.blocked} hadStaff=${r.hadStaff} (clean: true/true)`); await ctx.close(); }
+
+    // ── Chunk 6: catalogue publish (up) + gated corporate-cost split ──
+    // S-192 (delta + cost split): _buildCataloguePayload sends ONLY dirty rows, each with its _rv as baseRv,
+    // costPrice STRIPPED from the public change; a dirty cost goes to costChanges (never the public path).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const d = DB.get(); d.products = [{ id: 'P_A', name: 'A', catId: 'c', price: 10, costPrice: 5, _rv: 3, _costRv: 2 }, { id: 'P_B', name: 'B', catId: 'c', price: 20, _rv: 1 }];
+        try { localStorage.removeItem('bob_catalogue_dirty'); } catch (e) {}
+        Sync._markCatalogueDirty('products', 'P_A'); Sync._markCatalogueDirty('cost', 'P_A');
+        const p = Sync._buildCataloguePayload();
+        const ch = p.changes.find(c => c.row.id === 'P_A');
+        const cc = p.costChanges.find(c => c.productId === 'P_A');
+        return { onlyDirty: p.changes.length === 1 && p.changes[0].row.id === 'P_A', baseRv: ch && ch.baseRv, costStripped: ch && !('costPrice' in ch.row), costToCostChanges: !!cc && cc.costPrice === 5 && cc.baseRv === 2 };
+      });
+      rec('S-192', 'Chunk 6: publish payload = only-dirty rows + _rv baseRv, cost stripped from public + routed to costChanges', r.onlyDirty && r.baseRv === 3 && r.costStripped && r.costToCostChanges, `onlyDirty=${r.onlyDirty} baseRv=${r.baseRv} costStripped=${r.costStripped} costToCostChanges=${r.costToCostChanges} (clean: true/3/true/true)`); await ctx.close(); }
+
+    // S-193 (public never carries cost): _applyMasterData must NOT apply costPrice from the public blob even
+    // if a (malicious/misconfigured) master_data includes one — the device keeps its local cost.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); d.products = [{ id: 'P_C', name: 'C', catId: 'c', price: 10, costPrice: 99, active: true }];
+        try { localStorage.setItem('bob_catalogue_version', '0'); } catch (e) {}
+        await Sync._applyMasterData({ version: 5, products: [{ id: 'P_C', name: 'C2', catId: 'c', price: 15, costPrice: 1 }], stores: [], categories: [], productTypes: [] });
+        const p = DB.get().products.find(x => x.id === 'P_C');
+        return { name: p.name, price: p.price, cost: p.costPrice };
+      });
+      rec('S-193', 'Chunk 6: _applyMasterData applies public fields (name/price) but NEVER costPrice from the public blob', r.name === 'C2' && r.price === 15 && r.cost === 99, `name=${r.name} price=${r.price} cost=${r.cost} (clean: C2/15/99 — cost unchanged)`); await ctx.close(); }
+
+    // S-194 (device tier): _isCorporateDevice — Director device = corporate; a franchise store device = NOT.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const d = DB.get(); d.stores = [{ id: 'corp1', name: 'Corp', isFranchise: false }, { id: 'fr1', name: 'Fr', isFranchise: true }];
+        const set = (sid, dk) => { try { localStorage.setItem('bob_auth_store_id', sid); localStorage.setItem('bob_auth_director_key', dk); localStorage.setItem('bob_auth_store_key', sid ? 'bsk_x' : ''); } catch (e) {} };
+        set('', 'bdk_x'); const director = Sync._isCorporateDevice();
+        set('corp1', ''); const corp = Sync._isCorporateDevice();
+        set('fr1', ''); const fr = Sync._isCorporateDevice();
+        localStorage.removeItem('bob_auth_store_id'); localStorage.removeItem('bob_auth_director_key'); localStorage.removeItem('bob_auth_store_key');
+        return { director, corp, fr };
+      });
+      rec('S-194', 'Chunk 6: _isCorporateDevice — Director + corporate store = true, franchise store = false', r.director === true && r.corp === true && r.fr === false, `director=${r.director} corp=${r.corp} franchise=${r.fr} (clean: true/true/false)`); await ctx.close(); }
+
+    // S-195 (cost applies on corporate only): _fetchCorporateCosts applies cost on a corporate device; a
+    // franchise device short-circuits (never fetches) and keeps its own local cost.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', corporate_costs: { version: 2, costs: [{ productId: 'P_D', costPrice: 12, _rv: 1 }] } }) })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); d.products = [{ id: 'P_D', name: 'D', catId: 'c', price: 10, costPrice: 7, active: true }]; d.stores = [{ id: 'fr1', name: 'Fr', isFranchise: true }];
+        Sync._corpCostsUrl = 'https://prod-00.westus.logic.azure.com/cc';
+        try { localStorage.setItem('bob_auth_store_id', 'fr1'); localStorage.setItem('bob_auth_store_key', 'bsk_x'); localStorage.removeItem('bob_auth_director_key'); } catch (e) {}
+        await Sync._fetchCorporateCosts(); const franchiseCost = DB.get().products.find(x => x.id === 'P_D').costPrice;
+        try { localStorage.removeItem('bob_auth_store_id'); localStorage.setItem('bob_auth_director_key', 'bdk_x'); } catch (e) {}
+        await Sync._fetchCorporateCosts(); const corpCost = DB.get().products.find(x => x.id === 'P_D').costPrice;
+        localStorage.removeItem('bob_auth_director_key'); localStorage.removeItem('bob_auth_store_key');
+        return { franchiseCost, corpCost };
+      });
+      rec('S-195', 'Chunk 6: corporate cost applies on a corporate/Director device; a franchise device keeps its own local cost', r.franchiseCost === 7 && r.corpCost === 12, `franchiseKept=${r.franchiseCost} corpApplied=${r.corpCost} (clean: 7/12)`); await ctx.close(); }
+
+    // S-196 (honest clear): publishCatalogue clears ONLY accepted keys from dirty; rejected/conflicted stay
+    // dirty; a 401 pauses (unauthorized) and clears nothing.
+    { const { ctx, page } = await newPage(b);
+      let mode = 'ok';
+      await page.route('**logic.azure.com**', r => { if (mode === '401') return r.fulfill({ status: 401, contentType: 'application/json', body: '{"status":"unauthorized"}' }); return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', accepted: ['P_A'], rejected: [{ id: 'P_B', reason: 'BAD' }], conflicts: [], masterVersion: 7 }) }); });
+      await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); d.products = [{ id: 'P_A', name: 'A', catId: 'c', price: 1, _rv: 1 }, { id: 'P_B', name: 'B', catId: 'c', price: 2, _rv: 1 }];
+        Sync._catalogueWriteUrl = 'https://prod-00.westus.logic.azure.com/cw';
+        try { localStorage.removeItem('bob_catalogue_dirty'); localStorage.setItem('bob_auth_director_key', 'bdk_x'); } catch (e) {}
+        Sync._markCatalogueDirty('products', 'P_A'); Sync._markCatalogueDirty('products', 'P_B');
+        await Sync.publishCatalogue();
+        const dirtyAfter = Sync._catalogueDirty();
+        const lp = Sync.lastPublished();
+        localStorage.removeItem('bob_auth_director_key');
+        return { clearedAccepted: !dirtyAfter.includes('products:P_A'), keptRejected: dirtyAfter.includes('products:P_B'), lpVersion: lp && lp.version };
+      });
+      rec('S-196', 'Chunk 6: publish clears only ACCEPTED rows from dirty; rejected stay dirty; last-published recorded', r.clearedAccepted && r.keptRejected && r.lpVersion === 7, `clearedAccepted=${r.clearedAccepted} keptRejected=${r.keptRejected} lpVersion=${r.lpVersion} (clean: true/true/7)`); await ctx.close(); }
+
+    // S-197 (Director-gated publish): a non-Director session cannot trigger a publish.
+    { const { ctx, page } = await newPage(b);
+      let called = false;
+      await page.route('**logic.azure.com**', r => { called = true; return r.fulfill({ status: 200, contentType: 'application/json', body: '{"status":"ok","accepted":["P_A"],"rejected":[],"conflicts":[],"masterVersion":9}' }); });
+      await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const origDS = Pages.dirSettings; Pages.dirSettings = () => {};   // avoid a full settings re-render into the bare test DOM
+        const d = DB.get(); const staff = (d.users || []).find(u => u.role === 'staff') || (d.users || []).find(u => u.role === 'store_manager'); if (staff) Auth._user = staff;
+        d.products = [{ id: 'P_A', name: 'A', catId: 'c', price: 1, _rv: 1 }];
+        Sync._catalogueWriteUrl = 'https://prod-00.westus.logic.azure.com/cw';
+        try { localStorage.removeItem('bob_catalogue_dirty'); } catch (e) {} Sync._markCatalogueDirty('products', 'P_A');
+        try { await Pages._doPublishCatalogue(); } catch (e) {}
+        Pages.dirSettings = origDS;
+        const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir;
+        return { stillDirty: Sync._catalogueDirty().includes('products:P_A'), hadStaff: !!staff };
+      });
+      rec('S-197', 'Chunk 6: publish is Director-gated — a staff/manager session cannot publish (dirty unchanged)', r.stillDirty && r.hadStaff, `stillDirty=${r.stillDirty} hadStaff=${r.hadStaff} (clean: true/true)`); await ctx.close(); }
+
+    // S-198 (GPT-C6-1): a 'write_failed' publish response (server couldn't durably persist) must NOT clear any
+    // dirty rows — even if the (stale) accepted array is populated. The Director retries; nothing is lost.
+    { const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'write_failed', accepted: ['P_A'], rejected: [], conflicts: [], masterVersion: 9 }) }));
+      await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); d.products = [{ id: 'P_A', name: 'A', catId: 'c', price: 1, _rv: 1 }];
+        Sync._catalogueWriteUrl = 'https://prod-00.westus.logic.azure.com/cw';
+        try { localStorage.removeItem('bob_catalogue_dirty'); localStorage.removeItem('bob_catalogue_last_published'); localStorage.setItem('bob_auth_director_key', 'bdk_x'); } catch (e) {}
+        Sync._markCatalogueDirty('products', 'P_A');
+        const res = await Sync.publishCatalogue();
+        const out = { stillDirty: Sync._catalogueDirty().includes('products:P_A'), notOk: res.ok === false, retry: res.retry === true, noLastPub: Sync.lastPublished() === null };
+        localStorage.removeItem('bob_auth_director_key');
+        return out;
+      });
+      rec('S-198', 'Chunk 6: a write_failed publish keeps rows dirty (nothing cleared despite a stale accepted[]) + signals retry', r.stillDirty && r.notOk && r.retry && r.noLastPub, `stillDirty=${r.stillDirty} notOk=${r.notOk} retry=${r.retry} noLastPub=${r.noLastPub} (clean: all true)`); await ctx.close(); }
+
+    // ── Chunk 7: hardening ──
+    // S-199 (C2 deletion propagation): "removing" an UNUSED category DEACTIVATES it (active:false) + marks it
+    // dirty for publish — it does NOT hard-delete the row (which never propagated to other devices).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const origDS = Pages.dirSettings, origRS = Pages._refreshSettings, origC = UI.confirm;
+        let cbPromise = Promise.resolve();
+        Pages.dirSettings = () => {}; Pages._refreshSettings = () => {}; UI.confirm = (t, m, cb) => { cbPromise = Promise.resolve(cb()); };  // auto-confirm; capture the async callback
+        const d = DB.get(); const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir;
+        d.categories = [{ id: 'cat_z', name: 'Zed', ptId: 'pt_retail', active: true }]; d.products = (d.products || []).filter(p => p.catId !== 'cat_z');
+        try { localStorage.removeItem('bob_catalogue_dirty'); } catch (e) {}
+        await Pages._deleteCat('cat_z');
+        await cbPromise;  // _deleteCat runs its work inside the (un-awaited) confirm callback — wait for commit + markDirty
+        const cat = DB.get().categories.find(c => c.id === 'cat_z');
+        const out = { stillExists: !!cat, deactivated: cat && cat.active === false, dirty: Sync._catalogueDirty().includes('categories:cat_z') };
+        Pages.dirSettings = origDS; Pages._refreshSettings = origRS; UI.confirm = origC;
+        return out;
+      });
+      rec('S-199', 'Chunk 7 C2: removing an unused category DEACTIVATES (active:false) + marks dirty, does NOT hard-delete', r.stillExists && r.deactivated && r.dirty, `stillExists=${r.stillExists} deactivated=${r.deactivated} dirty=${r.dirty} (clean: all true)`); await ctx.close(); }
+
+    // S-200 (C2 inactive semantics): an INACTIVE category is HIDDEN from the new-product category selector,
+    // but its row persists (label preserved for historical display).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const d = DB.get(); const dir = (d.users || []).find(u => u.role === 'director'); if (dir) Auth._user = dir;
+        d.categories = [{ id: 'cat_on', name: 'On', ptId: 'pt_retail', active: true }, { id: 'cat_off', name: 'Off', ptId: 'pt_retail', active: false }];
+        UI.modal = (title, bodyHtml) => { window.__np = bodyHtml; };  // capture the add-product modal HTML
+        Pages._addProductModal();
+        const html = window.__np || '';
+        const sel = html.slice(html.indexOf('id="np-cat"'), html.indexOf('id="np-cat"') + 400);
+        return { activeShown: sel.includes('cat_on'), inactiveHidden: !sel.includes('cat_off'), rowPersists: !!DB.get().categories.find(c => c.id === 'cat_off') };
+      });
+      rec('S-200', 'Chunk 7 C2: inactive category hidden from the new-product selector; its row persists (label kept)', r.activeShown && r.inactiveHidden && r.rowPersists, `activeShown=${r.activeShown} inactiveHidden=${r.inactiveHidden} rowPersists=${r.rowPersists} (clean: all true)`); await ctx.close(); }
+
+    // S-201 (A self-host): the loaded document must carry NO third-party origin (jsdelivr / googleapis /
+    // gstatic) in its <script>/<link> tags — vendor JS + fonts are self-hosted.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const ext = [...document.querySelectorAll('script[src],link[href]')].map(e => e.src || e.href).filter(u => /cdn\.jsdelivr\.net|fonts\.googleapis\.com|fonts\.gstatic\.com/.test(u));
+        return { noExternal: ext.length === 0, dexieLocal: typeof Dexie !== 'undefined', chartLocal: typeof Chart !== 'undefined', extFound: ext.join(',') };
+      });
+      rec('S-201', 'Chunk 7 A: no third-party origin in the DOM (Dexie/Chart/fonts self-hosted, loaded locally)', r.noExternal && r.dexieLocal && r.chartLocal, `noExternal=${r.noExternal} dexie=${r.dexieLocal} chart=${r.chartLocal} extFound=[${r.extFound}] (clean: true/true/true)`); await ctx.close(); }
+
+    // ── Chunk 8 (ledger archival) ──────────────────────────────────────────────────────────────────────
+    // S-202: pull persists the monotonic SharePoint id as _spId (needed for the archival fold); a row with no
+    // usable ID stores _spId=null (never 0 — 0 would falsely read as "<= any cutoff").
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate((s) => { const withId = Sync._fromSharePoint({ TransactionId: 'sp202', Type: 'in', StoreId: s.storeId, ProductId: s.productId, Date: '2026-06-10', Qty: 3, ID: 1234 }); const noId = Sync._fromSharePoint({ TransactionId: 'sp202b', Type: 'in', StoreId: s.storeId, ProductId: s.productId, Date: '2026-06-10', Qty: 3 }); return { spId: withId && withId._spId, nullId: noId ? noId._spId : 'ROWNULL' }; }, s);
+      rec('S-202', 'Chunk 8: pull persists _spId (SharePoint id); missing id -> null (never 0)', r.spId === 1234 && r.nullId === null, `spId=${r.spId} nullId=${r.nullId} (clean: 1234/null)`); await ctx.close(); }
+
+    // S-203: _adoptSnapshot + _buildCache fold — seed opening balance, SKIP covered rows (_spId<=cutoff), apply
+    // post-cutoff + unsynced (_spId==null) rows on top. Snapshot+recent == full total, with the covered row NOT
+    // double-counted. Also: v0 clears any snapshot (no-archival sentinel).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { Sync._lastSyncId = 1000; const now = new Date().toISOString(); const d = DB.get(); d.transactions.push({ id: 's203cov', storeId: 'S8', productId: 'P', type: 'in', qty: 99, _spId: 10, _synced: false, date: '2026-01-01', createdAt: now }, { id: 's203post', storeId: 'S8', productId: 'P', type: 'out', qty: 2, _spId: 60, _synced: true, date: '2026-06-10', createdAt: now }, { id: 's203new', storeId: 'S8', productId: 'P', type: 'in', qty: 5, _spId: null, _synced: false, date: '2026-06-11', createdAt: now }); Stock._adoptSnapshot(JSON.stringify({ version: 1, cutoffId: 47, stepCutoffTs: 3000, balances: [{ storeId: 'S8', productId: 'P', balance: 12 }] })); const folded = Stock.qty('P', 'S8'); const active = Stock._snapshotActive(); Stock._adoptSnapshot(JSON.stringify({ version: 0, cutoffId: 0, stepCutoffTs: 0, balances: [] })); const clearedActive = Stock._snapshotActive(); const fullSum = Stock.qty('P', 'S8'); return { folded, active, clearedActive, fullSum }; });
+      // cov row is _synced:false so the async prune leaves it (isolates the FOLD from the PRUNE — prune is S-206).
+      rec('S-203', 'Chunk 8: fold seeds snapshot + skips covered + applies post-cutoff/unsynced (no double-count); v0 clears', r.folded === 15 && r.active === true && r.clearedActive === false && r.fullSum === 102, `folded=${r.folded} active=${r.active} clearedActive=${r.clearedActive} fullSumAfterClear=${r.fullSum} (clean: 15/true/false/102)`); await ctx.close(); }
+
+    // S-204: activation gate — a snapshot whose cutoffId is AHEAD of this device's pull frontier (_lastSyncId)
+    // is NOT used; the fold falls back to full-sum (always correct) until the device catches up.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { const now = new Date().toISOString(); const d = DB.get(); d.transactions.push({ id: 's204cov', storeId: 'S8b', productId: 'P', type: 'in', qty: 99, _spId: 10, _synced: true, date: '2026-01-01', createdAt: now }, { id: 's204post', storeId: 'S8b', productId: 'P', type: 'out', qty: 2, _spId: 60, _synced: true, date: '2026-06-10', createdAt: now }); Sync._lastSyncId = 10; Stock._adoptSnapshot(JSON.stringify({ version: 2, cutoffId: 47, stepCutoffTs: 3000, balances: [{ storeId: 'S8b', productId: 'P', balance: 12 }] })); return { active: Stock._snapshotActive(), qty: Stock.qty('P', 'S8b') }; });
+      rec('S-204', 'Chunk 8: activation gate — cutoff ahead of sync frontier -> snapshot unused, full-sum fallback', r.active === false && r.qty === 97, `active=${r.active} qty=${r.qty} (clean: false/97 = 99-2, no seed)`); await ctx.close(); }
+
+    // S-205: archived-key resolver (GPT P1 per-key proof) — a missing key is CONFIRMED only if it is a KNOWN
+    // archived key (in DB's archived-step-key index); a NEVER-LANDED key (not in the index) stays PENDING; a
+    // present+rejected key is mismatch. No date heuristic — a never-landed pre-cutoff step must not read completed.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { DB.recordArchivedStepKeys(['s205arch']); DB.get().transactions.push({ id: 's205rej', type: 'in', qty: 1, storeId: 'x', productId: 'p', _rejected: true, _synced: false, date: '2026-01-01', createdAt: new Date().toISOString() }); const archivedConfirmed = Records.stockStateFor(['s205arch'], 1500); const neverLandedPending = Records.stockStateFor(['s205never'], 1500); const rejMismatch = Records.stockStateFor(['s205rej'], 1500); return { archivedConfirmed, neverLandedPending, rejMismatch, isArch: DB.hasArchivedStepKey('s205arch'), notArch: DB.hasArchivedStepKey('s205never') }; });
+      rec('S-205', 'Chunk 8: resolver — known-archived key=confirmed, never-landed key=pending, rejected=mismatch (per-key proof)', r.archivedConfirmed === 'confirmed' && r.neverLandedPending === 'pending' && r.rejMismatch === 'mismatch' && r.isArch === true && r.notArch === false, `archived=${r.archivedConfirmed} neverLanded=${r.neverLandedPending} rejected=${r.rejMismatch} idx(arch=${r.isArch},never=${r.notArch}) (clean: confirmed/pending/mismatch/true/false)`); await ctx.close(); }
+
+    // S-206: prune shrinks the working set SAFELY — removes only DURABLY-SYNCED rows with _spId<=cutoff; keeps
+    // post-cutoff rows, unsynced rows, and _spId==null rows (never lose stock that may not be in the cloud yet).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => { const now = new Date().toISOString(); const rows = [ { id: 's206syncedOld', storeId: 'S8c', productId: 'P', type: 'in', qty: 1, _spId: 10, _synced: true, date: '2026-01-01', createdAt: now }, { id: 's206syncedPost', storeId: 'S8c', productId: 'P', type: 'in', qty: 1, _spId: 60, _synced: true, date: '2026-06-10', createdAt: now }, { id: 's206unsyncedOld', storeId: 'S8c', productId: 'P', type: 'in', qty: 1, _spId: 5, _synced: false, date: '2026-01-02', createdAt: now }, { id: 's206null', storeId: 'S8c', productId: 'P', type: 'in', qty: 1, _spId: null, _synced: false, date: '2026-06-11', createdAt: now } ]; await bobDB.transactions.bulkPut(rows); await DB.refresh(); const n = await DB.pruneArchivedLedger(47); const ids = new Set(DB.get().transactions.map(t => t.id)); return { n, removedOldSynced: !ids.has('s206syncedOld'), keptPost: ids.has('s206syncedPost'), keptUnsyncedOld: ids.has('s206unsyncedOld'), keptNull: ids.has('s206null') }; });
+      rec('S-206', 'Chunk 8: prune removes ONLY synced rows <=cutoff; keeps post-cutoff, unsynced, and _spId==null', r.n === 1 && r.removedOldSynced && r.keptPost && r.keptUnsyncedOld && r.keptNull, `n=${r.n} removedOldSynced=${r.removedOldSynced} keptPost=${r.keptPost} keptUnsyncedOld=${r.keptUnsyncedOld} keptNull=${r.keptNull} (clean: 1 + all true)`); await ctx.close(); }
+
+    // S-207: reports fail-closed archive-awareness — a range extending before the archive boundary is flagged
+    // (touchesArchive); a range fully after it is not; no snapshot -> never flagged. Overlay merges into the
+    // report set (Director-loaded archived movements become visible to date-range reports).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => { Sync._lastSyncId = 1000; const ts = new Date('2026-06-01T00:00:00Z').getTime(); Stock._adoptSnapshot(JSON.stringify({ version: 1, cutoffId: 47, stepCutoffTs: ts, balances: [] })); const before = Stock._reportTouchesArchive('2026-01-01'); const after = Stock._reportTouchesArchive('2030-01-01'); DB.get().transactions.push({ id: 'ov207', storeId: 'x', productId: 'p', type: 'in', qty: 1, date: '2025-01-01', _archived: true, _spId: 5, _synced: true, createdAt: new Date().toISOString() }); const included = Pages._reportBaseTxns(DB.get()).some(t => t.id === 'ov207'); await DB.pruneArchivedLedger(47); const survivesPrune = DB.get().transactions.some(t => t.id === 'ov207'); Stock._adoptSnapshot(JSON.stringify({ version: 0, cutoffId: 0, stepCutoffTs: 0, balances: [] })); const noSnap = Stock._reportTouchesArchive('2000-01-01'); return { before, after, included, survivesPrune, noSnap }; });
+      rec('S-207', 'Chunk 8: reports fail-closed banner + spliced overlay visible to reports + prune skips _archived', r.before === true && r.after === false && r.included === true && r.survivesPrune === true && r.noSnap === false, `before=${r.before} after=${r.after} included=${r.included} survivesPrune=${r.survivesPrune} noSnap=${r.noSnap} (clean: true/false/true/true/false)`); await ctx.close(); }
+
+    // S-208: _verifyCacheIntegrity stays snapshot-aware — with an active snapshot + covered rows still present,
+    // the cache (seed + non-covered) equals the snapshot-aware scan (no false drift).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate((s) => { Sync._lastSyncId = 1000; const now = new Date().toISOString(); const d = DB.get(); d.transactions.push({ id: 's208cov', storeId: s.storeId, productId: s.productId, type: 'in', qty: 50, _spId: 10, _synced: true, date: '2026-01-01', createdAt: now }, { id: 's208post', storeId: s.storeId, productId: s.productId, type: 'in', qty: 3, _spId: 60, _synced: true, date: '2026-06-10', createdAt: now }); Stock._adoptSnapshot(JSON.stringify({ version: 1, cutoffId: 47, stepCutoffTs: 3000, balances: [{ storeId: s.storeId, productId: s.productId, balance: 50 }] })); const clean = Stock._verifyCacheIntegrity(); return { clean }; }, s);
+      rec('S-208', 'Chunk 8: _verifyCacheIntegrity is snapshot-aware (seed + non-covered scan == cache, no false drift)', r.clean === true, `clean=${r.clean} (clean: true)`); await ctx.close(); }
+
+    // S-209: (AGY P1) the pull-time _spId backfill is DURABLY persisted — commit() never writes the transactions
+    // table, so DB.persistTransactionRows must bulkPut or the _spId is lost on reload (rows revert to null and
+    // double-count). Proof: pre-store the row WITHOUT _spId, persist WITH _spId, refresh from Dexie, expect it kept.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { const row = { id: 's209', storeId: s.storeId, productId: s.productId, type: 'in', qty: 1, _synced: true, date: '2026-01-01', createdAt: new Date().toISOString() }; await bobDB.transactions.put({ ...row, _spId: null }); DB.get().transactions.push({ ...row, _spId: 777 }); await DB.persistTransactionRows([{ ...row, _spId: 777 }]); await DB.refresh(); const reloaded = (DB.get().transactions || []).find(t => t.id === 's209'); return { spId: reloaded ? reloaded._spId : 'GONE' }; }, s);
+      rec('S-209', 'Chunk 8 (AGY P1): _spId backfill is durably persisted (survives reload — no double-count regression)', r.spId === 777, `reloaded _spId=${r.spId} (clean: 777)`); await ctx.close(); }
+
+    // S-210: (AGY P2) deleting an ARCHIVED (snapshot-covered) movement is BLOCKED — no tombstone is written for a
+    // row already folded into a published snapshot (phantom-delete guard). Drives the LIVE Pages._confirmDelete.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => { document.body.insertAdjacentHTML('beforeend', '<input id="del-name" value="Tester"><select id="del-reason"><option value="Damaged" selected>Damaged</option></select><input id="del-other" value="">'); Sync._lastSyncId = 1000; Stock._adoptSnapshot(JSON.stringify({ version: 1, cutoffId: 47, stepCutoffTs: 3000, balances: [] })); await new Promise(r => setTimeout(r, 150)); /* let the adopt-time prune finish first */ DB.get().transactions.push({ id: 's210cov', storeId: s.storeId, productId: s.productId, type: 'in', qty: 3, _spId: 10, _synced: true, date: '2026-01-01', createdAt: new Date().toISOString(), editLog: [] }); const covered = Stock._coveredBySnapshot(DB.get().transactions.find(t => t.id === 's210cov')); try { await Pages._confirmDelete('s210cov'); } catch (e) {} await new Promise(r => setTimeout(r, 100)); const survives = (DB.get().transactions || []).some(t => t.id === 's210cov'); const notTombstoned = !(DB.get().deletedTransactions || []).some(x => x.id === 's210cov'); return { covered, survives, notTombstoned }; }, s);
+      rec('S-210', 'Chunk 8 (AGY P2): deleting an archived (snapshot-covered) movement is blocked (no phantom tombstone)', r.covered === true && r.survives === true && r.notTombstoned === true, `covered=${r.covered} survives=${r.survives} notTombstoned=${r.notTombstoned} (clean: true/true/true)`); await ctx.close(); }
+
+    // S-211: (AGY P1) the archival snapshot is PERSISTED and reloaded at boot, so an OFFLINE boot (config fetch
+    // fails) still seeds it — otherwise _buildCache sums only the un-pruned rows and UNDER-COUNTS. Also proves the
+    // activation gate works offline (reads the persisted cursor when Sync._lastSyncId isn't set yet).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => { Sync._lastSyncId = 1000; Stock._adoptSnapshot(JSON.stringify({ version: 1, cutoffId: 47, stepCutoffTs: 3000, balances: [{ storeId: 'S8x', productId: 'P', balance: 12 }] })); const persisted = !!localStorage.getItem('bob_stock_snapshot'); Stock._snapshot = null; /* simulate a reload wiping memory */ Stock._loadSnapshot(); const restored = !!(Stock._snapshot && Stock._snapshot.version === 1 && Stock._snapshot.cutoffId === 47); localStorage.setItem('bob_last_sp_id', '1000'); const save = Sync._lastSyncId; Sync._lastSyncId = undefined; const activeOffline = Stock._snapshotActive(); Sync._lastSyncId = save; return { persisted, restored, activeOffline }; });
+      rec('S-211', 'Chunk 8 (AGY P1): snapshot persisted + reloaded at boot + gate works offline (no offline-boot under-count)', r.persisted === true && r.restored === true && r.activeOffline === true, `persisted=${r.persisted} restored=${r.restored} activeOffline=${r.activeOffline} (clean: true×3)`); await ctx.close(); }
+
+    // S-212: (AGY MED) a 401 from pullArchive triggers the SAME central unauthorized pause as push/pull/config —
+    // a rotated key must stop the sync cycle, not just flash a local toast and keep polling.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 401, contentType: 'application/json', body: '{"status":"unauthorized"}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => { Sync._archivePullUrl = 'https://x.logic.azure.com/archive-pull'; Sync._unauthorized = false; sessionStorage.setItem('bob_sync_config', JSON.stringify({ pushUrl: 'https://x.logic.azure.com/p' })); const rows = await Sync.pullArchive('2026-01-01', '2026-12-31'); return { paused: Sync._unauthorized === true, nullRows: rows === null }; });
+      rec('S-212', 'Chunk 8 (AGY MED): pullArchive 401 triggers the central unauthorized pause (not just a toast)', r.paused === true && r.nullRows === true, `paused=${r.paused} nullRows=${r.nullRows} (clean: true/true)`); await ctx.close(); }
+
+    // S-213: (AGY LOW) _verifyCacheIntegrity treats a DEACTIVATED-but-existing product as legitimate (its stock is
+    // real; deactivate-not-delete keeps it, _buildCache builds it) — it must NOT flag it stale, delete it, and
+    // return false. Only a genuinely-gone (deleted) id is orphaned.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate((s) => { const d = DB.get(); d.products.push({ id: 'S213p', name: 'Deact', active: false, catId: (d.products[0] || {}).catId }); d.transactions.push({ id: 'S213t', storeId: s.storeId, productId: 'S213p', type: 'in', qty: 5, date: '2026-06-01', createdAt: new Date().toISOString() }); Stock._buildCache(); const built = (Stock._qtyCache[s.storeId] || {})['S213p']; const clean = Stock._verifyCacheIntegrity(); const survives = (Stock._qtyCache[s.storeId] || {})['S213p']; return { built, clean, survives }; }, s);
+      rec('S-213', 'Chunk 8 (AGY LOW): _verifyCacheIntegrity keeps a deactivated-but-existing product (clean=true, not pruned)', r.built === 5 && r.clean === true && r.survives === 5, `built=${r.built} clean=${r.clean} survives=${r.survives} (clean: 5/true/5)`); await ctx.close(); }
+
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;

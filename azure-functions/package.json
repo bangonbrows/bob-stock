@@ -1,0 +1,12 @@
+{
+  "name": "bob-stock-functions",
+  "version": "1.0.0",
+  "description": "BOB Stock server-side validators (A7 delivery money validation).",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0"
+  }
+}

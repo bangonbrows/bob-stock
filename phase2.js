@@ -52,11 +52,63 @@ const Transfer = {
     return { id: 'txn_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join(''), type, productId, qty, storeId, transferId, date: UI.todayLocal(), staffName: u?.name || u?.username || 'unknown', reason: reason || '', by: Auth.actor(), editLog: [], createdAt: new Date().toISOString() };
   },
 
+  // Azure Chunk 4 (D4-E ledger dedup): the deterministic idempotency key for an INITIAL transfer-receive
+  // ledger row. Two offline devices receiving the same transfer compute the SAME key per product → the
+  // server's Enforce-Unique on IdempotencyKey 409s the 2nd → stock can't double (regardless of whether the
+  // two received quantities agree; a qty disagreement surfaces separately via the record-step conflict).
+  // ONLY the initial receive rows carry this; resolution/top-up/return rows fall back to TransactionId
+  // (Chunk-3 Q2 lean b) so they never collide with the receive or each other.
+  _receiveKey(transferId, storeId, productId) { return 'transfer:' + transferId + ':receive:' + storeId + ':' + productId; },
+
   _notify(payload) {
     // SA-D-F1: never email a full user object (carries password/PIN hashes). Slim every actor field.
     if (payload && typeof Auth!=='undefined' && Auth._slimActorsDeep) Auth._slimActorsDeep(payload);  // SA-I-F1: deep-slim incl nested flaggedItems[].resolvedBy
     // T3-03: Added .catch() to handle async rejection (try/catch can't catch promise errors)
     try { const _u=((typeof Sync!=='undefined'&&Sync._emailUrl)||''); if(!_u){ console.warn('[Transfer] email URL not configured'); return; } fetch(_u, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }).catch(() => {}); } catch(e) {}
+  },
+
+  // ─── Azure Chunk 4 — record-step emission (ADDITIVE) ──────────────────
+  // Each lifecycle method below already does its local write + ledger write UNCHANGED.
+  // These helpers fire AFTER a successful durable write to record the lifecycle step for
+  // cross-device sync. Defensive (never throws into the write path; no-op if Records absent).
+  async _emit(spec) {
+    try { if (typeof Records !== 'undefined' && Records.emit) return await Records.emit(spec); } catch (e) { console.error('[Transfer] step emit failed (non-fatal):', e); }
+    return null;
+  },
+  // The genesis "submit" step payload (shared by create-non-draft and submitDraft).
+  _submitPayload(t, ledgerIds) {
+    return {
+      fromStoreId: t.fromStoreId, toStoreId: t.toStoreId, type: t.type,
+      returnReason: t.returnReason || null, returnNote: t.returnNote || '',
+      createdAt: t.createdAt || t.date, createdBy: t.createdBy, createdByName: t.createdByName,
+      notes: t.notes || '',
+      items: (t.items || []).map(i => ({ productId: i.productId, sentQty: i.sentQty })),
+      expectedLedgerKeys: ledgerIds || [],
+    };
+  },
+  async _emitSubmit(t, ledgerIds) {
+    return this._emit({
+      recordType: 'transfer', recordId: t.id, stepType: 'submit',
+      ownerStoreId: t.fromStoreId, fromStoreId: t.fromStoreId, toStoreId: t.toStoreId,
+      status: 'in_transit', payload: this._submitPayload(t, ledgerIds),
+    });
+  },
+  // Resolve step (shared by single resolveFlag + batch resolveAllFlags). resolutions =
+  // [{productId, action, qty, note}]; generation defaults 0 (a conflict re-resolution bumps it, D4-F).
+  async _emitResolve(t, resolutions, ledgerIds, generation) {
+    const productIds = (resolutions || []).map(r => r.productId);
+    return this._emit({
+      recordType: 'transfer', recordId: t.id, stepType: 'resolve',
+      stepId: (typeof Records !== 'undefined' && Records.resolveStepId) ? Records.resolveStepId(t.id, generation || 0, productIds) : undefined,
+      ownerStoreId: t.toStoreId, fromStoreId: t.fromStoreId, toStoreId: t.toStoreId, status: 'completed',
+      payload: {
+        generation: generation || 0,
+        resolvesAttemptIds: t._receiveAttemptId ? [t._receiveAttemptId] : [],
+        resolvedBy: Auth.actor(),
+        resolutions: resolutions || [],
+        expectedLedgerKeys: ledgerIds || [],
+      },
+    });
   },
 
   async create(fromStoreId, toStoreId, items, options) {
@@ -116,6 +168,7 @@ const Transfer = {
     const _batch = transfer.items.map(item => this._txn('transfer_out', item.productId, item.sentQty, fromStoreId, id, 'Transfer to ' + UI.storeName(toStoreId)));
     const _ok = await DB.atomicTransferWriteDurable(_batch, transfer, null);
     if (!_ok) { DB.get().transfers = DB.get().transfers.filter(x => x !== transfer); UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    await this._emitSubmit(transfer, _batch.map(x => x.id));  // Chunk 4: record-step (genesis)
     this._notify({
       type: 'transfer_created', fromStore: UI.storeName(fromStoreId), toStore: UI.storeName(toStoreId),
       date: now, createdBy: Auth.actor(),
@@ -196,6 +249,7 @@ const Transfer = {
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    await this._emitSubmit(t, batchTxns.map(x => x.id));  // Chunk 4: record-step (genesis)
     this._notify({
       type: 'transfer_created', fromStore: UI.storeName(t.fromStoreId), toStore: UI.storeName(t.toStoreId),
       date: t.date, createdBy: Auth.actor(),
@@ -240,6 +294,11 @@ const Transfer = {
       }
       _rq[_it.productId] = _qv.value;
     }
+    // Chunk 4 (D4-E): a STABLE receive-attempt id, minted ONCE and persisted on the transfer BEFORE the
+    // snapshot so a failed-write rollback (which restores the snapshot) keeps it → a crash-retry on THIS
+    // device replays the SAME receive stepId (dedupe), while a different device gets a different one (both
+    // receive steps survive → the fold sees a genuine conflict). Not a fresh-per-tap random, not deviceId-only.
+    if (!t._receiveAttemptId) t._receiveAttemptId = (typeof Records !== 'undefined' && Records.newAttemptId) ? Records.newAttemptId() : ('ra_' + Date.now());
     // T2-06: Snapshot before mutations
     const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
@@ -254,7 +313,7 @@ const Transfer = {
       item.receivedQty = rQty;
       if (rQty === item.sentQty) {
         item.status = 'accepted';
-        batchTxns.push(this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)));
+        { const _rin = this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)); _rin.idempotencyKey = this._receiveKey(transferId, t.toStoreId, item.productId); batchTxns.push(_rin); }  // Chunk 4 D4-E
       } else {
         item.status = 'flagged';
         hasFlagged = true;
@@ -267,7 +326,7 @@ const Transfer = {
         const credit = Math.max(0, Math.min(item.sentQty, Math.trunc(Number(rQty)) || 0));
         item.creditedAtReceive = credit;
         if (credit > 0) {
-          batchTxns.push(this._txn('transfer_in', item.productId, credit, t.toStoreId, transferId, 'Received (discrepancy flagged) from ' + UI.storeName(t.fromStoreId)));
+          { const _rin = this._txn('transfer_in', item.productId, credit, t.toStoreId, transferId, 'Received (discrepancy flagged) from ' + UI.storeName(t.fromStoreId)); _rin.idempotencyKey = this._receiveKey(transferId, t.toStoreId, item.productId); batchTxns.push(_rin); }  // Chunk 4 D4-E
         }
       }
     });
@@ -278,6 +337,19 @@ const Transfer = {
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    // Chunk 4: emit the receive step (keyed on the stable receiveAttemptId; carries the ledger ids for R1).
+    await this._emit({
+      recordType: 'transfer', recordId: t.id, stepType: 'receive',
+      stepId: (typeof Records !== 'undefined' && Records.receiveStepId) ? Records.receiveStepId(t.id, t.toStoreId, t._receiveAttemptId) : undefined,
+      ownerStoreId: t.toStoreId, fromStoreId: t.fromStoreId, toStoreId: t.toStoreId,
+      status: hasFlagged ? 'received' : 'completed',
+      payload: {
+        receiveAttemptId: t._receiveAttemptId, receivedBy: t.receivedBy, receivedDate: t.receivedDate,
+        lines: t.items.map(i => ({ productId: i.productId, receivedQty: i.receivedQty, flagged: i.status === 'flagged', flagNote: i.flagNote || '' })),
+        completed: !hasFlagged,
+        expectedLedgerKeys: batchTxns.map(x => x.id),
+      },
+    });
     if (!hasFlagged) this._notifyCompleted(t);
     return { ok:true, hasFlagged };
   },
@@ -300,6 +372,7 @@ const Transfer = {
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    await this._emitResolve(t, [{ productId, action, qty, note: note || '' }], batchTxns.map(x => x.id), 0);  // Chunk 4
     // T3-M3r1: Notify AFTER successful atomic write (was before — would send ghost emails on write failure)
     if (allDone) this._notifyCompleted(t);
     return { ok:true };
@@ -361,7 +434,63 @@ const Transfer = {
     if (allDone) { t.status = 'completed'; t.completedDate = new Date().toISOString(); }
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    await this._emitResolve(t, (resolutions || []).map(r => ({ productId: r.productId, action: r.action, qty: r.qty, note: r.note || '' })), batchTxns.map(x => x.id), 0);  // Chunk 4
     if (allDone) this._notifyCompleted(t);
+    return { ok:true };
+  },
+
+  // ─── Azure Chunk 4 — double-receive CONFLICT resolution (Director decides) ─────────────
+  // A `conflict` transfer = the fold saw two+ receive attempts that disagree on a line qty (or a
+  // cancel-vs-receive race). Stock is currently pinned to whichever receive's ledger rows landed first
+  // (the per-product ledger IdempotencyKey deduped the rest). The Director picks the correct received
+  // qty per line; we emit ONLY the delta adjustment_in/out to move stock to that value, mark the
+  // transfer resolved/completed, and emit a `resolve` step at a BUMPED generation that NAMES every
+  // attempt it settles (so a late receive that arrives after this reopens the conflict, D4-F).
+  // chosen = { [productId]: correctReceivedQty }.
+  _creditedAtDest(transferId, productId, toStoreId) {
+    return (DB.get().transactions || [])
+      .filter(x => x && x.transferId === transferId && x.storeId === toStoreId && x.productId === productId)
+      .reduce((s, x) => s + (x.type === 'transfer_in' || x.type === 'adjustment_in' ? x.qty : (x.type === 'adjustment_out' ? -x.qty : 0)), 0);
+  },
+  async resolveConflict(transferId, chosen) {
+    if (!this._canResolve()) return { ok:false, error:'Permission denied' };
+    const t = this.get(transferId);
+    if (!t) return { ok:false, error:'Transfer not found' };
+    if (t.status !== 'conflict') return { ok:false, error:'This transfer is not in a conflict state' };
+    chosen = chosen || {};
+    const snapshot = JSON.parse(JSON.stringify(t));
+    const batchTxns = [];
+    const resolutions = [];
+    for (const item of (t.items || [])) {
+      if (!(item.productId in chosen)) continue;
+      const _q = Validate.qty(chosen[item.productId]);
+      if (!_q.ok || _q.value > item.sentQty) { Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot); return { ok:false, error:`Chosen quantity for ${UI.productName(item.productId)} must be a whole number from 0 to ${item.sentQty}` }; }
+      const chosenQty = _q.value;
+      const credited = this._creditedAtDest(transferId, item.productId, t.toStoreId);
+      const delta = chosenQty - credited;
+      if (delta > 0) batchTxns.push(this._txn('adjustment_in', item.productId, delta, t.toStoreId, transferId, 'Double-receive conflict resolved by Director — corrected up'));
+      else if (delta < 0) batchTxns.push(this._txn('adjustment_out', item.productId, -delta, t.toStoreId, transferId, 'Double-receive conflict resolved by Director — corrected down'));
+      item.receivedQty = chosenQty;
+      item.status = 'resolved';
+      item.resolvedBy = Auth.actor();
+      item.resolvedAction = 'conflict_resolved';
+      resolutions.push({ productId: item.productId, action: 'conflict_resolved', qty: chosenQty, note: '' });
+    }
+    const generation = ((t._conflict && t._conflict.generation) || 0) + 1;
+    const attemptIds = (t._conflict && t._conflict.attempts || []).map(a => a.attemptId).filter(Boolean);
+    t.status = 'completed';
+    t.completedDate = new Date().toISOString();
+    delete t._conflict;
+    const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
+    if (!_ok) { UI.fatalSaveError('Conflict resolution could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    // Emit the resolve step at the bumped generation, naming every attempt it settles.
+    await this._emit({
+      recordType: 'transfer', recordId: t.id, stepType: 'resolve',
+      stepId: (typeof Records !== 'undefined' && Records.resolveStepId) ? Records.resolveStepId(t.id, generation, resolutions.map(r => r.productId)) : undefined,
+      ownerStoreId: t.toStoreId, fromStoreId: t.fromStoreId, toStoreId: t.toStoreId, status: 'completed',
+      payload: { generation, resolvesAttemptIds: attemptIds, resolvedBy: Auth.actor(), resolutions, conflictResolution: true, expectedLedgerKeys: batchTxns.map(x => x.id) },
+    });
+    this._notifyCompleted(t);
     return { ok:true };
   },
 
@@ -422,11 +551,20 @@ const Transfer = {
         batchTxns.push(this._txn('transfer_in', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer cancelled — stock returned'));
       });
     }
+    const _wasInTransit = (t.status === 'in_transit');
     t.status = 'cancelled';
     t.completedDate = new Date().toISOString();
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
+    // Chunk 4: emit a cancel step ONLY for an in-transit cancel (a draft was never synced → nothing to void cross-device).
+    if (_wasInTransit) {
+      await this._emit({
+        recordType: 'transfer', recordId: t.id, stepType: 'cancel',
+        ownerStoreId: t.fromStoreId, fromStoreId: t.fromStoreId, toStoreId: t.toStoreId, status: 'cancelled',
+        payload: { cancelledBy: Auth.actor(), expectedLedgerKeys: batchTxns.map(x => x.id) },
+      });
+    }
     return { ok:true };
   },
 
@@ -456,7 +594,7 @@ const Transfer = {
 // ── 4. Add HTML page containers ──
 const pageContainer = document.querySelector('.main-wrap') || document.querySelector('.main-content') || document.querySelector('.content') || document.querySelector('main');
 if (pageContainer) {
-  const newPages = ['transfers','create-transfer','draft-transfer','receive-transfer','resolve-flags','optimum-levels'];
+  const newPages = ['transfers','create-transfer','draft-transfer','receive-transfer','resolve-flags','resolve-conflict','optimum-levels'];
   newPages.forEach(id => {
     if (!document.getElementById('page-' + id)) {
       const div = document.createElement('div');
@@ -544,6 +682,7 @@ if (typeof navigateTo === 'function') {
     if (page === 'draft-transfer') renderDraftTransfer(transferId);
     else if (page === 'receive-transfer') renderReceiveTransfer(transferId);
     else if (page === 'resolve-flags') renderResolveFlags(transferId);
+    else if (page === 'resolve-conflict') renderResolveConflict(transferId);
   };
 }
 
@@ -1322,6 +1461,75 @@ window.renderResolveFlags = function(transferId) {
 
 
 // ============================================================
+// 5b. RESOLVE DOUBLE-RECEIVE CONFLICT (Azure Chunk 4 — Director decides)
+// Shown when the fold marks a transfer status 'conflict' (two devices received
+// the same transfer with DIFFERENT counts). Mirrors renderResolveFlags: the
+// Director sees each device's count side by side and picks the correct qty per
+// line; submit calls Transfer.resolveConflict → delta adjustment + resolve step.
+// ============================================================
+let _conflictChosen = {};
+window.renderResolveConflict = function(transferId) {
+  const el = document.getElementById('page-resolve-conflict');
+  if (!el) return;
+  const data = DB.get();
+  const transfer = (data.transfers || []).find(t => t.id === transferId);
+  if (!transfer) { el.innerHTML = '<p>Transfer not found.</p>'; return; }
+  const conflict = transfer._conflict || { attempts: [] };
+  const attempts = conflict.attempts || [];
+  const isDirector = (typeof Auth !== 'undefined' && Auth.is && Auth.is('director'));
+
+  const productIds = [];
+  attempts.forEach(a => (a.lines || []).forEach(l => { if (productIds.indexOf(l.productId) === -1) productIds.push(l.productId); }));
+
+  // Default the chosen qty (once per transfer) to the highest received count, clamped to sentQty.
+  if (_conflictChosen.__tid !== transferId) {
+    _conflictChosen = { __tid: transferId };
+    productIds.forEach(pid => {
+      const item = (transfer.items || []).find(i => i.productId === pid);
+      const sent = item ? item.sentQty : 0;
+      let best = 0;
+      attempts.forEach(a => { const ln = (a.lines || []).find(l => l.productId === pid); if (ln && Number(ln.receivedQty) > best) best = Number(ln.receivedQty); });
+      _conflictChosen[pid] = Math.max(0, Math.min(sent, best));
+    });
+  }
+
+  el.innerHTML = `
+    <div class="ph2-header">
+      <div class="ph2-title">Resolve Receive Conflict</div>
+      <button class="btn-grey" onclick="navigateTo('transfers')">&larr; Back</button>
+    </div>
+    <div class="tx-detail-card">
+      <h3>${UI.storeName(transfer.fromStoreId)} &rarr; ${UI.storeName(transfer.toStoreId)}</h3>
+      <div class="tx-detail-row"><span>Status</span><strong style="color:#dc2626">Conflicting receives</strong></div>
+      <div style="font-size:.82rem;color:#6b7280;margin-top:6px">This transfer was received on more than one device with different counts. Stock currently reflects the first receive to sync. Choose the correct quantity for each line — only the difference will be adjusted.</div>
+    </div>
+    ${!isDirector ? '<div class="card card-body" style="color:#b45309">Only a Director can resolve a receive conflict.</div>' : productIds.map(pid => {
+      const item = (transfer.items || []).find(i => i.productId === pid);
+      const sent = item ? item.sentQty : 0;
+      const cells = attempts.map(a => {
+        const ln = (a.lines || []).find(l => l.productId === pid);
+        const who = UI.esc(a.actorName || a.deviceId || 'device');
+        return `<div style="flex:1;min-width:110px;padding:6px 8px;background:#f9fafb;border-radius:6px;text-align:center">
+          <div style="font-size:.72rem;color:#9ca3af">${who}</div>
+          <div style="font-size:1.05rem;font-weight:700">${ln ? ln.receivedQty : '—'}</div></div>`;
+      }).join('');
+      return `<div class="flag-row">
+        <div class="flag-header"><div class="flag-product">${UI.productName(pid)}</div><div class="flag-diff">sent ${sent}</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">${cells}</div>
+        <div style="margin:6px 0"><label style="font-size:12px;color:#777">Correct quantity received:</label>
+          ${createStepper({ id: 'cf_' + pid, value: _conflictChosen[pid], min: 0, max: sent, onChange: function(v) {} })}
+        </div>
+      </div>`;
+    }).join('')}
+    ${isDirector ? `<div style="margin-top:16px;text-align:right">
+      <button class="btn-rose" onclick="TransferUI.submitConflict(this.dataset.tid)" data-tid="${UI.esc(transferId)}">Resolve Conflict</button>
+    </div>` : ''}
+  `;
+  productIds.forEach(pid => { window['_stp_cf_' + pid] = function(v) { _conflictChosen[pid] = v; }; });
+};
+
+
+// ============================================================
 // 6. OPTIMUM LEVELS
 // ============================================================
 window.renderOptimumLevels = function() {
@@ -1443,8 +1651,13 @@ window.TransferUI = {
         _txState.flagActions = {};
         navigateToTransferDetail('resolve-flags', transferId);
       } else { TransferUI.showReadOnly(t); }
+    } else if (t.status === 'conflict') {  // Azure Chunk 4: double-receive conflict — Director resolves, others read-only
+      if (Auth.is('director')) {
+        _conflictChosen = {};
+        navigateToTransferDetail('resolve-conflict', transferId);
+      } else { TransferUI.showReadOnly(t); }
     } else {
-      TransferUI.showReadOnly(t);
+      TransferUI.showReadOnly(t);  // includes stock_pending / stock_mismatch (R1 — informational, nothing to action)
     }
   },
 
@@ -1455,6 +1668,8 @@ window.TransferUI = {
         <h3 style="margin-top:0">${UI.storeName(t.fromStoreId)} &rarr; ${UI.storeName(t.toStoreId)}</h3>
         <div class="tx-detail-row"><span>Date</span><strong>${UI.fmtDate(t.createdAt)}</strong></div>
         <div class="tx-detail-row"><span>Status</span><strong><span class="badge badge-${t.status}">${(t.status||'').replace(/_/g,' ')}</span></strong></div>
+        ${t.status === 'stock_pending' ? `<div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;padding:8px 10px;border-radius:6px;font-size:.8rem;margin:6px 0">⏳ This transfer was received, but its stock movements haven't synced to this device yet — the stock figures aren't final. This clears automatically once sync completes.</div>` : ''}
+        ${t.status === 'stock_mismatch' ? `<div style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;padding:8px 10px;border-radius:6px;font-size:.8rem;margin:6px 0">⚠ This transfer was received, but one or more of its stock movements were rejected by the server — the stock did NOT land. Please contact your administrator; do not rely on these stock numbers.</div>` : ''}
         <div class="tx-detail-row"><span>Type</span><strong>${t.type === 'return' ? 'Return' : 'Standard'}</strong></div>
         <div class="tx-detail-row"><span>Created By</span><strong>${UI.esc(t.createdByName || '-')}</strong></div>
         <hr style="margin:12px 0;border:none;border-top:1px solid #eee">
@@ -1649,6 +1864,27 @@ window.TransferUI = {
         renderTransfersHub();
       } catch (e) {
         UI.toast(e.message || 'Failed to complete transfer', 'error');
+      } finally { _txState._creating = false; }
+    });
+  },
+
+  // Azure Chunk 4: Director confirms the correct per-line counts for a double-receive conflict.
+  submitConflict(transferId) {
+    const t = Transfer.get(transferId);
+    if (!t || t.status !== 'conflict') { UI.toast('This transfer is not in a conflict state', 'warning'); return; }
+    UI.confirm('Resolve this conflict with the chosen quantities? Stock will be adjusted to match.', async function() {
+      if (_txState._creating) return; _txState._creating = true;
+      try {
+        const chosen = {};
+        Object.keys(_conflictChosen || {}).forEach(k => { if (k !== '__tid') chosen[k] = _conflictChosen[k]; });
+        const result = await Transfer.resolveConflict(transferId, chosen);
+        if (!result.ok) throw new Error(result.error);
+        _conflictChosen = {};
+        UI.toast('Conflict resolved — stock adjusted', 'success');
+        navigateTo('transfers');
+        renderTransfersHub();
+      } catch (e) {
+        UI.toast(e.message || 'Failed to resolve conflict', 'error');
       } finally { _txState._creating = false; }
     });
   },

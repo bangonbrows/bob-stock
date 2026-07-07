@@ -8,3 +8,6 @@ test/_shots/
 # BLIND-AUDIT-CONSOLIDATED-REPORT.md, WAVE-*-REVIEW.md, EXTERNAL-AUDIT-*.md) and the
 # reproducible harness lives in test/.
 audit-artifacts/
+
+# Staging secrets for the phase 5-8 audit — NEVER commit (rotated at cutover)
+audit-artifacts/AUDITOR-ACCESS-BUNDLE.txt

@@ -34,6 +34,14 @@ const Sync = {
   // ─── State ───────────────────────────────────────────────────────────
   _pushUrl: null,
   _pullUrl: null,
+  _lastSyncId: 0,   // Azure pull-hardening: ID-cursor (max SharePoint item ID merged). Replaces the
+                    // SyncTimestamp watermark as the pull cursor (bob_last_sp_id). See AZURE-PULL-HARDENING-SPEC.md.
+  // Azure Chunk 4 — record-steps sync (transfers/deliveries/stock-takes). Separate endpoints + ID-cursor
+  // (bob_last_step_sp_id) from the ledger. Steps sync is ENABLED only when both URLs are present in config;
+  // otherwise it's a graceful no-op (old config / pre-Chunk-4 = ledger-only, unchanged).
+  _stepsPushUrl: null,
+  _stepsPullUrl: null,
+  _lastStepSyncId: 0,
   _emailUrl: null,  // MFL-010: email Logic App URL from AppConfig (not hard-coded)
   _localWriteDebounce: null,  // MFL-018: debounce leader refresh on follower writes
   _configUrl: null,
@@ -54,6 +62,181 @@ const Sync = {
   // The config endpoint URL — the ONLY hardcoded URL in the app.
   // All other URLs (push, pull) are fetched from AppConfig via this endpoint.
   CONFIG_URL: '%%CONFIG_URL%%',
+
+  // ─── Chunk 5: cloud-boundary authorization (AZURE-CHUNK5-SCOPE.md REV 2) ────
+  // Keys travel in the request BODY as an `auth` envelope (NOT headers — custom headers
+  // trigger a CORS preflight whose Logic App handling is a deploy risk; body fields are
+  // CORS-neutral and the server hides the whole trigger body via secureData). Build
+  // deviation from the spec's "header" wording — flagged in the wave review.
+  // Keys persist in localStorage (device possession = the credential, D2d); they are
+  // NEVER in backups (the backup reads DB data, and _REUSABLE_AUTH_KEYS scrubs any
+  // embedded copies) and NEVER in Diag (bsk_/bdk_ redaction).
+  _authRequired: null,   // per-endpoint flags advertised by config (D6 phase 1); null = not advertised
+  _unauthorized: false,  // a 401 was received; sync paused until keys change (NO retry-loop)
+
+  _authKeys() {
+    try {
+      return {
+        storeId: localStorage.getItem('bob_auth_store_id') || '',
+        storeKey: localStorage.getItem('bob_auth_store_key') || '',
+        directorKey: localStorage.getItem('bob_auth_director_key') || '',
+      };
+    } catch (e) { return { storeId: '', storeKey: '', directorKey: '' }; }
+  },
+
+  hasAuthKeys() {
+    const k = this._authKeys();
+    return !!(k.storeKey || k.directorKey);
+  },
+
+  // Wrap an outgoing request body with the auth envelope (only when keys exist, so a
+  // pre-Chunk-5 server — or the D6 phase-1 window — sees an unchanged request shape).
+  _withAuth(body) {
+    const k = this._authKeys();
+    if (!k.storeKey && !k.directorKey) return body;
+    const auth = { deviceId: this._deviceId || '' };
+    if (k.storeId) auth.storeId = k.storeId;
+    if (k.storeKey) auth.storeKey = k.storeKey;
+    if (k.directorKey) auth.directorKey = k.directorKey;
+    return Object.assign({}, body, { auth });
+  },
+
+  // Central 401 handling (D6): clear the cached config (it may be stale), mark the
+  // device unauthorised, surface it, and STOP — never a retry-loop on auth failure.
+  _handleUnauthorized(where) {
+    this._unauthorized = true;
+    try { sessionStorage.removeItem('bob_sync_config'); } catch (e) {}
+    this._showStatus('Sync not authorised — enter sync keys in Settings', 'error', 0);
+    try { if (typeof Diag !== 'undefined') Diag.log('auth', '401 unauthorized from ' + where); } catch (e) {}
+    console.warn('[Sync] 401 unauthorized from ' + where + ' — sync paused until keys change.');
+  },
+
+  // Director enters keys in Settings → persist, clear the pause, re-bootstrap.
+  async saveAuthKeys(storeId, storeKey, directorKey) {
+    try {
+      localStorage.setItem('bob_auth_store_id', String(storeId || '').trim());
+      localStorage.setItem('bob_auth_store_key', String(storeKey || '').trim());
+      localStorage.setItem('bob_auth_director_key', String(directorKey || '').trim());
+    } catch (e) { return false; }
+    this._unauthorized = false;
+    const ok = await this._fetchRemoteConfig();
+    if (ok) this.scheduleSync();
+    return ok;
+  },
+
+  // ─── Chunk 6: catalogue publish (up) + corporate-cost read (gated) ──────────
+  // The catalogue DOWN-merge (_applyMasterData) is unchanged + already audited. Chunk 6 adds the UPWARD
+  // publish and the SEPARATE gated corporate-cost read. URLs come from sync_config (like the others).
+  _catalogueWriteUrl: null,
+  _corpCostsUrl: null,
+  _archivePullUrl: null,  // Chunk 8: Director/HO on-demand read of archived movements for full-history reports
+
+  // Dirty tracking: which catalogue rows a Director changed since the last successful publish. Stored as a
+  // localStorage set of "coll:id" (public rows) + "cost:productId" (cost changes). baseRv is read from the
+  // row's own _rv (set by the last master_data merge) at publish time — a new row has no _rv -> baseRv 0.
+  _catDirtyKey: 'bob_catalogue_dirty',
+  _markCatalogueDirty(coll, id) {
+    try {
+      const set = new Set(JSON.parse(localStorage.getItem(this._catDirtyKey) || '[]'));
+      set.add(coll + ':' + id);
+      localStorage.setItem(this._catDirtyKey, JSON.stringify([...set]));
+    } catch (e) {}
+  },
+  _catalogueDirty() { try { return JSON.parse(localStorage.getItem(this._catDirtyKey) || '[]'); } catch (e) { return []; } },
+  _clearCatalogueDirty(keys) {
+    try {
+      const set = new Set(this._catalogueDirty());
+      (keys || []).forEach(k => set.delete(k));
+      localStorage.setItem(this._catDirtyKey, JSON.stringify([...set]));
+    } catch (e) {}
+  },
+  hasUnpublishedCatalogue() { return this._catalogueDirty().length > 0; },
+
+  // Build the publish payload from the dirty set: public `changes` (products/stores/categories/productTypes,
+  // cost STRIPPED — cost never rides the public path) + `costChanges` (product cost only).
+  _buildCataloguePayload() {
+    const d = DB.get(); if (!d) return { changes: [], costChanges: [], keys: [] };
+    const changes = [], costChanges = [], keys = [];
+    for (const k of this._catalogueDirty()) {
+      const [coll, ...rest] = k.split(':'); const id = rest.join(':');
+      if (coll === 'cost') {
+        const p = (d.products || []).find(x => x && x.id === id);
+        if (p && p.costPrice != null) { costChanges.push({ productId: id, costPrice: p.costPrice, baseRv: Number(p._costRv) || 0 }); keys.push(k); }
+      } else if (['products', 'stores', 'categories', 'productTypes'].includes(coll)) {
+        const row = (d[coll] || []).find(x => x && x.id === id);
+        if (row) {
+          const clean = {}; Object.keys(row).forEach(f => { if (f !== 'costPrice' && f !== '_costRv') clean[f] = row[f]; });  // cost never in the public path
+          changes.push({ coll, row: clean, baseRv: Number(row._rv) || 0 }); keys.push(k);
+        }
+      }
+    }
+    return { changes, costChanges, keys };
+  },
+
+  // Director presses "Publish catalogue" -> push the deltas, honest result, clear only what landed.
+  async publishCatalogue() {
+    if (!this._catalogueWriteUrl) return { ok: false, error: 'Catalogue publishing is not configured on this device.' };
+    const { changes, costChanges, keys } = this._buildCataloguePayload();
+    if (!changes.length && !costChanges.length) return { ok: true, nothing: true };
+    let resp;
+    try {
+      resp = await fetch(this._catalogueWriteUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth({ data: { changes, costChanges } })) });
+    } catch (e) { return { ok: false, error: 'Network error — try again.' }; }
+    if (resp.status === 401) { this._handleUnauthorized('catalogue-write'); return { ok: false, unauthorized: true }; }
+    if (!resp.ok) return { ok: false, error: 'Publish failed (' + resp.status + ') — try again.' };
+    const r = await resp.json().catch(() => ({}));
+    // GPT-C6-1 defence-in-depth: a 'write_failed' means the server could NOT durably persist (it exhausted its
+    // If-Match retries) — accepted is empty and NOTHING landed. Do NOT clear any dirty keys; the Director
+    // retries. The server already returns accepted=[] on write_failed, but gate on status too so a rejected/
+    // conflicted row (status ok) still only clears the rows the server actually accepted.
+    const durable = r.status === 'ok';
+    const accepted = new Set(((durable ? r.accepted : []) || []).map(String));
+    // Clear ONLY the dirty keys the server accepted (a rejected/conflicted row stays dirty for the Director to fix/retry).
+    const landed = keys.filter(k => { const [coll, ...rest] = k.split(':'); const id = rest.join(':'); return coll === 'cost' ? accepted.has('cost:' + id) : accepted.has(id); });
+    this._clearCatalogueDirty(landed);
+    if (durable && r.masterVersion != null) { try { localStorage.setItem('bob_catalogue_last_published', JSON.stringify({ version: r.masterVersion, at: Date.now() })); } catch (e) {} }
+    return { ok: durable, writeStatus: r.status, accepted: r.accepted || [], rejected: r.rejected || [], conflicts: r.conflicts || [], retry: !durable };
+  },
+  lastPublished() { try { return JSON.parse(localStorage.getItem('bob_catalogue_last_published') || 'null'); } catch (e) { return null; } },
+
+  // Is THIS device corporate (gets central cost) or a franchise store (keeps its own cost)? A Director device
+  // (no store id) is corporate. A store device is corporate iff its store isFranchise !== true.
+  _isCorporateDevice() {
+    const k = this._authKeys();
+    if (k.directorKey && !k.storeId) return true;              // Director personal device
+    if (!k.storeId) return true;                                // unbound (pre-auth) — treat as corporate (HO/office)
+    const s = (DB.get().stores || []).find(x => x && x.id === k.storeId);
+    return !(s && s.isFranchise === true);
+  },
+
+  // Fetch + apply corporate cost — ONLY on a corporate device (a franchise device never even calls it; the
+  // server would 403 anyway). Sets local product.costPrice from the gated payload; franchise devices keep
+  // their own local cost untouched.
+  async _fetchCorporateCosts() {
+    if (!this._corpCostsUrl) return;
+    if (!this._isCorporateDevice()) return;                     // franchise device: keep local cost, don't fetch
+    let resp;
+    try { resp = await fetch(this._corpCostsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth({})) }); }
+    catch (e) { return; }
+    if (!resp.ok) return;                                       // 403 (unexpected on a corporate device) -> keep local cost
+    const r = await resp.json().catch(() => ({}));
+    const costs = (r.corporate_costs && Array.isArray(r.corporate_costs.costs)) ? r.corporate_costs.costs : null;
+    if (!costs) return;
+    await this._applyCorporateCosts(costs);
+  },
+  async _applyCorporateCosts(costs) {
+    const d = DB.get(); if (!d || !Array.isArray(d.products)) return;
+    let changed = false;
+    const byId = new Map(d.products.map(p => [p && p.id, p]));
+    costs.forEach(c => {
+      if (!c || typeof c.productId !== 'string') return;
+      const p = byId.get(c.productId); if (!p) return;
+      const val = (typeof Validate !== 'undefined') ? Validate.money(c.costPrice, { optional: true }) : { ok: Number.isFinite(Number(c.costPrice)), value: Number(c.costPrice) };
+      if (!val.ok) return;
+      if (p.costPrice !== val.value || p._costRv !== c._rv) { p.costPrice = val.value; p._costRv = c._rv; changed = true; }
+    });
+    if (changed) { try { await DB.commitDurable(); } catch (e) {} if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap(); this._rerender(); }
+  },
 
   // ─── Multi-Tab Leader Election (Tier 2 Fix #15) ─────────────────────
   _isLeader: false,
@@ -80,9 +263,16 @@ const Sync = {
       this._pushUrl = config.pushUrl || null;
       this._pullUrl = config.pullUrl || null;
       this._emailUrl = config.emailUrl || null;  // MFL-010
+      this._stepsPushUrl = config.stepsPushUrl || null;  // Chunk 4
+      this._stepsPullUrl = config.stepsPullUrl || null;  // Chunk 4
+      this._catalogueWriteUrl = config.catalogueWriteUrl || null;  // Chunk 6
+      this._corpCostsUrl = config.corpCostsUrl || null;  // Chunk 6
+      this._archivePullUrl = config.archivePullUrl || null;  // Chunk 8
       this._configUrl = this.CONFIG_URL;
       this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
       this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
+      this._lastSyncId = parseInt(localStorage.getItem('bob_last_sp_id') || '0', 10);  // ID-cursor (0 = full replay; safe, dedup by TransactionId)
+      this._lastStepSyncId = parseInt(localStorage.getItem('bob_last_step_sp_id') || '0', 10);  // Chunk 4 step ID-cursor
       return !!(this._pushUrl && this._pullUrl);
     } catch (e) {
       console.error('[Sync] Config load failed:', e);
@@ -105,8 +295,12 @@ const Sync = {
       const resp = await fetch(this.CONFIG_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(this._withAuth({})),
       });
+      if (resp.status === 401) {  // Chunk 5 (D6): config now requires a key once enforcement flips
+        this._handleUnauthorized('config');
+        return false;
+      }
       if (!resp.ok) {
         console.warn('[Sync] Config fetch failed:', resp.status);
         return false;
@@ -127,6 +321,18 @@ const Sync = {
         console.warn('[Sync] master_data merge failed (catalogue unchanged):', e);
       }
 
+      // Chunk 8 (ledger archival): adopt the published stock_snapshot (opening balances at a monotonic-id
+      // cutoff). Stored on Stock so _buildCache can seed from it and apply only post-cutoff local rows.
+      // Absent item = no archival yet (fold degenerates to summing all local rows — unchanged behaviour).
+      try {
+        const snapItem = data.items.find(i => i.ConfigType === 'stock_snapshot');
+        if (snapItem && snapItem.ConfigData && typeof Stock !== 'undefined' && Stock._adoptSnapshot) {
+          Stock._adoptSnapshot(snapItem.ConfigData);
+        }
+      } catch (e) {
+        console.warn('[Sync] stock_snapshot adopt failed (fold falls back to full-sum):', e);
+      }
+
       const syncItem = data.items.find(i => i.ConfigType === 'sync_config');
       if (!syncItem || !syncItem.ConfigData) {
         console.warn('[Sync] No sync_config item found in AppConfig.');
@@ -141,16 +347,38 @@ const Sync = {
         this._pushUrl = urls.pushUrl;
         this._pullUrl = urls.pullUrl;
         this._emailUrl = urls.emailUrl || null;  // MFL-010
+        this._stepsPushUrl = urls.stepsPushUrl || null;  // Chunk 4 (absent on pre-Chunk-4 config = steps sync off)
+        this._stepsPullUrl = urls.stepsPullUrl || null;  // Chunk 4
+        this._catalogueWriteUrl = urls.catalogueWriteUrl || null;  // Chunk 6 (absent = publishing off)
+        this._corpCostsUrl = urls.corpCostsUrl || null;  // Chunk 6
+        this._archivePullUrl = urls.archivePullUrl || null;  // Chunk 8 (absent = archive reports off; Director/HO on-demand)
+        // Chunk 5 (D6 phase 1): the server advertises which endpoints will require keys.
+        // If auth is coming and this device has no keys yet, tell the Director BEFORE the flag day.
+        this._authRequired = urls.authRequired || null;
+        if (this._authRequired && !this.hasAuthKeys()) {
+          this._showStatus('Sync keys required soon — enter them in Settings', 'warning', 0);
+        }
         this._configUrl = this.CONFIG_URL;
         // Cache in sessionStorage — SAS URLs must not persist across sessions (Tier 1 Fix #5)
         sessionStorage.setItem('bob_sync_config', JSON.stringify({
           pushUrl: urls.pushUrl,
           pullUrl: urls.pullUrl,
           emailUrl: urls.emailUrl || null,
+          stepsPushUrl: urls.stepsPushUrl || null,
+          stepsPullUrl: urls.stepsPullUrl || null,
+          catalogueWriteUrl: urls.catalogueWriteUrl || null,  // Chunk 6
+          corpCostsUrl: urls.corpCostsUrl || null,  // Chunk 6
+          archivePullUrl: urls.archivePullUrl || null,  // Chunk 8
           configUrl: this.CONFIG_URL
         }));
         this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
         this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
+        this._lastSyncId = parseInt(localStorage.getItem('bob_last_sp_id') || '0', 10);  // ID-cursor
+        this._lastStepSyncId = parseInt(localStorage.getItem('bob_last_step_sp_id') || '0', 10);  // Chunk 4
+        // Chunk 6: apply corporate cost (gated) ON TOP of the public catalogue — corporate/Director devices
+        // only; a franchise device skips it and keeps its own local cost. Fire-and-forget so config load
+        // isn't blocked; it re-renders when the cost lands.
+        this._fetchCorporateCosts().catch(() => {});
         console.log('[Sync] Remote config loaded and cached.');
         return true;
       }
@@ -203,7 +431,7 @@ const Sync = {
     const copyFields = (target, row, moneyFields, keepLocalCost) => {
       Object.keys(row).forEach(k => {
         if (RESERVED[k]) return;
-        if (keepLocalCost && k === 'costPrice' && row.costPrice == null) return;  // keep local cost unless server sends one
+        if (k === 'costPrice') return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data — corporate cost arrives ONLY via the gated corporate_costs path (_fetchCorporateCosts); franchise devices keep their own local cost untouched
         target[k] = normMoney(k, row[k], moneyFields);
       });
     };
@@ -333,6 +561,8 @@ const Sync = {
     this._pushUrl = null;
     this._pullUrl = null;
     this._emailUrl = null;  // MFL-010: clear email URL on logout too
+    this._stepsPushUrl = null;  // Chunk 4
+    this._stepsPullUrl = null;  // Chunk 4
     this._configUrl = null;
     console.log('[Sync] Sensitive data cleared.');
   },
@@ -577,7 +807,12 @@ const Sync = {
       Reason: t.reason || '',
       DeviceId: t.deviceId || this._deviceId || '',
       Timestamp: ts,
-      TransferId: t.transferId || ''
+      TransferId: t.transferId || '',
+      // Azure Chunk 4 (D4-E): deterministic dedup key. Initial transfer-receive rows carry a per-product
+      // receive key (set in phase2.js receive()); every other row falls back to its unique TransactionId.
+      // The server enforces uniqueness on this column → a 2nd offline receive of the same (transfer,store,
+      // product) 409s → stock can't double. Falling back to TransactionId means non-receive rows never collide.
+      IdempotencyKey: t.idempotencyKey || t.id
     };
     // Tombstone support: include TargetTransactionId + the deletion audit metadata (Wave I / I-2 —
     // was only TargetTransactionId, so other devices learned a row was deleted but not who/when/why).
@@ -631,13 +866,67 @@ const Sync = {
       deviceId: item.DeviceId || '',
       transferId: item.TransferId || '',
       createdAt: (function(){ try { if(item.Timestamp){ var _d=new Date(item.Timestamp); if(!isNaN(_d.getTime())) return _d.toISOString(); } } catch(e){} return new Date().toISOString(); })(),  // SA-C-F1: tolerate malformed remote Timestamp
-      _synced: true
+      _synced: true,
+      // Chunk 8 (archival): the monotonic SharePoint item id. The archival cutoff is BY this id, so the
+      // client fold seeds from the snapshot then applies only rows with _spId > cutoffId (or _spId == null =
+      // a brand-new local/unsynced row, always within the retain window => post-cutoff). A row that lacks a
+      // usable ID is stored as null (never 0 — 0 would falsely read as "<= any cutoff" and get pruned/skipped).
+      _spId: (function(){ var v = (item.ID != null ? item.ID : item.Id); var n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; })()
     };
     // Tombstone support: map TargetTransactionId if present
     if (item.TargetTransactionId) {
       local.targetTransactionId = item.TargetTransactionId;
     }
     return local;
+  },
+
+  // Chunk 8 (D8-6): map an ARCHIVE list row (TxnType/TxnDate/TxnTimestamp field names) to the local shape
+  // used by report overlays. Same strict-ingest posture as _fromSharePoint (reject fractional/negative qty).
+  _fromArchive(item) {
+    if (!item) return null;
+    const _q = (typeof Validate !== 'undefined') ? Validate.qty(item.Qty) : { ok: Number.isSafeInteger(Number(item.Qty)) && Number(item.Qty) >= 0, value: Number(item.Qty) };
+    if (!_q.ok) return null;
+    const sid = Number(item.SourceId);
+    return {
+      id: String(item.TransactionId || ''),
+      date: item.TxnDate || '',
+      storeId: item.StoreId || '',
+      productId: item.ProductId || '',
+      type: item.TxnType || '',
+      qty: _q.value,
+      staffName: item.StaffName || '',
+      reason: item.Reason || '',
+      deviceId: item.DeviceId || '',
+      transferId: item.TransferId || '',
+      targetTransactionId: item.TargetTransactionId || '',
+      createdAt: (function(){ try { if(item.TxnTimestamp){ var _d=new Date(Number(item.TxnTimestamp)); if(!isNaN(_d.getTime())) return _d.toISOString(); } } catch(e){} return ''; })(),
+      _synced: true,
+      _archived: true,   // report-overlay marker; never persisted, never in the stock cache
+      _spId: (Number.isSafeInteger(sid) && sid > 0) ? sid : null
+    };
+  },
+
+  // Director/HO on-demand pull of archived movements for a date range (report overlay). Returns an array of
+  // ACTIVE movement rows with tombstoned originals + 'deleted' rows REMOVED, so report sums match the snapshot
+  // (which already excluded them). Returns null if no endpoint is configured; [] on an authorised empty range.
+  async pullArchive(fromDate, toDate) {
+    if (!this._archivePullUrl) return null;
+    const body = this._withAuth({ from: fromDate || '', to: toDate || '' });
+    const resp = await fetch(this._archivePullUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (resp.status === 401) { this._handleUnauthorized('archive-pull'); this._showStatus('Not authorised to load archived data', 'warning'); return null; }  // AGY MED: 401 must trigger the SAME central pause as push/pull/config (rotated keys shouldn't keep polling)
+    if (!resp.ok) { console.warn('[Sync] Archive pull failed:', resp.status); return null; }
+    const j = await resp.json();
+    const items = (j && Array.isArray(j.items)) ? j.items : [];
+    const tombstoned = new Set();
+    for (const it of items) { if (String(it.TxnType || '') === 'deleted' && it.TargetTransactionId) tombstoned.add(String(it.TargetTransactionId)); }
+    const out = [];
+    for (const it of items) {
+      if (String(it.TxnType || '') === 'deleted') continue;                 // drop tombstones themselves
+      if (tombstoned.has(String(it.TransactionId))) continue;               // drop the deleted originals
+      const row = this._fromArchive(it);
+      if (row && row.qty >= 0) out.push(row);
+    }
+    return out;
   },
 
   // ─── Status UI ───────────────────────────────────────────────────────
@@ -678,6 +967,7 @@ const Sync = {
    * they are marked _synced=true in local storage.
    */
   async push(_isRetry) {
+    if (this._unauthorized) return;  // Chunk 5 (D6): paused after a 401 until keys change
     // T3-02: _isRetry flag allows retry to re-enter push() without releasing the lock
     if (this._syncLock && !_isRetry) {
       console.log('[Sync] Sync already in progress, skipping push.');
@@ -699,8 +989,10 @@ const Sync = {
       }
       const data = DB.get();  // synchronous — returns freshly refreshed cache
 
-      // Filter to only unsynced transactions
-      const _allUnsynced = (data.transactions || []).filter(t => !t._synced);
+      // Filter to only unsynced transactions. Chunk 2: also exclude rows the SERVER PERMANENTLY
+      // REJECTED (_rejected) — they did not land and must NOT re-push every cycle forever (they are
+      // surfaced to an admin instead; see DB.markTransactionsRejected + the ack handling below).
+      const _allUnsynced = (data.transactions || []).filter(t => !t._synced && !t._rejected);
 
       // F-followup-2 (GPT-FF-02): EGRESS validation — the 4th trust boundary.
       // _toSharePoint coerced bad qty (5.9->5, NaN->0) and forwarded unknown
@@ -759,17 +1051,121 @@ const Sync = {
       const resp = await fetch(this._pushUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(this._withAuth(payload)),
       });
 
+      if (resp.status === 401) {
+        // Chunk 5: auth failure is TERMINAL for this cycle — no retry-loop (D6). Batch stays
+        // pending; entering valid keys in Settings clears the pause and re-syncs.
+        this._handleUnauthorized('push');
+        Sync._setPending(true);
+        return;
+      }
       if (!resp.ok) {
         throw new Error(`Push failed: ${resp.status} ${resp.statusText}`);
       }
 
       const result = await resp.json().catch(() => ({}));
 
-      // ── Server acknowledgement verification (GPT Tier 1 review requirement) ──
-      // The Logic App returns: { status: "ok", processedCount: N, serverTimestamp }
+      // ── Chunk 2: honest ingest-validation contract (push-v2-validate) ──────────
+      // The validating Logic App returns:
+      //   { status, inputCount, accepted:[ids], duplicates:[ids],
+      //     rejected:[{index,TransactionId,reasonCode,reason}],
+      //     failed:[{index,TransactionId,reason,retryable}], serverTimestamp, catalogueCheck }
+      // It enforces a TERMINAL INVARIANT server-side (inputCount === accepted+duplicates+rejected+
+      // failed) and returns non-2xx + acks NOTHING if it can't hold — so a 2xx carrying these buckets
+      // is trustworthy. Client policy:
+      //   accepted + duplicates → _synced (a duplicate/409 means the server already has it; idempotent)
+      //   rejected  (permanent) → durable quarantine flag + surfaced to admin; NEVER _synced, NEVER
+      //                           re-pushed forever (DB.markTransactionsRejected)
+      //   failed    (retryable) → left UNSYNCED for a NORMAL retry next cycle; NEVER quarantined
+      // Detected by the presence of any of the four outcome arrays (the legacy push-v2 returns only
+      // processedCount → the else-branch below, retained for a safe rollback / mixed-endpoint window).
+      const _isV2 = Array.isArray(result.accepted) || Array.isArray(result.duplicates)
+                 || Array.isArray(result.rejected) || Array.isArray(result.failed);
+
+      if (_isV2) {
+        const _acc  = Array.isArray(result.accepted)   ? result.accepted   : [];
+        const _dup  = Array.isArray(result.duplicates) ? result.duplicates : [];
+        const _rej  = Array.isArray(result.rejected)   ? result.rejected   : [];
+        const _fail = Array.isArray(result.failed)     ? result.failed      : [];
+
+        // Defence in depth (P-13): only ever act on ids WE actually sent in this batch — never trust
+        // a server-returned id outside the batch (e.g. another device's row id leaking into a bucket).
+        const _accSyncIds = _acc.filter(id => batchIds.has(id));
+        const _dupSyncIds = _dup.filter(id => batchIds.has(id));
+        const _rejRows = _rej.filter(r => r && batchIds.has(r.TransactionId));
+        const _failRows = _fail.filter(f => f && batchIds.has(f.TransactionId));
+        const _rejSet  = new Set(_rejRows.map(r => r.TransactionId));
+        const _failSet = new Set(_failRows.map(f => f.TransactionId));
+
+        // FAIL CLOSED on a CONTRADICTORY response (GPT Chunk-2 audit P2, round 2): an id the server placed in
+        // a "landed" bucket (accepted/duplicate) AND ALSO in rejected/failed means the response is internally
+        // inconsistent and CANNOT be trusted on ANY of it. Make NO durable changes (don't sync, don't
+        // quarantine), keep the WHOLE batch pending, and retry. (Round-1 quarantined the conflict id instead,
+        // which removed it from the retry set, so the "retry" sent nothing and falsely cleared pending.)
+        const _landedIds = new Set([..._accSyncIds, ..._dupSyncIds]);
+        const _conflict = [..._landedIds].some(id => _rejSet.has(id) || _failSet.has(id));
+        if (_conflict) {
+          console.warn('[Sync] (v2) server returned conflicting buckets for a sent row — response untrusted; NO durable changes, retrying the whole batch (fail-closed).');
+          this._showStatus('Sync response invalid — will retry', 'warning');
+          Sync._setPending(true);
+          this._scheduleSyncRetry();
+        } else {
+
+          // (1) accepted + duplicates → durable _synced (targeted row update)
+          const _syncIds = new Set([..._landedIds]);
+          let _marked = true;
+          if (_syncIds.size > 0) _marked = await DB.markTransactionsSynced(_syncIds);
+
+          // (2) permanent rejects → durable quarantine (surfaced). CHECK the boolean (GPT P2 r1): a failed
+          // quarantine write must force a retry, not a false "done" that strands the row.
+          let _rejMarked = true;
+          if (_rejRows.length > 0) {
+            const _rejMap = new Map(_rejRows.map(r => [r.TransactionId, { code: r.reasonCode, reason: r.reason }]));
+            _rejMarked = await DB.markTransactionsRejected(_rejMap);
+            console.warn('[Sync] Server REJECTED ' + _rejRows.length + ' row(s): ' + _rejRows.map(r => r.TransactionId + '=' + (r.reasonCode || r.reason || '?')).join(', '));
+            try { if (typeof Diag !== 'undefined') Diag.log('sync', 'server-rejected ' + _rejRows.length + ' rows: ' + _rejRows.map(r => r.TransactionId + ':' + (r.reasonCode || '')).join(',')); } catch (e) {}
+          }
+
+          // (3) COVERAGE (GPT P2 r1): every sent row must map to exactly ONE outcome. Count any sent row that
+          // landed in NO bucket — it stays unsynced and MUST drive a retry (never a clean "Synced" while a
+          // sent row is in limbo / the server returned a partial 2xx).
+          let _unaccounted = 0;
+          batchIds.forEach(id => { if (!_syncIds.has(id) && !_rejSet.has(id) && !_failSet.has(id)) _unaccounted++; });
+
+          // CLEAN only when both durable writes succeeded, nothing is retryable, and nothing is unaccounted-for.
+          // Anything else → keep pending + retry, never lie "Synced". (Conflict is handled above, not here.)
+          const _clean = _marked && _rejMarked && _failRows.length === 0 && _unaccounted === 0;
+          if (_clean) {
+            // Fully resolved: accepted/duplicates durable, rejects durably quarantined + surfaced.
+            Sync._setPending(false);
+            this._retryCount = 0;
+            this._markRetryCount = 0;
+            this._stampUiSync();
+            if (_rejRows.length > 0) this._showStatus('Synced ✓ — ' + _rejRows.length + ' rejected by server', 'warning');
+            else this._showStatus('Synced ✓', 'success');
+            this._notifyFollowers();
+            console.log('[Sync] Push complete (v2): ' + _syncIds.size + ' synced, ' + _rejRows.length + ' rejected, ' + _failRows.length + ' failed.', result);
+          } else {
+            // NOT fully resolved — keep pending + schedule a retry; surface what happened, never "Synced ✓".
+            if (!_marked || !_rejMarked) console.warn('[Sync] (v2) durable sync-state write failed — keeping pending + retry (NOT showing Synced).');
+            if (_unaccounted > 0) console.warn('[Sync] (v2) ' + _unaccounted + ' sent row(s) in NO server bucket — keeping pending + retry (fail-safe).');
+            if (_failRows.length > 0) console.warn('[Sync] ' + _failRows.length + ' row(s) failed (retryable) — left unsynced for retry.');
+            const _bits = [];
+            if (_rejRows.length > 0) _bits.push(_rejRows.length + ' rejected');
+            if (_failRows.length > 0) _bits.push(_failRows.length + ' will retry');
+            if (_unaccounted > 0 || !_marked || !_rejMarked) _bits.push('sync incomplete — will retry');
+            this._showStatus(_bits.join(', ') || 'Sync incomplete — will retry', 'warning');
+            Sync._setPending(true);
+            this._scheduleSyncRetry();
+          }
+        }
+
+      } else {
+
+      // ── Legacy push-v2 acknowledgement verification (processedCount) — retained for rollback ──
+      // The legacy Logic App returns: { status: "ok", processedCount: N, serverTimestamp }
       // Verification rules:
       //   status ok/success + processedCount === batchSize  → mark synced
       //   status ok/success WITHOUT processedCount          → FAIL-SAFE, leave unsynced
@@ -839,6 +1235,8 @@ const Sync = {
         this._scheduleSyncRetry();  // Wave H (GPTa-32): the ambiguous branch used to schedule NO retry
       }
 
+      }  // end legacy (else) ack path
+
     } catch (err) {
       console.error('[Sync] Push error:', err);
       this._retryCount++;
@@ -871,31 +1269,50 @@ const Sync = {
   /**
    * Pulls changes from SharePoint via the pull-v2 Logic App.
    *
-   * The pull-v2 Logic App:
-   *   - Accepts POST { since: <epoch_ms_number>, $top: N, $skip: N }
-   *   - Returns { items: [...], serverTimestamp: "...", status: "ok" }
-   *   - Items are flat SharePoint list records with PascalCase field names
-   *   - Filtered by: Timestamp ge <since>
+   * The pull-v2 Logic App (ID-CURSOR contract — see AZURE-PULL-HARDENING-SPEC.md):
+   *   - Accepts POST { lastId: <int-as-string>, maxId: <int-as-string, optional>, $top: N }
+   *   - Returns { items: [...], maxId: "<frozen ceiling>", count, lastId, status: "ok" }
+   *   - Items are flat SharePoint list records with PascalCase field names + an `ID` (SP item id)
+   *   - Server filters: ID gt <lastId> AND ID le <maxId>, ordered by ID asc
    *
-   * PAGINATION (Tier 2 Fix #13):
-   *   Uses $top=1000 and $skip to page through large result sets.
-   *   Loops until a page returns fewer items than $top.
-   *   lastSyncAt is NOT advanced until ALL pages are successfully retrieved.
-   *   If any page fails, the pull aborts and retries next cycle from the
-   *   same lastSyncAt (no data loss, just a delayed sync).
+   * WHY ID-CURSOR (not SyncTimestamp): SharePoint throttles any query whose matched set exceeds
+   * ~5,000 items — even with a real index and paging — so the old SyncTimestamp `gt since` + `$skip`
+   * pull 502'd once a device had >5k rows to catch up on (new/long-offline device onboarding).
+   * Paging by the primary key ID crosses the threshold at any scale (proven on staging, 6k rows).
+   *
+   * PAGINATION + SNAPSHOT FREEZE (C1):
+   *   First page lets the server freeze `maxId` (the list's current max ID) as the cycle ceiling;
+   *   subsequent pages echo it so concurrent inserts can't extend the walk. Page by `lastId` =
+   *   max ID seen so far; loop until a short page. The cursor (bob_last_sp_id) advances to the
+   *   frozen maxId ONLY after every page merged durably; any page failure aborts and re-pulls
+   *   next cycle from the same cursor (no data loss).
+   *
+   * PHANTOM-READ LOOKBACK (C2):
+   *   SharePoint allocates IDs sequentially but commits them asynchronously, so a higher ID can
+   *   become visible before a lower one finishes committing. We start each cycle from
+   *   (lastSyncId - PULL_ID_LOOKBACK) so a row that was mid-commit last cycle is re-seen; replayed
+   *   rows are harmless (deduped locally by TransactionId).
    *
    * TOMBSTONE HANDLING (Tier 2 Fix #6):
    *   Items with Type === 'deleted' are tombstones — they signal that
    *   the referenced transaction (TargetTransactionId field holds the original ID)
-   *   should be removed from the local database.
+   *   should be removed from the local database. Tombstones are appended as NEW rows (new ID),
+   *   so the ID-cursor always reaches them — provided NO row is ever edited/deleted in place
+   *   on the SharePoint list (operational rule, C7).
    */
   PULL_PAGE_SIZE: 1000,
-  PULL_LOOKBACK_MS: 10000,  // 10-second overlap margin — re-queries a small window to catch
-                             // rows that were mid-commit during the previous pull cycle.
-                             // Replayed rows are harmless: Dexie put() deduplicates by ID.
-                             // (Required by GPT as condition for final green flag.)
+  PULL_ID_LOOKBACK: 100,  // C2: re-query the last N ids each cycle to catch async-committed rows.
+                           // Replayed rows are harmless — deduped locally by TransactionId.
+                           // Sizing (auditor follow-up): the out-of-order *visibility* window (a higher
+                           // ID visible before a lower one finishes committing) is bounded by the number
+                           // of inserts committing against the list at once = push-v2's writer concurrency
+                           // (50). 100 = 2x that bound. (Codex wanted >=1000-or-prove; AGY wanted 20 —
+                           // 20 < the 50 concurrency floor = unsafe. 100 is correctness-safe; the ~30KB/
+                           // poll re-read is negligible on store wifi. Raise if push concurrency ever grows.)
+  PULL_LOOKBACK_MS: 10000,  // (legacy, retained) time-overlap margin from the SyncTimestamp era.
 
   async pull() {
+    if (this._unauthorized) return;  // Chunk 5 (D6): paused after a 401 until keys change
     if (!this._pullUrl) return;
     if (this._syncLock) {
       console.log('[Sync] Sync already in progress, skipping pull.');
@@ -904,38 +1321,38 @@ const Sync = {
 
     this._syncLock = true;
     try {
-      let skip = 0;
       let allItems = [];
       let keepGoing = true;
-      let watermark = null;  // Snapshot upper bound — captured from first page
+      let frozenMaxId = null;  // C1: snapshot ceiling — server-frozen on first page, echoed after
 
-      // Page through results with snapshot-safe pagination (GPT review fix)
-      // First page captures serverTimestamp as watermark (epoch ms, server-owned).
-      // All pages filter: SyncTimestamp gt (since - lookback) AND SyncTimestamp le watermark
-      // SyncTimestamp is set server-side at ingest (not client event time).
-      // Stable sort: SyncTimestamp asc, ID asc (SharePoint server ID tie-breaker)
-      // This prevents offline/backdated pushes from being permanently skipped.
-      // The lookback margin (10s) catches rows that were mid-commit during the last pull.
-      const safeSince = Math.max(0, this._lastSyncAt - this.PULL_LOOKBACK_MS);
+      // ID-cursor pagination (threshold-safe at any scale). Start from (lastSyncId - lookback) so
+      // async-committed rows from last cycle are re-seen (C2). cursorId advances to the max ID seen
+      // per page; the server freezes maxId on the first page and we echo it so concurrent inserts
+      // can't extend this cycle (C1).
+      const safeLastId = Math.max(0, this._lastSyncId - this.PULL_ID_LOOKBACK);
+      let cursorId = safeLastId;
       while (keepGoing) {
         const body = {
-          since: String(safeSince),
-          $top: this.PULL_PAGE_SIZE,
-          $skip: skip
+          lastId: String(cursorId),
+          $top: this.PULL_PAGE_SIZE
         };
-        // Send watermark on subsequent pages so Logic App uses consistent upper bound
-        if (watermark) {
-          body.watermark = watermark;
+        // Echo the frozen ceiling on every page after the first (C1)
+        if (frozenMaxId != null) {
+          body.maxId = String(frozenMaxId);
         }
 
         const resp = await fetch(this._pullUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(this._withAuth(body)),
         });
 
+        if (resp.status === 401) {  // Chunk 5: pause sync, no retry-loop (D6)
+          this._handleUnauthorized('pull');
+          return;
+        }
         if (!resp.ok) {
-          console.warn(`[Sync] Pull page failed (skip=${skip}):`, resp.status);
+          console.warn(`[Sync] Pull page failed (lastId=${cursorId}):`, resp.status);
           this._showStatus('Data may be stale \u2014 last sync failed', 'warning', 0);
           return;  // Abort — don't advance lastSyncAt, retry next cycle
         }
@@ -943,32 +1360,62 @@ const Sync = {
         const remote = await resp.json();
         const items = (remote && Array.isArray(remote.items)) ? remote.items : [];
 
-        // Capture watermark from first page response
-        if (!watermark && remote.serverTimestamp) {
-          watermark = remote.serverTimestamp;
+        // C1: capture the frozen ceiling from the first page response
+        if (frozenMaxId == null && remote.maxId != null) {
+          const m = parseInt(remote.maxId, 10);
+          if (!isNaN(m)) frozenMaxId = m;
         }
 
         allItems = allItems.concat(items);
-        console.log(`[Sync] Pull page: skip=${skip}, received=${items.length}, total=${allItems.length}, watermark=${watermark}`);
+        console.log(`[Sync] Pull page: lastId=${cursorId}, received=${items.length}, total=${allItems.length}, frozenMaxId=${frozenMaxId}`);
 
         if (items.length < this.PULL_PAGE_SIZE) {
           keepGoing = false;  // Last page — fewer items than page size
         } else {
-          skip += this.PULL_PAGE_SIZE;
+          // Advance to the max ID on this page (rows are ID-ordered asc). Computed locally so we
+          // never trust a single server field.
+          const pageMaxId = items.reduce((mx, it) => {
+            const v = parseInt(it && it.ID, 10);
+            return (!isNaN(v) && v > mx) ? v : mx;
+          }, cursorId);
+          if (pageMaxId <= cursorId) {
+            // A FULL page that did not advance the max ID = a malformed/garbage server page (Codex P2).
+            // FAIL CLOSED: abort the whole cycle WITHOUT merging the partial result or advancing the
+            // cursor, so the next cycle re-pulls cleanly from the same point. Never risk an infinite
+            // same-page loop or a half-applied cycle.
+            console.warn(`[Sync] Pull no forward progress at lastId=${cursorId} on a full page — aborting cycle, cursor unchanged`);
+            this._showStatus('Data may be stale — last sync failed', 'warning', 0);
+            return;
+          }
+          cursorId = pageMaxId;
         }
       }
 
       if (allItems.length === 0) {
-        // Gemini-1: no new rows, but still advance the cursor to the server watermark so quiet
-        // systems don't re-query the same range every cycle (sync stagnation).
-        if (watermark) { const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime(); if (!isNaN(wmTs) && wmTs > 0) { this._lastSyncAt = Math.max(this._lastSyncAt, wmTs); try { localStorage.setItem('bob_last_sync', String(this._lastSyncAt)); } catch(e) {} } }
+        // No new rows, but still advance the cursor to the frozen ceiling so quiet systems don't
+        // re-query the same range every cycle (sync stagnation). Only ever advances forward.
+        if (frozenMaxId != null && frozenMaxId > 0) {
+          this._lastSyncId = Math.max(this._lastSyncId, frozenMaxId);
+          try { localStorage.setItem('bob_last_sp_id', String(this._lastSyncId)); } catch(e) {}
+        }
+        this._lastSyncAt = Date.now();  // UI freshness stamp (sync succeeded, no new rows)
+        try { localStorage.setItem('bob_last_sync', String(this._lastSyncAt)); } catch(e) {}
         return;  // No new rows (cursor advanced)
       }
 
       console.log(`[Sync] Pull received ${allItems.length} total items from SharePoint.`);
 
       const local = DB.get();
-      const localIds = new Set((local.transactions || []).map(t => t.id));
+      const localById = new Map((local.transactions || []).map(t => [t.id, t]));
+      const localIds = new Set(localById.keys());
+      let spIdBackfilled = 0;  // Chunk 8: assign _spId to already-known rows (esp. this device's own rows, which
+                               // are never re-ingested via _fromSharePoint) so the archival fold can tell which
+                               // local rows are <= cutoff. Without this, an old own-device row keeps _spId==null,
+                               // is treated as "recent", and double-counts against the snapshot that already folds it.
+      const spIdBackfillRows = [];  // AGY P1: DB.commit() does NOT persist the transactions table, so an in-memory
+                                    // _spId backfill is lost on reload (rows revert to _spId==null and double-count).
+                                    // Collect the mutated rows and write them DURABLY (bulkPut) below.
+      const _spIdOf = (it) => { const v = (it.ID != null ? it.ID : it.Id); const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; };
 
       // Diagnostic: count overlap/replay rows (items in the lookback window already known locally)
       // This helps verify the lookback margin is working and can be tuned later.
@@ -997,9 +1444,12 @@ const Sync = {
           continue;
         }
 
-        // Skip items we already have locally (includes lookback overlap rows)
+        // Skip items we already have locally (includes lookback overlap rows), but first BACKFILL the
+        // SharePoint id onto the known local row if it's missing (Chunk 8 fold correctness).
         if (localIds.has(spItem.TransactionId)) {
           overlapCount++;
+          const known = localById.get(spItem.TransactionId);
+          if (known && known._spId == null) { const sid = _spIdOf(spItem); if (sid != null) { known._spId = sid; spIdBackfilled++; spIdBackfillRows.push(known); } }
           continue;
         }
 
@@ -1070,6 +1520,15 @@ const Sync = {
         }
       }
 
+      if (spIdBackfilled > 0) {
+        changed = true;
+        // AGY P1: persist the backfill DURABLY — commit() only writes ref-data, so without this the _spId is
+        // lost on reload and the rows double-count against the snapshot. Best-effort: on failure the rows keep
+        // _spId in memory this session and get re-backfilled next pull cycle (the migration re-pull re-sees them).
+        try { await DB.persistTransactionRows(spIdBackfillRows); } catch (e) { console.warn('[Sync] _spId backfill durable persist failed (will re-backfill next cycle):', e); }
+        console.log(`[Sync] Backfilled _spId on ${spIdBackfilled} known local row(s) for archival fold (durably persisted).`);
+      }
+
       if (changed) {
         DB.commit();
         this._rerender();
@@ -1082,24 +1541,18 @@ const Sync = {
         return;
       }
 
-      // Only advance lastSyncAt AFTER all pages succeeded.
-      // Use watermark (server timestamp at pull start) if available, NOT Date.now().
-      // The watermark is the exact upper bound used by the query (SyncTimestamp le watermark).
-      // Any records that arrive during the pull loop have SyncTimestamp > watermark,
-      // so they'll be picked up in the next sync cycle. (Gemini + GPT both flagged this.)
-      // Pull filter uses "gt since" (not "ge") to avoid replaying boundary rows.
-      if (watermark) {
-        const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime();
-        if (!isNaN(wmTs) && wmTs > 0) {
-          // MFL-008: clamp — never let a stale/older server watermark move the cursor backwards
-          this._lastSyncAt = Math.max(this._lastSyncAt, wmTs);
-        } else {
-          this._lastSyncAt = Math.max(this._lastSyncAt, Date.now());
-        }
-      } else {
-        this._lastSyncAt = Math.max(this._lastSyncAt, Date.now());
+      // C3: advance the ID cursor ONLY after every page merged durably (gated above).
+      // Advance to the frozen ceiling (the exact ID upper bound the cycle used) — any rows that
+      // arrived after the freeze have ID > frozenMaxId and are caught next cycle. Math.max clamp:
+      // never let the cursor move backwards. The C2 lookback re-reads the tail; dedup handles it.
+      if (frozenMaxId != null && frozenMaxId > 0) {
+        this._lastSyncId = Math.max(this._lastSyncId, frozenMaxId);
+        localStorage.setItem('bob_last_sp_id', String(this._lastSyncId));
       }
-      localStorage.setItem('bob_last_sync', String(this._lastSyncAt));
+      // _lastSyncAt is now a pure UI freshness stamp (wall-clock of last successful sync) — the pull
+      // cursor is bob_last_sp_id. Stamp it so the staleness banner reflects real sync recency.
+      this._lastSyncAt = Date.now();
+      try { localStorage.setItem('bob_last_sync', String(this._lastSyncAt)); } catch(e) {}
 
       // Clear any stale-data warning since sync succeeded
       this._showStatus('Synced \u2713', 'success'); this._stampUiSync();
@@ -1112,6 +1565,161 @@ const Sync = {
       this._drainSyncQueue();  // Wave L2r1 (GPT P2): run a manual/reconnect cycle that collided with this raw pull
     }
   },
+
+  // ─── Azure Chunk 4 — record-steps push/pull (parallel stream to the ledger) ──────────
+  // Same honest accept/reject/duplicate/failed contract as the Chunk-2 ledger push; ids are stepIds.
+  // R1 FAIL-CLOSED ORDERING: a stock-effecting step (one carrying payload.expectedLedgerKeys) is eligible
+  // to push ONLY once ALL its ledger rows are confirmed _synced — so the record can never claim a stock
+  // effect (e.g. "received") before the stock itself has landed. The cycle runs ledger push FIRST, then
+  // pushSteps (see _runSyncCycle / scheduleSync / poll), which is what makes the ordering hold.
+  async pushSteps() {
+    if (!this._stepsPushUrl) return;                 // steps sync disabled (pre-Chunk-4 config) — graceful no-op
+    if (typeof Records === 'undefined') return;
+    if (this._syncLock) { console.log('[Sync] Sync in progress, skipping pushSteps.'); return; }
+    this._syncLock = true;
+    try {
+      if (typeof DB !== 'undefined' && DB.refresh) await DB.refresh();
+      const data = DB.get();
+      const allUnsynced = (data.recordSteps || []).filter(s => s && !s._synced && !s._rejected);
+      if (allUnsynced.length === 0) { Sync._setStepPending(false); return; }
+
+      // R1 eligibility: hold a stock-effecting step until its ledger rows are durably synced (+ not rejected).
+      const ledgerById = new Map((data.transactions || []).map(t => [t.id, t]));
+      const eligible = [], held = [];
+      for (const s of allUnsynced) {
+        const keys = (s.payload && Array.isArray(s.payload.expectedLedgerKeys)) ? s.payload.expectedLedgerKeys.filter(Boolean) : [];
+        if (keys.length === 0) { eligible.push(s); continue; }
+        const ready = keys.every(k => { const r = ledgerById.get(k); return r && r._synced && !r._rejected; });
+        (ready ? eligible : held).push(s);
+      }
+      if (held.length) console.log('[Sync] R1: holding ' + held.length + ' record-step(s) until their ledger rows sync.');
+      if (eligible.length === 0) { Sync._setStepPending(true); return; }
+
+      const batchIds = new Set(eligible.map(s => s.stepId));
+      const payload = { data: { steps: eligible.map(s => Records.toSharePoint(s)) } };
+      console.log('[Sync] Pushing ' + eligible.length + ' record-step(s)...');
+
+      const resp = await fetch(this._stepsPushUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth(payload)) });
+      if (resp.status === 401) {  // Chunk 5: pause sync, no retry-loop (D6); steps stay pending
+        this._handleUnauthorized('pushSteps');
+        Sync._setStepPending(true);
+        return;
+      }
+      if (!resp.ok) throw new Error('Steps push failed: ' + resp.status + ' ' + resp.statusText);
+      const result = await resp.json().catch(() => ({}));
+
+      const _acc  = Array.isArray(result.accepted)   ? result.accepted   : [];
+      const _dup  = Array.isArray(result.duplicates) ? result.duplicates : [];
+      const _rej  = Array.isArray(result.rejected)   ? result.rejected   : [];
+      const _fail = Array.isArray(result.failed)     ? result.failed      : [];
+      const _idOf = r => r && (r.StepId || r.stepId);
+      const accIds  = _acc.filter(id => batchIds.has(id));
+      const dupIds  = _dup.filter(id => batchIds.has(id));
+      const rejRows = _rej.filter(r => batchIds.has(_idOf(r)));
+      const failRows = _fail.filter(f => batchIds.has(_idOf(f)));
+      const rejSet  = new Set(rejRows.map(_idOf));
+      const failSet = new Set(failRows.map(_idOf));
+      const landed  = new Set([...accIds, ...dupIds]);
+
+      // Fail-closed on a contradictory response (id in a landed bucket AND rejected/failed): trust none of it.
+      const conflict = [...landed].some(id => rejSet.has(id) || failSet.has(id));
+      if (conflict) {
+        console.warn('[Sync] (steps) contradictory server buckets — no durable change, retrying whole batch.');
+        Sync._setStepPending(true); this._scheduleSyncRetry();
+        return;
+      }
+      let marked = true, rejMarked = true;
+      if (landed.size > 0) marked = await DB.markStepsSynced(landed);
+      if (rejRows.length > 0) {
+        rejMarked = await DB.markStepsRejected(new Map(rejRows.map(r => [_idOf(r), { code: r.reasonCode, reason: r.reason }])));
+        console.warn('[Sync] Server REJECTED ' + rejRows.length + ' record-step(s): ' + rejRows.map(r => _idOf(r) + '=' + (r.reasonCode || r.reason || '?')).join(', '));
+        try { if (typeof Diag !== 'undefined') Diag.log('sync', 'server-rejected ' + rejRows.length + ' record-steps'); } catch (e) {}
+      }
+      let unaccounted = 0;
+      batchIds.forEach(id => { if (!landed.has(id) && !rejSet.has(id) && !failSet.has(id)) unaccounted++; });
+
+      const clean = marked && rejMarked && failRows.length === 0 && unaccounted === 0 && held.length === 0;
+      Sync._setStepPending(!clean);
+      if (!clean) this._scheduleSyncRetry();
+      else { this._notifyFollowers(); }
+      console.log('[Sync] Steps push: ' + landed.size + ' synced, ' + rejRows.length + ' rejected, ' + failRows.length + ' failed, ' + unaccounted + ' unaccounted, ' + held.length + ' held.');
+    } catch (err) {
+      console.error('[Sync] pushSteps error:', err);
+      Sync._setStepPending(true); this._scheduleSyncRetry();
+    } finally {
+      this._syncLock = false;
+      this._drainSyncQueue();
+    }
+  },
+
+  async pullSteps() {
+    if (!this._stepsPullUrl) return;                 // steps sync disabled — graceful no-op
+    if (typeof Records === 'undefined') return;
+    if (this._syncLock) { console.log('[Sync] Sync in progress, skipping pullSteps.'); return; }
+    this._syncLock = true;
+    try {
+      let allItems = [], keepGoing = true, frozenMaxId = null;
+      const safeLastId = Math.max(0, this._lastStepSyncId - this.PULL_ID_LOOKBACK);
+      let cursorId = safeLastId;
+      while (keepGoing) {
+        const body = { lastId: String(cursorId), $top: this.PULL_PAGE_SIZE };
+        if (frozenMaxId != null) body.maxId = String(frozenMaxId);
+        const resp = await fetch(this._stepsPullUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth(body)) });
+        if (resp.status === 401) { this._handleUnauthorized('pullSteps'); return; }  // Chunk 5: no retry-loop (D6)
+        if (!resp.ok) { console.warn('[Sync] Steps pull page failed (lastId=' + cursorId + '):', resp.status); return; }
+        const remote = await resp.json();
+        const items = (remote && Array.isArray(remote.items)) ? remote.items : [];
+        if (frozenMaxId == null && remote.maxId != null) { const m = parseInt(remote.maxId, 10); if (!isNaN(m)) frozenMaxId = m; }
+        allItems = allItems.concat(items);
+        if (items.length < this.PULL_PAGE_SIZE) keepGoing = false;
+        else {
+          const pageMaxId = items.reduce((mx, it) => { const v = parseInt(it && it.ID, 10); return (!isNaN(v) && v > mx) ? v : mx; }, cursorId);
+          if (pageMaxId <= cursorId) { console.warn('[Sync] Steps pull no forward progress — aborting cycle.'); return; }
+          cursorId = pageMaxId;
+        }
+      }
+
+      if (allItems.length === 0) {
+        if (frozenMaxId != null && frozenMaxId > 0) { this._lastStepSyncId = Math.max(this._lastStepSyncId, frozenMaxId); try { localStorage.setItem('bob_last_step_sp_id', String(this._lastStepSyncId)); } catch (e) {} }
+        return;
+      }
+
+      const local = DB.get();
+      const knownStepIds = new Set((local.recordSteps || []).map(s => s.stepId));
+      const newSteps = [];
+      for (const it of allItems) {
+        const step = Records.fromSharePoint(it);
+        if (!step) continue;                              // malformed → skip (don't stall)
+        if (knownStepIds.has(step.stepId)) continue;      // already have it (lookback overlap / own row)
+        newSteps.push(step);
+      }
+
+      let mergeDurable = true;
+      if (newSteps.length > 0) {
+        mergeDurable = await DB.addStepsDurable(newSteps, { remote: true });
+        if (mergeDurable) {
+          console.log('[Sync] Merged ' + newSteps.length + ' new record-step(s).');
+          await Records.applyFold();        // materialise/refresh the local transfer/delivery/stocktake records
+          this._rerender();
+          this._notifyFollowers();
+        } else {
+          console.error('[Sync] Durable persist of merged steps FAILED — cursor unchanged, will re-pull.');
+        }
+      }
+
+      if (!mergeDurable) { this._showStatus('Data may be stale — will retry', 'warning'); return; }
+      if (frozenMaxId != null && frozenMaxId > 0) { this._lastStepSyncId = Math.max(this._lastStepSyncId, frozenMaxId); try { localStorage.setItem('bob_last_step_sp_id', String(this._lastStepSyncId)); } catch (e) {} }
+    } catch (err) {
+      console.error('[Sync] pullSteps error:', err);
+    } finally {
+      this._syncLock = false;
+      this._drainSyncQueue();
+    }
+  },
+
+  // Chunk 4: separate pending flag for record-steps (so a held/failed step keeps the leader draining).
+  _setStepPending(on) { try { if (on) localStorage.setItem('bob_step_sync_pending', 'true'); else localStorage.removeItem('bob_step_sync_pending'); } catch (e) {} },
+  _getStepPending() { try { return localStorage.getItem('bob_step_sync_pending') === 'true'; } catch (e) { return false; } },
 
   // ─── Tombstone handling (Wave I / Tier 2) ───────────────────────────
   // The separate Sync.pushTombstone fetch path was REMOVED. A delete now writes a durable
@@ -1167,6 +1775,7 @@ const Sync = {
     if (this._debounceTimer) clearTimeout(this._debounceTimer);
     this._debounceTimer = setTimeout(async () => {
       await this.push();
+      await this.pushSteps();  // Chunk 4: drain record-steps after the ledger (R1 ordering)
     }, this.DEBOUNCE_MS);
   },
 
@@ -1190,13 +1799,18 @@ const Sync = {
   // scheduleSync debounce) — those hold _syncLock WITHOUT setting _syncing, so without this guard the cycle's
   // own push/pull would both silently skip and the manual/reconnect sync would no-op while reporting success.
   async _runSyncCycle() {
+    // Chunk 5 (D6): after a 401 the device is paused — no fetch storm from the 30s poll.
+    // Entering valid keys (saveAuthKeys) clears the pause and re-runs.
+    if (this._unauthorized) return { ok: false, unauthorized: true };
     if (this._syncing || this._syncLock) { this._syncQueued = true; return { ok: true, queued: true }; }
     this._syncing = true;
     try {
       do {
         this._syncQueued = false;
-        await this.push();   // local → server first
-        await this.pull();   // then server → local
+        await this.push();        // ledger local → server FIRST (R1: stock before record-steps)
+        await this.pushSteps();   // then record-steps (eligible only when their ledger rows are synced)
+        await this.pull();        // ledger server → local
+        await this.pullSteps();   // then record-steps server → local (fold into records)
       } while (this._syncQueued);
     } finally { this._syncing = false; }
     return { ok: true };
@@ -1233,6 +1847,7 @@ const Sync = {
    */
   async poll() {
     await this.pull();
+    await this.pullSteps();  // Chunk 4: pull record-steps each cycle, fold into records
     // Wave I (Tier 2, GPT): the leader's periodic poll also DRAINS pending writes. A delete now
     // writes a durable tombstone row + relies on the 'local-write' BroadcastChannel signal to make
     // the leader push it — but that signal can be missed (backgrounded/closed follower tab). Pushing
@@ -1240,6 +1855,10 @@ const Sync = {
     // tombstone-specific path. Leader-only + lock-guarded; a clean cycle with nothing pending is a no-op.
     if (this._isLeader && this._getPending && this._getPending()) {
       try { await this.push(); } catch (e) { /* push handles its own retry/status */ }
+    }
+    // Chunk 4: also drain pending record-steps (e.g. steps held last cycle whose ledger rows have now synced).
+    if (this._isLeader && this._getStepPending && this._getStepPending()) {
+      try { await this.pushSteps(); } catch (e) {}
     }
   },
 
@@ -1252,6 +1871,19 @@ const Sync = {
    * All tabs load config, but only the leader starts push/pull/polling.
    */
   async init() {
+    // Chunk 8 (AGY P1 / migration): rows synced BEFORE this build carry no _spId, and the ID-cursor never
+    // re-pulls rows below the high-water mark — so they'd stay _spId==null and DOUBLE-COUNT at the first
+    // archival (null != covered -> applied on top of the snapshot seed). One-time: if any synced row lacks an
+    // _spId, rewind the pull cursor to 0 so the next pull re-reads the whole ledger and backfills every row
+    // (dedup by TransactionId makes the replay harmless; the ID-cursor pull is threshold-safe at any scale).
+    try {
+      if (!localStorage.getItem('bob_c8_spid_migrated')) {
+        const needs = typeof DB !== 'undefined' && DB.get && (DB.get().transactions || []).some(t => t && t._synced === true && t._spId == null);
+        if (needs) { this._lastSyncId = 0; localStorage.setItem('bob_last_sp_id', '0'); console.log('[Sync] Chunk-8 _spId migration: rewound pull cursor to 0 for a one-time full backfill.'); }
+        localStorage.setItem('bob_c8_spid_migrated', '1');
+      }
+    } catch (e) {}
+
     // Try remote config first (self-configuring), fall back to sessionStorage cache
     let hasConfig = await this._fetchRemoteConfig();
     if (!hasConfig) {
@@ -1284,22 +1916,34 @@ const Sync = {
       console.log('[Sync] Pending sync found, pushing...');
       await this.push();
     }
+    if (Sync._getStepPending && Sync._getStepPending()) {
+      console.log('[Sync] Pending record-steps found, pushing...');
+      await this.pushSteps();
+    }
 
     // GPTa-24: a brand-new (never-synced) device renders the bundled seed until the first 30s poll —
     // pull immediately so staff act on real data, not seed. Non-blocking to app use; offline-safe.
     // pull() does NOT reliably throw on failure (failed HTTP returns internally), so confirm success by
-    // the advanced cursor (_lastSyncAt>0), never by a catch — otherwise we'd show "Up to date" on seed.
-    if (this._lastSyncAt === 0) {
-      console.log('[Sync] First run on this device — pulling initial data...');
+    // the advanced cursor (_lastSyncId>0), never by a catch — otherwise we'd show "Up to date" on seed.
+    // ID-cursor migration: gate on _lastSyncId (the new cursor). Existing devices have bob_last_sp_id
+    // unset (=0) so they take this branch once and replay from ID 0 — a one-time full pull, deduped by
+    // TransactionId (C6). Cheap while live is <5k; threshold-safe even if not.
+    if (this._lastSyncId === 0) {
+      console.log('[Sync] First ID-cursor run on this device — pulling initial data...');
       this._showStatus('↻ Syncing latest data…', 'info', 0);
       try { await this.pull(); } catch (e) {}
-      if (this._lastSyncAt > 0) { this._showStatus('✓ Up to date', 'success', 2500); }
+      try { await this.pullSteps(); } catch (e) {}  // Chunk 4: first-run record-steps pull too
+      if (this._lastSyncId > 0) { this._showStatus('✓ Up to date', 'success', 2500); }
       else { this._showStatus('⚠ Could not sync yet — showing local data; will retry automatically', 'error', 0); }
     } else if (this._lastSyncAt > 0 && (Date.now() - this._lastSyncAt) > this.STALE_THRESHOLD) {
       // Check if data is stale
       console.log('[Sync] Data is stale, pulling fresh...');
       await this.pull();
+      await this.pullSteps();  // Chunk 4
     }
+    // Chunk 4: also run the one-time automatic backfill of pre-existing local records (D4-I).
+    // No-op when there are no un-emitted local records (current state) or already run on this device.
+    try { if (typeof Records !== 'undefined' && Records.runBackfillOnce) await Records.runBackfillOnce(); } catch (e) { console.warn('[Sync] backfill skipped:', e); }
 
     // Start polling (leader only)
     this._startPolling();

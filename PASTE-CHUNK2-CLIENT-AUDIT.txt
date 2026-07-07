@@ -1,0 +1,117 @@
+BOB STOCK — AZURE CHUNK 2 (CLIENT HALF) — FOCUSED CODE AUDIT BRIEF
+Mode: REPORT ONLY. Do NOT edit any file. (AGY: report-only, never agentic file-editing.)
+You are one of two independent auditors (GPT-Codex + AGY/Antigravity). Claude is the sole engineer.
+
+=== CONTEXT ===
+The Azure SERVER half of Chunk 2 is done + proven on staging (bob-stock-push-v2-validate-staging):
+it validates every pushed StockTransactions row and returns an HONEST per-row outcome contract instead
+of the old lie (processedCount === batchSize → whole batch acked). Spec + decisions: AZURE-CHUNK2-SCOPE.md.
+
+This audit covers the CLIENT half only: making sync.js push() honour that contract, a durable quarantine
+in db.js, and the new sentinels. Everything is built on branch main, UNCOMMITTED, held for the
+end-of-phase 6-way + single live cutover. Live is untouched. Authz is OUT of scope (Chunk 5).
+
+=== THE CONTRACT (what the server now returns on push) ===
+{ status, inputCount,
+  accepted:   [TransactionId...],
+  duplicates: [TransactionId...],                              // 409 / already-present = idempotent
+  rejected:   [{index, TransactionId, reasonCode, reason}],    // PERMANENT validation failure
+  failed:     [{index, TransactionId, reason, retryable}],     // RETRYABLE (429/5xx/transient)
+  serverTimestamp, catalogueCheck }
+Server enforces a terminal invariant (inputCount === accepted+duplicates+rejected+failed) and returns
+non-2xx + acks NOTHING if it can't hold — so a 2xx carrying these buckets is trustworthy.
+
+=== CLIENT POLICY (what to verify in the code) ===
+- accepted + duplicates  -> marked _synced (DB.markTransactionsSynced)
+- rejected (permanent)    -> DB.markTransactionsRejected (durable _rejected flag + reasonCode/reason);
+                             SURFACED (console.warn + Diag.log + status); NEVER _synced; and excluded
+                             from re-push via the new `!t._rejected` filter (no silent retry-forever)
+- failed (retryable)      -> left UNSYNCED + _setPending(true) + _scheduleSyncRetry(); NEVER quarantined
+- Every bucket is intersected with batchIds (only act on ids WE sent this batch) — P-13 defence in depth
+- A row we sent that lands in NO bucket simply stays unsynced and re-pushes next cycle (fail-safe)
+- markSynced persist-fail keeps pending + retries, never shows "Synced" (Wave H/H3 preserved)
+- The legacy processedCount path is RETAINED as the `else` branch (rollback / mixed-endpoint window)
+
+=== FILES CHANGED (read the diff) ===
+  git --no-pager diff -- sync.js db.js test/smoke-test.js test/saboteur-runner.js
+- sync.js  push(): _isV2 contract detection + bucket handling; `_allUnsynced` now excludes _rejected.
+- db.js     markTransactionsRejected(Map<TransactionId,{code,reason}>) — durable, cache-revert on fail.
+- test/smoke-test.js     S-163..166 (drive the LIVE Sync.push() against a mocked v2 response).
+- test/saboteur-runner.js  matching mutations S-163..166.
+Design/review write-up: AZURE-CHUNK2-CLIENT-REVIEW.md.
+
+=== RUN THE HARNESS YOURSELF (do not trust Claude's numbers) ===
+No secret needed for the client harness. From the repo root.
+IMPORTANT — auditors cap concurrency to 5 (SABOTEUR_CONCURRENCY=5) so multiple auditors can run the
+sweep at the same time without starving each other's browsers. (Claude's own default is 10.)
+
+  node test/smoke-test.js
+      → expect: ==== 161/161 sentinels PASS on clean code ====
+  SABOTEUR_CONCURRENCY=5 SABOTEUR_ONLY=S-163,S-164,S-165,S-166,S-167,S-168,S-169,S-170,S-67 node test/saboteur-runner.js
+      → expect: baseline 161/161 green, then 9 CAUGHT / 0 BLIND / 0 skipped / 0 INFRA-FAIL
+  (The full pre-commit gate Claude ran: SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js
+   = baseline 161/161, 178 CAUGHT / 0 BLIND / 0 SKIPPED / 0 INFRA-FAIL of 178.)
+Report YOUR observed numbers. Any difference from the above is a finding.
+
+=== ROUND 2 — GPT P2 FIXES (re-audit these) ===
+GPT-Codex round 1 BLOCK'd with 3 real P2s; all fixed at root. The v2 ack now gates the clean/"Synced"
+outcome on a single invariant — `_clean = _marked && _rejMarked && noFailed && allAccounted && !_conflict`;
+anything else keeps pending + schedules a retry (never lies "Synced"):
+  P2-1 (no-bucket): a sent row in NO bucket is counted (_unaccounted) → retry, not falsely Synced. (S-168)
+  P2-2 (quarantine-write fail): DB.markTransactionsRejected return is now CHECKED (_rejMarked) → retry. (S-169)
+  P2-3 (conflict): the sync set excludes any id ALSO in rejected/failed (fail-closed) → never synced. (S-170)
+Please re-run your round-1 probes against these (mixed/empty/missing/all-rejected/duplicate-in-two-buckets,
+markRejected→false, same-id-in-accepted+rejected) and confirm cleared.
+
+New/changed sentinels this wave: S-163 (rejected not synced + surfaced), S-164 (duplicate=synced),
+S-165 (accepted=synced), S-166 (failed left unsynced + retried, not quarantined), S-167 (v2
+markSynced-fail does not lie "Synced"), S-168 (no-bucket row retried), S-169 (failed quarantine-write
+retried), S-170 (conflicting-bucket id fail-closed, not synced); S-67 re-pointed (legacy markSynced-fail).
+
+NOTE (harness change to flag): the saboteur-runner default concurrency was raised 6→10 this wave
+(test/saboteur-runner.js:61) — a pure performance knob, no logic/mutation change; 10 was already
+validated effectiveness-neutral. Auditors override it to 5 as above.
+
+=== NEW THIS ROUND — SERVER-SIDE END-TO-END GROUND TRUTH (cloud access now provided) ===
+You are no longer limited to reading Claude's probe transcripts. Kunal will give you (separately, out of
+band — NOT in this repo) a credentials file containing:
+  (a) a READ-ONLY Microsoft Graph app credential (tenant/client/secret + siteId) scoped to read ONLY the
+      staging SharePoint site — you can independently READ StockTransactions_Staging, the quarantine list,
+      StockTransactions_Validate, AppConfig, etc.; and
+  (b) the STAGING push-validate + pull Logic App URLs (write-capable, DISPOSABLE staging only — never live).
+Use them to VERIFY the Chunk-2 SERVER half end-to-end, not just the client:
+  1. POST a mixed batch to the push-validate URL: 1 good row + bad-Qty + unknown-Store + reserved-key id
+     (__proto__) + hostile-char id (abc.def) + a duplicate of an existing TransactionId.
+  2. Confirm the RESPONSE: good->accepted; bad->rejected (with reasonCode); dup->duplicates; and the terminal
+     invariant inputCount === accepted+duplicates+rejected+failed.
+  3. Then INDEPENDENTLY READ the list via the Graph credential and confirm reality matches the response:
+     the good row actually landed, the rejected rows are actually ABSENT, the duplicate did NOT double-insert,
+     and the rejects appear in the quarantine list with reason codes.
+  4. Acceptance-bar ids that MUST all reject (allowlist-equivalent): abc.def, abc:def, abc/def, abc\def,
+     abc%2f, abc[1], a newline/tab, and a non-ASCII char (é).
+This is the part that was previously "trust Claude's numbers" — now prove it yourself. Report what you
+independently observed in the list vs. what the server claimed. Any mismatch is a finding.
+(The CLIENT sentinels above still run with NO credential — the credential is for the server/end-to-end half.)
+
+ISOLATION RULE (both auditors may run at the SAME time): the staging list enforces unique TransactionId and
+dedup is against the SHARED list, so you MUST namespace every test row's TransactionId with your own prefix
+and a fresh random suffix EACH run — GPT use `gpt_<rand>_...`, AGY use `agy_<rand>_...` (never a fixed/shared
+id). Filter your list-reads to your own prefix. Otherwise the other auditor's identical id will return as a
+`duplicate` and look like a false bug. With unique prefixes the two audits are fully isolated. (Staging only;
+live is a different endpoint + list and is never touched. Reads are concurrency-safe.)
+
+=== ADVERSARIAL ANGLE (try to DEFEAT it; run the code) ===
+1. Silent data loss: can a server-rejected row ever end up _synced (lost)? Mixed batches
+   (accepted+rejected+failed together), empty buckets, missing buckets, all-rejected, duplicate ids
+   appearing in two buckets.
+2. Infinite reject loop: does a permanently-rejected row stop re-pushing? Does it survive a reload
+   (durable flag) and stay surfaced?
+3. Mislabel: is a `failed` (retryable) row ever quarantined as permanent, or a `rejected` ever retried?
+4. Duplicate handling: does a 409 duplicate clear (mark _synced), or does it loop forever unsynced?
+5. batchIds confusion: a server id NOT in the batch appearing in a bucket — is it ignored?
+6. Contract detection: does a legacy {status,processedCount} response still take the old path unchanged?
+   Does an all-empty v2 response ({accepted:[]}) leave the sent row safely unsynced (not lost)?
+7. Sentinel quality: are S-163..166 mutation-proven (each flips exactly its own sentinel red), or is any
+   BLIND (passes even with its guard removed)?
+
+Return: PASS / BLOCK + each finding with severity, the exact code path, and (where you ran it) the probe.

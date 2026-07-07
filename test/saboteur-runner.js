@@ -50,15 +50,16 @@ process.on('exit', _cleanup);
 });
 
 const REPO = path.resolve(__dirname, '..');
-const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'phase2.js', 'sw.js', 'staticwebapp.config.json'];
+const SRC_FILES = ['index.html', 'db.js', 'sync.js', 'records.js', 'phase2.js', 'sw.js', 'staticwebapp.config.json'];
 // Per-child budget. Bumped from 600s: under parallel CPU contention a single smoke run (~266s
 // in-repo) slows down, so give generous headroom to avoid a contention timeout reading as a false BLIND.
 const SMOKE_TIMEOUT = 1200000;
 const MAXBUF = 64 * 1024 * 1024;
 // Mutations run in a bounded pool of fresh child processes (each still fully isolated in its own temp
 // copy — the isolation that fixed the teardown flakiness is preserved; we just run several at once).
-// Speedup ≈ concurrency. Tune with SABOTEUR_CONCURRENCY; default modest to keep per-child contention low.
-const CONCURRENCY = Math.max(1, parseInt(process.env.SABOTEUR_CONCURRENCY || '0', 10) || Math.min(6, Math.max(2, os.cpus().length - 1)));
+// Speedup ≈ concurrency. Tune with SABOTEUR_CONCURRENCY; default 10 (Kunal 2026-06-28) — validated
+// effectiveness-neutral on this 32-core box (~10x vs sequential). Capped at cores-1 for smaller machines.
+const CONCURRENCY = Math.max(1, parseInt(process.env.SABOTEUR_CONCURRENCY || '0', 10) || Math.min(10, Math.max(2, os.cpus().length - 1)));
 
 const MUTATIONS = [
   { id: 'S-01', file: 'db.js',
@@ -110,9 +111,10 @@ const MUTATIONS = [
     repl: "todayLocal() { return new Date().toISOString().slice(0,10); },",
     note: 'dates revert to UTC slice -> early-AM Perth actions dated to the previous day (I-86)' },
   { id: 'S-20', file: 'sync.js',
-    find: "        if (watermark) { const wmTs = typeof watermark === 'number' ? watermark : new Date(watermark).getTime(); if (!isNaN(wmTs) && wmTs > 0) { this._lastSyncAt = Math.max(this._lastSyncAt, wmTs); try { localStorage.setItem('bob_last_sync', String(this._lastSyncAt)); } catch(e) {} } }",
+    find: "          this._lastSyncId = Math.max(this._lastSyncId, frozenMaxId);\n          try { localStorage.setItem('bob_last_sp_id', String(this._lastSyncId)); } catch(e) {}",
+    altFind: "          this._lastSyncId = Math.max(this._lastSyncId, frozenMaxId);\r\n          try { localStorage.setItem('bob_last_sp_id', String(this._lastSyncId)); } catch(e) {}",
     repl: "",
-    note: 'empty pull stops advancing the cursor -> quiet systems re-query the same range forever (I-89)' },
+    note: 'empty pull stops advancing the ID cursor -> quiet systems re-query the same range forever (I-89)' },
   { id: 'S-21', file: 'index.html',
     find: "else walk(v[k]);",
     repl: "",
@@ -130,9 +132,10 @@ const MUTATIONS = [
     repl: "/* S-11 saboteur: rollback removed */",
     note: 'addTransactionDurable stops rolling back on a quota throw -> torn half-saved state (I-21/I-131)' },
   { id: 'S-04', file: 'sync.js',
-    find: 'this._lastSyncAt = Math.max(this._lastSyncAt, wmTs);\n        } else {',
-    repl: 'this._lastSyncAt = wmTs;\n        } else {',
-    note: 'remove the main watermark clamp (post-merge) -> a stale older server watermark rewinds the cursor' },
+    find: "        this._lastSyncId = Math.max(this._lastSyncId, frozenMaxId);\n        localStorage.setItem('bob_last_sp_id', String(this._lastSyncId));",
+    altFind: "        this._lastSyncId = Math.max(this._lastSyncId, frozenMaxId);\r\n        localStorage.setItem('bob_last_sp_id', String(this._lastSyncId));",
+    repl: "        this._lastSyncId = frozenMaxId;\n        localStorage.setItem('bob_last_sp_id', String(this._lastSyncId));",
+    note: 'remove the ID-cursor clamp (post-merge) -> a lower frozen maxId rewinds the cursor' },
   { id: 'S-05', file: 'index.html',
     find: ".replace(/</g,'&lt;')",
     repl: '',
@@ -259,9 +262,9 @@ const MUTATIONS = [
     repl: 'const badMoney = v => v != null && (!Number.isFinite(Number(v)) || Number(v) < 0);',
     note: 'master_data money check reverts to finite+non-negative only -> 1000000.01 / 3-decimal prices pushed to every device (F-followup / GPT-WF-03)' },
   { id: 'S-50', file: 'sync.js',
-    find: 'if (RESERVED[k]) return;\n        if (keepLocalCost && k === \'costPrice\' && row.costPrice == null) return;',
-    repl: 'if (k === \'id\') return;\n        if (keepLocalCost && k === \'costPrice\' && row.costPrice == null) return;',
-    note: 'master_data upsert stops skipping reserved keys -> a __proto__ field in a remote row swaps the merged object prototype (F-followup / CL-01, I-02). Round-1 lesson: the shared copyFields helper means ONE mutation breaks both insert+update branches; the v1 mutation hit only the update branch while the sentinel tested a new product (insert) -> BLIND.' },
+    find: 'if (RESERVED[k]) return;\n        if (k === \'costPrice\') return;',
+    repl: 'if (k === \'id\') return;\n        if (k === \'costPrice\') return;',
+    note: 'master_data upsert stops skipping reserved keys -> a __proto__ field in a remote row swaps the merged object prototype (F-followup / CL-01, I-02). Round-1 lesson: the shared copyFields helper means ONE mutation breaks both insert+update branches; the v1 mutation hit only the update branch while the sentinel tested a new product (insert) -> BLIND. Re-anchored 2026-07-05: Chunk 6 changed the following costPrice line (cost now never from public master_data).' },
   { id: 'S-51', file: 'index.html',
     find: "if (!this._QTY_RE.test(s)) return { ok: false, error: 'must be a whole number' };",
     repl: ';',
@@ -693,8 +696,9 @@ const MUTATIONS = [
     repl: "const _dupId=null;",
     note: "_saveDelivery drops the duplicate-product guard -> the same product on two lines muddles the saved cost (Wave M2 / GPTa-38)" },
   { id: 'S-152', file: 'sync.js',
-    find: "if (this._lastSyncAt === 0) {\n      console.log('[Sync] First run on this device — pulling initial data...');",
-    repl: "if (false) {\n      console.log('[Sync] First run on this device — pulling initial data...');",
+    find: "if (this._lastSyncId === 0) {\n      console.log('[Sync] First ID-cursor run on this device — pulling initial data...');",
+    altFind: "if (this._lastSyncId === 0) {\r\n      console.log('[Sync] First ID-cursor run on this device — pulling initial data...');",
+    repl: "if (false) {\n      console.log('[Sync] First ID-cursor run on this device — pulling initial data...');",
     note: "Sync.init drops the never-synced immediate pull -> a brand-new device acts on bundled seed until the 30s poll (Wave M2 / GPTa-24)" },
   { id: 'S-153', file: 'index.html',
     find: "try{ const _snap=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get())))); localStorage.setItem(DB.KEY+'_prerestore',JSON.stringify(_snap)); return true; }catch(_e){ return false; }",
@@ -728,6 +732,237 @@ const MUTATIONS = [
     find: "\"rewrite\": \"/index.html\",\n    \"exclude\": [\"/*.{js,css,json,png,ico,svg,webmanifest,woff,woff2,map}\", \"/icons/*\"]",
     repl: "\"rewrite\": \"/index.html\"",
     note: "navigationFallback loses its exclude list -> a missing .js is rewritten to HTML and can be cached under the .js URL (Wave M3 / Ca-M17)" },
+  { id: 'S-159', file: 'sync.js',
+    find: "          lastId: String(cursorId),\n          $top: this.PULL_PAGE_SIZE",
+    altFind: "          lastId: String(cursorId),\r\n          $top: this.PULL_PAGE_SIZE",
+    repl: "          since: String(cursorId),\n          $top: this.PULL_PAGE_SIZE",
+    note: "pull reverts to a since-style request key -> ID-cursor contract broken (server gets no lastId) (Azure pull-hardening)" },
+  { id: 'S-160', file: 'sync.js',
+    find: "      const safeLastId = Math.max(0, this._lastSyncId - this.PULL_ID_LOOKBACK);",
+    repl: "      const safeLastId = Math.max(0, this._lastSyncId);",
+    note: "pull drops the C2 phantom-read lookback -> a row mid-commit last cycle is skipped permanently (Azure pull-hardening / C2)" },
+  { id: 'S-161', file: 'sync.js',
+    find: "        if (frozenMaxId != null) {\n          body.maxId = String(frozenMaxId);\n        }",
+    altFind: "        if (frozenMaxId != null) {\r\n          body.maxId = String(frozenMaxId);\r\n        }",
+    repl: "        if (false) {\n          body.maxId = String(frozenMaxId);\n        }",
+    note: "pull stops echoing the frozen ceiling -> concurrent inserts extend the walk; page2 omits maxId (Azure pull-hardening / C1)" },
+  { id: 'S-162', file: 'sync.js',
+    find: "cursor unchanged`);\n            this._showStatus('Data may be stale — last sync failed', 'warning', 0);\n            return;",
+    altFind: "cursor unchanged`);\r\n            this._showStatus('Data may be stale — last sync failed', 'warning', 0);\r\n            return;",
+    repl: "cursor unchanged`);\n            this._showStatus('Data may be stale — last sync failed', 'warning', 0);\n            keepGoing = false;",
+    note: "no-forward-progress stops failing closed (reverts to stop-and-advance) -> a malformed full page advances the cursor past unseen rows (Codex P2)" },
+  { id: 'S-163', file: 'sync.js',
+    find: 'await DB.markTransactionsRejected(_rejMap);',
+    repl: 'void _rejMap;',
+    note: "push stops quarantining server-rejected rows -> a permanently-rejected row is neither flagged/surfaced nor excluded from re-push (it silently re-pushes forever; admin never sees it) (Azure Chunk 2 honest-contract reject path)" },
+  { id: 'S-164', file: 'sync.js',
+    find: 'const _dupSyncIds = _dup.filter(id => batchIds.has(id));',
+    repl: 'const _dupSyncIds = [];',
+    note: "push stops treating server `duplicates` (409 idempotent) as synced -> an already-landed row stays unsynced and re-pushes every cycle forever (Azure Chunk 2 duplicate path)" },
+  { id: 'S-165', file: 'sync.js',
+    find: 'const _accSyncIds = _acc.filter(id => batchIds.has(id));',
+    repl: 'const _accSyncIds = [];',
+    note: "push stops marking server-`accepted` rows synced -> a row that DID land server-side stays unsynced and re-pushes forever (Azure Chunk 2 accepted path)" },
+  { id: 'S-166', file: 'sync.js',
+    find: 'const _clean = _marked && _rejMarked && _failRows.length === 0 && _unaccounted === 0;',
+    repl: 'const _clean = _marked && _rejMarked && _unaccounted === 0;',
+    note: "v2 ack drops the retryable-`failed` term from the _clean gate -> a transient 429/5xx failure clears pending + shows 'Synced' with no retry = a recoverable row silently stranded (Azure Chunk 2 failed/retryable path)" },
+  { id: 'S-167', file: 'sync.js',
+    find: 'const _clean = _marked && _rejMarked && _failRows.length === 0 && _unaccounted === 0;',
+    repl: 'const _clean = _rejMarked && _failRows.length === 0 && _unaccounted === 0;',
+    note: "v2 ack drops the markSynced-persist term (_marked) from the _clean gate -> a failed local _synced write lies 'Synced ✓' + clears pending (Azure Chunk 2 / Wave H H3 parity on the v2 contract)" },
+  { id: 'S-168', file: 'sync.js',
+    find: 'const _clean = _marked && _rejMarked && _failRows.length === 0 && _unaccounted === 0;',
+    repl: 'const _clean = _marked && _rejMarked && _failRows.length === 0;',
+    note: "v2 ack drops the coverage term (_unaccounted) from the _clean gate -> a sent row in NO server bucket (partial 2xx) is left unsynced but pending is cleared + 'Synced' shown = silently stranded (GPT Chunk 2 audit P2)" },
+  { id: 'S-169', file: 'sync.js',
+    find: 'const _clean = _marked && _rejMarked && _failRows.length === 0 && _unaccounted === 0;',
+    repl: 'const _clean = _marked && _failRows.length === 0 && _unaccounted === 0;',
+    note: "v2 ack drops the reject-persist term (_rejMarked) from the _clean gate -> a FAILED durable quarantine write is ignored, clears pending + shows 'Synced' = the rejected row is stranded un-flagged (GPT Chunk 2 audit P2)" },
+  { id: 'S-170', file: 'sync.js',
+    find: 'const _conflict = [..._landedIds].some(id => _rejSet.has(id) || _failSet.has(id));',
+    repl: 'const _conflict = false;',
+    note: "v2 ack stops detecting a contradictory response (same id in landed AND rejected/failed) -> the conflict id falls through to normal processing, gets marked _synced AND quarantined = a server-flagged-bad row synced (GPT Chunk 2 audit P2 round-2, fail-closed/no-durable-change)" },
+
+  // ───────── Azure Chunk 4 — multi-table record sync ─────────
+  { id: 'S-171', file: 'phase2.js',
+    find: 'await this._emitSubmit(transfer, _batch.map(x => x.id));  // Chunk 4: record-step (genesis)',
+    repl: 'void 0;  // Chunk 4: record-step (genesis)',
+    note: "Chunk 4: drop the submit record-step emit on a direct (non-draft) transfer create -> the transfer never propagates cross-device (no genesis step)" },
+  { id: 'S-172', file: 'phase2.js',
+    find: 'Records.receiveStepId(t.id, t.toStoreId, t._receiveAttemptId) : undefined,',
+    repl: 'undefined : undefined,',
+    note: "Chunk 4: drop the receive stepId -> falls back to the generic key (no toStore/attemptId) -> conflicting receives can't both survive + the key check fails (D4-E)" },
+  { id: 'S-173', file: 'records.js',
+    find: 'return (steps || []).slice().sort((a, b) => {',
+    repl: 'return (steps || []).slice(); return (steps || []).slice().sort((a, b) => {',
+    note: "Chunk 4: fold stops sorting -> the reduce becomes order-dependent (a receive before its submit is dropped) -> rebuilt record differs by arrival order (D4-L)" },
+  { id: 'S-174', file: 'records.js',
+    find: 'const disagree = Object.keys(lineMap).some(pid => lineMap[pid].size > 1);',
+    repl: 'const disagree = false;',
+    note: "Chunk 4: conflict detector stops noticing disagreeing receive quantities -> a real double-receive conflict is silently treated as a benign duplicate (D4-F)" },
+  { id: 'S-175', file: 'records.js',
+    find: "if (row._rejected) return 'mismatch';",
+    repl: "if (false) return 'mismatch';",
+    note: "Chunk 4: R1 stops flagging stockMismatch when a step's ledger rows were server-rejected -> the UI would claim a stock effect that never landed (R1)" },
+  { id: 'S-176', file: 'sync.js',
+    find: '(ready ? eligible : held).push(s);',
+    repl: '(true ? eligible : held).push(s);',
+    note: "Chunk 4: pushSteps stops the R1 fail-closed hold -> a stock-effecting step pushes BEFORE its ledger rows are synced (record claims stock the ledger hasn't accepted)" },
+  { id: 'S-177', file: 'sync.js',
+    find: 'rejMarked = await DB.markStepsRejected(new Map(rejRows.map(r => [_idOf(r), { code: r.reasonCode, reason: r.reason }])));',
+    repl: 'rejMarked = true;',
+    note: "Chunk 4: pushSteps stops durably quarantining a server-rejected step -> the reject is not flagged/surfaced (silent step-data loss, Chunk-2 honest-contract parity)" },
+  { id: 'S-178', file: 'sync.js',
+    find: 'await Records.applyFold();        // materialise/refresh the local transfer/delivery/stocktake records',
+    repl: ';',
+    note: "Chunk 4: pullSteps stores pulled steps but stops folding them -> inbound transfers/deliveries/stocktakes never materialise (other devices' records stay invisible)" },
+  { id: 'S-179', file: 'records.js',
+    find: "stepType: 'backfill',",
+    repl: "stepType: 'NOPEbackfill',",
+    note: "Chunk 4: backfill emits a wrong step type -> the one-time historical-record migration produces no usable backfill step (D4-I)" },
+  { id: 'S-180', file: 'index.html',
+    find: "id:(typeof Records!=='undefined'&&Records.genId)?Records.genId('del_'):('del_'+Date.now()+'_'+Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join('')),  // D4-M: crypto suffix",
+    repl: "id:'del_'+Date.now(),  // D4-M: crypto suffix",
+    note: "Chunk 4 (D4-M): delivery id reverts to bare Date.now() -> two devices can mint the same RecordId once deliveries sync (cross-device collision)" },
+  { id: 'S-181', file: 'phase2.js',
+    find: 'const delta = chosenQty - credited;',
+    repl: 'const delta = chosenQty;',
+    note: "Chunk 4: conflict resolution adjusts by the full chosen qty instead of the DELTA vs already-credited stock -> double-counts the correction (D4-F delta-only)" },
+  { id: 'S-182', file: 'sync.js',
+    find: 'IdempotencyKey: t.idempotencyKey || t.id',
+    repl: 'IdempotencyKey: t.id',
+    note: "Chunk 4 (D4-E): egress drops the receive idempotency key -> a transfer-receive row goes out keyed by its (unique) TransactionId instead of the deterministic per-product receive key -> the server can't dedup a 2nd offline receive -> stock doubles" },
+  { id: 'S-182b', sentinel: 'S-182', file: 'phase2.js',
+    find: "{ const _rin = this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)); _rin.idempotencyKey = this._receiveKey(transferId, t.toStoreId, item.productId); batchTxns.push(_rin); }  // Chunk 4 D4-E",
+    repl: "batchTxns.push(this._txn('transfer_in', item.productId, rQty, t.toStoreId, transferId, 'Received from ' + UI.storeName(t.fromStoreId)));",
+    note: "Chunk 4 (D4-E): receive() stops tagging the initial transfer_in row with the per-product receive key -> the row egresses keyed by TransactionId -> no cross-device receive dedup" },
+  { id: 'S-183', file: 'records.js',
+    find: "if (t.status !== 'conflict' && t.status !== 'cancelled') {",
+    repl: "if (false && t.status !== 'conflict' && t.status !== 'cancelled') {",
+    note: "GPT Chunk-4 BLOCK #1 (R1): fold stops reflecting stock-state in status -> a received transfer whose ledger rows are missing/rejected still shows a clean 'completed' (UI claims stock that never landed)" },
+  { id: 'S-184', file: 'records.js',
+    find: "const uncovered = byAttempt.filter(a => !covered.has(a.attemptId));",
+    repl: "const uncovered = byAttempt;",
+    note: "GPT Chunk-4 BLOCK #2: conflict detector ignores which attempts a resolve covers -> a resolved double-receive re-folds back to 'conflict' forever (resolution never sticks)" },
+  { id: 'S-185', file: 'records.js',
+    find: "if (bfHashes.size > 1) {",
+    repl: "if (false) {",
+    note: "GPT Chunk-4 BLOCK #3 (D4-I): fold stops detecting divergent backfill snapshots -> two devices' different records under one id silently last-writer-win instead of surfacing a conflict" },
+  { id: 'S-186', file: 'sync.js',
+    find: "    if (!k.storeKey && !k.directorKey) return body;\n    const auth = { deviceId: this._deviceId || '' };",
+    repl: "    return body;\n    const auth = { deviceId: this._deviceId || '' };",
+    note: "Chunk 5: _withAuth stops attaching the auth envelope -> every sync call goes out credential-less -> the gated server 401s everything (device looks permanently unauthorised)" },
+  { id: 'S-187', file: 'sync.js',
+    find: "      if (resp.status === 401) {\n        // Chunk 5: auth failure is TERMINAL for this cycle — no retry-loop (D6). Batch stays\n        // pending; entering valid keys in Settings clears the pause and re-syncs.\n        this._handleUnauthorized('push');\n        Sync._setPending(true);\n        return;\n      }\n      if (!resp.ok) {",
+    repl: "      if (!resp.ok) {",
+    note: "Chunk 5 (D6): push stops intercepting 401 -> auth failure falls into the generic retry ladder -> retry-loop against the auth wall + no unauthorised state/prompt" },
+  { id: 'S-188', file: 'sync.js',
+    find: "    if (this._unauthorized) return { ok: false, unauthorized: true };",
+    repl: "    if (false) return { ok: false, unauthorized: true };",
+    note: "Chunk 5 (D6): the sync cycle ignores the unauthorized pause -> the 30s poll fetch-storms a 401 wall forever" },
+  { id: 'S-189', file: 'index.html',
+    find: "'auth','storeKey','directorKey','stepsPushUrl','stepsPullUrl'",
+    repl: "'stepsPushUrl','stepsPullUrl'",
+    note: "Chunk 5 (D2d/L36): backup scrubber stops stripping sync keys -> a backup JSON can carry a live device credential out of the device" },
+  { id: 'S-190', file: 'index.html',
+    find: "    t = t.replace(/\\bb[sd]k_[A-Za-z0-9]+/g, '[synckey-redacted]');",
+    repl: "",
+    note: "Chunk 5: Diag stops redacting bsk_/bdk_ keys -> a logged sync key reaches the downloadable diagnostic export" },
+  { id: 'S-191', file: 'index.html',
+    find: "    if(typeof Auth!=='undefined'&&Auth.can&&!Auth.can('manageUsers')){UI.toast('Director access required','error');return;}\n    const cur=Sync._authKeys();",
+    repl: "    const cur=Sync._authKeys();",
+    note: "Chunk 5 (D2): sync-key entry loses its Director gate -> any logged-in staff session can overwrite the device's keys" },
+  { id: 'S-192', file: 'sync.js',
+    find: "const clean = {}; Object.keys(row).forEach(f => { if (f !== 'costPrice' && f !== '_costRv') clean[f] = row[f]; });  // cost never in the public path",
+    repl: "const clean = Object.assign({}, row);",
+    note: "Chunk 6 (D-COST): the publish payload stops stripping costPrice from a public change -> corporate cost rides the public catalogue path to every device (franchise privacy leak)" },
+  { id: 'S-193', file: 'sync.js',
+    find: "        if (k === 'costPrice') return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data",
+    repl: "        if (false) return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data",
+    note: "Chunk 6 (D-COST): _applyMasterData starts applying costPrice from the public blob -> a franchise device's local cost is overwritten by whatever the public catalogue carries" },
+  { id: 'S-194', file: 'sync.js',
+    find: "    return !(s && s.isFranchise === true);",
+    repl: "    return true;",
+    note: "Chunk 6: _isCorporateDevice always returns true -> a franchise device is treated as corporate -> it fetches + applies central cost, clobbering its own" },
+  { id: 'S-195', file: 'sync.js',
+    find: "    if (!this._isCorporateDevice()) return;                     // franchise device: keep local cost, don't fetch",
+    repl: "    if (false) return;",
+    note: "Chunk 6: _fetchCorporateCosts drops the corporate-device guard -> a franchise device fetches + applies central cost (privacy + wrong-cost)" },
+  { id: 'S-196', file: 'sync.js',
+    find: "    const landed = keys.filter(k => { const [coll, ...rest] = k.split(':'); const id = rest.join(':'); return coll === 'cost' ? accepted.has('cost:' + id) : accepted.has(id); });\n    this._clearCatalogueDirty(landed);",
+    repl: "    this._clearCatalogueDirty(keys);",
+    note: "Chunk 6: publish clears ALL dirty keys instead of only accepted ones -> a rejected/conflicted change is silently dropped (never retried, change lost)" },
+  { id: 'S-197', file: 'index.html',
+    find: "  async _doPublishCatalogue(){\n    if(!Auth.can('manageUsers')){UI.toast('Director access required','error');return;}",
+    repl: "  async _doPublishCatalogue(){\n    if(false){UI.toast('Director access required','error');return;}",
+    note: "Chunk 6 (D-HOAUTH): publish loses its Director gate -> any logged-in staff session can publish catalogue changes company-wide" },
+  { id: 'S-198', file: 'sync.js',
+    find: "    const durable = r.status === 'ok';",
+    repl: "    const durable = true;",
+    note: "Chunk 6 (GPT-C6-1): publish stops gating on status==='ok' -> a write_failed response (nothing persisted) clears the dirty rows anyway -> the change is silently lost, never retried" },
+  { id: 'S-199', file: 'index.html',
+    find: "const _cat=d.categories.find(c=>c.id===id);if(_cat)_cat.active=false;/* Chunk 7 C2: deactivate (publishes) instead of hard-delete (which never propagated) */",
+    repl: "d.categories=d.categories.filter(c=>c.id!==id);",
+    note: "Chunk 7 C2: removing a category reverts to HARD-DELETE (filter-out) instead of deactivate -> the removal never propagates to other devices (the C6 deletion-propagation gap it was meant to close)" },
+  { id: 'S-200', file: 'index.html',
+    find: "id=\"np-cat\">${d.categories.filter(c=>c.active!==false).map(c=>",
+    repl: "id=\"np-cat\">${d.categories.map(c=>",
+    note: "Chunk 7 C2: the new-product category selector stops filtering out inactive categories -> a Director can attach a new product to a deactivated category (the server then rejects it DANGLING_CATID, but the UI wrongly offers it)" },
+  { id: 'S-201', file: 'index.html',
+    find: "<script src=\"./vendor/chart-4.4.0.umd.min.js\"></script>",
+    repl: "<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js\"></script>",
+    note: "Chunk 7 A1: Chart.js reverts to the jsdelivr CDN -> a third-party origin re-enters the DOM (defeats the self-host + the tightened CSP)" },
+
+  // ── Chunk 8 (ledger archival) ──
+  { id: 'S-202', file: 'sync.js',
+    find: "_spId: (function(){ var v = (item.ID != null ? item.ID : item.Id); var n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; })()",
+    repl: "_spId: null",
+    note: "Chunk 8: pull stops persisting the SharePoint id -> the archival fold can never tell which local rows are archived (every row looks 'recent')" },
+  { id: 'S-203', file: 'index.html',
+    find: "if (useSnap && this._coveredBySnapshot(t)) continue;  // Chunk 8: already in the snapshot seed — skip (no double-count)",
+    repl: "if (false) continue;",
+    note: "Chunk 8: the fold stops skipping snapshot-covered rows -> archived movements are counted twice (snapshot seed + the still-present live row)" },
+  { id: 'S-204', file: 'index.html',
+    find: "return this._snapshot.cutoffId <= lastSyncId;",
+    repl: "return true;",
+    note: "Chunk 8: the activation gate is defeated -> a device that hasn't caught up past the cutoff seeds the snapshot anyway (double-counts own not-yet-backfilled rows)" },
+  { id: 'S-205', file: 'records.js',
+    find: "if (!row) { if (!hasArchivedKey(k)) pending = true; continue; }  // missing: confirmed ONLY if proven archived, else pending",
+    repl: "if (!row) { continue; }",
+    note: "Chunk 8 (GPT P1): the resolver treats ANY missing key as confirmed -> a NEVER-LANDED pre-cutoff step falsely reads completed (reopens the Chunk-4 R1 class); the per-key archive proof is bypassed" },
+  { id: 'S-206', file: 'db.js',
+    find: "t && t._synced === true && t._spId != null && Number.isSafeInteger(t._spId) && t._spId <= cut",
+    repl: "t && t._spId != null && Number.isSafeInteger(t._spId) && t._spId <= cut",
+    note: "Chunk 8: prune drops the _synced guard -> an UNSYNCED local movement at/below the cutoff is deleted before it reaches the cloud (silent stock loss)" },
+  { id: 'S-207', file: 'index.html',
+    find: "return !fromDate || fromDate <= b;       // range extends to/at/before the boundary",
+    repl: "return false;",
+    note: "Chunk 8: reports stop flagging archive-spanning ranges -> a long-range report silently under-counts (archived movements missing, no warning)" },
+  { id: 'S-208', file: 'index.html',
+    find: ".reduce((s, t) => Txn.isIn(t) ? s + t.qty : s - t.qty, seed);",
+    repl: ".reduce((s, t) => Txn.isIn(t) ? s + t.qty : s - t.qty, 0);",
+    note: "Chunk 8: the integrity scan drops the snapshot seed -> it reports false drift against a correct snapshot-seeded cache (health check becomes a liar)" },
+  { id: 'S-209', file: 'db.js',
+    find: "return await _retryWrite(() => bobDB.transactions.bulkPut(list), `Persist ${list.length} transaction row(s)`);",
+    repl: "return true;",
+    note: "Chunk 8 (AGY P1): persistTransactionRows claims success WITHOUT writing to Dexie -> the _spId backfill is lost on reload and archived rows double-count (permanent stock inflation)" },
+  { id: 'S-210', file: 'index.html',
+    find: "if(Stock._coveredBySnapshot&&Stock._coveredBySnapshot(txn)){UI.toast('This movement has been archived and can no longer be deleted.','error');return;}",
+    repl: "if(false){UI.toast('This movement has been archived and can no longer be deleted.','error');return;}",
+    note: "Chunk 8 (AGY P2): the archived-movement delete guard is removed -> deleting an archived row writes a phantom tombstone the snapshot can't reconcile (under/over-count)" },
+  { id: 'S-211', file: 'index.html',
+    find: "this._persistSnapshot();  // AGY P1: durable so an offline boot keeps seeding it",
+    repl: ";",
+    note: "Chunk 8 (AGY P1): the snapshot is no longer persisted on adopt -> an offline boot loses it, _buildCache sums only un-pruned rows and UNDER-COUNTS stock" },
+  { id: 'S-212', file: 'sync.js',
+    find: "if (resp.status === 401) { this._handleUnauthorized('archive-pull'); this._showStatus('Not authorised to load archived data', 'warning'); return null; }",
+    repl: "if (resp.status === 401) { this._showStatus('Not authorised to load archived data', 'warning'); return null; }",
+    note: "Chunk 8 (AGY MED): pullArchive 401 stops triggering the central pause -> a rotated key keeps the sync cycle polling into an auth wall" },
+  { id: 'S-213', file: 'index.html',
+    find: "const existingProductIds = new Set(d.products.map(p => p.id));",
+    repl: "const existingProductIds = new Set(d.products.filter(p=>p.active).map(p => p.id));",
+    note: "Chunk 8 (AGY LOW): the integrity backward-scan reverts to treating INACTIVE products as stale -> deactivating a product-with-stock deletes its cache entry and returns false spuriously" },
 ];
 
 function copyRepoTo(dir) {
@@ -735,6 +970,12 @@ function copyRepoTo(dir) {
   for (const f of SRC_FILES) {
     const src = path.join(REPO, f);
     if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dir, f));
+  }
+  // Chunk 7 A1/A2: self-hosted assets index.html now loads locally (./vendor/dexie… is required to BOOT).
+  // The isolated mutation copy MUST include them or every mutated run fails to load Dexie (na/na).
+  for (const d of ['vendor', 'fonts']) {
+    const src = path.join(REPO, d);
+    if (fs.existsSync(src)) fs.cpSync(src, path.join(dir, d), { recursive: true });
   }
 }
 
@@ -816,14 +1057,23 @@ function runSmokeChildAsync(dir) {  // ASYNC — used by the parallel mutation p
       copyRepoTo(dir);
       const target = path.join(dir, m.file);
       const before = fs.readFileSync(target, 'utf8');
-      let useFind = m.find;
-      if (before.indexOf(useFind) === -1 && m.altFind && before.indexOf(m.altFind) !== -1) useFind = m.altFind;  // CRLF/LF resilience: fall back to an alternate (e.g. \r\n vs \n) find string
-      if (before.indexOf(useFind) === -1) {
+      // CRLF/LF resilience (CLASS fix, Codex 2026-06-24): the working tree is CRLF on Windows but mutation
+      // `find` strings are authored with \n, so multi-line finds silently SKIP-NOFIND and leave the sentinel
+      // mutation-UNPROVEN. Try each candidate as-authored AND as a CRLF-normalized variant; convert the repl
+      // to match the ending style we matched on. No per-mutation altFind needed anymore.
+      let useFind = null, useRepl = null;
+      for (const cand of [m.find, m.altFind]) {
+        if (!cand) continue;
+        if (before.indexOf(cand) !== -1) { useFind = cand; useRepl = m.repl; break; }
+        const crlf = cand.replace(/\r?\n/g, '\r\n');
+        if (crlf !== cand && before.indexOf(crlf) !== -1) { useFind = crlf; useRepl = (m.repl || '').replace(/\r?\n/g, '\r\n'); break; }
+      }
+      if (useFind === null) {
         missingFind++;
         console.log(`  [SKIP-NOFIND] ${m.id} :: source string not found in ${m.file} (mutation needs updating)`);
         return;
       }
-      fs.writeFileSync(target, before.replace(useFind, m.repl), 'utf8');
+      fs.writeFileSync(target, before.replace(useFind, useRepl), 'utf8');
       // GPT P2 (re-audit): never count a result from an UNRELIABLE run. A COMPLETE run (summary present
       // AND total === EXPECTED_SENTINELS) is trusted outright. A PARTIAL run is only trusted if the target's
       // verdict is DETERMINISTIC — identical across the original + a retry. This admits the intentionally-early

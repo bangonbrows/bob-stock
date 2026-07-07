@@ -43,6 +43,17 @@ bobDB.version(1).stores({
   meta:                 'key'
 });
 
+// ─── Azure Chunk 4 — append-only record-steps (multi-table record sync) ──────
+// v2 adds the `recordSteps` outbox/inbox table. Each lifecycle step of a
+// transfer/delivery/stock-take is one immutable row, keyed by its deterministic
+// `stepId` (the idempotency key). The client folds a record's steps to rebuild
+// the local transfer/delivery/stockTake object (Records.foldAll). Append-only,
+// like `transactions` — single-record puts, never clear+rewrite at scale.
+// Dexie inherits all v1 stores; v2 only declares the new one.
+bobDB.version(2).stores({
+  recordSteps: 'stepId, recordType, recordId, stepType, seq, _synced, _syncTs'
+});
+
 // ─── Write Tracking ─────────────────────────────────────────────────────────
 // Tracks whether a Dexie write is in flight, used by beforeunload guard.
 let _pendingWrites = 0;
@@ -58,7 +69,7 @@ async function _persistAllToDexie(d) {
       bobDB.stores, bobDB.users, bobDB.thresholds,
       bobDB.transactions, bobDB.deletedTransactions,
       bobDB.transfers, bobDB.costHistory, bobDB.stockTakes,
-      bobDB.deliveries, bobDB.meta,
+      bobDB.deliveries, bobDB.recordSteps, bobDB.meta,
       async () => {
         await Promise.all([
           bobDB.productTypes.clear().then(() => d.productTypes?.length ? bobDB.productTypes.bulkPut(d.productTypes) : null),
@@ -73,6 +84,7 @@ async function _persistAllToDexie(d) {
           bobDB.costHistory.clear().then(() => d.costHistory?.length ? bobDB.costHistory.bulkPut(d.costHistory) : null),
           bobDB.stockTakes.clear().then(() => d.stockTakes?.length ? bobDB.stockTakes.bulkPut(d.stockTakes) : null),
           bobDB.deliveries.clear().then(() => d.deliveries?.length ? bobDB.deliveries.bulkPut(d.deliveries) : null),
+          bobDB.recordSteps.clear().then(() => d.recordSteps?.length ? bobDB.recordSteps.bulkPut(d.recordSteps) : null),  // Chunk 4
         ]);
 
         await bobDB.meta.bulkPut([
@@ -236,7 +248,7 @@ function _defaultActiveTrue(rows) {
 async function _loadFromDexie() {
   const [productTypes, categories, products, stores, users,
          thresholds, transactions, deletedTransactions,
-         transfers, costHistory, stockTakes, deliveries] = await Promise.all([
+         transfers, costHistory, stockTakes, deliveries, recordSteps] = await Promise.all([
     bobDB.productTypes.toArray(),
     bobDB.categories.toArray(),
     bobDB.products.toArray(),
@@ -249,6 +261,7 @@ async function _loadFromDexie() {
     bobDB.costHistory.toArray(),
     bobDB.stockTakes.toArray(),
     bobDB.deliveries.toArray(),
+    bobDB.recordSteps.toArray(),   // Chunk 4: append-only record-step log
   ]);
 
   const metaV = await bobDB.meta.get('_v');
@@ -268,6 +281,7 @@ async function _loadFromDexie() {
     costHistory,
     stockTakes,
     deliveries,
+    recordSteps,   // Chunk 4
     stockTakePin: metaPin ? metaPin.value : { pin: null, expiresAt: null },
     _v: metaV ? metaV.value : 0,
   };
@@ -396,6 +410,143 @@ const DB = {
     }
   },
 
+  // Chunk 8 (GPT P1): the per-key ARCHIVE PROOF index — TransactionIds of step-referenced ledger rows that
+  // were pruned after archival. Persisted in localStorage (bounded to step-referenced keys, not every movement).
+  // The resolver uses it to distinguish "archived-known key" (confirmed) from "never-landed key" (pending).
+  _archivedStepKeys: null,
+  _ARCH_KEYS_LS: 'bob_archived_step_keys',
+  _loadArchivedStepKeys() {
+    if (this._archivedStepKeys) return this._archivedStepKeys;
+    let arr = [];
+    try { const raw = localStorage.getItem(this._ARCH_KEYS_LS); if (raw) arr = JSON.parse(raw) || []; } catch (e) { arr = []; }
+    this._archivedStepKeys = new Set(Array.isArray(arr) ? arr : []);
+    return this._archivedStepKeys;
+  },
+  hasArchivedStepKey(id) { return this._loadArchivedStepKeys().has(id); },
+  recordArchivedStepKeys(ids) {
+    const set = this._loadArchivedStepKeys();
+    let added = false;
+    for (const id of (ids || [])) if (id != null && !set.has(id)) { set.add(id); added = true; }
+    if (added) { try { localStorage.setItem(this._ARCH_KEYS_LS, JSON.stringify([...set])); } catch (e) { console.warn('[DB] persist archived step-keys failed:', e); } }
+    return added;
+  },
+
+  // Chunk 8 (AGY P1): durably persist specific transaction rows (used for the pull-time _spId backfill).
+  // commit() rewrites ONLY ref-data + meta, never the transactions table, so a mutated existing row (e.g. an
+  // _spId backfill) must be written here or it is lost on reload. Targeted bulkPut — never a full-table rewrite.
+  async persistTransactionRows(rows) {
+    if (!this._cache) return false;
+    const list = (rows || []).filter(t => t && t.id != null);
+    if (list.length === 0) return true;
+    _pendingWrites++;
+    try {
+      return await _retryWrite(() => bobDB.transactions.bulkPut(list), `Persist ${list.length} transaction row(s)`);
+    } finally { _pendingWrites--; }
+  },
+
+  // Azure Chunk 2 (ingest validation): a row the SERVER PERMANENTLY REJECTED (bad shape / unknown
+  // catalogue id / hostile id / reserved key) must NOT be marked _synced (it never landed) and must
+  // NOT keep re-pushing every cycle (silent retry-forever). Flag it durably so push() excludes it
+  // (`!t._rejected`) and an admin can see WHY it was rejected. This is the client half of the
+  // honest accept/reject contract — the cloud quarantines + returns the reject; we surface it locally.
+  // `rejects` is a Map<TransactionId, {code, reason}>. Returns true only when durably persisted; on a
+  // failed write the cache is reverted (the row stays un-flagged and simply re-pushes → re-rejected
+  // → re-flagged next cycle: no data loss, just a delayed flag).
+  async markTransactionsRejected(rejects) {
+    if (!this._cache) return false;
+    const map = rejects instanceof Map ? rejects : new Map(Object.entries(rejects || {}));
+    if (map.size === 0) return true;
+    const rows = (this._cache.transactions || []).filter(t => t && map.has(t.id));
+    if (rows.length === 0) return true;
+    const _now = Date.now();
+    const _snap = rows.map(t => ({ t, _rejected: t._rejected, _rejectedAt: t._rejectedAt, _rejectCode: t._rejectCode, _rejectReason: t._rejectReason }));
+    rows.forEach(t => { const m = map.get(t.id) || {}; t._rejected = true; t._rejectedAt = _now; t._rejectCode = m.code || ''; t._rejectReason = m.reason || ''; });
+    _pendingWrites++;
+    try {
+      const ok = await _retryWrite(
+        () => bobDB.transactions.bulkPut(rows),
+        `Flag ${rows.length} server-rejected transactions`
+      );
+      if (!ok) _snap.forEach(s => { s.t._rejected = s._rejected; s.t._rejectedAt = s._rejectedAt; s.t._rejectCode = s._rejectCode; s.t._rejectReason = s._rejectReason; });  // cache must not claim a flag disk didn't confirm
+      return ok;
+    } finally {
+      _pendingWrites--;
+    }
+  },
+
+  // ─── Azure Chunk 4 — record-steps persistence (mirrors the transaction methods) ──────────
+  // The recordSteps table is append-only and keyed by the deterministic stepId. These methods are
+  // the exact counterparts of addTransactionDurable / addTransactionsDurable / markTransactionsSynced
+  // / markTransactionsRejected, with the SAME durability + cache-rollback contract: the cache never
+  // claims a state that disk didn't confirm; a failed write leaves the step unsynced so it re-pushes
+  // (the server dedups by stepId, so replay is safe).
+
+  // Local emit of ONE step (a lifecycle transition just happened on this device). Idempotent on stepId.
+  async addStepDurable(step) {
+    if (!this._cache) return false;
+    if (!this._cache.recordSteps) this._cache.recordSteps = [];
+    if (step && this._cache.recordSteps.some(s => s.stepId === step.stepId)) return true;  // dedupe by stepId
+    this._cache.recordSteps.push(step);
+    const ok = await _appendRecord('recordSteps', step);
+    if (!ok) this._cache.recordSteps = this._cache.recordSteps.filter(s => s !== step);
+    else this._afterLedgerWrite();  // schedule a sync push (Wave L2 pattern)
+    return ok;
+  },
+
+  // Bulk merge of pulled steps (remote). Dedupe by stepId vs cache AND within the batch (running set).
+  // opts.remote = arrived already _synced (don't schedule a redundant push).
+  async addStepsDurable(steps, opts) {
+    if (!this._cache) return false;
+    if (!this._cache.recordSteps) this._cache.recordSteps = [];
+    if (!steps || steps.length === 0) return true;
+    const _seen = new Set(this._cache.recordSteps.map(s => s.stepId));
+    steps = steps.filter(s => { if (!s || _seen.has(s.stepId)) return false; _seen.add(s.stepId); return true; });
+    if (steps.length === 0) return true;
+    this._cache.recordSteps.push(...steps);
+    const ok = await _appendRecords('recordSteps', steps);
+    if (!ok) {
+      const added = new Set(steps);
+      this._cache.recordSteps = this._cache.recordSteps.filter(s => !added.has(s));
+    } else if (!(opts && opts.remote)) {
+      this._afterLedgerWrite();
+    }
+    return ok;
+  },
+
+  // accepted + duplicates (409 idempotent) → durable _synced. Targeted bulkPut; reverts cache on fail.
+  async markStepsSynced(ids) {
+    if (!this._cache) return false;
+    const idSet = ids instanceof Set ? ids : new Set(ids);
+    const rows = (this._cache.recordSteps || []).filter(s => s && idSet.has(s.stepId));
+    if (rows.length === 0) return true;
+    const _now = Date.now();
+    rows.forEach(s => { s._synced = true; s._syncedAt = _now; });
+    _pendingWrites++;
+    try {
+      const ok = await _retryWrite(() => bobDB.recordSteps.bulkPut(rows), `Mark ${rows.length} record-steps synced`);
+      if (!ok) rows.forEach(s => { s._synced = false; delete s._syncedAt; });
+      return ok;
+    } finally { _pendingWrites--; }
+  },
+
+  // permanent server rejects → durable quarantine flag (surfaced, never re-pushed). rejects = Map<stepId,{code,reason}>.
+  async markStepsRejected(rejects) {
+    if (!this._cache) return false;
+    const map = rejects instanceof Map ? rejects : new Map(Object.entries(rejects || {}));
+    if (map.size === 0) return true;
+    const rows = (this._cache.recordSteps || []).filter(s => s && map.has(s.stepId));
+    if (rows.length === 0) return true;
+    const _now = Date.now();
+    const _snap = rows.map(s => ({ s, _rejected: s._rejected, _rejectedAt: s._rejectedAt, _rejectCode: s._rejectCode, _rejectReason: s._rejectReason }));
+    rows.forEach(s => { const m = map.get(s.stepId) || {}; s._rejected = true; s._rejectedAt = _now; s._rejectCode = m.code || ''; s._rejectReason = m.reason || ''; });
+    _pendingWrites++;
+    try {
+      const ok = await _retryWrite(() => bobDB.recordSteps.bulkPut(rows), `Flag ${rows.length} server-rejected record-steps`);
+      if (!ok) _snap.forEach(x => { x.s._rejected = x._rejected; x.s._rejectedAt = x._rejectedAt; x.s._rejectCode = x._rejectCode; x.s._rejectReason = x._rejectReason; });
+      return ok;
+    } finally { _pendingWrites--; }
+  },
+
   // Wave I (Tier 2 / I-4): prune synced tombstones older than the TTL so type:'deleted' rows do not
   // accumulate forever (they slow every O(N) cache/ledger loop). Prune by _syncedAt (when it was
   // confirmed synced), falling back to createdAt. SharePoint remains the persistent cloud record, so
@@ -417,6 +568,44 @@ const DB = {
     finally { _pendingWrites--; }
     console.log('[DB] Pruned ' + staleIds.length + ' synced tombstone(s) older than ' + (ttlDays || 30) + 'd');
     return staleIds.length;
+  },
+
+  // Chunk 8 (ledger archival): shrink the device working set by dropping ledger rows the published snapshot
+  // already folds in — a row is safe to prune iff it is DURABLY SYNCED and has a real SharePoint id at/below
+  // the snapshot cutoff. NEVER prune an unsynced row (_spId==null or _synced!==true): it may not be in the
+  // cloud/snapshot yet, so dropping it would lose stock. SharePoint (live+archive) remains the persistent
+  // record, so this local prune never loses data. The archived-key resolver (records.js stockStateFor) keeps
+  // record-steps correct after their ledger rows are pruned. Best-effort; a failed disk delete just leaves the
+  // rows locally (fold still skips them — correctness never depends on the prune).
+  async pruneArchivedLedger(cutoffId) {
+    if (!this._cache) return 0;
+    const cut = Number(cutoffId);
+    if (!Number.isSafeInteger(cut) || cut <= 0) return 0;
+    const pruneIds = (this._cache.transactions || [])
+      .filter(t => t && t._synced === true && t._spId != null && Number.isSafeInteger(t._spId) && t._spId <= cut && !t._archived)  // never prune a report-overlay row
+      .map(t => t.id);
+    if (!pruneIds.length) return 0;
+    const idSet = new Set(pruneIds);
+    // GPT P1 (per-key archive PROOF, not a date heuristic): before deleting, remember which of these pruned
+    // ledger keys are REFERENCED by a record-step's expectedLedgerKeys. The resolver then confirms a missing
+    // key ONLY if it's a known-archived key here — a never-landed key stays 'pending' (no false 'completed').
+    // Bounded to step-referenced keys (transfers/deliveries/stocktakes), so it does NOT grow with every movement.
+    try {
+      const referenced = new Set();
+      for (const s of (this._cache.recordSteps || [])) {
+        const ks = s && s.payload && s.payload.expectedLedgerKeys;
+        if (Array.isArray(ks)) for (const k of ks) if (k) referenced.add(k);
+      }
+      const newlyArchivedStepKeys = pruneIds.filter(id => referenced.has(id));
+      if (newlyArchivedStepKeys.length) this.recordArchivedStepKeys(newlyArchivedStepKeys);
+    } catch (e) { console.warn('[DB] archived step-key index update failed (resolver falls back to pending — safe):', e); }
+    this._cache.transactions = this._cache.transactions.filter(t => !idSet.has(t.id));
+    _pendingWrites++;
+    try { await _retryWrite(() => bobDB.transactions.bulkDelete(pruneIds), `Prune ${pruneIds.length} archived ledger rows (<=id ${cut})`); }
+    catch (e) { console.error('[DB] Archived-ledger prune failed (rows remain locally; fold still correct):', e); }
+    finally { _pendingWrites--; }
+    console.log('[DB] Pruned ' + pruneIds.length + ' archived ledger row(s) at/below snapshot cutoff ' + cut);
+    return pruneIds.length;
   },
 
   // Wave J (Tier 3): non-mutating load-time quarantine for ALREADY-contaminated devices — a hostile
@@ -1000,6 +1189,7 @@ async function _loadSeedData(seed) {
     costHistory: [],
     stockTakes: [],
     deliveries: [],
+    recordSteps: [],   // Chunk 4
     stockTakePin: { pin: null, expiresAt: null },
     // Fix #8: stockThresholds removed — thresholds unified in d.thresholds
     _v: 1,

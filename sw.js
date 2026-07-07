@@ -10,24 +10,25 @@
  *   - Handles Azure SWA routing (no GitHub Pages path prefix)
  */
 
-const CACHE_NAME = 'bob-stock-v10';  // D-044: precache Dexie URL realigned to the page's pinned+SRI jsdelivr build
+const CACHE_NAME = 'bob-stock-v14';  // Chunk 7: self-host vendor JS + fonts, tightened CSP
 
 const CORE_URLS = [
   './',
   './index.html',
   './db.js',
   './sync.js',
+  './records.js',
   './phase2.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
+  './vendor/dexie-3.2.7.min.js',    // Chunk 7 A1: self-hosted (same-origin) — now a CORE precache, always cached
+  './vendor/chart-4.4.0.umd.min.js',
+  './fonts/fonts.css',              // Chunk 7 A2: self-hosted fonts
 ];
-// CDN-hosted libs — cached for offline, but a transient CDN miss must NOT fail the whole install (GPT-5c, Wave M3)
-const OPTIONAL_URLS = [
-  'https://cdn.jsdelivr.net/npm/dexie@3.2.7/dist/dexie.min.js',  // D-044: match the page's pinned+SRI Dexie build (was unpkg unmin — never cache-hit, broke first-load-offline)
-  'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js',  // MFL-022: charts work offline
-];
+// Chunk 7 A1/A2: vendor JS + fonts are now same-origin CORE_URLS above. No third-party CDN precache remains.
+const OPTIONAL_URLS = [];
 const PRECACHE_URLS = [...CORE_URLS, ...OPTIONAL_URLS];  // kept for reference
 
 // ─── Install ──────────────────────────────────────────────────────────────────

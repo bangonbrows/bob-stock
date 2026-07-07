@@ -1,0 +1,93 @@
+BOB STOCK — AZURE CHUNK 2 — FULL RE-AUDIT (ROUND 3). Report only; do NOT edit any file.
+(AGY: report-only, never agentic file-editing.) Two independent auditors: GPT-Codex + AGY. Claude = sole engineer.
+
+This round is a FULL Chunk-2 sweep across ALL FOUR surfaces — (A) the client harness + saboteur, (B) the Azure
+Logic App, (C) the SharePoint lists, (D) end-to-end — and you must USE YOUR CLOUD CREDENTIALS to verify the new
+things yourself, not trust Claude's transcripts. Both round-2 BLOCKs are claimed fixed; re-verify both.
+
+WHAT CHANGED SINCE YOUR LAST RUN (verify each independently):
+ 1. CLIENT (GPT round-2 BLOCK, fixed): a CONTRADICTORY response (same TransactionId in a landed bucket
+    [accepted/duplicate] AND in rejected/failed) now makes NO durable change (not _synced, not quarantined) and
+    retries the WHOLE batch (fail-closed). Round-1 wrongly quarantined the conflict id, which removed it from the
+    retry set so the "retry" sent nothing + cleared pending.
+ 2. SERVER (AGY round-2 BLOCK, fixed): the cloud quarantine sink now EXISTS. New SharePoint list
+    `StockTransactions_Quarantine` + a best-effort `Quarantine_loop` in `bob-stock-push-v2-validate-staging`
+    writes every rejected row to it. (Previously Q1="both" was only half-built — response only, no cloud list.)
+
+YOUR CLOUD ACCESS (separate credentials file from Kunal — NOT in the repo):
+ - READ-ONLY Microsoft Graph app credential (tenant/client/secret + siteId), scoped to READ the staging site only.
+ - STAGING push-validate + pull Logic App URLs (write-capable, DISPOSABLE staging only; never live).
+
+ISOLATION RULE (both auditors may run at the SAME time): namespace every test row's TransactionId with your own
+prefix + a fresh random suffix EACH run — GPT `gpt_<rand>_...`, AGY `agy_<rand>_...` (never a fixed/shared id);
+filter your reads to your own prefix. Staging only; live is a different endpoint+list and is never touched.
+
+==================================================================================================
+A. CLIENT HARNESS + SABOTEUR  (no credential needed — the client is tested against a mocked server)
+==================================================================================================
+Run yourself, cap concurrency at 5 so both auditors can run at once:
+  node test/smoke-test.js                         -> expect 161/161 sentinels PASS
+  SABOTEUR_CONCURRENCY=5 SABOTEUR_ONLY=S-163,S-164,S-165,S-166,S-167,S-168,S-169,S-170,S-67 node test/saboteur-runner.js
+                                                  -> expect baseline 161/161, then 9 CAUGHT / 0 BLIND / 0 skipped / 0 INFRA
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js   (full sweep) -> 178 CAUGHT / 0 BLIND / 0 SKIPPED / 0 INFRA of 178
+Read the diff: `git --no-pager diff -- sync.js db.js test/smoke-test.js test/saboteur-runner.js`.
+Sentinels of interest: S-163 reject-not-synced+surfaced, S-164 dup=synced, S-165 accepted=synced,
+S-166 failed-retried-not-quarantined, S-167 v2 markSynced-fail no-lie, S-168 no-bucket retried,
+S-169 failed-quarantine-write retried, S-170 conflict = not synced AND not quarantined (retries), S-67 legacy.
+Report YOUR numbers. Verify each sentinel is genuinely mutation-proven (not BLIND).
+
+==================================================================================================
+B. AZURE LOGIC APP — bob-stock-push-v2-validate-staging
+==================================================================================================
+Static: read `audit-artifacts/push-v2-validate-staging-DEFINITION-2026-06-29.json` (the CURRENT deployed
+definition). Review:
+ - The no-regex allowlist-equivalent id check in `Validate` (uriComponent length trick + explicit `. ! ~ * ' ( )`
+   blocks + reserved-key blocks) — does it reject EVERY id the client `_isSafeLedgerId` would? (acceptance ids below)
+ - Type whitelist, Qty (int, 0..10,000,000), tombstone special-case, catalogue check (applied vs skipped), the
+   terminal invariant (`Invariant`) and that a non-2xx acks nothing.
+ - NEW `Quarantine_loop`: writes each `body('Rejected')` row to StockTransactions_Quarantine; it's sequenced so
+   `Respond` runs after it as Succeeded|Failed (best-effort — a quarantine write failure must NOT block or alter
+   the accept/reject response). Confirm that design holds and there's no path where a quarantine failure loses or
+   changes an ack.
+Behavioral: drive it via the staging push-validate URL (below).
+
+==================================================================================================
+C. SHAREPOINT LISTS — read with the Graph credential
+==================================================================================================
+  GET https://graph.microsoft.com/v1.0/sites/<siteId>/lists?`$select=displayName,id
+  GET .../lists/StockTransactions_Validate/items?expand=fields&`$top=...     (where accepted/landed rows go)
+  GET .../lists/StockTransactions_Quarantine/items?expand=fields&`$top=...   (where rejects are recorded)
+Verify:
+ - Your ACCEPTED rows are present in StockTransactions_Validate; your REJECTED rows are ABSENT from it.
+ - Every rejected row appears in StockTransactions_Quarantine with the correct reasonCode + DeviceId + receivedAt +
+   workflowRunId + the raw row JSON (rawRowJson).
+ - No duplicate TransactionId in StockTransactions_Validate (the unique-constraint / dedup claim).
+
+==================================================================================================
+D. END-TO-END (push your own batch, then verify both lists + the response)
+==================================================================================================
+POST to the staging push-validate URL: body `{ "data": { "transactions": [ ...PascalCase rows... ] } }`.
+Send a mixed batch (your prefix): 1 good + bad-Qty + unknown-Store + reserved-key id (__proto__) + hostile-char id
+(abc.def) + a duplicate of an existing TransactionId + (NEW) a CONFLICT probe if you can construct one. Confirm:
+ - response: good->accepted; bad->rejected (right reasonCode); dup->duplicates; inputCount===acc+dup+rej+fail.
+ - then READ both lists: good landed in Validate, bad absent from Validate + PRESENT in Quarantine, dup not
+   double-inserted.
+ACCEPTANCE-BAR ids that MUST all reject (allowlist-equivalent): abc.def, abc:def, abc/def, abc\def, abc%2f,
+abc[1], a newline/tab, and a non-ASCII char (é). Confirm each rejects AND lands in Quarantine.
+
+==================================================================================================
+E. USE YOUR CREDENTIAL TO CHECK THE "NEW THINGS" + its own scope
+==================================================================================================
+ - Confirm the NEW StockTransactions_Quarantine list exists and is being written (section C/D).
+ - Confirm the read credential is genuinely READ-ONLY: attempt a write (e.g. POST an item to any list) and confirm
+   it FAILS (403) — it must not be able to write/forge/delete. Confirm it cannot read a DIFFERENT site.
+
+=== ADVERSARIAL ANGLE (try to DEFEAT it; run the code/cloud) ===
+ - Client: can a rejected/failed/unaccounted/conflict row ever end up _synced (lost) or falsely "Synced ✓"? Is any
+   sentinel BLIND? Is the conflict path now truly no-durable-change + retry (S-170)?
+ - Server: can a quarantine-write failure block, drop, or change an accept/reject ack? Can a bad row land in
+   StockTransactions_Validate? Any id the client would quarantine that the server accepts (divergence)?
+ - Cloud: does reality in the lists ever disagree with the server's response? Any duplicate that double-inserted?
+
+Return PASS / BLOCK per surface, with each finding's severity, the exact path/probe, and what you INDEPENDENTLY
+observed in the cloud vs. what was claimed. Nothing is committed or deployed to live — all held for the 6-way.
