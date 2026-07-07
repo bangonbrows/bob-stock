@@ -43,14 +43,23 @@ function timingSafeHexEq(aHex, bHex) {
   catch (e) { return false; }
 }
 
+// Coerce a SharePoint date-ish value to a comparable ISO string. SP text columns return strings, but a
+// number/Date must NOT silently skip a lock check (deep-audit HIGH: the old typeof-string gate failed OPEN on
+// a numeric LockedUntil, defeating lockout). Any non-empty time value normalises to ISO; unknown -> '' (unset).
+function toIso(v) {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) { try { return new Date(v).toISOString(); } catch (e) { return '9999'; } }
+  if (v instanceof Date) { try { return v.toISOString(); } catch (e) { return '9999'; } }
+  return '';
+}
+function rowLocked(row, nowIso) { const lu = toIso(row && row.LockedUntil); return lu !== '' && lu > nowIso; }
 function rowUsable(row, nowIso) {
   if (!row || typeof row !== 'object') return false;
   const act = row.Active; // SP Number column: 1 = active
   if (!(act === 1 || act === true || act === '1')) return false;
-  const lu = row.LockedUntil;
-  if (typeof lu === 'string' && lu !== '' && lu > nowIso) return false; // locked (ISO lexical compare)
+  if (rowLocked(row, nowIso)) return false;                       // FAIL CLOSED on ANY LockedUntil type
   const g = row.GraceUntil;
-  if (g != null && g !== '' && !(typeof g === 'string' && g >= nowIso)) return false;
+  if (g != null && g !== '') { const gi = toIso(g); if (!(gi !== '' && gi >= nowIso)) return false; }
   return true;
 }
 
@@ -84,10 +93,10 @@ function evaluateUser(pepper, proofSecret, body, nowMs) {
   }
   if (!rowUsable(row, nowIso)) {
     computeHash(pepper, username, String(row.Salt || 'dummy'), password); // equal work even when locked/inactive
-    // 'locked' surfaced ONLY to the LA (internal) so it can skip counter-increment on an already-locked row;
-    // the LA's outward response stays generic (oracle-safe).
-    const lu = row.LockedUntil;
-    return { userOk: false, locked: !!(typeof lu === 'string' && lu !== '' && lu > nowIso) };
+    // Deep-audit MEDIUM: do NOT emit a `locked`/existence-distinguishing field — a known-but-locked user must
+    // return the SAME shape as an unknown user (no enumeration oracle). The LA decides whether to skip the
+    // counter increment from ITS OWN row read (LockedUntil), not from this response.
+    return { userOk: false };
   }
   const sh = String(row.SecretHash || '');
   if (!/^[0-9a-f]{64}$/i.test(sh)) { computeHash(pepper, username, String(row.Salt || ''), password); return { userOk: false }; }

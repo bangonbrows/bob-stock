@@ -1571,7 +1571,7 @@ _toastQueue:[],
 const PIN = {
   _timer:null, _entry:'', _timeout:600000,
   reset() { clearTimeout(this._timer); this._timer=setTimeout(()=>this.lock(),this._timeout); },
-  lock()  { if(!Auth.user())return; document.getElementById('pin-overlay').classList.add('show'); this._entry=''; this.renderDots(); },
+  lock()  { if(!Auth.user())return; if(typeof Sync!=='undefined'&&Sync.clearPersonProofs)Sync.clearPersonProofs(); /* Chunk 9 deep-audit: the idle/manual lock MUST wipe the in-memory session proof (its own contract) — else a walked-away, locked device still holds a 12h proof reachable via DevTools/background reads */ document.getElementById('pin-overlay').classList.add('show'); this._entry=''; this.renderDots(); },
   renderDots() {
     document.querySelectorAll('.pin-dot').forEach((d,i)=>d.classList.toggle('filled',i<this._entry.length));
     document.getElementById('pin-error').textContent='';
@@ -3502,7 +3502,8 @@ const Pages = {
   _editUserModal(id){
     const d=DB.get(); const u=d.users.find(u=>u.id===id);
     UI.modal('Edit User',`
-      <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="eu-name" value="${u.name}"></div>
+      <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="eu-name" value="${UI.esc(u.name)}"></div>
+      <!-- Chunk 9 deep-audit: esc the name (was raw) — names round-trip through backup import, so a crafted name would execute when a Director opens Edit -->
       <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="eu-user" value="${UI.esc(u.username)}"></div>
       <div class="form-group"><label class="form-label">New Password (leave blank to keep)</label><input type="password" class="form-input" id="eu-pass"></div>
       <div class="form-group"><label class="form-label">New PIN (4 digits, leave blank to keep)</label><input type="text" inputmode="numeric" pattern="[0-9]*" class="form-input" id="eu-pin" value="" placeholder="Enter new PIN" style="max-width:100px"></div>
