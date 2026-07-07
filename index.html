@@ -860,18 +860,75 @@ function generateDemoTransactions() {
 
     const Auth = {
   _user: null,
+
+  // ── Chunk 9: offline local verifier (PBKDF2-HMAC-SHA-256, per-device salt) ───────────────────────────────
+  // The cloud SecretHash NEVER leaves SharePoint. For OFFLINE login we cache a device-local PBKDF2 verifier,
+  // computed on a successful ONLINE login. A stolen device/backup exposes only this salted, ~250ms-per-guess
+  // verifier — not the server credential. Scrubbed from backups. Deleted verifier = no offline fallback.
+  _LVERIFY_ITERS: 210000,
+  async _pbkdf2(password, saltHex) {
+    const enc = new TextEncoder();
+    const salt = Uint8Array.from(saltHex.match(/.{2}/g).map(b => parseInt(b, 16)));
+    const key = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: this._LVERIFY_ITERS, hash: 'SHA-256' }, key, 256);
+    return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+  },
+  _lverifyKey(username) { return 'bob_lverify_' + username; },
+  async _cacheLocalVerifier(username, password) {
+    try {
+      const saltHex = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+      const hash = await this._pbkdf2(password, saltHex);
+      localStorage.setItem(this._lverifyKey(username), JSON.stringify({ salt: saltHex, iters: this._LVERIFY_ITERS, hash, v: 1 }));
+    } catch (e) {}
+  },
+  async _checkLocalVerifier(username, password) {
+    try {
+      const raw = localStorage.getItem(this._lverifyKey(username));
+      if (!raw) return false;
+      const v = JSON.parse(raw);
+      if (!v || !v.salt || !v.hash) return false;
+      const h = await this._pbkdf2(password, v.salt);
+      // constant-time-ish compare
+      if (h.length !== v.hash.length) return false;
+      let diff = 0; for (let i = 0; i < h.length; i++) diff |= h.charCodeAt(i) ^ v.hash.charCodeAt(i);
+      return diff === 0;
+    } catch (e) { return false; }
+  },
+
+  // Reworked login (Chunk 9). ONLINE: verify the person server-side (Sync.personLogin) — the browser role is
+  // no longer the gate. On success cache the offline verifier + adopt the server-confirmed role. OFFLINE (or
+  // person-auth not yet enforced): fall back to the device-local PBKDF2 verifier. Legacy fallback: the old
+  // sha256 local check, only when no cloud + no cached verifier yet (first-run migration window).
   async login(username, password) {
-      const hash = await sha256(password);
-      const u = DB.get().users.find(u=>u.username===username && u.password===hash);
-      if (!u) return false;
-      // T2-02: Generate ephemeral session UUID — never store password hash in sessionStorage
-      const sessionToken = crypto.randomUUID();
-      u.currentSession = sessionToken;
-      DB.commit();
-      this._user = u;
-      sessionStorage.setItem('bob_session_v5', JSON.stringify({ username: u.username, token: sessionToken }));
-      return true;
-    },
+    let serverRole = null, usedServer = false;
+    if (typeof Sync !== 'undefined' && Sync._userVerifyUrl && Sync.personLogin) {
+      const r = await Sync.personLogin(username, password);
+      if (r.ok) { serverRole = r.role; usedServer = true; await this._cacheLocalVerifier(username, password); }
+      else if (r.reason === 'invalid' || r.reason === 'device') return false;   // server REACHED and said no -> fail closed (don't fall through to offline)
+      // r.reason 'offline'/'config' -> fall through to the local verifier
+    }
+    if (!usedServer) {
+      const localOk = await this._checkLocalVerifier(username, password);
+      if (!localOk) {
+        // migration window: no cached verifier yet AND no cloud -> accept the legacy sha256 row so a device
+        // that hasn't done its first online login still works; that login then caches the PBKDF2 verifier.
+        const legacyHash = await sha256(password);
+        const legacy = DB.get().users.find(u => u.username === username && u.password === legacyHash);
+        if (!legacy) return false;
+        await this._cacheLocalVerifier(username, password);
+      }
+    }
+    // resolve the local user object (role/storeIds/name). Server role wins when present.
+    let u = DB.get().users.find(u => u.username === username);
+    if (!u) { u = { id: 'u_' + username, username, name: username, role: serverRole || 'staff', storeIds: [] }; DB.get().users.push(u); }
+    if (serverRole) u.role = serverRole;                                         // server is authoritative on role
+    const sessionToken = crypto.randomUUID();
+    u.currentSession = sessionToken;
+    DB.commit();
+    this._user = u;
+    sessionStorage.setItem('bob_session_v5', JSON.stringify({ username: u.username, token: sessionToken }));
+    return true;
+  },
   restore() {
     const s = sessionStorage.getItem('bob_session_v5');
     if (!s) { sessionStorage.removeItem('bob_session_v4'); return; } // also clean up old key
@@ -890,7 +947,14 @@ function generateDemoTransactions() {
     // T2-02: Clear ephemeral session from Dexie on logout
     if (this._user) { this._user.currentSession = null; DB.commit(); }
     this._user=null; sessionStorage.removeItem('bob_session_v5'); sessionStorage.removeItem('bob_session_v4');
-    if(typeof Sync!=='undefined'){Sync.clearSensitiveData();}
+    if(typeof Sync!=='undefined'){ Sync.clearSensitiveData(); if(Sync.clearPersonProofs) Sync.clearPersonProofs(); }  // Chunk 9: wipe in-memory person proofs on logout
+  },
+  // Chunk 9: sudo re-prompt — verify the CURRENT user's password server-side and return a fresh purpose-bound
+  // proof (publish/archive/user-admin/backup). Returns the proof string, or null if wrong/offline. The UI calls
+  // this right before a privileged action (D9-6). Never caches the password.
+  async sudo(purpose, password) {
+    if (typeof Sync === 'undefined' || !Sync.sudo) return null;
+    return await Sync.sudo(purpose, String(password || ''));
   },
   user()    { return this._user; },
   actor()   { const u=this._user; return u ? { id:u.id, username:u.username, name:u.name, role:u.role } : null; },  // SA-D-F1: hash-free snapshot for records/emails (NEVER store/send the full user)
@@ -3310,17 +3374,67 @@ const Pages = {
   directorUsers(elId) {
     if(!Auth.can('manageUsers')){navigateTo('log-movement');return;}
     const d=DB.get(); const el=document.getElementById(elId||'page-users');
-    el.innerHTML=`<div class="page-header"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="page-title">User Management</div><div class="page-sub">${d.users.length} accounts configured</div></div><button class="btn btn-primary" onclick="Pages._addUserModal()">+ Add User</button></div></div>
-      <div class="tbl-wrap card"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Assigned Stores</th><th>Actions</th></tr></thead><tbody>${d.users.map(u=>`<tr>
-        <td><strong>${u.name}</strong></td>
-        <td><span style="font-family:monospace;font-size:.8rem;color:#6b7280">${UI.esc(u.username)}</span></td>
-        <td>${Pages._roleBadge(u.role)}</td>
-        <td>${Pages._userStoreList(u,d)}</td>
-        <td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editUserModal('${u.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteUser('${u.id}')">Delete</button></td>
-      </tr>`).join('')}</tbody></table></div>
-      ${Pages._manageStockTakePinPanel()}`;
+    const personAuth=(typeof Sync!=='undefined'&&Sync.personAuthActive&&Sync.personAuthActive());
+    const rowActions=(u)=>{
+      const deactLabel=personAuth?(u.active===false?'':'Deactivate'):'Delete';
+      const lockBtn=(personAuth&&u._locked)?`<button class="btn btn-sm btn-secondary" onclick="Pages._unlockUser('${UI.esc(u.username)}')">Unlock</button>`:'';
+      const reactBtn=(personAuth&&u.active===false)?`<button class="btn btn-sm btn-secondary" onclick="Pages._reactivateUser('${UI.esc(u.username)}')">Reactivate</button>`:'';
+      const delBtn=deactLabel?`<button class="btn btn-sm btn-danger" onclick="Pages._deleteUser('${u.id}')">${deactLabel}</button>`:'';
+      return `<button class="btn btn-sm btn-secondary" onclick="Pages._editUserModal('${u.id}')">Edit</button>${lockBtn}${reactBtn}${delBtn}`;
+    };
+    const statusCell=(u)=>{
+      if(!personAuth)return '';
+      if(u.active===false)return '<span class="badge badge-gray">Inactive</span>';
+      if(u._locked)return `<span class="badge badge-red">🔒 Locked</span>`;
+      if(u._failed>0)return `<span style="color:#d97706;font-size:.75rem">${u._failed} failed</span>`;
+      return '<span style="color:#059669;font-size:.75rem">OK</span>';
+    };
+    const render=(users)=>{
+      el.innerHTML=`<div class="page-header"><div style="display:flex;align-items:center;justify-content:space-between"><div><div class="page-title">User Management</div><div class="page-sub">${users.length} accounts${personAuth?' · cloud-managed':''}</div></div><button class="btn btn-primary" onclick="Pages._addUserModal()">+ Add User</button></div></div>
+        ${personAuth?'<div style="font-size:.76rem;color:#065f46;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:8px 12px;margin-bottom:12px">🔐 Accounts are managed in the cloud. Passwords are set by you and verified server-side; a locked account is shown below and you can Unlock it.</div>':''}
+        <div class="tbl-wrap card"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Assigned Stores</th>${personAuth?'<th>Status</th>':''}<th>Actions</th></tr></thead><tbody>${users.map(u=>`<tr>
+          <td><strong>${UI.esc(u.name)}</strong></td>
+          <td><span style="font-family:monospace;font-size:.8rem;color:#6b7280">${UI.esc(u.username)}</span></td>
+          <td>${Pages._roleBadge(u.role)}</td>
+          <td>${Pages._userStoreList(u,d)}</td>
+          ${personAuth?`<td>${statusCell(u)}</td>`:''}
+          <td style="display:flex;gap:6px;flex-wrap:wrap">${rowActions(u)}</td>
+        </tr>`).join('')}</tbody></table></div>
+        ${Pages._manageStockTakePinPanel()}`;
+    };
+    render(d.users);  // instant paint from the local mirror
+    // when person-auth is active, refresh from the cloud so lock-state + FailedCount are live (D9-3)
+    if(personAuth&&Sync.userAdmin){
+      Sync.userAdmin('list',{},null).then(r=>{
+        if(r&&r.status==='ok'&&Array.isArray(r.users)){
+          const now=new Date().toISOString();
+          const merged=r.users.map(su=>{const local=d.users.find(x=>x.username===su.Username)||{};return {id:local.id||('u_'+su.Username),username:su.Username,name:su.FullName||su.Username,role:su.Role,storeIds:(()=>{try{return JSON.parse(su.StoreIds||'[]');}catch(e){return [];}})(),active:su.Active!==0,_failed:Number(su.FailedCount||0),_locked:!!(su.LockedUntil&&su.LockedUntil>now)};});
+          render(merged);
+        }
+      }).catch(()=>{});
+    }
+  },
+  async _unlockUser(username){
+    if(!Auth.can('manageUsers'))return;
+    const proof=await this._sudoPrompt('user-admin',`unlock "${username}"`); if(proof===null)return;
+    const r=await Sync.userAdmin('unlock',{username},proof==='__no_person_auth__'?undefined:proof);
+    if(r.status!=='ok'){UI.toast(this._userAdminErr(r,'unlock'),'error');return;}
+    UI.toast(`Unlocked "${username}"`,'success'); this._refreshSettings('users');
+  },
+  async _reactivateUser(username){
+    if(!Auth.can('manageUsers'))return;
+    const proof=await this._sudoPrompt('user-admin',`reactivate "${username}"`); if(proof===null)return;
+    const r=await Sync.userAdmin('activate',{username},proof==='__no_person_auth__'?undefined:proof);
+    if(r.status!=='ok'){UI.toast(this._userAdminErr(r,'reactivate'),'error');return;}
+    const u=DB.get().users.find(x=>x.username===username); if(u)u.active=true; await this._commitSettings('');
+    UI.toast(`Reactivated "${username}"`,'success'); this._refreshSettings('users');
   },
   _roleBadge(role){const map={staff:'badge-gray',franchisee:'badge-purple',store_manager:'badge-blue',territory_manager:'badge-teal',head_office:'badge-amber',director:'badge-red'};return `<span class="badge ${map[role]||'badge-gray'}">${role.replace(/_/g,' ')}</span>`;},
+  // Chunk 9: translate a user-admin LA error into a message the Director understands.
+  _userAdminErr(r,action){
+    const m={device:'This device is not authorised.',person:'Password confirmation was rejected.',offline:'No connection — try again when online.',config:'User sync is not configured on this device.',PASSWORD_TOO_SHORT:'Password too short (8+ chars, 10 for Directors).',create_failed_or_duplicate:'Username already exists or could not be created.',BAD_USERNAME:'Invalid username (letters, numbers, _ . - only).'};
+    return (m[r.reason]||('Could not '+(action||'complete')+' ('+(r.reason||'error')+').'));
+  },
   _userStoreList(u,d){if(!u.storeIds||u.storeIds.length===0)return '<span style="color:#9ca3af">All Stores</span>';return u.storeIds.map(id=>d.stores.find(s=>s.id===id)?.name||id).join(', ');},
   _addUserModal(){
     const d=DB.get();
@@ -3367,6 +3481,16 @@ const Pages = {
       const d=DB.get();
       if(d.users.find(u=>u.username===username)){UI.toast('Username already exists','error');return;}
       const storeIds=[...document.querySelectorAll('.nu-store-cb:checked')].map(cb=>cb.value);
+      // Chunk 9: when person-auth is active, the account is created SERVER-SIDE (salt+hash on the Function,
+      // never local) via the gated user-admin LA + a sudo re-prompt. The local mirror is updated on next sync;
+      // we also add a minimal local row so it shows immediately.
+      if(typeof Sync!=='undefined'&&Sync.personAuthActive&&Sync.personAuthActive()){
+        const proof=await this._sudoPrompt('user-admin',`add "${name}"`); if(proof===null)return;
+        const r=await Sync.userAdmin('create',{username,fullName:name,role,storeIds,password},proof==='__no_person_auth__'?undefined:proof);
+        if(r.status!=='ok'){UI.toast(this._userAdminErr(r,'add user'),'error');return;}
+        d.users.push({id:'u_'+username,username,role,name,storeIds});  // mirror (NO local password/hash)
+        await this._commitSettings('User could not be saved.'); UI.closeModal(); UI.toast(`"${name}" added`,'success'); this._refreshSettings('users'); return;
+      }
       const id='u_'+Date.now();
       const hashedPassword=await sha256(password);
       const hashedPin=await sha256(pin||'1234');
@@ -3409,6 +3533,21 @@ const Pages = {
       if(d.users.some(x=>x.id!==id && x.username===newUsername)){UI.toast('Username already exists','error');return;}
       if(u.role==='director' && newRole!=='director' && d.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot change the last Director — promote another Director first','error');return;}
       if(newPin&&!/^\d{4}$/.test(newPin)){UI.toast('PIN must be exactly 4 digits','error');return;}
+      const _np0=document.getElementById('eu-pass')?.value;
+      const _storeIds=[...document.querySelectorAll('.eu-store-cb:checked')].map(cb=>cb.value);
+      // Chunk 9: person-auth active -> role/store change + optional password reset go SERVER-SIDE (sudo).
+      if(typeof Sync!=='undefined'&&Sync.personAuthActive&&Sync.personAuthActive()){
+        const proof=await this._sudoPrompt('user-admin',`update "${u.name}"`); if(proof===null)return;
+        const _p=proof==='__no_person_auth__'?undefined:proof;
+        if(newRole!==u.role||JSON.stringify(_storeIds)!==JSON.stringify(u.storeIds||[])){
+          const r=await Sync.userAdmin('setRole',{username:u.username,role:newRole,storeIds:_storeIds},_p);
+          if(r.status!=='ok'){UI.toast(this._userAdminErr(r,'update role'),'error');return;}
+        }
+        if(_np0){ const r2=await Sync.userAdmin('setPassword',{username:u.username,password:_np0},_p);
+          if(r2.status!=='ok'){UI.toast(this._userAdminErr(r2,'reset password'),'error');return;} }
+        u.name=document.getElementById('eu-name')?.value.trim()||u.name; u.role=newRole; u.storeIds=_storeIds;
+        await this._commitSettings('User could not be updated.'); UI.closeModal(); UI.toast('Updated','success'); this._refreshSettings('users'); return;
+      }
       u.name=document.getElementById('eu-name')?.value.trim()||u.name;
       u.username=newUsername;
       const np=document.getElementById('eu-pass')?.value;if(np)u.password=await sha256(np);
@@ -3426,15 +3565,26 @@ const Pages = {
     // Wave M1 / GPTa-36: prevent self-delete + last-Director lockout (guard before confirm)
     if(Auth.user()?.id===id){UI.toast('You cannot delete your own account','error');return;}
     if(u.role==='director' && _d0.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot delete the last Director','error');return;}
-    UI.confirm('Delete User',`Delete user "${u?.name}"? This cannot be undone.`,async()=>{
+    // Chunk 9: with person-auth active this DEACTIVATES the cloud account (deactivate-not-delete — the audit
+    // trail keeps the person; a reactivate is possible). Legacy (dormant): local hard-delete as before.
+    const _personAuth=(typeof Sync!=='undefined'&&Sync.personAuthActive&&Sync.personAuthActive());
+    UI.confirm(_personAuth?'Deactivate User':'Delete User',
+      _personAuth?`Deactivate "${u?.name}"? They can no longer log in. You can reactivate later via Edit.`:`Delete user "${u?.name}"? This cannot be undone.`,async()=>{
       const d=DB.get();
       const target=d.users.find(x=>x.id===id); // GPT P3: re-fetch fresh target state inside the callback
       if(!target){UI.toast('User not found','error');return;}
-      if(Auth.user()?.id===id){UI.toast('You cannot delete your own account','error');return;} // defence-in-depth
-      if(target.role==='director' && d.users.filter(x=>x.role==='director').length<=1){UI.toast('Cannot delete the last Director','error');return;}
+      if(Auth.user()?.id===id){UI.toast('You cannot deactivate your own account','error');return;} // defence-in-depth
+      if(target.role==='director' && d.users.filter(x=>x.role==='director'&&x.active!==false).length<=1){UI.toast('Cannot remove the last Director','error');return;}
+      if(_personAuth){
+        const proof=await Pages._sudoPrompt('user-admin',`deactivate "${target.name}"`); if(proof===null)return;
+        const r=await Sync.userAdmin('deactivate',{username:target.username},proof==='__no_person_auth__'?undefined:proof);
+        if(r.status!=='ok'){UI.toast(Pages._userAdminErr(r,'deactivate'),'error');return;}
+        target.active=false;  // mirror
+        await Pages._commitSettings('User could not be deactivated.'); UI.toast('Deactivated','info'); Pages._refreshSettings('users'); return;
+      }
       d.users=d.users.filter(u2=>u2.id!==id);
       if(!(await Pages._commitSettings('User could not be deleted.')))return;UI.toast('Deleted','info');Pages._refreshSettings('users');
-    },'Delete');
+    },_personAuth?'Deactivate':'Delete');
   },
 
   // ── Director: Settings Hub (consolidated tab) ──
@@ -3505,7 +3655,7 @@ const Pages = {
     this._downloadCSV(`bob-wastage-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
   },
   _BACKUP_FORMAT: 1,
-  _REUSABLE_AUTH_KEYS: ['currentSession','sessionToken','token','sas','sig','pushUrl','pullUrl','emailUrl','configUrl','auth','storeKey','directorKey','stepsPushUrl','stepsPullUrl'],  // Chunk 5: sync keys + steps URLs must never survive into a backup
+  _REUSABLE_AUTH_KEYS: ['currentSession','sessionToken','token','sas','sig','pushUrl','pullUrl','emailUrl','configUrl','auth','storeKey','directorKey','stepsPushUrl','stepsPullUrl','password','pin','proof'],  // Chunk 5: sync keys + steps URLs never survive into a backup. Chunk 9 (D-039 acceptance ENDS + AGY-9-2): strip legacy password/pin hashes + any proof too. (The PBKDF2 offline verifier lives in localStorage, never in the Dexie backup, so it is excluded by construction.)
   _scrubBackupSecrets(o){  // C1 (D-047 / L36): strip ALL reusable session + config material from a backup (session tokens, SAS/URLs, the live 24h stock-take grant). Password/PIN HASHES are intentionally kept (D-039 alpha-accepted) and labelled in the export warning — they require cracking, they are not directly reusable.
     const deny=new Set(this._REUSABLE_AUTH_KEYS);
     const walk=v=>{ if(Array.isArray(v)){v.forEach(walk);} else if(v&&typeof v==='object'){ for(const k in v){ if(deny.has(k)) delete v[k]; else walk(v[k]); } } };
@@ -3514,6 +3664,8 @@ const Pages = {
     return o;
   },
   async _exportBackup() {
+    // Chunk 9 (AGY-9-4): a backup is the whole database — gate it behind the sudo re-prompt like publish/archive.
+    const _sp=await this._sudoPrompt('backup','download a full backup'); if(_sp===null)return;
     const clean=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get()))));  // SA-I-F1: slim actors; C1: + strip reusable session/config material
     if(Array.isArray(clean.transactions)) clean.transactions=clean.transactions.filter(t=>!(t&&t._archived));  // Chunk 8: report-overlay archived rows are session-only, never part of a backup (they live in the cloud archive)
     let checksum=''; try{ checksum=await sha256(JSON.stringify(clean)); }catch(e){}
@@ -3588,10 +3740,11 @@ const Pages = {
     delete data._meta;
     return {ok:true,data};
   },
-  _importBackup() {
+  async _importBackup() {
     const file=document.getElementById('backup-file-input')?.files?.[0];
     if(!file){UI.toast('Please select a backup file','error');return;}
-    
+    // Chunk 9 (AGY-9-4): a restore REPLACES all data — gate behind the sudo re-prompt.
+    const _sp=await this._sudoPrompt('backup','restore from a backup file'); if(_sp===null)return;
     UI.confirm('Restore Backup','⚠ This will REPLACE all current app data with the backup. A safety copy of your current data is saved first.',()=>{
     if(file.size>5*1024*1024){UI.toast('Backup file too large (max 5MB)','error');return;}
     const reader=new FileReader();
@@ -3800,13 +3953,41 @@ const Pages = {
       +(costChanges.length?'<div style="font-size:.75rem;color:#6b7280;margin-top:6px">Cost changes reach your corporate stores only — franchisees keep their own cost.</div>':''),
       '<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._doPublishCatalogue()">Publish Now</button>');
   },
+  // Chunk 9 (D9-6 sudo): prompt for the current user's password, verify it server-side, and return a fresh
+  // purpose-bound proof — or null if cancelled/wrong/offline. Reusable before any privileged action.
+  // Resolves via a modal; the password is passed straight to Auth.sudo and never stored.
+  _sudoPrompt(purpose, actionLabel){
+    return new Promise((resolve)=>{
+      if(typeof Sync==='undefined' || !Sync._userVerifyUrl){ resolve('__no_person_auth__'); return; }  // person-auth dormant -> no prompt (legacy behaviour)
+      UI.modal('Confirm your password',
+        `<p style="margin:0 0 10px;color:#4b5563">Re-enter your password to ${UI.esc(actionLabel||'continue')}.</p>`
+        +`<input type="password" id="sudo-pw" class="form-input" autocomplete="current-password" placeholder="Password" style="width:100%">`
+        +`<div id="sudo-err" style="color:#ef4444;font-size:.8rem;margin-top:6px;display:none">Password not accepted — try again.</div>`,
+        '<button class="btn btn-secondary" onclick="UI.closeModal();Pages.__sudoResolve&&Pages.__sudoResolve(null)">Cancel</button>'
+        +'<button class="btn btn-primary" onclick="Pages.__sudoSubmit()">Confirm</button>');
+      this.__sudoResolve=resolve; this.__sudoPurpose=purpose;
+      setTimeout(()=>{const i=document.getElementById('sudo-pw'); if(i){i.focus(); i.onkeydown=e=>{if(e.key==='Enter')Pages.__sudoSubmit();};}},50);
+    });
+  },
+  async __sudoSubmit(){
+    const i=document.getElementById('sudo-pw'); const err=document.getElementById('sudo-err');
+    const pw=i?i.value:''; if(!pw){ if(err)err.style.display='block'; return; }
+    const btn=document.querySelector('#modal .btn-primary'); if(btn){btn.disabled=true;btn.textContent='Checking…';}
+    const proof=await Auth.sudo(this.__sudoPurpose,pw);
+    if(proof){ const r=this.__sudoResolve; this.__sudoResolve=null; UI.closeModal(); r&&r(proof); }
+    else { if(err)err.style.display='block'; if(btn){btn.disabled=false;btn.textContent='Confirm';} if(i){i.value='';i.focus();} }
+  },
   async _doPublishCatalogue(){
     if(!Auth.can('manageUsers')){UI.toast('Director access required','error');return;}
-    if(this._publishing)return; this._publishing=true;
-    UI.closeModal(); UI.toast('Publishing…','info');
-    let res; try{ res=await Sync.publishCatalogue(); } finally { this._publishing=false; }
+    if(this._publishing)return;
+    const proof=await this._sudoPrompt('publish','publish the catalogue');
+    if(proof===null)return;  // cancelled
+    this._publishing=true;
+    UI.toast('Publishing…','info');
+    let res; try{ res=await Sync.publishCatalogue(proof==='__no_person_auth__'?undefined:proof); } finally { this._publishing=false; }
     const el=document.getElementById('publish-cat-result');
     if(res.unauthorized){ if(el)el.innerHTML='<div class="card card-body" style="border-left:4px solid #ef4444"><strong style="color:#ef4444">Not authorised.</strong> Enter the Director key in Sync Keys above.</div>'; Pages.dirSettings('cloudsync'); return; }
+    if(res.needSudo){ UI.toast('Password confirmation was required or rejected — please Publish again','warning'); Pages.dirSettings('cloudsync'); return; }  // Chunk 9: sudo proof missing/rejected server-side
     if(res.retry){ UI.toast('Another publish was in progress — nothing was changed, please Publish again','warning'); Pages.dirSettings('cloudsync'); return; }  // GPT-C6-1: write_failed = nothing landed, dirty kept
     if(!res.ok){ UI.toast(UI.esc(res.error||'Publish failed'),'error'); return; }
     const bad=(res.rejected||[]).length, conf=(res.conflicts||[]).length;

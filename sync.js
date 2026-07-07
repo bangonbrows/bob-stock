@@ -101,6 +101,87 @@ const Sync = {
     return Object.assign({}, body, { auth });
   },
 
+  // ─── Chunk 9: person auth-proofs (key-card model, Codex R1) ─────────────────────────────────────────
+  // The user's PASSWORD transits ONLY at login/sudo (to _userVerifyUrl). On success the server mints a
+  // short-lived signed PROOF; sensitive requests carry the proof, never the password. Proofs live in MEMORY
+  // ONLY (never localStorage/sessionStorage/Dexie/backup). Wiped on lock/logout.
+  _userVerifyUrl: null, _userAdminUrl: null,   // from sync_config
+  _sessionProof: null,                          // { proof, role, username, expiresAt } - the 12h background proof
+  _deviceContext() { const k = this._authKeys(); return k.directorKey ? '__director' : (k.storeId || ''); },
+
+  // Log in a person: device keys (Chunk 5) + username/password -> server verify -> session proof in memory.
+  // Returns {ok, role} | {ok:false, reason:'device'|'invalid'|'offline'|'config'}. The caller (Auth) also
+  // caches an OFFLINE local verifier (PBKDF2) so subsequent launches can log in without the cloud.
+  async personLogin(username, password) {
+    if (!this._userVerifyUrl) return { ok: false, reason: 'config' };
+    let resp;
+    try {
+      resp = await fetch(this._userVerifyUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this._withAuth({ user: { username: String(username || ''), password: String(password || ''), purpose: 'session' } })) });
+    } catch (e) { return { ok: false, reason: 'offline' }; }
+    if (resp.status === 401) { let j = {}; try { j = await resp.json(); } catch (e) {} return { ok: false, reason: j.reason === 'device_unauthorized' ? 'device' : 'invalid' }; }
+    if (!resp.ok) return { ok: false, reason: 'offline' };
+    const j = await resp.json();
+    if (j.status === 'ok' && j.proof) {
+      this._sessionProof = { proof: j.proof, role: j.role, username: j.username, expiresAt: j.expiresAt };
+      return { ok: true, role: j.role };
+    }
+    return { ok: false, reason: 'invalid' };
+  },
+
+  // Mint a short-TTL, purpose-bound SUDO proof (publish/archive/user-admin/backup/approve/resolve/delivery/
+  // adjustment). Requires the password AGAIN (D9-6 re-prompt) — never reuses the session proof for privileged
+  // actions. Returns the proof string or null.
+  async sudo(purpose, password) {
+    if (!this._userVerifyUrl) return null;
+    // Prefer the CURRENTLY logged-in user (Auth.user) over the session-proof pointer — a sudo action must
+    // always target the person at the keyboard, never a stale/other _sessionProof username.
+    const username = (typeof Auth !== 'undefined' && Auth.user() && Auth.user().username) || (this._sessionProof && this._sessionProof.username) || '';
+    let resp;
+    try {
+      resp = await fetch(this._userVerifyUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this._withAuth({ user: { username, password: String(password || ''), purpose } })) });
+    } catch (e) { return null; }
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    return (j.status === 'ok' && j.proof) ? j.proof : null;
+  },
+
+  // The logged-in person's username (so a gated LA can read the right UserCredentials row to verify the proof
+  // against — a lie here just fails, since verifyProof matches the proof's signed username to the row).
+  _actorUsername() { return (this._sessionProof && this._sessionProof.username) || (typeof Auth !== 'undefined' && Auth.user() && Auth.user().username) || ''; },
+
+  // Attach the session proof to a sensitive request body (background gated reads: corp-costs, archive-pull).
+  _withPerson(body) {
+    const b = this._withAuth(body);
+    b.actorUsername = this._actorUsername();
+    if (this._sessionProof && this._sessionProof.proof && this._sessionProof.expiresAt > Date.now()) b.proof = this._sessionProof.proof;
+    return b;
+  },
+
+  // Wipe every in-memory person credential (lock/logout). Session proof + any transient sudo proofs.
+  clearPersonProofs() { this._sessionProof = null; },
+
+  // Director user management via the gated user-admin LA (Chunk 9, D9-2). op = create|setPassword|deactivate|
+  // activate|setRole|unlock|list. Requires a purpose='user-admin' sudo proof (the caller mints it). Returns the
+  // parsed response {status,...} or {status:'error', reason}. Returns {reason:'config'} if not configured.
+  async userAdmin(op, data, sudoProof) {
+    if (!this._userAdminUrl) return { status: 'error', reason: 'config' };
+    let resp;
+    try {
+      const body = this._withAuth({ op, data: data || {} });
+      body.actorUsername = this._actorUsername();
+      if (sudoProof) body.proof = sudoProof;
+      resp = await fetch(this._userAdminUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    } catch (e) { return { status: 'error', reason: 'offline' }; }
+    if (resp.status === 401) { return { status: 'error', reason: 'device' }; }
+    if (resp.status === 403) { return { status: 'error', reason: 'person' }; }
+    const j = await resp.json().catch(() => ({ status: 'error', reason: 'bad_response' }));
+    j._http = resp.status;
+    return j;
+  },
+  personAuthActive() { return !!this._userAdminUrl && !!this._userVerifyUrl; },
+
   // Central 401 handling (D6): clear the cached config (it may be stale), mark the
   // device unauthorised, surface it, and STOP — never a retry-loop on auth failure.
   _handleUnauthorized(where) {
@@ -174,14 +255,21 @@ const Sync = {
   },
 
   // Director presses "Publish catalogue" -> push the deltas, honest result, clear only what landed.
-  async publishCatalogue() {
+  // Chunk 9: publishing is a SUDO action — the caller passes a fresh purpose='publish' proof (from a password
+  // re-prompt). When person-auth is enforced (server advertises userVerifyUrl), no proof = fail closed.
+  async publishCatalogue(sudoProof) {
     if (!this._catalogueWriteUrl) return { ok: false, error: 'Catalogue publishing is not configured on this device.' };
+    if (this._userVerifyUrl && !sudoProof) return { ok: false, error: 'Password confirmation required to publish.', needSudo: true };
     const { changes, costChanges, keys } = this._buildCataloguePayload();
     if (!changes.length && !costChanges.length) return { ok: true, nothing: true };
     let resp;
     try {
-      resp = await fetch(this._catalogueWriteUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth({ data: { changes, costChanges } })) });
+      const body = this._withAuth({ data: { changes, costChanges } });
+      if (sudoProof) body.proof = sudoProof;
+      body.actorUsername = this._actorUsername();
+      resp = await fetch(this._catalogueWriteUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     } catch (e) { return { ok: false, error: 'Network error — try again.' }; }
+    if (resp.status === 403) return { ok: false, error: 'Password confirmation was rejected — try again.', needSudo: true };
     if (resp.status === 401) { this._handleUnauthorized('catalogue-write'); return { ok: false, unauthorized: true }; }
     if (!resp.ok) return { ok: false, error: 'Publish failed (' + resp.status + ') — try again.' };
     const r = await resp.json().catch(() => ({}));
@@ -216,7 +304,7 @@ const Sync = {
     if (!this._corpCostsUrl) return;
     if (!this._isCorporateDevice()) return;                     // franchise device: keep local cost, don't fetch
     let resp;
-    try { resp = await fetch(this._corpCostsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth({})) }); }
+    try { resp = await fetch(this._corpCostsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withPerson({})) }); }  // Chunk 9: session proof
     catch (e) { return; }
     if (!resp.ok) return;                                       // 403 (unexpected on a corporate device) -> keep local cost
     const r = await resp.json().catch(() => ({}));
@@ -268,6 +356,8 @@ const Sync = {
       this._catalogueWriteUrl = config.catalogueWriteUrl || null;  // Chunk 6
       this._corpCostsUrl = config.corpCostsUrl || null;  // Chunk 6
       this._archivePullUrl = config.archivePullUrl || null;  // Chunk 8
+      this._userVerifyUrl = config.userVerifyUrl || null;  // Chunk 9
+      this._userAdminUrl = config.userAdminUrl || null;  // Chunk 9
       this._configUrl = this.CONFIG_URL;
       this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
       this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
@@ -352,6 +442,8 @@ const Sync = {
         this._catalogueWriteUrl = urls.catalogueWriteUrl || null;  // Chunk 6 (absent = publishing off)
         this._corpCostsUrl = urls.corpCostsUrl || null;  // Chunk 6
         this._archivePullUrl = urls.archivePullUrl || null;  // Chunk 8 (absent = archive reports off; Director/HO on-demand)
+        this._userVerifyUrl = urls.userVerifyUrl || null;  // Chunk 9 (absent = person-auth off; falls back to local-only login)
+        this._userAdminUrl = urls.userAdminUrl || null;  // Chunk 9
         // Chunk 5 (D6 phase 1): the server advertises which endpoints will require keys.
         // If auth is coming and this device has no keys yet, tell the Director BEFORE the flag day.
         this._authRequired = urls.authRequired || null;
@@ -369,6 +461,8 @@ const Sync = {
           catalogueWriteUrl: urls.catalogueWriteUrl || null,  // Chunk 6
           corpCostsUrl: urls.corpCostsUrl || null,  // Chunk 6
           archivePullUrl: urls.archivePullUrl || null,  // Chunk 8
+          userVerifyUrl: urls.userVerifyUrl || null,  // Chunk 9
+          userAdminUrl: urls.userAdminUrl || null,  // Chunk 9
           configUrl: this.CONFIG_URL
         }));
         this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
@@ -911,7 +1005,7 @@ const Sync = {
   // (which already excluded them). Returns null if no endpoint is configured; [] on an authorised empty range.
   async pullArchive(fromDate, toDate) {
     if (!this._archivePullUrl) return null;
-    const body = this._withAuth({ from: fromDate || '', to: toDate || '' });
+    const body = this._withPerson({ from: fromDate || '', to: toDate || '' });  // Chunk 9: session proof
     const resp = await fetch(this._archivePullUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (resp.status === 401) { this._handleUnauthorized('archive-pull'); this._showStatus('Not authorised to load archived data', 'warning'); return null; }  // AGY MED: 401 must trigger the SAME central pause as push/pull/config (rotated keys shouldn't keep polling)
     if (!resp.ok) { console.warn('[Sync] Archive pull failed:', resp.status); return null; }

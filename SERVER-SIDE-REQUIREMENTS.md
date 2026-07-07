@@ -44,6 +44,16 @@ The client now enforces every rule below at its own boundary, but client-side ch
    shared secrets or per-device registration ids checked by push-v2, plus role
    checks for transaction types (e.g. only Director devices may push
    `adjustment_*`).
+   *(Progress: device layer = Chunk 5 DONE; person layer = Chunk 9 IN BUILD; row scoping = Chunk 10 next.)*
+
+4b. **Stock-take approval + discrepancy resolution move fully server-side (KUNAL COMMITMENT, 2026-07-07 —
+   deferred from Chunk 9 / D9-7).** Kunal: *"keep a note of this as I really do want it — I ultimately don't
+   want anything in the browser that is not in the cloud."* Today these Director-only actions are enforced
+   client-side and write ledger rows via the normal push; Chunk 9 adds the person re-prompt (sudo mode) at the
+   UI, but a tampered device can still forge the underlying rows (P-13 residual; compensating controls =
+   append-only ledger audit trail + Chunk 10 row scoping). The real fix is a Director-gated server endpoint
+   (device key + person verify) that performs the approval/resolution write itself. Target: first post-launch
+   server wave.
 
 ## P1 — before scale / before the ledger grows
 
