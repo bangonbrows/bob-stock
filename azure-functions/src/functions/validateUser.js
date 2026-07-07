@@ -128,7 +128,10 @@ function verifyProofBody(proofSecret, body, nowMs) {
   const nowIso = new Date(nowMs).toISOString();
   if (!rowUsable(row, nowIso)) return { ok: false };                              // deactivated/locked since minting
   if ((Number(row.TokenVersion) || 0) !== (Number(payload.tv) || 0)) return { ok: false };
-  return { ok: true, username: String(payload.un), role: String(payload.r || '') };
+  // Codex HIGH: return the CURRENT ROW's role, never the role signed into the proof — the proof self-certified
+  // its role, so a demotion that (for any reason) didn't bump TokenVersion would still assert the old role.
+  // The row is the live authority; the gate must judge off it, and the proof's tv already pins it to a version.
+  return { ok: true, username: String(payload.un), role: String(row.Role || '') };
 }
 
 function handlerFactory(fn) {

@@ -990,9 +990,13 @@ const MUTATIONS = [
     repl: "_REUSABLE_AUTH_KEYS: ['currentSession','sessionToken','token','sas','sig','pushUrl','pullUrl','emailUrl','configUrl','auth','storeKey','directorKey','stepsPushUrl','stepsPullUrl'],",
     note: "Chunk 9: the backup scrubber stops stripping password/pin/proof -> a backup carries credential hashes again (D-039 acceptance was ended by Chunk 9)" },
   { id: 'S-220', file: 'index.html',
-    find: "d.users.push({id:'u_'+username,username,role,name,storeIds});  // mirror (NO local password/hash)",
-    repl: "d.users.push({id:'u_'+username,username,role,name,storeIds,password:await sha256(password)});",
+    find: "d.users.push({id:'u_'+username,username,role,name,storeIds,active:true});  // mirror (NO local password/hash; AGY-9-C3 explicit active)",
+    repl: "d.users.push({id:'u_'+username,username,role,name,storeIds,active:true,password:await sha256(password)});",
     note: "Chunk 9: user-create writes a LOCAL password hash into the mirror -> the server-owned credential is duplicated on-device (a stolen device/backup exposes it; defeats server-only credential ownership)" },
+  { id: 'S-221', file: 'index.html',
+    find: "if (typeof Sync !== 'undefined' && Sync.clearPersonProofs) Sync.clearPersonProofs();\n    let serverRole = null, usedServer = false;",
+    repl: "let serverRole = null, usedServer = false;",
+    note: "Chunk 9 (deep-audit): login stops clearing the prior session proof -> an offline login as user B inherits user A's in-memory proof (cross-account proof leak; _actorUsername/_withPerson mis-bind to A)" },
 ];
 
 function copyRepoTo(dir) {

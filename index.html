@@ -866,11 +866,15 @@ function generateDemoTransactions() {
   // computed on a successful ONLINE login. A stolen device/backup exposes only this salted, ~250ms-per-guess
   // verifier — not the server credential. Scrubbed from backups. Deleted verifier = no offline fallback.
   _LVERIFY_ITERS: 210000,
-  async _pbkdf2(password, saltHex) {
+  async _pbkdf2(password, saltHex, iters) {
+    // Codex LOW: derive at the caller-supplied iteration count (default = current). _cacheLocalVerifier stores
+    // its iters; _checkLocalVerifier re-derives at the STORED iters — so raising _LVERIFY_ITERS later doesn't
+    // lock out devices whose verifier was cached at the old count (offline-login migration safety).
+    const n = Number.isSafeInteger(iters) && iters > 0 ? iters : this._LVERIFY_ITERS;
     const enc = new TextEncoder();
     const salt = Uint8Array.from(saltHex.match(/.{2}/g).map(b => parseInt(b, 16)));
     const key = await crypto.subtle.importKey('raw', enc.encode(String(password)), 'PBKDF2', false, ['deriveBits']);
-    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: this._LVERIFY_ITERS, hash: 'SHA-256' }, key, 256);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: n, hash: 'SHA-256' }, key, 256);
     return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
   },
   _lverifyKey(username) { return 'bob_lverify_' + username; },
@@ -887,7 +891,7 @@ function generateDemoTransactions() {
       if (!raw) return false;
       const v = JSON.parse(raw);
       if (!v || !v.salt || !v.hash) return false;
-      const h = await this._pbkdf2(password, v.salt);
+      const h = await this._pbkdf2(password, v.salt, v.iters);   // Codex LOW: derive at the STORED iters
       // constant-time-ish compare
       if (h.length !== v.hash.length) return false;
       let diff = 0; for (let i = 0; i < h.length; i++) diff |= h.charCodeAt(i) ^ v.hash.charCodeAt(i);
@@ -900,6 +904,11 @@ function generateDemoTransactions() {
   // person-auth not yet enforced): fall back to the device-local PBKDF2 verifier. Legacy fallback: the old
   // sha256 local check, only when no cloud + no cached verifier yet (first-run migration window).
   async login(username, password) {
+    // Codex MEDIUM: a fresh login must NEVER inherit a prior account's in-memory session proof — clear it up
+    // front. The server path (personLogin) mints a new one; the offline path leaves it null (no server proof
+    // exists offline). Without this, an offline login as B kept A's proof, so _withPerson/_actorUsername
+    // mis-bound to A.
+    if (typeof Sync !== 'undefined' && Sync.clearPersonProofs) Sync.clearPersonProofs();
     let serverRole = null, usedServer = false;
     if (typeof Sync !== 'undefined' && Sync._userVerifyUrl && Sync.personLogin) {
       const r = await Sync.personLogin(username, password);
@@ -3432,7 +3441,7 @@ const Pages = {
   _roleBadge(role){const map={staff:'badge-gray',franchisee:'badge-purple',store_manager:'badge-blue',territory_manager:'badge-teal',head_office:'badge-amber',director:'badge-red'};return `<span class="badge ${map[role]||'badge-gray'}">${role.replace(/_/g,' ')}</span>`;},
   // Chunk 9: translate a user-admin LA error into a message the Director understands.
   _userAdminErr(r,action){
-    const m={device:'This device is not authorised.',person:'Password confirmation was rejected.',offline:'No connection — try again when online.',config:'User sync is not configured on this device.',PASSWORD_TOO_SHORT:'Password too short (8+ chars, 10 for Directors).',create_failed_or_duplicate:'Username already exists or could not be created.',BAD_USERNAME:'Invalid username (letters, numbers, _ . - only).'};
+    const m={device:'This device is not authorised.',person:'Password confirmation was rejected.',offline:'No connection — try again when online.',config:'User sync is not configured on this device.',PASSWORD_TOO_SHORT:'Password too short (8+ chars, 10 for Directors).',create_failed_or_duplicate:'Username already exists or could not be created.',BAD_USERNAME:'Invalid username (letters, numbers, _ . - only).',last_director:'Cannot deactivate or demote the last active Director.'};  // AGY-9-C1
     return (m[r.reason]||('Could not '+(action||'complete')+' ('+(r.reason||'error')+').'));
   },
   _userStoreList(u,d){if(!u.storeIds||u.storeIds.length===0)return '<span style="color:#9ca3af">All Stores</span>';return u.storeIds.map(id=>d.stores.find(s=>s.id===id)?.name||id).join(', ');},
@@ -3488,7 +3497,7 @@ const Pages = {
         const proof=await this._sudoPrompt('user-admin',`add "${name}"`); if(proof===null)return;
         const r=await Sync.userAdmin('create',{username,fullName:name,role,storeIds,password},proof==='__no_person_auth__'?undefined:proof);
         if(r.status!=='ok'){UI.toast(this._userAdminErr(r,'add user'),'error');return;}
-        d.users.push({id:'u_'+username,username,role,name,storeIds});  // mirror (NO local password/hash)
+        d.users.push({id:'u_'+username,username,role,name,storeIds,active:true});  // mirror (NO local password/hash; AGY-9-C3 explicit active)
         await this._commitSettings('User could not be saved.'); UI.closeModal(); UI.toast(`"${name}" added`,'success'); this._refreshSettings('users'); return;
       }
       const id='u_'+Date.now();
@@ -3674,7 +3683,7 @@ const Pages = {
     const blob=new Blob([JSON.stringify(clean,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);const a=document.createElement('a');
     a.href=url;a.download=`bob-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);
-    UI.toast('Backup downloaded — contains sensitive internal business data and (alpha-accepted) staff password/PIN hashes. Store it securely.','success');
+    UI.toast('Backup downloaded — contains sensitive internal business data (no passwords/PINs — those are scrubbed). Store it securely.','success');  // AGY-9-C2: Chunk 9 scrubs credential hashes; toast updated
   },
   _validateAndScrubBackup(data){  // C1: returns {ok,error,data}. Rejects wrong-app / future-version / malformed shape, and strips reusable session/config material on the way IN too — so a crafted backup cannot restore an active login.
     if(!data||typeof data!=='object') return {ok:false,error:'Not a valid backup object.'};
