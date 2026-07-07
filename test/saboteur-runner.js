@@ -966,7 +966,7 @@ const MUTATIONS = [
 
   // ── Chunk 9 (per-account server-side auth) ──
   { id: 'S-214', file: 'index.html',
-    find: "const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: this._LVERIFY_ITERS, hash: 'SHA-256' }, key, 256);",
+    find: "const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: n, hash: 'SHA-256' }, key, 256);",
     repl: "const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 1, hash: 'SHA-256' }, key, 256);",
     note: "Chunk 9: the offline verifier drops to 1 PBKDF2 iteration -> a stolen device/backup verifier becomes trivially brute-forceable (defeats the >=100k-iter protection)" },
   { id: 'S-215', file: 'index.html',
