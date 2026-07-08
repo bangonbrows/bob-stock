@@ -363,6 +363,42 @@ const DB = {
   },
 
   /**
+   * Chunk 10 (store isolation) — PURGE local per-store data down to the given scope.
+   * Drops every movement row whose store is OUTSIDE the scope set, then durably rewrites all tables.
+   * Called by Sync.pull() when the server-echoed scope shrinks/changes, so out-of-scope data a device
+   * synced earlier (under a wider scope) can never linger locally (framework P-13 residual leak, D10-3).
+   *
+   * scopeArr: array of allowed store slugs, or ['*'] = see everything (no purge). Reference/catalogue
+   * tables (products, stores, users, categories) are SHARED and never purged. Transfers + record-steps use
+   * EITHER-END retention (a row touching an in-scope store on any end is kept) so an incoming transfer from
+   * an out-of-scope store stays visible — mirrors the server's either-end read rule.
+   * AWAITABLE — returns true only when the pared-down dataset is durably persisted.
+   */
+  async purgeToScope(scopeArr) {
+    if (!this._cache) return false;
+    const scope = Array.isArray(scopeArr) ? scopeArr : [];
+    if (scope.includes('*')) return true;                       // sees all — nothing to purge
+    const allow = new Set(scope);
+    const inScope = (v) => v != null && allow.has(v);
+    const d = this._cache;
+    const before = (d.transactions || []).length;
+    // ledger + single-store movement tables: keep storeId ∈ scope
+    d.transactions        = (d.transactions || []).filter(t => inScope(t && t.storeId));
+    d.deletedTransactions = (d.deletedTransactions || []).filter(t => inScope(t && t.storeId));
+    d.stockTakes          = (d.stockTakes || []).filter(t => inScope(t && t.storeId));
+    d.deliveries          = (d.deliveries || []).filter(t => inScope(t && t.storeId));
+    d.thresholds          = (d.thresholds || []).filter(t => inScope(t && t.storeId));
+    // two-ended rows: keep if EITHER end is in scope (incoming transfers stay receivable)
+    d.transfers   = (d.transfers || []).filter(t => t && (inScope(t.fromStoreId) || inScope(t.toStoreId)));
+    d.recordSteps = (d.recordSteps || []).filter(s => s && (inScope(s.ownerStoreId) || inScope(s.fromStoreId) || inScope(s.toStoreId)));
+    // costHistory is product-level corporate cost (Chunk-6 gated), not per-store movement — left intact.
+    const ok = await _persistAllToDexie(d);                     // durable full rewrite (awaited)
+    if (ok && typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+    console.log(`[DB] purgeToScope(${JSON.stringify(scope)}): transactions ${before} -> ${(d.transactions || []).length}, durable=${ok}`);
+    return ok;
+  },
+
+  /**
    * SYNCHRONOUS on the surface.
    * Bumps version, persists ONLY reference data to Dexie (fast).
    * Append-only tables (transactions, transfers, deletedTransactions)

@@ -1418,6 +1418,7 @@ const Sync = {
       let allItems = [];
       let keepGoing = true;
       let frozenMaxId = null;  // C1: snapshot ceiling — server-frozen on first page, echoed after
+      let scopeChecked = false;  // Chunk 10: reconcile the server-echoed store scope once, on the first page
 
       // ID-cursor pagination (threshold-safe at any scale). Start from (lastSyncId - lookback) so
       // async-committed rows from last cycle are re-seen (C2). cursorId advances to the max ID seen
@@ -1453,6 +1454,14 @@ const Sync = {
 
         const remote = await resp.json();
         const items = (remote && Array.isArray(remote.items)) ? remote.items : [];
+
+        // Chunk 10 (store isolation): the server echoes this device's effective store scope. If it changed
+        // since last sync, purge out-of-scope local rows and re-bootstrap from a clean cursor (D10-3), then
+        // abort this cycle — the next pull re-fetches the in-scope set from scratch. Runs once, on page 1.
+        if (!scopeChecked) {
+          scopeChecked = true;
+          if (await this._reconcileScope(remote.scope)) return;
+        }
 
         // C1: capture the frozen ceiling from the first page response
         if (frozenMaxId == null && remote.maxId != null) {
@@ -1658,6 +1667,41 @@ const Sync = {
       this._syncLock = false;
       this._drainSyncQueue();  // Wave L2r1 (GPT P2): run a manual/reconnect cycle that collided with this raw pull
     }
+  },
+
+  // ─── Chunk 10 — store-scope reconciliation ──────────────────────────────────────────
+  // The pull LA echoes `scope` = this device's effective store set (['*'] = sees all). When it differs from
+  // the last-seen scope, the device may be holding rows it's no longer entitled to (a wider scope was
+  // narrowed, or scope enforcement just switched on). Purge those rows and reset the pull cursor so the
+  // in-scope set re-pulls cleanly. Returns true if the caller should ABORT this cycle (scope changed).
+  // Returns false when the server sent no scope (older LA — backward compatible) or the scope is unchanged.
+  async _reconcileScope(scopeArr) {
+    if (!Array.isArray(scopeArr)) return false;               // server didn't echo scope — no-op
+    const sig = JSON.stringify([...scopeArr].sort());
+    let prev = null; try { prev = localStorage.getItem('bob_scope_sig'); } catch (e) {}
+    if (sig === prev) return false;                            // scope unchanged — normal pull continues
+
+    // Scope changed (or first-ever sync). '*' = full access → nothing to purge, just record the signature.
+    if (!scopeArr.includes('*')) {
+      const ok = await DB.purgeToScope(scopeArr);
+      if (!ok) {
+        // durable purge failed — do NOT record the new sig or advance; retry next cycle (fail-closed)
+        console.error('[Sync] scope purge failed — leaving scope unreconciled, will retry.');
+        this._showStatus('Data may be stale — will retry', 'warning');
+        return true;
+      }
+      try { if (typeof Stock !== 'undefined' && Stock._scopeSnapshot) Stock._scopeSnapshot(scopeArr); } catch (e) {}
+      this._rerender();
+      this._notifyFollowers();
+    }
+    // Re-bootstrap BOTH cursors (ledger + record-steps) so in-scope rows below the old cursor re-pull fresh.
+    this._lastSyncId = 0;
+    this._lastStepSyncId = 0;
+    try { localStorage.setItem('bob_last_sp_id', '0'); } catch (e) {}
+    try { localStorage.setItem('bob_last_step_sp_id', '0'); } catch (e) {}
+    try { localStorage.setItem('bob_scope_sig', sig); } catch (e) {}
+    console.log('[Sync] store scope changed → purged out-of-scope data + cursor reset. New scope:', sig);
+    return true;                                               // abort this cycle; next pull re-bootstraps
   },
 
   // ─── Azure Chunk 4 — record-steps push/pull (parallel stream to the ledger) ──────────

@@ -51,6 +51,27 @@ DEFINE a new account type with its own capability set. So roles become DATA-DRIV
 - **Existing franchisee acquires ANOTHER store** → that store is added to the SAME franchisee's scope under the
   SAME franchise HO (franchisee scope = a growing set of stores, one HO).
 
+### D. SUDO POLICY — "which actions require the Director's password" (Kunal 2026-07-07)
+A DISTINCT axis from A-C: A/B/C decide whether an account CAN do an action; this decides, for actions a
+Director CAN do, WHICH ones re-prompt for the password (the D9-6 sudo second-factor / walk-away protection).
+- A Director-set list of app actions, each with a checkbox "requires my password": e.g. stock in/out = OFF,
+  change settings = ON, add store = ON, add staff/user = ON, publish catalogue = ON, run archive = ON,
+  backup/restore = ON, edit pricing/cost = ON, ... (extensible, same spirit as the capability list).
+- Replaces the current HARD-CODED sudo set (publish/archive/user-admin/backup, D9-6) with this editable policy;
+  those become the DEFAULTS the Director can add to / remove from.
+- **Security FLOOR (must-always-require-password, NOT unable to be unchecked):** editing this sudo policy
+  itself + Director add/remove/role-change. Otherwise someone on an unlocked device weakens the lock on the
+  lock. Flag at design.
+- **Server interaction:** for cloud-enforced actions (publish/archive/user-admin), "no password" = the client
+  uses the logged-in SESSION proof instead of a fresh 5-min SUDO proof — still authenticated, just no re-type.
+  So the gated LAs must accept EITHER a session or a sudo proof for an action whose policy is "no password",
+  and REQUIRE a sudo proof when the policy is "password". Purely-local actions (stock in/out) have no server
+  gate — the toggle is client-only convenience there. The policy itself is published/gated like the access
+  policy so every device (and the LAs) agree on it.
+- Scope: is it a GLOBAL business policy (one setting all Directors share) or PER-Director-account? Kunal said
+  "a setting in Director's account" — CONFIRM at design (global is simpler + safer; per-director allows Shahin
+  vs Kunal to differ). Leaning global.
+
 ### Interactions (why this is big + must be designed carefully)
 - **Subsumes Chunk 6 cost-privacy:** "see cost" / "see selling price" become toggles — generalising the
   hard-coded franchise→no-corporate-cost rule. Server cost-strip must honour the toggle, not just role.

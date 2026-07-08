@@ -1759,6 +1759,67 @@ async function runSmoke(repo) {
       const r = await page.evaluate(async () => { Auth._user = null; const d = DB.get(); d.users.push({ id: 'u_b221', username: 'userB221', name: 'B', role: 'staff', storeIds: [] }); await Auth._cacheLocalVerifier('userB221', 'b-pass-88'); Sync._userVerifyUrl = null; Sync._sessionProof = { proof: 'STALE-A', username: 'userA221', expiresAt: Date.now() + 1e6 }; const ok = await Auth.login('userB221', 'b-pass-88'); return { ok, cleared: Sync._sessionProof === null, actor: Sync._actorUsername() }; });
       rec('S-221', 'Chunk 9 (deep-audit): a fresh login clears any prior account session proof (no cross-account leak)', r.ok === true && r.cleared === true && r.actor === 'userB221', `loginOk=${r.ok} proofCleared=${r.cleared} actor=${r.actor} (clean: true/true/userB221)`); await ctx.close(); }
 
+    // ─── Chunk 10 — store isolation (client fold) ───────────────────────────────
+    // S-222: DB.purgeToScope drops out-of-scope ledger rows, keeps in-scope rows AND either-end transfers
+    // (a transfer touching an in-scope store on any end survives). Drives the LIVE durable purge.
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get();
+        d.transactions = [ { id:'t1', storeId:'karrinyup', productId:'P1', type:'in', qty:1 }, { id:'t2', storeId:'whitford', productId:'P1', type:'in', qty:1 }, { id:'t3', storeId:'ardross', productId:'P1', type:'in', qty:1 } ];
+        d.transfers = [ { id:'tr1', fromStoreId:'karrinyup', toStoreId:'ardross' }, { id:'tr2', fromStoreId:'whitford', toStoreId:'ardross' } ];
+        const ok = await DB.purgeToScope(['karrinyup']);
+        const dd = DB.get();
+        return { ok, stores: dd.transactions.map(t => t.storeId).sort(), transfers: dd.transfers.map(t => t.id).sort() };
+      });
+      rec('S-222', 'Chunk 10: purgeToScope drops out-of-scope ledger, keeps in-scope + either-end transfer', r.ok === true && JSON.stringify(r.stores) === JSON.stringify(['karrinyup']) && JSON.stringify(r.transfers) === JSON.stringify(['tr1']), `stores=${JSON.stringify(r.stores)} transfers=${JSON.stringify(r.transfers)} (clean: [karrinyup]/[tr1])`); await ctx.close(); }
+
+    // S-223: Sync._reconcileScope purges + resets BOTH cursors + records the sig on a scope change; no-ops when
+    // the scope is unchanged; treats '*' as a change with NO purge (widening to all-access).
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup', 'whitford'])); } catch(e){}
+        const d = DB.get(); d.transactions = [ { id:'a', storeId:'karrinyup', productId:'P1', type:'in', qty:1 }, { id:'b', storeId:'whitford', productId:'P1', type:'in', qty:1 } ];
+        Sync._lastSyncId = 500; Sync._lastStepSyncId = 300;
+        const changed = await Sync._reconcileScope(['karrinyup']);
+        const purged = DB.get().transactions.every(t => t.storeId === 'karrinyup');
+        const unchanged = await Sync._reconcileScope(['karrinyup']);
+        const star = await Sync._reconcileScope(['*']);
+        let sig = null; try { sig = localStorage.getItem('bob_scope_sig'); } catch(e){}
+        return { changed, purged, reset: Sync._lastSyncId === 0 && Sync._lastStepSyncId === 0, unchanged, star, sigIsStar: sig === JSON.stringify(['*']) };
+      });
+      rec('S-223', 'Chunk 10: _reconcileScope purges + resets cursors on change, no-ops when unchanged, star=change/no-purge', r.changed === true && r.purged === true && r.reset === true && r.unchanged === false && r.star === true && r.sigIsStar === true, `changed=${r.changed} purged=${r.purged} reset=${r.reset} unchanged=${r.unchanged} star=${r.star} sigStar=${r.sigIsStar}`); await ctx.close(); }
+
+    // S-224: Stock._adoptSnapshot seeds ONLY in-scope stores' opening balances (config path can't leak another
+    // store's balance into the local snapshot — AGY CRIT #7).
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup'])); } catch(e){}
+        Stock._adoptSnapshot(JSON.stringify({ version: 2, cutoffId: 100, stepCutoffTs: 0, balances: [ { storeId:'karrinyup', productId:'P1', balance:5 }, { storeId:'whitford', productId:'P1', balance:9 } ] }));
+        const bal = Stock._snapshot && Stock._snapshot.bal;
+        return { hasKar: !!(bal && bal.karrinyup), hasWht: !!(bal && bal.whitford) };
+      });
+      rec('S-224', 'Chunk 10: _adoptSnapshot seeds only in-scope stores opening balances', r.hasKar === true && r.hasWht === false, `hasKar=${r.hasKar} hasWht=${r.hasWht} (clean: true/false)`); await ctx.close(); }
+
+    // S-225: Stock._scopeSnapshot strips out-of-scope stores from an already-adopted snapshot on a scope change.
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        Stock._snapshot = { version: 1, cutoffId: 1, stepCutoffTs: 0, bal: { karrinyup: { P1: 1 }, whitford: { P1: 2 }, ardross: { P1: 3 } } };
+        Stock._scopeSnapshot(['karrinyup', 'ardross']);
+        return { keys: Object.keys(Stock._snapshot.bal).sort() };
+      });
+      rec('S-225', 'Chunk 10: _scopeSnapshot strips out-of-scope stores from the adopted snapshot', JSON.stringify(r.keys) === JSON.stringify(['ardross', 'karrinyup']), `keys=${JSON.stringify(r.keys)} (clean: [ardross,karrinyup])`); await ctx.close(); }
+
+    // S-226: Pages._scrubBackupScope strips out-of-scope rows from an imported backup (either-end for transfers)
+    // so a full-ledger backup can't reintroduce another store's data (D10 §5b-9).
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup'])); } catch(e){}
+        const data = { transactions: [ { id:'x', storeId:'karrinyup' }, { id:'y', storeId:'whitford' } ], transfers: [ { id:'t1', fromStoreId:'whitford', toStoreId:'karrinyup' }, { id:'t2', fromStoreId:'whitford', toStoreId:'ardross' } ], recordSteps: [ { id:'s1', ownerStoreId:'whitford', toStoreId:'karrinyup' }, { id:'s2', ownerStoreId:'ardross' } ] };
+        Pages._scrubBackupScope(data);
+        return { txn: data.transactions.map(t => t.storeId), transfers: data.transfers.map(t => t.id), steps: data.recordSteps.map(s => s.id) };
+      });
+      rec('S-226', 'Chunk 10: _scrubBackupScope strips out-of-scope backup rows (either-end kept)', JSON.stringify(r.txn) === JSON.stringify(['karrinyup']) && JSON.stringify(r.transfers) === JSON.stringify(['t1']) && JSON.stringify(r.steps) === JSON.stringify(['s1']), `txn=${JSON.stringify(r.txn)} transfers=${JSON.stringify(r.transfers)} steps=${JSON.stringify(r.steps)}`); await ctx.close(); }
+
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;

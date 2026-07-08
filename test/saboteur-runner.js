@@ -997,6 +997,28 @@ const MUTATIONS = [
     find: "if (typeof Sync !== 'undefined' && Sync.clearPersonProofs) Sync.clearPersonProofs();\n    let serverRole = null, usedServer = false;",
     repl: "let serverRole = null, usedServer = false;",
     note: "Chunk 9 (deep-audit): login stops clearing the prior session proof -> an offline login as user B inherits user A's in-memory proof (cross-account proof leak; _actorUsername/_withPerson mis-bind to A)" },
+
+  // ─── Chunk 10 — store isolation (client fold) ───────────────────────────────
+  { id: 'S-222', file: 'db.js',
+    find: "d.transactions        = (d.transactions || []).filter(t => inScope(t && t.storeId));",
+    repl: "d.transactions        = (d.transactions || []);",
+    note: "Chunk 10: purgeToScope stops filtering the ledger -> out-of-scope store rows the device synced under a wider scope linger locally (P-13 residual leak)" },
+  { id: 'S-223', file: 'sync.js',
+    find: "if (sig === prev) return false;                            // scope unchanged — normal pull continues",
+    repl: "if (true) return false;",
+    note: "Chunk 10: _reconcileScope never detects a scope change -> a narrowed scope never purges/re-bootstraps; the device keeps serving out-of-scope local data" },
+  { id: 'S-224', file: 'index.html',
+    find: "if (!this._scopeAllows(b.storeId)) continue;  // Chunk 10: never seed an out-of-scope store's opening balance",
+    repl: "if (false) continue;",
+    note: "Chunk 10: _adoptSnapshot stops skipping out-of-scope stores -> the config-published stock_snapshot seeds another store's opening balance locally (AGY CRIT #7)" },
+  { id: 'S-225', file: 'index.html',
+    find: "for (const sid of Object.keys(this._snapshot.bal)) { if (allow.has(sid)) bal[sid] = this._snapshot.bal[sid]; }",
+    repl: "for (const sid of Object.keys(this._snapshot.bal)) { bal[sid] = this._snapshot.bal[sid]; }",
+    note: "Chunk 10: _scopeSnapshot keeps all stores -> a scope change never strips out-of-scope balances already in the adopted snapshot" },
+  { id: 'S-226', file: 'index.html',
+    find: "if(Array.isArray(data.transactions))        data.transactions=data.transactions.filter(t=>t&&inS(t.storeId));",
+    repl: "if(Array.isArray(data.transactions))        data.transactions=data.transactions;",
+    note: "Chunk 10: _scrubBackupScope stops filtering imported transactions -> a full-ledger backup reintroduces another store's rows (D10 §5b-9)" },
 ];
 
 function copyRepoTo(dir) {
