@@ -1,8 +1,18 @@
 # Chunk 10 — Wave Review: row-level store isolation
 
 Branch `azure-phase-5-8-server`. Status: **server-side core isolation + client fold BUILT + PROVEN on staging;
-217/217 sentinels PASS (incl. 5 new Chunk-10), saboteurs S-222..S-226 caught.** External code audit (GPT + AGY)
-still to come. Nothing deployed to `main`.
+GPT + AGY code audit DONE + all findings resolved; 219/219 sentinels PASS (incl. 7 Chunk-10), saboteurs
+S-222..S-228 caught.** Nothing deployed to `main`.
+
+## AUDIT (GPT + AGY, 2026-07-09) — verdict BLOCK, now RESOLVED
+Both auditors ran the harness (217/217) and reviewed the diff + deployed LA expressions. Findings + fixes are in
+`audit-artifacts/CHUNK10-AUDIT-RESPONSE.md`. Summary: **1 CONFIRMED HIGH** (wildcard `*` smuggling via substring
+match → fixed to exact parsed-array membership, fail-closed on malformed, re-proven live), **1 CONFIRMED
+CRITICAL** (client failed OPEN before first scope echo → `Stock._effectiveScope` falls back to the logged-in
+account's stores, fail-closed on unknown; S-227), **1 CONFIRMED MED** (purge mutated cache before durable persist
++ no fail-closed → persist-first-swap-on-success + `bob_scope_purge_pending` privacy lock blocks backup export;
+S-228), **1 LOW** (OUT_OF_SCOPE_STORE friendly banner), and **1 FALSE ALARM** (GPT#2 "missing FromStoreId" was a
+truncated audit artifact — the deployed LA has all three either-end branches; proven + artifact regenerated).
 
 ## What Chunk 10 fixes (plain English)
 Before: every store device downloaded the WHOLE company ledger and the UI just hid other stores — a franchisee

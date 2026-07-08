@@ -1209,18 +1209,27 @@ const Stock = {
     return true;
   },
 
-  // Chunk 10 (store isolation) — does the device's current store scope allow this store? Reads the scope the
-  // pull LA echoed (persisted by Sync._reconcileScope). Fail-OPEN when no scope is known yet (the server still
-  // scopes every pull; this is defence-in-depth for the snapshot, which the config path could otherwise seed
-  // with out-of-scope opening balances — AGY CRIT #7).
-  _scopeAllows(storeId) {
+  // Chunk 10 (store isolation) — the device's effective store scope. Prefers the scope the pull LA last echoed
+  // (persisted as bob_scope_sig by Sync._reconcileScope); BEFORE the first pull it falls back to the logged-in
+  // ACCOUNT's own stores so we never fail open (audit GPT#3 / AGY-10-C1). Director/HO = ['*'] (all). Returns
+  // null only when there is no echoed scope AND nobody is logged in — callers then fail CLOSED.
+  _effectiveScope() {
+    try { const raw = localStorage.getItem('bob_scope_sig'); if (raw) { const s = JSON.parse(raw); if (Array.isArray(s)) return s; } } catch (e) {}
     try {
-      const raw = localStorage.getItem('bob_scope_sig');
-      if (!raw) return true;
-      const scope = JSON.parse(raw);
-      if (!Array.isArray(scope) || scope.includes('*')) return true;
-      return scope.includes(storeId);
-    } catch (e) { return true; }
+      if (typeof Auth !== 'undefined' && Auth.user && Auth.user()) {
+        if ((Auth.isHO && Auth.isHO()) || (Auth.is && Auth.is('director'))) return ['*'];
+        const ids = (Auth.storeIds && Auth.storeIds()) || [];
+        return Array.isArray(ids) ? ids.slice() : [];
+      }
+    } catch (e) {}
+    return null;
+  },
+  // Does the effective scope allow this store? Fail-CLOSED: unknown scope (not logged in, no echo) -> false.
+  _scopeAllows(storeId) {
+    const scope = this._effectiveScope();
+    if (scope === null) return false;
+    if (scope.includes('*')) return true;
+    return scope.includes(storeId);
   },
 
   // Chunk 10 — strip out-of-scope stores from an already-adopted snapshot (called on a scope change). '*' or
@@ -3703,6 +3712,10 @@ const Pages = {
     return o;
   },
   async _exportBackup() {
+    // Chunk 10 (audit GPT#4): if a store-scope purge is still pending (a prior purge failed to persist durably),
+    // the local cache may still hold out-of-scope rows — block the whole-DB export until the device reconciles.
+    let _pp=false; try{ _pp=(typeof Sync!=='undefined'&&Sync._scopePurgePending)||localStorage.getItem('bob_scope_purge_pending')==='1'; }catch(e){}
+    if(_pp){ UI.toast('Backup is paused while the app finishes a store-scope update. Sync once more, then try again.','error'); return; }
     // Chunk 9 (AGY-9-4): a backup is the whole database — gate it behind the sudo re-prompt like publish/archive.
     const _sp=await this._sudoPrompt('backup','download a full backup'); if(_sp===null)return;
     const clean=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get()))));  // SA-I-F1: slim actors; C1: + strip reusable session/config material
@@ -3780,15 +3793,16 @@ const Pages = {
     delete data._meta;
     return {ok:true,data};
   },
-  // Chunk 10 (store isolation, D10 §5b-9): strip per-store rows outside this device's current store scope so
-  // an imported full-ledger backup can't smuggle another store's data back in. Fail-OPEN when scope is unknown
-  // ('*' or not yet synced) — the next server-scoped pull + Sync._reconcileScope purge is the backstop.
-  // Transfers + record-steps use EITHER-END retention (mirrors DB.purgeToScope + the server read rule).
+  // Chunk 10 (store isolation, D10 §5b-9): strip per-store rows outside this device's effective store scope so
+  // an imported full-ledger backup can't smuggle another store's data back in. Uses Stock._effectiveScope so it
+  // fails CLOSED even before the first pull (audit GPT#3 / AGY-10-C1): '*' keeps all; a store list filters;
+  // unknown scope (null) strips EVERY per-store row rather than trusting the file. Transfers + record-steps use
+  // EITHER-END retention (mirrors DB.purgeToScope + the server read rule).
   _scrubBackupScope(data){
     try{
-      const raw=localStorage.getItem('bob_scope_sig'); if(!raw) return;
-      const scope=JSON.parse(raw); if(!Array.isArray(scope)||scope.includes('*')) return;
-      const allow=new Set(scope); const inS=v=>v!=null&&allow.has(v);
+      const scope=(typeof Stock!=='undefined'&&Stock._effectiveScope)?Stock._effectiveScope():null;
+      if(Array.isArray(scope)&&scope.includes('*')) return;   // full access -> keep everything
+      const allow=new Set(Array.isArray(scope)?scope:[]); const inS=v=>v!=null&&allow.has(v);  // null -> ∅ -> strip all
       if(Array.isArray(data.transactions))        data.transactions=data.transactions.filter(t=>t&&inS(t.storeId));
       if(Array.isArray(data.deletedTransactions)) data.deletedTransactions=data.deletedTransactions.filter(t=>t&&inS(t.storeId));
       if(Array.isArray(data.stockTakes))          data.stockTakes=data.stockTakes.filter(t=>t&&inS(t.storeId));

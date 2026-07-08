@@ -1220,6 +1220,10 @@ const Sync = {
             _rejMarked = await DB.markTransactionsRejected(_rejMap);
             console.warn('[Sync] Server REJECTED ' + _rejRows.length + ' row(s): ' + _rejRows.map(r => r.TransactionId + '=' + (r.reasonCode || r.reason || '?')).join(', '));
             try { if (typeof Diag !== 'undefined') Diag.log('sync', 'server-rejected ' + _rejRows.length + ' rows: ' + _rejRows.map(r => r.TransactionId + ':' + (r.reasonCode || '')).join(',')); } catch (e) {}
+            // Chunk 10 (audit AGY-C3): give OUT_OF_SCOPE_STORE a plain-English banner instead of a generic reject.
+            if (_rejRows.some(r => (r.reasonCode || '') === 'OUT_OF_SCOPE_STORE')) {
+              this._showStatus('Some entries were for a store this device isn’t set up to manage and weren’t saved. Check this device’s store setup.', 'warning', 0);
+            }
           }
 
           // (3) COVERAGE (GPT P2 r1): every sent row must map to exactly ONE outcome. Count any sent row that
@@ -1685,15 +1689,22 @@ const Sync = {
     if (!scopeArr.includes('*')) {
       const ok = await DB.purgeToScope(scopeArr);
       if (!ok) {
-        // durable purge failed — do NOT record the new sig or advance; retry next cycle (fail-closed)
-        console.error('[Sync] scope purge failed — leaving scope unreconciled, will retry.');
-        this._showStatus('Data may be stale — will retry', 'warning');
+        // durable purge failed — the device may still hold out-of-scope rows. FAIL CLOSED: raise a privacy lock
+        // (blocks backup export, warns) and do NOT record the new sig, so every later cycle re-attempts the purge
+        // until it durably succeeds (audit GPT#4).
+        this._scopePurgePending = true;
+        try { localStorage.setItem('bob_scope_purge_pending', '1'); } catch (e) {}
+        console.error('[Sync] scope purge failed — privacy lock raised, will retry every cycle.');
+        this._showStatus('Finishing a store-scope update — some actions are paused until it completes', 'warning', 0);
         return true;
       }
       try { if (typeof Stock !== 'undefined' && Stock._scopeSnapshot) Stock._scopeSnapshot(scopeArr); } catch (e) {}
       this._rerender();
       this._notifyFollowers();
     }
+    // purge succeeded (or '*' = no purge needed) — clear any privacy lock from a prior failed attempt
+    this._scopePurgePending = false;
+    try { localStorage.removeItem('bob_scope_purge_pending'); } catch (e) {}
     // Re-bootstrap BOTH cursors (ledger + record-steps) so in-scope rows below the old cursor re-pull fresh.
     this._lastSyncId = 0;
     this._lastStepSyncId = 0;

@@ -380,22 +380,28 @@ const DB = {
     if (scope.includes('*')) return true;                       // sees all — nothing to purge
     const allow = new Set(scope);
     const inScope = (v) => v != null && allow.has(v);
-    const d = this._cache;
-    const before = (d.transactions || []).length;
-    // ledger + single-store movement tables: keep storeId ∈ scope
-    d.transactions        = (d.transactions || []).filter(t => inScope(t && t.storeId));
-    d.deletedTransactions = (d.deletedTransactions || []).filter(t => inScope(t && t.storeId));
-    d.stockTakes          = (d.stockTakes || []).filter(t => inScope(t && t.storeId));
-    d.deliveries          = (d.deliveries || []).filter(t => inScope(t && t.storeId));
-    d.thresholds          = (d.thresholds || []).filter(t => inScope(t && t.storeId));
+    const c = this._cache;
+    const before = (c.transactions || []).length;
+    // Audit fix (GPT#4): build a FILTERED COPY and persist it durably BEFORE swapping the live cache — a persist
+    // failure must not leave the in-memory cache pared down while disk still holds the out-of-scope rows (which
+    // would then reappear on the next reload). On failure the cache is untouched and the caller keeps the device
+    // unreconciled (Sync._reconcileScope holds the scope-purge-pending lock until a durable purge succeeds).
+    const nd = Object.assign({}, c);
+    nd.transactions        = (c.transactions || []).filter(t => inScope(t && t.storeId));
+    nd.deletedTransactions = (c.deletedTransactions || []).filter(t => inScope(t && t.storeId));
+    nd.stockTakes          = (c.stockTakes || []).filter(t => inScope(t && t.storeId));
+    nd.deliveries          = (c.deliveries || []).filter(t => inScope(t && t.storeId));
+    nd.thresholds          = (c.thresholds || []).filter(t => inScope(t && t.storeId));
     // two-ended rows: keep if EITHER end is in scope (incoming transfers stay receivable)
-    d.transfers   = (d.transfers || []).filter(t => t && (inScope(t.fromStoreId) || inScope(t.toStoreId)));
-    d.recordSteps = (d.recordSteps || []).filter(s => s && (inScope(s.ownerStoreId) || inScope(s.fromStoreId) || inScope(s.toStoreId)));
+    nd.transfers   = (c.transfers || []).filter(t => t && (inScope(t.fromStoreId) || inScope(t.toStoreId)));
+    nd.recordSteps = (c.recordSteps || []).filter(s => s && (inScope(s.ownerStoreId) || inScope(s.fromStoreId) || inScope(s.toStoreId)));
     // costHistory is product-level corporate cost (Chunk-6 gated), not per-store movement — left intact.
-    const ok = await _persistAllToDexie(d);                     // durable full rewrite (awaited)
-    if (ok && typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
-    console.log(`[DB] purgeToScope(${JSON.stringify(scope)}): transactions ${before} -> ${(d.transactions || []).length}, durable=${ok}`);
-    return ok;
+    const ok = await _persistAllToDexie(nd);                    // durable FIRST
+    if (!ok) { console.error('[DB] purgeToScope: durable persist FAILED — cache left intact, device stays unreconciled'); return false; }
+    this._cache = nd;                                           // swap ONLY after disk is written
+    if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+    console.log(`[DB] purgeToScope(${JSON.stringify(scope)}): transactions ${before} -> ${(nd.transactions || []).length}, durable=true`);
+    return true;
   },
 
   /**

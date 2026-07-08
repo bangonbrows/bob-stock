@@ -1820,6 +1820,34 @@ async function runSmoke(repo) {
       });
       rec('S-226', 'Chunk 10: _scrubBackupScope strips out-of-scope backup rows (either-end kept)', JSON.stringify(r.txn) === JSON.stringify(['karrinyup']) && JSON.stringify(r.transfers) === JSON.stringify(['t1']) && JSON.stringify(r.steps) === JSON.stringify(['s1']), `txn=${JSON.stringify(r.txn)} transfers=${JSON.stringify(r.transfers)} steps=${JSON.stringify(r.steps)}`); await ctx.close(); }
 
+    // S-227: (audit GPT#3 / AGY-10-C1) with NO echoed scope, _scopeAllows must FAIL CLOSED for an unknown viewer
+    // and fall back to the LOGGED-IN ACCOUNT's own stores — never fail open. Director/HO = all.
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.removeItem('bob_scope_sig'); } catch (e) {}
+        Auth._user = null;
+        const noUser = Stock._scopeAllows('karrinyup');                 // unknown -> false (fail closed)
+        Auth._user = { id: 'u', username: 'k', role: 'staff', storeIds: ['karrinyup'] };
+        const own = Stock._scopeAllows('karrinyup'), other = Stock._scopeAllows('whitford');
+        Auth._user = { id: 'd', username: 'dir', role: 'director', storeIds: [] };
+        const dir = Stock._scopeAllows('whitford');
+        return { noUser, own, other, dir };
+      });
+      rec('S-227', 'Chunk 10 (audit): no-scope fails CLOSED; _scopeAllows falls back to the account stores', r.noUser === false && r.own === true && r.other === false && r.dir === true, `noUser=${r.noUser} own=${r.own} other=${r.other} dir=${r.dir} (clean: false/true/false/true)`); await ctx.close(); }
+
+    // S-228: (audit GPT#4) backup EXPORT is blocked while a scope purge is pending — must return BEFORE the sudo
+    // prompt (no whole-DB export can leak out-of-scope rows the failed purge left behind).
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_scope_purge_pending', '1'); } catch (e) {}
+        let sudoCalled = false; Pages._sudoPrompt = async () => { sudoCalled = true; return 'x'; };
+        let toasted = ''; const _t = UI.toast; UI.toast = (m) => { toasted = m; };
+        await Pages._exportBackup();
+        UI.toast = _t;
+        return { sudoCalled, blocked: /paused|scope update/i.test(toasted) };
+      });
+      rec('S-228', 'Chunk 10 (audit): backup export blocked while a scope purge is pending', r.sudoCalled === false && r.blocked === true, `sudoReached=${r.sudoCalled} blockedToast=${r.blocked} (clean: false/true)`); await ctx.close(); }
+
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;

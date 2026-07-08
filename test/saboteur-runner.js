@@ -1000,8 +1000,8 @@ const MUTATIONS = [
 
   // ─── Chunk 10 — store isolation (client fold) ───────────────────────────────
   { id: 'S-222', file: 'db.js',
-    find: "d.transactions        = (d.transactions || []).filter(t => inScope(t && t.storeId));",
-    repl: "d.transactions        = (d.transactions || []);",
+    find: "nd.transactions        = (c.transactions || []).filter(t => inScope(t && t.storeId));",
+    repl: "nd.transactions        = (c.transactions || []);",
     note: "Chunk 10: purgeToScope stops filtering the ledger -> out-of-scope store rows the device synced under a wider scope linger locally (P-13 residual leak)" },
   { id: 'S-223', file: 'sync.js',
     find: "if (sig === prev) return false;                            // scope unchanged — normal pull continues",
@@ -1019,6 +1019,14 @@ const MUTATIONS = [
     find: "if(Array.isArray(data.transactions))        data.transactions=data.transactions.filter(t=>t&&inS(t.storeId));",
     repl: "if(Array.isArray(data.transactions))        data.transactions=data.transactions;",
     note: "Chunk 10: _scrubBackupScope stops filtering imported transactions -> a full-ledger backup reintroduces another store's rows (D10 §5b-9)" },
+  { id: 'S-227', file: 'index.html',
+    find: "if (scope === null) return false;",
+    repl: "if (scope === null) return true;",
+    note: "Chunk 10 (audit GPT#3/AGY-C1): _scopeAllows reverts to FAIL-OPEN on unknown scope -> a device with no echoed scope seeds/keeps out-of-scope data before the first pull" },
+  { id: 'S-228', file: 'index.html',
+    find: "if(_pp){ UI.toast('Backup is paused while the app finishes a store-scope update. Sync once more, then try again.','error'); return; }",
+    repl: "if(false){ UI.toast('x','error'); return; }",
+    note: "Chunk 10 (audit GPT#4): the backup-export privacy lock is removed -> a device whose scope purge failed can still export the full out-of-scope ledger" },
 ];
 
 function copyRepoTo(dir) {
