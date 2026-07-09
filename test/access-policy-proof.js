@@ -41,18 +41,19 @@ const sudoApprove = VU.mintProof(SECRET, rowDir, 'approve', '__director', NOW).p
 
 console.log('== resolveCapability (SR-7 order) ==');
 ok('role default allows (director editCost)', AP.resolveCapability(POLICY, 'editCost', 'u-kunal', 'director', false).ok === true);
-ok('role default denies (staff stockTakeCount)', AP.resolveCapability(POLICY, 'stockTakeCount', 'u-boor', 'staff', false).ok === false);
-ok('PIN grant lifts staff transferReceive', AP.resolveCapability(POLICY, 'transferReceive', 'u-boor', 'staff', true).ok === true);
-ok('PIN grant lifts staff stockTakeCount', AP.resolveCapability(POLICY, 'stockTakeCount', 'u-boor', 'staff', true).ok === true);
-ok('PIN grant does NOT lift non-PIN caps (recordDelivery)', AP.resolveCapability(POLICY, 'recordDelivery', 'u-boor', 'staff', true).ok === false);
-const P_OVR = { ...POLICY, overrides: { 'u-boor': { transferReceive: false, editCost: true } } };
-ok('explicit override DENY beats PIN grant (SR-7, AGY R1)', AP.resolveCapability(P_OVR, 'transferReceive', 'u-boor', 'staff', true).ok === false);
-ok('explicit override ALLOW beats role deny', AP.resolveCapability(P_OVR, 'editCost', 'u-boor', 'staff', false).ok === true);
-ok('override for ANOTHER account is ignored', AP.resolveCapability(P_OVR, 'editCost', 'u-kunal2', 'staff', false).ok === false);
-ok('unknown capability denied (fail closed)', AP.resolveCapability(POLICY, 'launchMissiles', 'u-kunal', 'director', false).ok === false);
-ok('unknown role denied (fail closed)', AP.resolveCapability(POLICY, 'editCost', 'u-x', 'super_admin', false).ok === false);
-ok('no policy denied (SR-2 fail closed)', AP.resolveCapability(null, 'editCost', 'u-kunal', 'director', false).ok === false);
-ok('__proto__ capability denied', AP.resolveCapability(POLICY, '__proto__', 'u-kunal', 'director', false).ok === false);
+// AA-01: resolveCapability's 3rd arg is now USERNAME (overrides keyed by username on both sides).
+ok('role default denies (staff stockTakeCount)', AP.resolveCapability(POLICY, 'stockTakeCount', 'booragoon', 'staff', false).ok === false);
+ok('PIN grant lifts staff transferReceive', AP.resolveCapability(POLICY, 'transferReceive', 'booragoon', 'staff', true).ok === true);
+ok('PIN grant lifts staff stockTakeCount', AP.resolveCapability(POLICY, 'stockTakeCount', 'booragoon', 'staff', true).ok === true);
+ok('PIN grant does NOT lift non-PIN caps (recordDelivery)', AP.resolveCapability(POLICY, 'recordDelivery', 'booragoon', 'staff', true).ok === false);
+const P_OVR = { ...POLICY, overrides: { booragoon: { transferReceive: false, editCost: true } } };
+ok('explicit override DENY beats PIN grant (SR-7, AGY R1)', AP.resolveCapability(P_OVR, 'transferReceive', 'booragoon', 'staff', true).ok === false);
+ok('explicit override ALLOW beats role deny', AP.resolveCapability(P_OVR, 'editCost', 'booragoon', 'staff', false).ok === true);
+ok('override for ANOTHER account is ignored', AP.resolveCapability(P_OVR, 'editCost', 'someoneelse', 'staff', false).ok === false);
+ok('unknown capability denied (fail closed)', AP.resolveCapability(POLICY, 'launchMissiles', 'kunal', 'director', false).ok === false);
+ok('unknown role denied (fail closed)', AP.resolveCapability(POLICY, 'editCost', 'x', 'super_admin', false).ok === false);
+ok('no policy denied (SR-2 fail closed)', AP.resolveCapability(null, 'editCost', 'kunal', 'director', false).ok === false);
+ok('__proto__ capability denied', AP.resolveCapability(POLICY, '__proto__', 'kunal', 'director', false).ok === false);
 
 console.log('== sudoRequirement (D-AA-5 + SR-1 floor) ==');
 ok('mapped session => session', AP.sudoRequirement(POLICY, 'delivery') === 'session');
@@ -82,15 +83,17 @@ ok('pinPlain hashed server-side (64-hex, no plaintext)', mPin.ok && /^[0-9a-f]{6
 ok('bad pin format rejected', AP.policyMerge(PEPPER, { current: POLICY, proposed: good, pinPlain: 'abc' }, NOW).reason === 'BAD_PIN');
 ok('pinClear removes pin', AP.policyMerge(PEPPER, { current: mPin.blob, proposed: good, pinClear: true }, NOW).blob.pin === null);
 
-console.log('== validatePin (server-minted grant, matrix D5) ==');
+console.log('== validatePin (server-minted grant, matrix D5; AA-09 actorUsername contract) ==');
 const P_PIN = mPin.blob; // pin '4321', expires NOW+24h
-const g1 = AP.validatePin(PEPPER, SECRET, { pin: '4321', username: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW);
-ok('correct PIN mints a grant proof', g1.ok === true && typeof g1.proof === 'string');
+// AA-09: the acting account arrives as `actorUsername` (the client field). deviceContext is LA-supplied.
+const g1 = AP.validatePin(PEPPER, SECRET, { pin: '4321', actorUsername: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW);
+ok('AA-09: correct PIN via actorUsername mints a grant', g1.ok === true && typeof g1.proof === 'string');
+ok('AA-09: back-compat username field still works', AP.validatePin(PEPPER, SECRET, { pin: '4321', username: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW).ok === true);
 ok('grant expiry <= PIN expiry', g1.ok && g1.expiresAt <= Date.parse(P_PIN.pin.expiresAt));
-ok('wrong PIN rejected', AP.validatePin(PEPPER, SECRET, { pin: '9999', username: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW).ok === false);
-ok('expired PIN rejected', AP.validatePin(PEPPER, SECRET, { pin: '4321', username: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW + 25 * 3600 * 1000).ok === false);
-ok('deactivated account cannot PIN-elevate', AP.validatePin(PEPPER, SECRET, { pin: '4321', username: 'gone', deviceContext: 'x', policy: P_PIN, rows: ROWS }, NOW).ok === false);
-ok('no policy => no grant', AP.validatePin(PEPPER, SECRET, { pin: '4321', username: 'booragoon', deviceContext: 'booragoon', policy: null, rows: ROWS }, NOW).ok === false);
+ok('wrong PIN rejected', AP.validatePin(PEPPER, SECRET, { pin: '9999', actorUsername: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW).ok === false);
+ok('expired PIN rejected', AP.validatePin(PEPPER, SECRET, { pin: '4321', actorUsername: 'booragoon', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }, NOW + 25 * 3600 * 1000).ok === false);
+ok('deactivated account cannot PIN-elevate', AP.validatePin(PEPPER, SECRET, { pin: '4321', actorUsername: 'gone', deviceContext: 'x', policy: P_PIN, rows: ROWS }, NOW).ok === false);
+ok('no policy => no grant', AP.validatePin(PEPPER, SECRET, { pin: '4321', actorUsername: 'booragoon', deviceContext: 'booragoon', policy: null, rows: ROWS }, NOW).ok === false);
 const gv = VU.verifyProofBody(SECRET, { proof: g1.proof, expectedPurposes: ['pin-grant'], deviceContext: 'booragoon', rows: ROWS }, NOW);
 ok('minted grant verifies via verifyProofBody', gv.ok === true && gv.username === 'booragoon');
 ok('grant bound to device context (wrong dc fails)', VU.verifyProofBody(SECRET, { proof: g1.proof, expectedPurposes: ['pin-grant'], deviceContext: 'karrinyup', rows: ROWS }, NOW).ok === false);

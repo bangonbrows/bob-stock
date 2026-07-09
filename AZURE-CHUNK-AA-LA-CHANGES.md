@@ -90,9 +90,14 @@ changes touching `franchiseDiscount`/`price` ⇒ `editPricing`; supplier fields 
 rejects ITS rows via the existing `rejected[]`, the rest merge.
 
 ## 9. user-verify LA: new `pin` op
-`POST {auth, op:'pin', username, pin, deviceContext}` → device key gate → read UserCredentials rows +
-`access_policy` → `validatePin` → `{ok, proof, expiresAt}`. Wrong PIN counts toward the existing
-per-account failed-attempt counters (same If-Match pattern) so the 4-12-digit PIN can't be brute-forced.
+`POST {auth, op:'pin', pin, actorUsername}` → device key gate → read UserCredentials rows + `access_policy`
+→ `validatePin {pin, actorUsername, deviceContext:<LA-derived>, policy, rows}` → `{ok, proof, expiresAt}`.
+**AA-09 (contract):** the client (`Sync.pinUnlock`) sends `actorUsername` (NOT `username`) — the field name
+must match, or `validatePin` finds no row and every correct PIN fails closed. **AA-09 (security):**
+`deviceContext` is NOT a client field — the LA derives it from the VALIDATED device keys (`__director` for a
+Director key, else the verified `storeId`), exactly as the other gated LAs do; a client-asserted `dc` would
+let a grant be minted against a different device. Wrong PIN counts toward the existing per-account
+failed-attempt counters (same If-Match pattern) so the 4-12-digit PIN can't be brute-forced.
 
 ## 10. Chunk-8 archive LA (Director-gated run)
 No structural change; its sudo gate now honours the sudo map via `evaluateAccess {action:'archive'}`

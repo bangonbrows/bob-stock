@@ -1036,21 +1036,25 @@ function generateDemoTransactions() {
     this._policy = blob; return true;
   },
   policyVersion() { return this._policy ? (Number(this._policy.version) || 0) : 0; },
+  _RESERVED_CAP: { __proto__: 1, constructor: 1, prototype: 1 },  // AA-11: mirror accessPolicy.js RESERVED
   can(cap) {
     const u = this._user;
     if (!u || !cap) return false;
+    if (Object.prototype.hasOwnProperty.call(this._RESERVED_CAP, cap)) return false;      // AA-11: reserved cap names denied, same as the server
     const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const uname = String(u.username || '');                                               // AA-01: overrides key by USERNAME (the system join key on both sides); AA-14: normalise
+    const urole = String(u.role || '');
     const pol = this._policy;
     if (pol) {
       const ovs = pol.overrides;
-      if (ovs && typeof ovs === 'object' && hasOwn(ovs, u.id)) {
-        const ov = ovs[u.id];
+      if (uname && ovs && typeof ovs === 'object' && hasOwn(ovs, uname)) {
+        const ov = ovs[uname];
         if (ov && typeof ov === 'object' && hasOwn(ov, cap)) return ov[cap] === true;   // override is FINAL (SR-7) — beats the PIN
       }
       if (this._PIN_CAPS.includes(cap) && this.hasTempStockTake()) return true;         // PIN lifts a type-default deny only
       const roles = pol.roles;
-      if (roles && typeof roles === 'object' && hasOwn(roles, u.role)) {
-        const rd = roles[u.role];
+      if (roles && typeof roles === 'object' && hasOwn(roles, urole)) {
+        const rd = roles[urole];
         if (rd && typeof rd === 'object' && hasOwn(rd, cap)) return rd[cap] === true;
       }
       return false;                                                                      // fail closed under an adopted policy
@@ -4913,20 +4917,20 @@ const Pages = {
       <tbody>${capIds.map(c=>`<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:5px 6px">${UI.esc(this._AP_CAP_LABELS[c]||c)}</td>${roleIds.map(r=>{
         const locked=(r==='director'&&c==='editAccessPolicy');
         const on=draft.roles[r]&&draft.roles[r][c]===true;
-        return `<td style="text-align:center">${locked?'🔒':`<input type="checkbox" ${on?'checked':''} onchange="Pages._apToggleRole('${r}','${c}',this.checked)">`}</td>`;
+        return `<td style="text-align:center">${locked?'🔒':`<input type="checkbox" ${on?'checked':''} data-role="${UI.esc(r)}" data-cap="${UI.esc(c)}" onchange="Pages._apToggleRole(this.dataset.role,this.dataset.cap,this.checked)">`}</td>`;  // AA-10: keys via dataset, never raw into the handler
       }).join('')}</tr>`).join('')}</tbody></table></div>`;
-    // per-account overrides (D-AA-2)
+    // per-account overrides (D-AA-2) — AA-01: keyed by USERNAME
     const users=(d.users||[]).filter(u=>u&&u.username);
-    const ovRows=Object.entries(draft.overrides).flatMap(([uid,m])=>Object.entries(m||{}).map(([c,v])=>{
-      const u=users.find(x=>x.id===uid);
-      return `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:4px 6px">${UI.esc(u?(u.name||u.username):uid)}</td><td style="padding:4px 6px">${UI.esc(this._AP_CAP_LABELS[c]||c)}</td><td style="text-align:center">${v?'<span class="badge badge-green">ALWAYS ALLOWED</span>':'<span class="badge badge-red">ALWAYS BLOCKED</span>'}</td><td><button class="btn btn-sm btn-secondary" onclick="Pages._apRemoveOverride('${UI.esc(uid)}','${c}')">Remove</button></td></tr>`;
+    const ovRows=Object.entries(draft.overrides).flatMap(([uname,m])=>Object.entries(m||{}).map(([c,v])=>{
+      const u=users.find(x=>x.username===uname);
+      return `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:4px 6px">${UI.esc(u?(u.name||u.username):uname)}</td><td style="padding:4px 6px">${UI.esc(this._AP_CAP_LABELS[c]||c)}</td><td style="text-align:center">${v?'<span class="badge badge-green">ALWAYS ALLOWED</span>':'<span class="badge badge-red">ALWAYS BLOCKED</span>'}</td><td><button class="btn btn-sm btn-secondary" data-uname="${UI.esc(uname)}" data-cap="${UI.esc(c)}" onclick="Pages._apRemoveOverride(this.dataset.uname,this.dataset.cap)">Remove</button></td></tr>`;
     })).join('');
     const overrides = `<div style="margin-top:20px"><div style="font-weight:700;margin-bottom:6px">Per-account exceptions</div>
       <div style="font-size:.75rem;color:#6b7280;margin-bottom:8px">An exception is FINAL for that account — it beats the role default and the 24h PIN (e.g. tick Booragoon's store account + "Do stock takes" to exempt it from the PIN).</div>
       ${ovRows?`<div class="tbl-wrap"><table style="font-size:.78rem;width:100%"><thead><tr style="color:#6b7280"><th style="text-align:left;padding:4px 6px">Account</th><th style="text-align:left;padding:4px 6px">Capability</th><th>Rule</th><th></th></tr></thead><tbody>${ovRows}</tbody></table></div>`:'<div style="font-size:.75rem;color:#9ca3af">No exceptions set.</div>'}
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <select id="ap-ov-user" class="form-select" style="font-size:.78rem;max-width:200px">${users.map(u=>`<option value="${UI.esc(u.id)}">${UI.esc(u.name||u.username)} (${UI.esc(this._AP_ROLE_LABELS[u.role]||u.role)})</option>`).join('')}</select>
-        <select id="ap-ov-cap" class="form-select" style="font-size:.78rem;max-width:220px">${capIds.map(c=>`<option value="${c}">${UI.esc(this._AP_CAP_LABELS[c]||c)}</option>`).join('')}</select>
+        <select id="ap-ov-user" class="form-select" style="font-size:.78rem;max-width:200px">${users.map(u=>`<option value="${UI.esc(u.username)}">${UI.esc(u.name||u.username)} (${UI.esc(this._AP_ROLE_LABELS[u.role]||u.role)})</option>`).join('')}</select>
+        <select id="ap-ov-cap" class="form-select" style="font-size:.78rem;max-width:220px">${capIds.map(c=>`<option value="${UI.esc(c)}">${UI.esc(this._AP_CAP_LABELS[c]||c)}</option>`).join('')}</select>
         <select id="ap-ov-val" class="form-select" style="font-size:.78rem;max-width:150px"><option value="1">Always allow</option><option value="0">Always block</option></select>
         <button class="btn btn-sm btn-secondary" onclick="Pages._apAddOverride()">+ Add exception</button>
       </div></div>`;
@@ -4936,7 +4940,7 @@ const Pages = {
       <div style="font-size:.75rem;color:#6b7280;margin-bottom:8px">One shared setting for all Directors. 🔒 items always require the password — that can't be switched off (it protects the lock itself).</div>
       <div class="tbl-wrap"><table style="font-size:.78rem;width:100%"><tbody>${sudoKeys.map(k=>{
         const floor=this._AP_FLOOR.includes(k); const on=draft.sudo[k]!=='session';
-        return `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:5px 6px">${UI.esc(this._AP_SUDO_LABELS[k]||k)}</td><td style="text-align:center">${floor?'🔒 Always':`<input type="checkbox" ${on?'checked':''} onchange="Pages._apSetSudo('${k}',this.checked)">`}</td></tr>`;
+        return `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:5px 6px">${UI.esc(this._AP_SUDO_LABELS[k]||k)}</td><td style="text-align:center">${floor?'🔒 Always':`<input type="checkbox" ${on?'checked':''} data-act="${UI.esc(k)}" onchange="Pages._apSetSudo(this.dataset.act,this.checked)">`}</td></tr>`;  // AA-10: key via dataset
       }).join('')}</tbody></table></div></div>`;
     el.innerHTML=`<div class="page-header"><div class="page-title">Account Access</div><div class="page-sub">Edit what each account type can do, set per-account exceptions, and choose which actions re-ask for your password</div></div>
       ${banner}${matrix}${overrides}${sudo}
@@ -4950,13 +4954,13 @@ const Pages = {
   _apSetSudo(action,checked){ const d=this._apDraft; if(!d||this._AP_FLOOR.includes(action))return; d.sudo[action]=checked?'password':'session'; },
   _apAddOverride(){
     const d=this._apDraft; if(!d)return;
-    const uid=document.getElementById('ap-ov-user')?.value; const cap=document.getElementById('ap-ov-cap')?.value; const val=document.getElementById('ap-ov-val')?.value==='1';
-    if(!uid||!cap)return;
-    if(!d.overrides[uid])d.overrides[uid]={};
-    d.overrides[uid][cap]=val;
+    const uname=document.getElementById('ap-ov-user')?.value; const cap=document.getElementById('ap-ov-cap')?.value; const val=document.getElementById('ap-ov-val')?.value==='1';  // AA-01: key by username
+    if(!uname||!cap)return;
+    if(!d.overrides[uname])d.overrides[uname]={};
+    d.overrides[uname][cap]=val;
     this.dirSettings('access');
   },
-  _apRemoveOverride(uid,cap){ const d=this._apDraft; if(!d||!d.overrides[uid])return; delete d.overrides[uid][cap]; if(!Object.keys(d.overrides[uid]).length)delete d.overrides[uid]; this.dirSettings('access'); },
+  _apRemoveOverride(uname,cap){ const d=this._apDraft; if(!d||!d.overrides[uname])return; delete d.overrides[uname][cap]; if(!Object.keys(d.overrides[uname]).length)delete d.overrides[uname]; this.dirSettings('access'); },
   async _apPublish(){
     if(!Auth.can('editAccessPolicy')){UI.toast('Only a Director can publish access policy','error');return;}
     const draft=this._apDraft||this._apBuildDraft();

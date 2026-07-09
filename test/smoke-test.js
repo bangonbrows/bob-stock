@@ -1861,13 +1861,14 @@ async function runSmoke(repo) {
         Auth._tempStockTake = new Date(Date.now() + 3600000).toISOString();
         const pinLifts = Auth.can('transferReceive') && Auth.can('stockTakeCount');
         const pinNoLiftOther = Auth.can('recordDelivery');
-        Auth._policy.overrides = { u_boor: { transferReceive: false, recordDelivery: true } };
+        Auth._policy.overrides = { boor: { transferReceive: false, recordDelivery: true } };  // AA-01: keyed by USERNAME
         const ovDenyBeatsPin = Auth.can('transferReceive');
         const ovAllowBeatsRole = Auth.can('recordDelivery');
+        const ovByIdIgnored = (() => { Auth._policy.overrides = { u_boor: { recordDelivery: true } }; return Auth.can('recordDelivery'); })();  // AA-01: an id-keyed override must NOT bind (this is the exact bug)
         Auth._policy = null; Auth._tempStockTake = null;
-        return { deniedNoPin, pinLifts, pinNoLiftOther, ovDenyBeatsPin, ovAllowBeatsRole };
+        return { deniedNoPin, pinLifts, pinNoLiftOther, ovDenyBeatsPin, ovAllowBeatsRole, ovByIdIgnored };
       });
-      rec('S-229', 'AA: SR-7 order — override FINAL beats PIN; PIN lifts only its two caps', r.deniedNoPin === false && r.pinLifts === true && r.pinNoLiftOther === false && r.ovDenyBeatsPin === false && r.ovAllowBeatsRole === true, `noPin=${r.deniedNoPin} pin=${r.pinLifts} other=${r.pinNoLiftOther} ovDeny=${r.ovDenyBeatsPin} ovAllow=${r.ovAllowBeatsRole} (clean: false/true/false/false/true)`); await ctx.close(); }
+      rec('S-229', 'AA: SR-7 order — override(by username) FINAL beats PIN; id-keyed override ignored (AA-01)', r.deniedNoPin === false && r.pinLifts === true && r.pinNoLiftOther === false && r.ovDenyBeatsPin === false && r.ovAllowBeatsRole === true && r.ovByIdIgnored === false, `noPin=${r.deniedNoPin} pin=${r.pinLifts} other=${r.pinNoLiftOther} ovDeny=${r.ovDenyBeatsPin} ovAllow=${r.ovAllowBeatsRole} idIgnored=${r.ovByIdIgnored} (clean: f/t/f/f/t/f)`); await ctx.close(); }
 
     // S-230: PRE-ACTIVATION PARITY — with NO adopted policy the legacy seed governs exactly (staff receive
     // freely, staff stock-take blocked w/o grant, director sees cost, staff sees selling price).

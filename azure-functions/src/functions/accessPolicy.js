@@ -53,11 +53,13 @@ function toIso(v) {
 // ── The SR-7 resolver — ONE algorithm, mirrored verbatim in client Auth.can (parity sentinel) ──────────
 // Order: explicit per-account override (allow OR deny - FINAL) -> PIN grant (PIN_CAPS only, lifts a
 // type-default deny) -> role/type default. Unknown capability, unknown role, or no policy => DENY.
-function resolveCapability(policy, capability, userId, role, hasPinGrant) {
+// AA-01: overrides key by USERNAME (the join key on both sides — the client never learns UserId).
+function resolveCapability(policy, capability, username, role, hasPinGrant) {
   if (!policy || typeof policy !== 'object' || !capability || RESERVED.has(capability)) return { ok: false, reason: 'NO_POLICY' };
+  const uname = String(username || '');
   const ovs = policy.overrides;
-  if (ovs && typeof ovs === 'object' && hasOwn(ovs, userId)) {
-    const ov = ovs[userId];
+  if (uname && ovs && typeof ovs === 'object' && hasOwn(ovs, uname)) {
+    const ov = ovs[uname];
     if (ov && typeof ov === 'object' && hasOwn(ov, capability)) return { ok: ov[capability] === true, via: 'override' };
   }
   if (hasPinGrant === true && PIN_CAPS.includes(capability)) return { ok: true, via: 'pin' };
@@ -105,12 +107,10 @@ function evaluateAccess(pepper, proofSecret, body, nowMs) {
     hasPin = pv.ok === true && pv.username === v.username;
   }
 
-  // 4. Capability resolution (SR-7). No policy => FAIL CLOSED.
+  // 4. Capability resolution (SR-7). No policy => FAIL CLOSED. AA-01: resolve by username.
   if (capability) {
     if (!policy) return { ok: false, reason: 'NO_POLICY' };
-    const row = (Array.isArray(body.rows) ? body.rows : []).find(r => r && r.Username === v.username);
-    const userId = String((row && row.UserId) || '');
-    const r = resolveCapability(policy, capability, userId, v.role, hasPin);
+    const r = resolveCapability(policy, capability, v.username, v.role, hasPin);
     if (!r.ok) return { ok: false, reason: hasPin === false && PIN_CAPS.includes(capability) ? 'NEED_PIN' : (r.reason || 'DENIED') };
     return { ok: true, username: v.username, role: v.role, via: r.via };
   }
@@ -165,6 +165,9 @@ function policyMerge(pepper, body, nowMs) {
 }
 
 // ── validatePin ────────────────────────────────────────────────────────────────────────────────────────
+// AA-09: the acting account is read from `actorUsername` (the client field, consistent with every other
+// gated call — Sync._actorUsername). `deviceContext` MUST be supplied by the LA from the VALIDATED device
+// keys (never the client body) — the LA passes it in; this function just binds it into the grant.
 function validatePin(pepper, proofSecret, body, nowMs) {
   const pinEntry = typeof body.pin === 'string' ? body.pin : '';
   const deviceContext = typeof body.deviceContext === 'string' ? body.deviceContext : '';
@@ -183,7 +186,8 @@ function validatePin(pepper, proofSecret, body, nowMs) {
     if (!(computed.length === sh.length && crypto.timingSafeEqual(Buffer.from(computed, 'hex'), Buffer.from(sh.toLowerCase(), 'hex')))) return { ok: false };
   } catch (e) { return { ok: false }; }
   // the requesting ACCOUNT must itself be a live row (a deactivated store account can't PIN-elevate)
-  const row = rows.find(r => r && r.Username === (typeof body.username === 'string' ? body.username : ''));
+  const actor = typeof body.actorUsername === 'string' ? body.actorUsername : (typeof body.username === 'string' ? body.username : '');  // AA-09: prefer actorUsername; accept username for back-compat
+  const row = rows.find(r => r && r.Username === actor);
   if (!row || !rowUsable(row, nowIso)) return { ok: false };
   const expMs = Math.min(Date.parse(expIso), nowMs + 24 * 60 * 60 * 1000);
   const payload = {
