@@ -287,6 +287,25 @@ const Sync = {
   },
   lastPublished() { try { return JSON.parse(localStorage.getItem('bob_catalogue_last_published') || 'null'); } catch (e) { return null; } },
 
+  // AA-W4: publish a proposed access_policy to the gated write LA. FAIL CLOSED like publishCatalogue:
+  // when person-auth is live, no sudo proof = no network call (SR-1 — policy edits are always-password).
+  // The server (policyMerge) validates schema/floor and bumps the version; we never mint one locally.
+  async publishAccessPolicy(proposed, sudoProof, pinPlain, pinClear) {
+    if (!this._accessPolicyWriteUrl) return { ok: false, reason: 'no-endpoint' };
+    if (this._userVerifyUrl && (!sudoProof || sudoProof === '__no_person_auth__')) return { ok: false, reason: 'needSudo' };
+    const body = { proposed, actorUsername: this._actorUsername() };
+    if (sudoProof && sudoProof !== '__no_person_auth__') body.proof = sudoProof;
+    if (typeof pinPlain === 'string' && pinPlain) body.pinPlain = pinPlain;
+    if (pinClear === true) body.pinClear = true;
+    let resp;
+    try { resp = await fetch(this._accessPolicyWriteUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth(body)) }); }
+    catch (e) { return { ok: false, reason: 'offline' }; }
+    if (resp.status === 401) { this._handleUnauthorized('access-policy-write'); return { ok: false, reason: 'device' }; }
+    if (resp.status === 403) return { ok: false, reason: 'person' };
+    const r = await resp.json().catch(() => ({}));
+    return { ok: r.ok === true, version: r.version, reason: r.reason };
+  },
+
   // Is THIS device corporate (gets central cost) or a franchise store (keeps its own cost)? A Director device
   // (no store id) is corporate. A store device is corporate iff its store isFranchise !== true.
   _isCorporateDevice() {
@@ -415,6 +434,7 @@ const Sync = {
       this._archivePullUrl = config.archivePullUrl || null;  // Chunk 8
       this._userVerifyUrl = config.userVerifyUrl || null;  // Chunk 9
       this._userAdminUrl = config.userAdminUrl || null;  // Chunk 9
+      this._accessPolicyWriteUrl = config.accessPolicyWriteUrl || null;  // AA-W4
       this._configUrl = this.CONFIG_URL;
       this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
       this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
@@ -512,6 +532,7 @@ const Sync = {
         this._archivePullUrl = urls.archivePullUrl || null;  // Chunk 8 (absent = archive reports off; Director/HO on-demand)
         this._userVerifyUrl = urls.userVerifyUrl || null;  // Chunk 9 (absent = person-auth off; falls back to local-only login)
         this._userAdminUrl = urls.userAdminUrl || null;  // Chunk 9
+        this._accessPolicyWriteUrl = urls.accessPolicyWriteUrl || null;  // AA-W4 (absent = access-policy editing off)
         // Chunk 5 (D6 phase 1): the server advertises which endpoints will require keys.
         // If auth is coming and this device has no keys yet, tell the Director BEFORE the flag day.
         this._authRequired = urls.authRequired || null;
@@ -531,6 +552,7 @@ const Sync = {
           archivePullUrl: urls.archivePullUrl || null,  // Chunk 8
           userVerifyUrl: urls.userVerifyUrl || null,  // Chunk 9
           userAdminUrl: urls.userAdminUrl || null,  // Chunk 9
+          accessPolicyWriteUrl: urls.accessPolicyWriteUrl || null,  // AA-W4
           configUrl: this.CONFIG_URL
         }));
         this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();

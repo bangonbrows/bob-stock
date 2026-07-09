@@ -4833,6 +4833,7 @@ const Pages = {
       {id:'stores',     label:'Stores',              icon:'🏪'},
       {id:'categories', label:'Categories & Types',  icon:'🏷'},
       {id:'users',      label:'Users',               icon:'👥'},
+      ...(Auth.can('editAccessPolicy')?[{id:'access', label:'Account Access', icon:'🔑'}]:[]),  // AA-W4
       {id:'thresholds', label:'Thresholds',          icon:'⚠️'},
       {id:'pin',        label:'Stock Take PIN',      icon:'🔐'},
       {id:'suppliers',  label:'Suppliers',           icon:'🚚'},
@@ -4855,6 +4856,7 @@ const Pages = {
     else if(tab==='margins')    this._dirMargins('ds-tab-content');
     else if(tab==='data')       this._dirDataBackup('ds-tab-content');
     else if(tab==='cloudsync')  this._dirCloudSync('ds-tab-content');
+    else if(tab==='access')     this._dirAccessPolicy('ds-tab-content');  // AA-W4
     else if(tab==='pin'){
       const tcEl=document.getElementById('ds-tab-content');
       if(tcEl) tcEl.innerHTML=`<div class="page-header"><div class="page-title">Stock Take PIN</div><div class="page-sub">Manage access PIN for staff stock takes</div></div>${Pages._manageStockTakePinPanel()}`;
@@ -4868,6 +4870,106 @@ const Pages = {
     else if(tab==='thresholds') this.settingsThresholds();
     else if(tab==='users')      this.directorUsers();
   },
+  // ── AA-W4: Account Access screen (Director) — the UI over the access_policy matrix ─────────────────
+  // Renders from the ADOPTED policy (or the default seed pre-activation). Every publish goes through the
+  // 'access-policy' sudo prompt (SR-1 floor) to the gated write LA; the server (policyMerge) is the real
+  // validator — this screen is a convenience editor, never the gate (P-13).
+  _AP_CAP_LABELS: {
+    recordDelivery:'Record deliveries (warehouse intake)', editCost:'Edit cost prices', editPricing:'Edit pricing & franchise discounts',
+    stockTakeCount:'Do stock takes', stockTakeApprove:'Approve / reject stock takes', transferCreate:'Create transfers',
+    transferReceive:'Receive transfers', transferCancel:'Cancel transfers', resolveDiscrepancy:'Resolve transfer discrepancies',
+    manageUsers:'Manage users', editRefData:'Edit products & reference data', editSuppliers:'Edit suppliers',
+    viewReports:'View profit / margin reports', viewTransferHistory:'View transfer history', deleteMovement:'Delete logged movements',
+    seeCost:'See cost prices', seeSellingPrice:'See selling prices', seeArchive:'See older / archived data',
+    seeCharts:'See charts', seeComparativeCharts:'See store-comparison charts', editAccessPolicy:'Edit this access policy'
+  },
+  _AP_ROLE_LABELS: { staff:'Store account', store_manager:'Store manager', franchisee:'Franchisee', territory_manager:'Territory mgr', head_office:'Head office', director:'Director' },
+  _AP_SUDO_LABELS: { publish:'Publish catalogue', archive:'Run ledger archive', 'user-admin':'User management', backup:'Backup export / restore', approve:'Approve stock takes', resolve:'Resolve discrepancies', delivery:'Record deliveries', adjustment:'Stock adjustments', cancel:'Cancel transfers', 'access-policy':'Edit access policy' },
+  _AP_FLOOR: ['access-policy','user-admin'],   // mirrors accessPolicy.js FLOOR_ACTIONS — rendered locked
+  _apDraft: null,
+  _apBuildDraft() {
+    const src = (typeof Auth!=='undefined' && Auth._policy) || DB.get().accessPolicy || null;
+    const base = src ? JSON.parse(JSON.stringify({ roles: src.roles||{}, overrides: src.overrides||{}, sudo: src.sudo||{} })) : Auth.defaultPolicyBlob();
+    this._AP_FLOOR.forEach(k=>{ base.sudo[k]='password'; });
+    if(base.roles.director) base.roles.director.editAccessPolicy = true;   // mirror of the server DIRECTOR_LOCKOUT invariant
+    return base;
+  },
+  _dirAccessPolicy(containerId) {
+    const el=document.getElementById(containerId||'ds-tab-content'); if(!el) return;
+    if(!Auth.can('editAccessPolicy')){ el.innerHTML='<div class="page-sub">Only a Director can manage account access.</div>'; return; }
+    if(!this._apDraft) this._apDraft=this._apBuildDraft();
+    const draft=this._apDraft; const d=DB.get();
+    const active=!!((typeof Auth!=='undefined'&&Auth._policy)||d.accessPolicy);
+    const ver=active?((Auth._policy&&Auth._policy.version)||(d.accessPolicy&&d.accessPolicy.version)||'?'):null;
+    const roleIds=Object.keys(draft.roles);                                    // data-driven: custom roles render automatically
+    const capIds=[...new Set([...Object.keys(this._AP_CAP_LABELS), ...roleIds.flatMap(r=>Object.keys(draft.roles[r]||{}))])];
+    const banner = active
+      ? `<div style="font-size:.8rem;color:#065f46;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:8px 12px;margin-bottom:14px">✓ Access policy ACTIVE (v${UI.esc(String(ver))}) — the matrix below governs every account. Changes take effect when you publish.</div>`
+      : `<div style="font-size:.8rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:14px">⚠ Access policy NOT ACTIVE — built-in defaults govern. Publishing activates it (note: activation makes the basic store account need the 24h PIN to <strong>receive HO transfers</strong>, per your 2026-07-07 decision).</div>`;
+    // role matrix
+    const matrix = `<div class="tbl-wrap" style="max-height:420px;overflow:auto"><table style="font-size:.78rem;border-collapse:collapse;width:100%">
+      <thead><tr style="position:sticky;top:0;background:#fff"><th style="text-align:left;padding:6px">Capability</th>${roleIds.map(r=>`<th style="padding:6px;text-align:center">${UI.esc(this._AP_ROLE_LABELS[r]||r)}</th>`).join('')}</tr></thead>
+      <tbody>${capIds.map(c=>`<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:5px 6px">${UI.esc(this._AP_CAP_LABELS[c]||c)}</td>${roleIds.map(r=>{
+        const locked=(r==='director'&&c==='editAccessPolicy');
+        const on=draft.roles[r]&&draft.roles[r][c]===true;
+        return `<td style="text-align:center">${locked?'🔒':`<input type="checkbox" ${on?'checked':''} onchange="Pages._apToggleRole('${r}','${c}',this.checked)">`}</td>`;
+      }).join('')}</tr>`).join('')}</tbody></table></div>`;
+    // per-account overrides (D-AA-2)
+    const users=(d.users||[]).filter(u=>u&&u.username);
+    const ovRows=Object.entries(draft.overrides).flatMap(([uid,m])=>Object.entries(m||{}).map(([c,v])=>{
+      const u=users.find(x=>x.id===uid);
+      return `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:4px 6px">${UI.esc(u?(u.name||u.username):uid)}</td><td style="padding:4px 6px">${UI.esc(this._AP_CAP_LABELS[c]||c)}</td><td style="text-align:center">${v?'<span class="badge badge-green">ALWAYS ALLOWED</span>':'<span class="badge badge-red">ALWAYS BLOCKED</span>'}</td><td><button class="btn btn-sm btn-secondary" onclick="Pages._apRemoveOverride('${UI.esc(uid)}','${c}')">Remove</button></td></tr>`;
+    })).join('');
+    const overrides = `<div style="margin-top:20px"><div style="font-weight:700;margin-bottom:6px">Per-account exceptions</div>
+      <div style="font-size:.75rem;color:#6b7280;margin-bottom:8px">An exception is FINAL for that account — it beats the role default and the 24h PIN (e.g. tick Booragoon's store account + "Do stock takes" to exempt it from the PIN).</div>
+      ${ovRows?`<div class="tbl-wrap"><table style="font-size:.78rem;width:100%"><thead><tr style="color:#6b7280"><th style="text-align:left;padding:4px 6px">Account</th><th style="text-align:left;padding:4px 6px">Capability</th><th>Rule</th><th></th></tr></thead><tbody>${ovRows}</tbody></table></div>`:'<div style="font-size:.75rem;color:#9ca3af">No exceptions set.</div>'}
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <select id="ap-ov-user" class="form-select" style="font-size:.78rem;max-width:200px">${users.map(u=>`<option value="${UI.esc(u.id)}">${UI.esc(u.name||u.username)} (${UI.esc(this._AP_ROLE_LABELS[u.role]||u.role)})</option>`).join('')}</select>
+        <select id="ap-ov-cap" class="form-select" style="font-size:.78rem;max-width:220px">${capIds.map(c=>`<option value="${c}">${UI.esc(this._AP_CAP_LABELS[c]||c)}</option>`).join('')}</select>
+        <select id="ap-ov-val" class="form-select" style="font-size:.78rem;max-width:150px"><option value="1">Always allow</option><option value="0">Always block</option></select>
+        <button class="btn btn-sm btn-secondary" onclick="Pages._apAddOverride()">+ Add exception</button>
+      </div></div>`;
+    // sudo policy (D-AA-5)
+    const sudoKeys=[...new Set([...Object.keys(this._AP_SUDO_LABELS),...Object.keys(draft.sudo)])];
+    const sudo = `<div style="margin-top:20px"><div style="font-weight:700;margin-bottom:6px">Ask for my password again when…</div>
+      <div style="font-size:.75rem;color:#6b7280;margin-bottom:8px">One shared setting for all Directors. 🔒 items always require the password — that can't be switched off (it protects the lock itself).</div>
+      <div class="tbl-wrap"><table style="font-size:.78rem;width:100%"><tbody>${sudoKeys.map(k=>{
+        const floor=this._AP_FLOOR.includes(k); const on=draft.sudo[k]!=='session';
+        return `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:5px 6px">${UI.esc(this._AP_SUDO_LABELS[k]||k)}</td><td style="text-align:center">${floor?'🔒 Always':`<input type="checkbox" ${on?'checked':''} onchange="Pages._apSetSudo('${k}',this.checked)">`}</td></tr>`;
+      }).join('')}</tbody></table></div></div>`;
+    el.innerHTML=`<div class="page-header"><div class="page-title">Account Access</div><div class="page-sub">Edit what each account type can do, set per-account exceptions, and choose which actions re-ask for your password</div></div>
+      ${banner}${matrix}${overrides}${sudo}
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn btn-primary" onclick="Pages._apPublish()">${active?'Publish changes':'Activate access policy'}</button>
+        <button class="btn btn-secondary" onclick="Pages._apDraft=null;Pages.dirSettings('access')">Discard draft</button>
+      </div>
+      <div style="font-size:.72rem;color:#9ca3af;margin-top:8px">Publishing asks for your password (always) and applies to every device on its next sync. The server enforces this policy — the screen is just the editor.</div>`;
+  },
+  _apToggleRole(role,cap,checked){ const d=this._apDraft; if(!d||!d.roles[role])return; if(role==='director'&&cap==='editAccessPolicy'){return;} d.roles[role][cap]=!!checked; },
+  _apSetSudo(action,checked){ const d=this._apDraft; if(!d||this._AP_FLOOR.includes(action))return; d.sudo[action]=checked?'password':'session'; },
+  _apAddOverride(){
+    const d=this._apDraft; if(!d)return;
+    const uid=document.getElementById('ap-ov-user')?.value; const cap=document.getElementById('ap-ov-cap')?.value; const val=document.getElementById('ap-ov-val')?.value==='1';
+    if(!uid||!cap)return;
+    if(!d.overrides[uid])d.overrides[uid]={};
+    d.overrides[uid][cap]=val;
+    this.dirSettings('access');
+  },
+  _apRemoveOverride(uid,cap){ const d=this._apDraft; if(!d||!d.overrides[uid])return; delete d.overrides[uid][cap]; if(!Object.keys(d.overrides[uid]).length)delete d.overrides[uid]; this.dirSettings('access'); },
+  async _apPublish(){
+    if(!Auth.can('editAccessPolicy')){UI.toast('Only a Director can publish access policy','error');return;}
+    const draft=this._apDraft||this._apBuildDraft();
+    const proof=await this._sudoPrompt('access-policy','update account access');
+    if(proof===null)return;
+    UI.toast('Publishing access policy…','info');
+    const r=(typeof Sync!=='undefined'&&Sync.publishAccessPolicy)?await Sync.publishAccessPolicy(draft,proof):{ok:false,reason:'no-endpoint'};
+    if(r.ok){ this._apDraft=null; UI.toast(`Access policy published (v${r.version})`,'success'); try{await Sync._fetchRemoteConfig();}catch(e){} this.dirSettings('access'); }
+    else if(r.reason==='needSudo') UI.toast('Password confirmation is required to change access policy','error');
+    else if(r.reason==='person') UI.toast('The server refused: password confirmation failed or you lack access','error');
+    else if(r.reason==='no-endpoint') UI.toast('Access-policy endpoint not configured yet (server phase pending)','error');
+    else UI.toast('Publish failed: '+(r.reason||'server refused')+' — nothing was changed','error');
+  },
+
   // ── Director: Cost Management (variable pricing per shipment) ──
   directorCosts() {
     if(!Auth.can('viewReports')){navigateTo('log-movement');return;}
