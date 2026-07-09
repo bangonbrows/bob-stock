@@ -4,7 +4,16 @@ Branch `azure-phase-5-8-server`. Status: **server-side core isolation + client f
 GPT + AGY code audit DONE + all findings resolved; 219/219 sentinels PASS (incl. 7 Chunk-10), saboteurs
 S-222..S-228 caught.** Nothing deployed to `main`.
 
-## AUDIT (GPT + AGY, 2026-07-09) — verdict BLOCK, now RESOLVED
+## AUDIT round 2 (GPT re-audit 2026-07-09) — AGY PASS; GPT held BLOCK on OData injection → RESOLVED
+GPT's remaining HIGH: the read scope clause is built by string-replacement on StoreIds, so a valid-JSON member
+with a quote/paren could break out of the `StoreId eq '...'` literal and inject OData. Ground-truthed live first:
+every payload returned 502/0 rows (this SP rejects the crafted filter — fail-closed by accident), so NOT actually
+exploitable today — but the read path must not rely on the downstream parser. FIXED with a positive allowlist:
+strip JSON-structure + `[A-Za-z0-9_-]`; anything left (quote/paren/space/operator/`*`) → no-scope, never a clause.
+Applied to pull + recordsteps-pull + archive-pull. Re-proven live on all three: injection → **200/0 rows**
+(deterministic fail-closed); isolation 7/7; either-end 5/5; wildcard still closed. Server-only (no client change).
+
+## AUDIT round 1 (GPT + AGY, 2026-07-09) — verdict BLOCK, now RESOLVED
 Both auditors ran the harness (217/217) and reviewed the diff + deployed LA expressions. Findings + fixes are in
 `audit-artifacts/CHUNK10-AUDIT-RESPONSE.md`. Summary: **1 CONFIRMED HIGH** (wildcard `*` smuggling via substring
 match → fixed to exact parsed-array membership, fail-closed on malformed, re-proven live), **1 CONFIRMED
