@@ -1,10 +1,24 @@
 # Account Access Model — configurable permissions (SCOPE STUB — design WITH Kunal before building)
 
-**Status:** DESIGN DECISIONS LOCKED 2026-07-09 (Kunal + Claude design session) — see §Decisions below. SPEC
-REVIEW R1 DONE 2026-07-09 (Codex BLOCK ×8 + AGY, all findings triaged REAL) — adopted changes folded as
-§SR-1..SR-11 below; they GOVERN the build together with the Decisions. Next: Kunal reviews the fold → round 2
-with both auditors (convergence), then build + audit as its own chunk. Org-structure tools (§C) were SPLIT OUT
-to their own sibling chunk — see `AZURE-CHUNK-ORG-STRUCTURE.md` (D-AA-4). Originally captured 2026-07-07.
+**Status:** ✅ SPEC CONVERGED 2026-07-09 — BUILD-READY. Decisions D-AA-1..5 locked (Kunal); spec review R1
+(Codex BLOCK ×8 + AGY) folded as §SR-1..SR-11; **R2 verdicts: Codex PASS-with-notes + AGY all-R1-closed** —
+every R1 finding confirmed closed, R2 notes folded below (§R2) and into `AZURE-CHUNK-ORG-STRUCTURE.md`.
+Decisions + SR + R2 govern the build. Next: BUILD this chunk (on Kunal's go), per-wave audits as usual.
+Org-structure tools (§C) were SPLIT OUT to their own sibling chunk (D-AA-4). Originally captured 2026-07-07.
+
+## R2 NOTES (folded 2026-07-09 — the parts that land in THIS chunk)
+- **R2-1 (Codex) — a baseline cutoff/visibility record is REQUIRED for EVERY franchise store, not only
+  conversions.** Born-franchise stores get one at creation (= store creation date); EXISTING franchise stores
+  get one SEEDED as part of the end-of-phase cutover migration. SR-6's fail-closed rule stays the backstop
+  (no record ⇒ no pre-scope history served). Enforcement + cutover seeding = THIS chunk; the wizard setting
+  records going forward = the org chunk.
+- **R2-2 (AGY, acknowledged limitation)** — a fully OFFLINE device retains already-pulled sensitive data after
+  a revoke until it reconnects and sees the accessPolicyVersion bump (the SR-4 purge fires on reconnect;
+  SR-8's proof-binding blocks all server interaction meanwhile). Standard offline-PWA limitation, same family
+  as SR-11 — recorded so no audit mistakes it for a gap.
+- Codex R2-2/R2-3 + AGY's Tool-4/wizard gaps target the ORG chunk's design session — folded into
+  `AZURE-CHUNK-ORG-STRUCTURE.md` (ownership-ERA model, all-affected-credentials, franchisee-to-franchisee
+  sale).
 
 ## What Kunal wants
 A **screen where the Director edits account access levels** — a UI over the permission matrix — with:

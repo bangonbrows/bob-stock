@@ -42,7 +42,9 @@ Machinery underneath (invisible to the user, from the audited chunks):
   already ships in the Account Access chunk (SR-6).
 - New-franchisee path mints the office account with its capability set from the data-driven role matrix
   (Account Access chunk) — nothing hard-coded (SR from D-AA-3).
-- Existing-franchisee path bumps that franchisee's scopeVersion → their devices purge/re-pull per Chunk 10.
+- Every topology change bumps the scopeVersion of **ALL affected credentials** (store POS account, store
+  managers, franchise HO/office, ex-franchisee, any scoped account touched — not just the franchisee; R2
+  Codex-2) → their devices purge/re-pull per Chunk 10.
 - The whole wizard is Director-gated + sudo-floored (always-password, per SR-1/D-AA-5 floor) and all its writes
   are atomic per SR-9 (StoreIds + scopeVersion + policy defaults + cutoff together).
 - **Directors/HO retain FULL pre-conversion history visibility** — the cutoff is a franchisee-side visibility
@@ -55,12 +57,30 @@ session (not now). Likely the same wizard entered from the other direction (flip
 Questions to settle at design:
 - **Ex-franchisee's access:** the store leaves their scope (scopeVersion bump → their devices purge the store's
   data per Chunk 10). If it was their ONLY store, what happens to their office account — deactivate?
-- **Data continuity for HO:** HO/Directors already see everything, so the ledger just continues — confirm no
-  cutoff is needed in this direction (the curtain protected the FRANCHISEE from HO history, not the reverse;
-  franchise-era data is presumably fine for HO to see since HO could see it all along).
-- **Cost/pricing flags:** franchise discount / cost-strip stop applying from the buy-back date — where does
-  that date live?
+  **R2 (AGY): KUNAL DECISION NEEDED** — does the ex-franchisee keep READ access to their OWN era's records
+  (tax/accounting)? Chunk 10's scope is binary today; "historical-only window access" would be new machinery.
+  Alternative: hand them a data EXPORT at buy-back instead of live access (much simpler).
+- **HO cost basis (R2, AGY — the "no cutoff needed" assumption is WRONG for costing):** HO buying back the
+  remaining stock establishes a NEW corporate cost basis. Without a reverse marker, franchise-era costing
+  bleeds into HO's ongoing corporate ledger. Tool 4 likely needs a buy-back-date marker (snapshot/era
+  boundary) so HO's cost reporting for that store restarts cleanly — VISIBILITY needs no curtain (HO saw it
+  all along), but COSTING does need the boundary.
+- **Cost/pricing flags:** franchise discount / cost-strip stop applying from the buy-back date — same marker.
 - Same atomicity + sudo-floor rules as the forward direction (SR-9, SR-1).
+
+## R2 SPEC-REVIEW INPUTS for this chunk's design session (Codex R2-3 + AGY, 2026-07-09)
+- **OWNERSHIP-ERA model, not a single cutoff (Codex R2-3 — adopt as the working model).** A store carries an
+  OWNERSHIP HISTORY (era records: owner + start/end dates) rather than one takeover-cutoff field. Each scoped
+  account sees a store's rows only within its own era window(s). This is what makes re-franchising and resale
+  safe: a single cutoff breaks the moment a store changes hands TWICE (buy-back then re-franchise — the new
+  franchisee must not inherit the PRIOR franchisee's or HO's history). D10-9's forward cutoff becomes the
+  first era boundary, not a special case.
+- **Franchisee → franchisee SALE (AGY) — the wizard must handle a direct hand-off:** remove from Franchisee
+  A's scope + add to Franchisee B's scope + new era boundary so B sees nothing of A's history — one atomic
+  operation (SR-9). Add as a wizard path (or Tool 5) at design.
+- **Baseline era/cutoff record for EVERY franchise store (Codex R2-1):** born-franchise stores get one at
+  creation; existing franchise stores get one seeded at cutover (that seeding ships with the Account Access
+  chunk — see its §R2-1); this chunk's wizard maintains them from then on.
 
 ## Carried-in deferred item
 - **D10-9 — franchise-takeover opening-balance cost cutoff** (LOCKED by Kunal 2026-07-08, see
