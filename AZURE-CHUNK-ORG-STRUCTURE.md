@@ -48,9 +48,19 @@ Machinery underneath (invisible to the user, from the audited chunks):
 - **Directors/HO retain FULL pre-conversion history visibility** — the cutoff is a franchisee-side visibility
   curtain, NOT a deletion (Kunal confirmed understanding 2026-07-09).
 
-**Edge captured, NOT designed (decide later):** REVERSE conversion — a franchise store coming back under HO
-(buy-back). What happens to the franchisee-era data visibility, the office account, the cutoff? Park until a
-real case approaches.
+## Tool 4 — REVERSE conversion: franchise store comes back under HO (buy-back)
+**PROMOTED from parked edge to IN-SCOPE (Kunal 2026-07-09): this REALLY HAPPENED last year** (a franchised
+store came back under HO), so it's a recurring real scenario, not a hypothetical. Design at this chunk's design
+session (not now). Likely the same wizard entered from the other direction (flip type franchise → HO-operated).
+Questions to settle at design:
+- **Ex-franchisee's access:** the store leaves their scope (scopeVersion bump → their devices purge the store's
+  data per Chunk 10). If it was their ONLY store, what happens to their office account — deactivate?
+- **Data continuity for HO:** HO/Directors already see everything, so the ledger just continues — confirm no
+  cutoff is needed in this direction (the curtain protected the FRANCHISEE from HO history, not the reverse;
+  franchise-era data is presumably fine for HO to see since HO could see it all along).
+- **Cost/pricing flags:** franchise discount / cost-strip stop applying from the buy-back date — where does
+  that date live?
+- Same atomicity + sudo-floor rules as the forward direction (SR-9, SR-1).
 
 ## Carried-in deferred item
 - **D10-9 — franchise-takeover opening-balance cost cutoff** (LOCKED by Kunal 2026-07-08, see
