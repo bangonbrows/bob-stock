@@ -24,6 +24,34 @@ scope to them) — as opposed to the Account Access chunk, which changes what ac
 3. **Existing franchisee acquires ANOTHER store** — the store joins the SAME franchisee's scope under the SAME
    franchise HO (franchisee scope = a growing set of stores, one HO).
 
+## KUNAL'S WIZARD DESIGN (2026-07-09) — UNIFIES tools 1–3 into ONE guided flow (this governs the UI shape)
+One store-creation wizard, reused for conversion — instead of three separate tools:
+
+- **Step 1 — store details:** name, phone number, other details as wanted, and TYPE: **HO-operated** or
+  **franchise**.
+- **Step 2 (franchise only) — new or existing franchisee?**
+  - **NEW franchisee** → automatically creates their OFFICE + franchise HO account ALONG WITH the store, in the
+    same flow (one go — no separate "make an office" step).
+  - **EXISTING franchisee** → shows the list of existing franchisee accounts; picking one ASSIMILATES the store
+    into that franchisee's existing office/scope (growing store set, same HO).
+- **CONVERTING an existing store → franchise reuses the SAME screens** — enter the flow with the store's
+  details pre-filled, flip the type to franchise, then step 2 as above.
+
+Machinery underneath (invisible to the user, from the audited chunks):
+- Conversion path SETS the D10-9 takeover cutoff automatically (= conversion date); enforcement of the cutoff
+  already ships in the Account Access chunk (SR-6).
+- New-franchisee path mints the office account with its capability set from the data-driven role matrix
+  (Account Access chunk) — nothing hard-coded (SR from D-AA-3).
+- Existing-franchisee path bumps that franchisee's scopeVersion → their devices purge/re-pull per Chunk 10.
+- The whole wizard is Director-gated + sudo-floored (always-password, per SR-1/D-AA-5 floor) and all its writes
+  are atomic per SR-9 (StoreIds + scopeVersion + policy defaults + cutoff together).
+- **Directors/HO retain FULL pre-conversion history visibility** — the cutoff is a franchisee-side visibility
+  curtain, NOT a deletion (Kunal confirmed understanding 2026-07-09).
+
+**Edge captured, NOT designed (decide later):** REVERSE conversion — a franchise store coming back under HO
+(buy-back). What happens to the franchisee-era data visibility, the office account, the cutoff? Park until a
+real case approaches.
+
 ## Carried-in deferred item
 - **D10-9 — franchise-takeover opening-balance cost cutoff** (LOCKED by Kunal 2026-07-08, see
   `AZURE-CHUNK10-SCOPE.md` §D10-9): when a company store converts to a franchise, the new franchisee's cost
