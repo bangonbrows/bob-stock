@@ -3745,23 +3745,25 @@ const Pages = {
     const myIds=(isFran||isSL)?Auth.storeIds():null;
     const stores=myIds?d.stores.filter(s=>s.active&&myIds.includes(s.id)):d.stores.filter(s=>s.active&&(s.type!=='warehouse'||s.isFranchiseOffice));
     const showHO=isHO||!isFran;
-    const headers=['Product','Category','Sell Price',...stores.map(s=>s.name),...(showHO?['HO Warehouse']:[]),'Total Units'];
+    const seeSell=Auth.can('seeSellingPrice'); // AA-EXT-1: the CSV must honour the same seeSellingPrice gate as the on-screen table (AGY external finding) — else the toggle is inconsistent. Client-only view hint (price is public catalogue data; P-13).
+    const headers=['Product','Category',...(seeSell?['Sell Price']:[]),...stores.map(s=>s.name),...(showHO?['HO Warehouse']:[]),'Total Units'];
     const rows=d.products.filter(p=>p.active).sort((a,b)=>a.name.localeCompare(b.name)).map(p=>{
       const cat=d.categories.find(c=>c.id===p.catId)?.name||'';
       const storeQtys=stores.map(s=>Stock.dispQty(p.id,s.id));
       const hoQty=showHO?Stock.dispQty(p.id,'head_office'):0;
       const total=storeQtys.reduce((a,b)=>a+b,0)+(showHO?hoQty:0);
-      return[p.name,cat,p.price!=null?p.price.toFixed(2):'',...storeQtys,...(showHO?[hoQty]:[]),total];
+      return[p.name,cat,...(seeSell?[p.price!=null?p.price.toFixed(2):'']:[]),...storeQtys,...(showHO?[hoQty]:[]),total];
     });
     this._downloadCSV(`bob-stock-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
   },
   _exportProductsCSV() {
     const d=DB.get();
-    const headers=['ID','Product Name','Category','Type','Sell Price','Franchise Discount','Supplier','Contact','Lead Days'];
+    const seeSell=Auth.can('seeSellingPrice'); // AA-EXT-1: honour the seeSellingPrice gate in the products CSV too (AGY external finding)
+    const headers=['ID','Product Name','Category','Type',...(seeSell?['Sell Price']:[]),'Franchise Discount','Supplier','Contact','Lead Days'];
     const rows=d.products.filter(p=>p.active).sort((a,b)=>a.name.localeCompare(b.name)).map(p=>{
       const cat=d.categories.find(c=>c.id===p.catId);
       const pt=d.productTypes.find(t=>t.id===cat?.ptId);
-      return[p.id,p.name,cat?.name||'',pt?.name||'',p.price!=null?p.price.toFixed(2):'',p.franchiseDiscount?p.franchiseDiscount+'%':'',p.supplierName||'',p.supplierContact||'',p.leadDays||''];
+      return[p.id,p.name,cat?.name||'',pt?.name||'',...(seeSell?[p.price!=null?p.price.toFixed(2):'']:[]),p.franchiseDiscount?p.franchiseDiscount+'%':'',p.supplierName||'',p.supplierContact||'',p.leadDays||''];
     });
     this._downloadCSV(`bob-products-${new Date().toISOString().slice(0,10)}.csv`,headers,rows);
   },

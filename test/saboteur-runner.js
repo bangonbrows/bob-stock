@@ -1107,6 +1107,10 @@ const MUTATIONS = [
     find: "      if (this._PIN_CAPS.includes(cap) && this.hasTempStockTake()) return true;         // PIN lifts a type-default deny only",
     repl: "      if (this.hasTempStockTake()) return true;",
     note: "AA-12: the CLIENT resolver drifts (PIN lifts ALL caps, not just its two) -> client Auth.can diverges from the server resolveCapability on recordDelivery+pin; the parity sentinel catches the one-sided edit" },
+  { id: 'S-248', file: 'index.html',
+    find: "    const seeSell=Auth.can('seeSellingPrice'); // AA-EXT-1: the CSV must honour the same seeSellingPrice gate as the on-screen table (AGY external finding)",
+    repl: "    const seeSell=true; // AA-EXT-1: the CSV must honour the same seeSellingPrice gate as the on-screen table (AGY external finding)",
+    note: "AA-EXT-1: the stock CSV export ignores seeSellingPrice -> a denied role exports the full price list (the AGY external finding; consistency of the client-only view hint)" },
 ];
 
 function copyRepoTo(dir) {

@@ -2141,6 +2141,25 @@ async function runSmoke(repo) {
       const agree = AP_PARITY && server.length === client.length && server.every((s, i) => s === client[i]);
       rec('S-247', 'AA-12: client Auth.can == server resolveCapability across fixtures', !!agree, `server=[${server}] client=[${client}]`); await ctx.close(); }
 
+    // S-248 (AA-EXT-1, AGY external): the stock + products CSV exports honour the seeSellingPrice gate — a
+    // denied role's CSV must NOT carry a Sell Price column (was the on-screen table only). Drives the LIVE
+    // export via a captured _downloadCSV. Client-only view consistency (price is public catalogue data, P-13).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        let hdrs = null; const _dl = Pages._downloadCSV; Pages._downloadCSV = (fn, headers) => { hdrs = headers.slice(); };
+        Auth._user = { id: 'u', username: 'sm', role: 'store_manager', storeIds: ['karrinyup'] };
+        // DENIED: no Sell Price column in either export
+        Auth.adoptPolicy({ version: 1, roles: { store_manager: { seeSellingPrice: false }, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        Pages._exportStockCSV(); const stockDenied = !hdrs.includes('Sell Price');
+        Pages._exportProductsCSV(); const prodDenied = !hdrs.includes('Sell Price');
+        // ALLOWED: column present
+        Auth.adoptPolicy({ version: 2, roles: { store_manager: { seeSellingPrice: true }, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        Pages._exportStockCSV(); const stockAllowed = hdrs.includes('Sell Price');
+        Pages._downloadCSV = _dl; Auth._policy = null;
+        return { stockDenied, prodDenied, stockAllowed };
+      });
+      rec('S-248', 'AA-EXT-1: CSV exports honour seeSellingPrice (no price column when denied)', r.stockDenied === true && r.prodDenied === true && r.stockAllowed === true, `stockDenied=${r.stockDenied} prodDenied=${r.prodDenied} stockAllowed=${r.stockAllowed} (clean: all true)`); await ctx.close(); }
+
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;
