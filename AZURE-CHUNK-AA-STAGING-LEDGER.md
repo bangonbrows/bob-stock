@@ -4,6 +4,12 @@ Tracks applying `AZURE-CHUNK-AA-LA-CHANGES.md` to the staging cloud (RG `bob-sto
 `BOB-Stock-App`). Started 2026-07-09. The LAs are not in-repo; this is the authoritative record of what
 was changed on staging, same role as the Chunk-5..10 wave reviews.
 
+## Fix-round redeploy (2026-07-09, post internal audit)
+After the internal deep audit's fixes (AA-01/09/03/17/18 server-side), the Function App was **redeployed**
+(all 10 routes, additive) and `access-policy-write-staging` **redeployed** with the AA-03 `baseVersion`
+passthrough. Both re-proven fail-closed (wrong device keys → 401). Items 1-4 below remain the applied set;
+their server dependencies now carry the audited code.
+
 ## Applied ✅
 
 1. **Function App `bob-stock-money-fn`** — zip-deployed the updated `azure-functions/` (additive: existing 7
