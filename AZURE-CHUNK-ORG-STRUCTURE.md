@@ -55,17 +55,27 @@ Machinery underneath (invisible to the user, from the audited chunks):
 store came back under HO), so it's a recurring real scenario, not a hypothetical. Design at this chunk's design
 session (not now). Likely the same wizard entered from the other direction (flip type franchise → HO-operated).
 Questions to settle at design:
-- **Ex-franchisee's access:** the store leaves their scope (scopeVersion bump → their devices purge the store's
-  data per Chunk 10). If it was their ONLY store, what happens to their office account — deactivate?
-  **R2 (AGY): KUNAL DECISION NEEDED** — does the ex-franchisee keep READ access to their OWN era's records
-  (tax/accounting)? Chunk 10's scope is binary today; "historical-only window access" would be new machinery.
-  Alternative: hand them a data EXPORT at buy-back instead of live access (much simpler).
-- **HO cost basis (R2, AGY — the "no cutoff needed" assumption is WRONG for costing):** HO buying back the
-  remaining stock establishes a NEW corporate cost basis. Without a reverse marker, franchise-era costing
-  bleeds into HO's ongoing corporate ledger. Tool 4 likely needs a buy-back-date marker (snapshot/era
-  boundary) so HO's cost reporting for that store restarts cleanly — VISIBILITY needs no curtain (HO saw it
-  all along), but COSTING does need the boundary.
-- **Cost/pricing flags:** franchise discount / cost-strip stop applying from the buy-back date — same marker.
+- **Ex-franchisee's access — KUNAL DECIDED 2026-07-09: EXPORT, not live access.** At buy-back the
+  ex-franchisee is handed a data EXPORT of THEIR era's records (tax/accounting) and their live access to the
+  store ends (scopeVersion bump → devices purge per Chunk 10). No "historical-only window access" machinery
+  needed — closes AGY's R2 Tool-4 gap the simple way. Design-session detail: export format/content (their
+  era's movements, invoices, stock takes) + make it a step IN the wizard so it can't be forgotten.
+  Still open: if it was their ONLY store, what happens to their office account — deactivate?
+- **HO cost basis — RESOLVED by KUNAL'S LENS MODEL (2026-07-09, ground-truthed against code):** Kunal's
+  insight, verified: the ledger stores ONLY quantities/movements; money is computed AT VIEW TIME (corporate
+  costPrice on products; the franchise loading = `isFranchise` + `franchiseDiscount`% applied at
+  invoice/report time — NEVER baked into stored rows). So buy-back = flip the store's franchise flags OFF and
+  the loading simply stops applying — no data loss, no cost snapshot, no reset mechanism. Re-franchise = flip
+  back on. AGY's "cost contamination" concern assumed baked-in franchise costing, which the app doesn't do —
+  Tool 4 needs NO cost-boundary machinery. **ADOPTED as the Tool-4 costing approach.**
+  - Caveat (design session): reports SPANNING an ownership change blend two business arrangements (franchise
+    era: store sales = franchisee revenue, HO revenue = invoice margin; HO era: all HO). Numbers stay correct;
+    just LABEL the era boundary in reports — no complex machinery.
+  - The lens model does NOT replace the visibility curtain: era records still govern WHOSE history a
+    franchisee may SEE (prior owner's trading data stays private). Lens = what numbers are shown; era =
+    which rows are shown.
+- **Cost/pricing flags:** the wizard's flag flip IS the mechanism; record the flip date (era boundary) for
+  report labels + the visibility curtain.
 - Same atomicity + sudo-floor rules as the forward direction (SR-9, SR-1).
 
 ## R2 SPEC-REVIEW INPUTS for this chunk's design session (Codex R2-3 + AGY, 2026-07-09)
