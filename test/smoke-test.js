@@ -1848,6 +1848,190 @@ async function runSmoke(repo) {
       });
       rec('S-228', 'Chunk 10 (audit): backup export blocked while a scope purge is pending', r.sudoCalled === false && r.blocked === true, `sudoReached=${r.sudoCalled} blockedToast=${r.blocked} (clean: false/true)`); await ctx.close(); }
 
+    // ═══ Account Access chunk (AA-W6): S-229..S-240 ═══════════════════════════════════════════════════
+
+    // S-229: SR-7 resolver order in the LIVE Auth.can — explicit per-account override is FINAL (beats the
+    // PIN grant); PIN lifts ONLY stockTakeCount/transferReceive; role default is the floor.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Auth._user = { id: 'u_boor', username: 'boor', role: 'staff', storeIds: ['booragoon'] };
+        Auth.adoptPolicy({ version: 1, roles: { staff: { transferReceive: false, stockTakeCount: false, recordDelivery: false }, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        Auth._tempStockTake = null;
+        const deniedNoPin = Auth.can('transferReceive');
+        Auth._tempStockTake = new Date(Date.now() + 3600000).toISOString();
+        const pinLifts = Auth.can('transferReceive') && Auth.can('stockTakeCount');
+        const pinNoLiftOther = Auth.can('recordDelivery');
+        Auth._policy.overrides = { u_boor: { transferReceive: false, recordDelivery: true } };
+        const ovDenyBeatsPin = Auth.can('transferReceive');
+        const ovAllowBeatsRole = Auth.can('recordDelivery');
+        Auth._policy = null; Auth._tempStockTake = null;
+        return { deniedNoPin, pinLifts, pinNoLiftOther, ovDenyBeatsPin, ovAllowBeatsRole };
+      });
+      rec('S-229', 'AA: SR-7 order — override FINAL beats PIN; PIN lifts only its two caps', r.deniedNoPin === false && r.pinLifts === true && r.pinNoLiftOther === false && r.ovDenyBeatsPin === false && r.ovAllowBeatsRole === true, `noPin=${r.deniedNoPin} pin=${r.pinLifts} other=${r.pinNoLiftOther} ovDeny=${r.ovDenyBeatsPin} ovAllow=${r.ovAllowBeatsRole} (clean: false/true/false/false/true)`); await ctx.close(); }
+
+    // S-230: PRE-ACTIVATION PARITY — with NO adopted policy the legacy seed governs exactly (staff receive
+    // freely, staff stock-take blocked w/o grant, director sees cost, staff sees selling price).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Auth._policy = null; Auth._tempStockTake = null;
+        Auth._user = { id: 'u_s', username: 's', role: 'staff', storeIds: ['booragoon'] };
+        const staffReceive = Auth.can('transferReceive'), staffTake = Auth.can('stockTakeCount'), staffSell = Auth.can('seeSellingPrice'), staffCost = Auth.can('seeCost');
+        Auth._user = { id: 'u_d', username: 'd', role: 'director', storeIds: [] };
+        const dirCost = Auth.can('seeCost'), dirPolicy = Auth.can('editAccessPolicy');
+        return { staffReceive, staffTake, staffSell, staffCost, dirCost, dirPolicy };
+      });
+      rec('S-230', 'AA: pre-activation parity — legacy seed governs with no policy', r.staffReceive === true && r.staffTake === false && r.staffSell === true && r.staffCost === false && r.dirCost === true && r.dirPolicy === true, `recv=${r.staffReceive} take=${r.staffTake} sell=${r.staffSell} sCost=${r.staffCost} dCost=${r.dirCost} dPol=${r.dirPolicy} (clean: t/f/t/f/t/t)`); await ctx.close(); }
+
+    // S-231: THE PIN-to-receive covering sentinel (Kunal 2026-07-07 default) — ACTIVATING the default
+    // policy flips the basic store account to PIN-gated receive; the PIN grant lifts it.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Auth._user = { id: 'u_s', username: 's', role: 'staff', storeIds: ['booragoon'] };
+        Auth._policy = null; Auth._tempStockTake = null;
+        const before = Auth.can('transferReceive');
+        Auth.adoptPolicy({ ...Auth.defaultPolicyBlob(), version: 1 });
+        const after = Auth.can('transferReceive');
+        Auth._tempStockTake = new Date(Date.now() + 3600000).toISOString();
+        const withPin = Auth.can('transferReceive');
+        Auth._policy = null; Auth._tempStockTake = null;
+        return { before, after, withPin };
+      });
+      rec('S-231', 'AA: activation makes store-account receive PIN-gated (default blob), PIN lifts', r.before === true && r.after === false && r.withPin === true, `before=${r.before} after=${r.after} withPin=${r.withPin} (clean: true/false/true)`); await ctx.close(); }
+
+    // S-232: SR-4 narrowing purge — a policy bump that revokes seeCost/seeArchive scrubs the merged
+    // corporate-cost payload (costPrice+_costRv) durably and drops the archive overlay from the working set.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        const d = DB.get();
+        d.accessPolicy = null; Auth._policy = null;
+        await Sync._applyAccessPolicy({ version: 1, roles: { director: { seeCost: true, seeArchive: true, editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const p = d.products.find(x => x.id === s.productId); p.costPrice = 42.5; p._costRv = 'rv1';
+        d.transactions.push({ id: 'aa_arch_1', type: 'in', qty: 1, storeId: s.storeId, productId: s.productId, date: '2024-01-01', createdAt: '2024-01-01', _archived: true });
+        Stock._archiveOverlay = [{ id: 'aa_arch_1' }];
+        await Sync._applyAccessPolicy({ version: 2, roles: { director: { seeCost: false, seeArchive: false, editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const p2 = DB.get().products.find(x => x.id === s.productId);
+        return { cost: p2.costPrice, rv: p2._costRv, overlay: Stock._archiveOverlay, archRow: DB.get().transactions.some(t => t && t._archived), ver: Auth._policy && Auth._policy.version };
+      }, s);
+      rec('S-232', 'AA: SR-4 narrowing purge — revoke scrubs corp cost + archive overlay', r.cost === null && r.rv === undefined && r.overlay === null && r.archRow === false && r.ver === 2, `cost=${r.cost} rv=${r.rv} overlay=${r.overlay} archRow=${r.archRow} v=${r.ver} (clean: null/undef/null/false/2)`); await ctx.close(); }
+
+    // S-233: adoption is VERSION-MONOTONIC — a replayed/rolled-back LOWER version is ignored (an attacker
+    // can't restore themselves a more permissive old policy).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); d.accessPolicy = null; Auth._policy = null;
+        await Sync._applyAccessPolicy({ version: 5, roles: { director: { seeCost: false, editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        await Sync._applyAccessPolicy({ version: 3, roles: { director: { seeCost: true, editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        return { ver: Auth._policy && Auth._policy.version, cost: Auth.can('seeCost') };
+      });
+      rec('S-233', 'AA: policy adoption is version-monotonic (rollback ignored)', r.ver === 5 && r.cost === false, `v=${r.ver} seeCost=${r.cost} (clean: 5/false)`); await ctx.close(); }
+
+    // S-234: FAIL CLOSED under an adopted policy — a capability the blob doesn't mention is DENIED, even
+    // for a director (no silent fallback to the legacy seed once a policy governs).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Auth._user = { id: 'u_d', username: 'd', role: 'director', storeIds: [] };
+        Auth.adoptPolicy({ version: 1, roles: { director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const unknownCap = Auth.can('recordDelivery');           // not in the blob -> deny
+        Auth._user = { id: 'u_x', username: 'x', role: 'made_up_role', storeIds: [] };
+        const unknownRole = Auth.can('editAccessPolicy');
+        Auth._policy = null;
+        return { unknownCap, unknownRole };
+      });
+      rec('S-234', 'AA: fail closed under policy — unmentioned cap/role denied (no seed fallback)', r.unknownCap === false && r.unknownRole === false, `cap=${r.unknownCap} role=${r.unknownRole} (clean: false/false)`); await ctx.close(); }
+
+    // S-235: publishAccessPolicy is FAIL-CLOSED without a sudo proof — needSudo, NO network call (SR-1;
+    // mirrors the S-217 publish pattern).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        Sync._userVerifyUrl = 'https://x.logic.azure.com/verify'; Sync._accessPolicyWriteUrl = 'https://x.logic.azure.com/appolicy';
+        let fetches = 0; const _f = window.fetch; window.fetch = (...a) => { fetches++; return _f(...a); };
+        const r1 = await Sync.publishAccessPolicy({ roles: { director: { editAccessPolicy: true } }, overrides: {}, sudo: {} }, null);
+        const r2 = await Sync.publishAccessPolicy({ roles: { director: { editAccessPolicy: true } }, overrides: {}, sudo: {} }, '__no_person_auth__');
+        window.fetch = _f;
+        return { r1: r1.reason, r2: r2.reason, fetches };
+      });
+      rec('S-235', 'AA: publishAccessPolicy fail-closed without sudo proof (no network call)', r.r1 === 'needSudo' && r.r2 === 'needSudo' && r.fetches === 0, `r1=${r.r1} r2=${r.r2} fetches=${r.fetches} (clean: needSudo/needSudo/0)`); await ctx.close(); }
+
+    // S-236: backup export blocked while a POLICY purge is pending (SR-4 privacy lock — mirrors S-228).
+    { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.removeItem('bob_scope_purge_pending'); localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {}
+        Sync._scopePurgePending = false;
+        let sudoCalled = false; Pages._sudoPrompt = async () => { sudoCalled = true; return 'x'; };
+        let toasted = ''; const _t = UI.toast; UI.toast = (m) => { toasted = m; };
+        await Pages._exportBackup();
+        UI.toast = _t; try { localStorage.removeItem('bob_policy_purge_pending'); } catch (e) {}
+        return { sudoCalled, blocked: /paused|scope update/i.test(toasted) };
+      });
+      rec('S-236', 'AA: backup export blocked while a policy purge is pending', r.sudoCalled === false && r.blocked === true, `sudoReached=${r.sudoCalled} blockedToast=${r.blocked} (clean: false/true)`); await ctx.close(); }
+
+    // S-237: _withIngestProofs attaches session+pin+action proofs; expired ones are dropped; logout wipes.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Sync._sessionProof = { proof: 'SESS', username: 'd', expiresAt: Date.now() + 3600000 };
+        Sync._pinGrantProof = { proof: 'PIN', expiresAt: Date.now() + 3600000 };
+        Sync.holdActionProof('approve', 'APPR');
+        Sync._actionProofs['resolve'] = { proof: 'STALE', at: Date.now() - 6 * 60 * 1000 };
+        const b1 = Sync._withIngestProofs({});
+        Sync._pinGrantProof = { proof: 'PIN', expiresAt: Date.now() - 1000 };
+        const b2 = Sync._withIngestProofs({});
+        Sync.clearPersonProofs();
+        const b3 = Sync._withIngestProofs({});
+        return { proof: b1.proof, pin: b1.pinProof, appr: b1.sudoProofs && b1.sudoProofs.approve, stale: b1.sudoProofs && b1.sudoProofs.resolve, expiredPin: b2.pinProof, wiped: !b3.proof && !b3.pinProof && !b3.sudoProofs };
+      });
+      rec('S-237', 'AA: ingest proofs attached (session/pin/action), stale dropped, logout wipes', r.proof === 'SESS' && r.pin === 'PIN' && r.appr === 'APPR' && r.stale === undefined && r.expiredPin === undefined && r.wiped === true, `proof=${r.proof} pin=${r.pin} appr=${r.appr} stale=${r.stale} expPin=${r.expiredPin} wiped=${r.wiped}`); await ctx.close(); }
+
+    // S-238: the Account Access screen — Director gets the tab content with the FLOOR rows locked (🔒, no
+    // checkbox) and the activation button pre-activation.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Auth._policy = null; Pages._apDraft = null;
+        const host = document.getElementById('page-dir-settings');
+        if (!host) return { html: '' };
+        Pages.dirSettings('access');
+        const html = document.getElementById('ds-tab-content') ? document.getElementById('ds-tab-content').innerHTML : '';
+        Pages._apDraft = null;
+        return { hasActivate: /Activate access policy/.test(html), hasLock: /🔒 Always/.test(html), hasMatrix: /Receive transfers/.test(html), hasOverrides: /Per-account exceptions/.test(html) };
+      });
+      rec('S-238', 'AA: Account Access screen renders matrix + locked floor + activate', r.hasActivate === true && r.hasLock === true && r.hasMatrix === true && r.hasOverrides === true, `activate=${r.hasActivate} lock=${r.hasLock} matrix=${r.hasMatrix} ov=${r.hasOverrides} (clean: all true)`); await ctx.close(); }
+
+    // S-239: under an ACTIVE policy, PIN verification goes SERVER-side (live _verifyPinValue -> Sync.pinUnlock
+    // -> pin-grant proof held); a denied server answer does NOT unlock.
+    { const { ctx, page } = await newPage(b); let pinCalls = 0, answer = { ok: true };
+      await page.route('**logic.azure.com**', r => { const body = r.request().postData() || ''; if (body.includes('"op":"pin"')) { pinCalls++; return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(answer.ok ? { ok: true, proof: 'PG.1', expiresAt: Date.now() + 3600000 } : { ok: false }) }); } return r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }); });
+      await waitBoot(page, repo); await setup(page);
+      const r1 = await page.evaluate(async () => {
+        Auth._user = { id: 'u_s', username: 's', role: 'staff', storeIds: ['booragoon'] };
+        Auth.adoptPolicy({ version: 1, roles: { staff: {} , director: { editAccessPolicy: true } }, overrides: {}, sudo: {}, pin: { expiresAt: new Date(Date.now() + 3600000).toISOString() } });
+        Sync._userVerifyUrl = 'https://x.logic.azure.com/verify'; Auth._tempStockTake = null; Sync._pinGrantProof = null;
+        const v = await Pages._verifyPinValue('1234');
+        return { ok: v.ok, grant: Sync._pinGrantProof && Sync._pinGrantProof.proof, temp: !!Auth._tempStockTake };
+      });
+      answer.ok = false;
+      const r2 = await page.evaluate(async () => { Auth._tempStockTake = null; Sync._pinGrantProof = null; const v = await Pages._verifyPinValue('9999'); const out = { ok: v.ok, temp: !!Auth._tempStockTake }; Auth._policy = null; return out; });
+      rec('S-239', 'AA: PIN verify is server-side under policy; denial does not unlock', pinCalls === 2 && r1.ok === true && r1.grant === 'PG.1' && r1.temp === true && r2.ok === false && r2.temp === false, `calls=${pinCalls} ok1=${r1.ok} grant=${r1.grant} temp1=${r1.temp} ok2=${r2.ok} temp2=${r2.temp}`); await ctx.close(); }
+
+    // S-240: _actionSudo is INERT pre-activation (no prompt, behaviour unchanged); under a policy the sudo
+    // map governs — 'session' skips the prompt, 'password' prompts and holds the proof for the push.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try {
+        let prompts = 0; Pages._sudoPrompt = async () => { prompts++; return 'PROOF9'; };
+        Auth._policy = null;
+        const pre = await Pages._actionSudo('approve', 'x');
+        const preNoPrompt = prompts === 0;
+        Auth.adoptPolicy({ version: 1, roles: { director: { editAccessPolicy: true } }, overrides: {}, sudo: { approve: 'session', resolve: 'password' } });
+        const sess = await Pages._actionSudo('approve', 'x');
+        const sessNoPrompt = prompts === 0;
+        Sync._actionProofs = {};
+        const pw = await Pages._actionSudo('resolve', 'x');
+        const held = Sync._actionProofs.resolve && Sync._actionProofs.resolve.proof;
+        Auth._policy = null;
+        return { pre, preNoPrompt, sess, sessNoPrompt, pw, prompts, held };
+        } catch (e) { Auth._policy = null; return { threw: String(e && e.message) }; }   // a mutated guard throws on null policy — fail the sentinel, don't abort the suite
+      });
+      rec('S-240', 'AA: _actionSudo inert pre-activation; sudo map governs under policy; proof held', r.pre === '__no_person_auth__' && r.preNoPrompt === true && r.sess === '__session_ok__' && r.sessNoPrompt === true && r.pw === 'PROOF9' && r.prompts === 1 && r.held === 'PROOF9', `pre=${r.pre} sess=${r.sess} pw=${r.pw} prompts=${r.prompts} held=${r.held}`); await ctx.close(); }
+
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;
