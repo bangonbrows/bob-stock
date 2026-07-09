@@ -31,6 +31,19 @@ their server dependencies now carry the audited code.
    **PROVEN fail-closed on the real cloud:** wrong device keys → **401** `{authRequired:true}` (probe
    2026-07-09). Trigger URL captured (scratchpad, not committed).
 
+## Tracked fix for the staging-apply step (server audit P3, 2026-07-09)
+**SRV-P3 — non-atomic 3-item policy write.** The `access-policy-write` LA upserts `access_policy_secure` →
+`access_policy` → `access_policy_version` sequentially (chained on Succeeded). A mid-sequence SharePoint
+failure advances the secure blob's version while the client/version items lag; the client never sees `ok`,
+retries with its old `baseVersion`, and the AA-03 CAS then returns `STALE_VERSION` → the Director is
+temporarily blocked from republishing until reconciled. FAILS SAFE (no bad policy ships; devices keep the
+last good one) — rated P3, confirmed by the independent server audit AND by the builder against the deployed
+WDL. **Fix at staging-apply:** either (a) write `version` FIRST as an intent marker + a reconcile that
+repairs a detected secure/version mismatch, or (b) allow a "repair republish" when the LA reads
+secure.version > version-item (bypass CAS for the self-heal), or (c) make the write idempotent + retried
+until all three converge (catalogue-write Until-loop pattern). Do NOT hand-fix now — folds into finalizing
+the write LA at apply time.
+
 ## Remaining ⏳ (need staging test credentials — see below)
 
 5. **push-v2 + recordsteps-push ingest validation** (LA-CHANGES §3-4) — the highest-care items: they sit on
