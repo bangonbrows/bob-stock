@@ -1048,11 +1048,11 @@ function generateDemoTransactions() {
     if (ov && typeof ov === 'object' && Object.prototype.hasOwnProperty.call(ov, cap)) return ov[cap] === true;
     return undefined;
   },
-  _RESERVED_CAP: { __proto__: 1, constructor: 1, prototype: 1 },  // AA-11: mirror accessPolicy.js RESERVED
+  _RESERVED_CAP: ['__proto__', 'constructor', 'prototype'],  // AA-11: mirror accessPolicy.js RESERVED. Array, not an object literal — {__proto__:1} sets the PROTOTYPE, not an own key, so a literal would never match a cap named "__proto__" (and would throw on the seed path). The array matches it as a plain string.
   can(cap) {
     const u = this._user;
     if (!u || !cap) return false;
-    if (Object.prototype.hasOwnProperty.call(this._RESERVED_CAP, cap)) return false;      // AA-11: reserved cap names denied, same as the server
+    if (this._RESERVED_CAP.indexOf(cap) !== -1) return false;      // AA-11: reserved cap names denied, same as the server
     const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
     const uname = String(u.username || '');                                               // AA-01: overrides key by USERNAME (the system join key on both sides); AA-14: normalise
     const urole = String(u.role || '');
