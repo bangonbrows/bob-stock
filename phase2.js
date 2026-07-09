@@ -359,6 +359,7 @@ const Transfer = {
 
   async resolveFlag(transferId, productId, action, qty, note) {
     if (!this._canResolve()) return { ok:false, error:'Permission denied' };
+    if (typeof Pages !== 'undefined' && Pages._actionSudo && (await Pages._actionSudo('resolve', 'resolve this discrepancy')) === null) return { ok:false, error:'Password confirmation cancelled' };  // AA-W5 D9-8 (inert pre-activation)
     const t = this.get(transferId);
     if (!t || (t.status !== 'received' && t.status !== 'in_transit')) return { ok:false, error:'Invalid transfer' };
     const item = t.items.find(i => i.productId === productId && i.status === 'flagged');
@@ -423,6 +424,7 @@ const Transfer = {
   // (the old per-item resolveFlag loop left the transfer half-resolved).
   async resolveAllFlags(transferId, resolutions) {
     if (!this._canResolve()) return { ok:false, error:'Permission denied' };
+    if (typeof Pages !== 'undefined' && Pages._actionSudo && (await Pages._actionSudo('resolve', 'resolve this discrepancy')) === null) return { ok:false, error:'Password confirmation cancelled' };  // AA-W5 D9-8 (inert pre-activation)
     const t = this.get(transferId);
     if (!t || (t.status !== 'received' && t.status !== 'in_transit')) return { ok:false, error:'Invalid transfer' };
     const snapshot = JSON.parse(JSON.stringify(t));
@@ -457,6 +459,7 @@ const Transfer = {
   },
   async resolveConflict(transferId, chosen) {
     if (!this._canResolve()) return { ok:false, error:'Permission denied' };
+    if (typeof Pages !== 'undefined' && Pages._actionSudo && (await Pages._actionSudo('resolve', 'resolve this discrepancy')) === null) return { ok:false, error:'Password confirmation cancelled' };  // AA-W5 D9-8 (inert pre-activation)
     const t = this.get(transferId);
     if (!t) return { ok:false, error:'Transfer not found' };
     if (t.status !== 'conflict') return { ok:false, error:'This transfer is not in a conflict state' };
@@ -1798,6 +1801,14 @@ window.TransferUI = {
   },
 
   submitReceive(transferId) {
+    // AA-W5 (Kunal 2026-07-07 default): under an ACTIVE access policy the basic store account needs the
+    // 24h PIN to receive HO transfers. Offer the unlock right here instead of a dead-end denial; the PIN
+    // grant then lifts Auth.can('transferReceive') (SR-7) and the server-minted pin-grant proof rides the
+    // push for ingest validation. Inert pre-activation (staff receive freely, unchanged).
+    if (!Transfer._canReceive() && Auth.user()?.role === 'staff' && typeof Pages !== 'undefined' && Pages._pinUnlockModal) {
+      Pages._pinUnlockModal('receive this transfer', () => TransferUI.submitReceive(transferId));
+      return;
+    }
     const data = DB.get();
     const transfer = (data.transfers || []).find(t => t.id === transferId);
     if (!transfer) return;

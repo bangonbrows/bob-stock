@@ -2486,6 +2486,7 @@ const Pages = {
   },
   async _approveStockTake(takeId) {
     if(!Auth.can('stockTakeApprove')){UI.toast('Director approval only','error');return;}  // AA-W3 D1: central cap (was Auth.is('director') — same set, now matrix-editable)
+    if((await this._actionSudo('approve','approve this stock take'))===null)return;  // AA-W5 D9-8: proof minted at action time (inert pre-activation)
     if(this._stApproving)return; this._stApproving=true;
     try{
       const d=DB.get(); const t=(d.stockTakes||[]).find(x=>x.id===takeId);
@@ -5287,6 +5288,7 @@ const Pages = {
   },
   async _saveDelivery(){
     if(!Auth.can('recordDelivery')){UI.toast('Only a Director can record deliveries','error');return;}
+    if((await this._actionSudo('delivery','record this delivery'))===null)return;  // AA-W5 D9-8: proof at action time (inert pre-activation)
     // Wave G (blind W7): double-tap on "Record Delivery" doubled the stock-in (+ could duplicate
     // cost history). Same re-entrancy pattern as _submitLog/_stApproving.
     if(this._delSaving)return; this._delSaving=true;
@@ -5543,10 +5545,69 @@ const Pages = {
     } finally { this._pkgSaving=false; }
   },
 
+  // AA-W5: PIN source is the ACTIVE policy when adopted (hash lives server-side; delivery keeps only
+  // expiresAt as a UX hint), else the legacy local d.stockTakePin. One helper feeds every PIN surface.
+  _pinSource() {
+    const usePolicy=(typeof Auth!=='undefined'&&!!Auth._policy);
+    const src=usePolicy?((Auth._policy&&Auth._policy.pin)||{}):(DB.get().stockTakePin||{});
+    const hasPin=!!(src.expiresAt&&new Date(src.expiresAt).getTime()>Date.now()&&(usePolicy||src.pin));
+    return { usePolicy, src, hasPin };
+  },
+  // AA-W5: shared PIN verification. Under an ACTIVE policy → server-side verify (Sync.pinUnlock mints the
+  // pin-grant proof the ingest LAs demand); needs internet at PIN-entry (the D9-8 trade-off Kunal accepted).
+  // Pre-activation → the legacy local hash compare, unchanged. Success sets the temp grant Auth.can honours
+  // for stockTakeCount + transferReceive (SR-7 lift).
+  async _verifyPinValue(entered){
+    if(!entered) return {ok:false,err:'Enter the PIN.'};
+    if(typeof Auth!=='undefined'&&Auth._policy){
+      if(!(typeof Sync!=='undefined'&&Sync._userVerifyUrl&&Sync.pinUnlock)) return {ok:false,err:'PIN check unavailable — cloud connection not configured.'};
+      const r=await Sync.pinUnlock(entered);
+      if(r.ok){ _stTakeUnlocked=true; Auth._tempStockTake=new Date(Number(r.expiresAt)||Date.now()).toISOString(); return {ok:true}; }
+      if(r.reason==='offline') return {ok:false,err:'PIN check needs internet — connect and try again.'};
+      return {ok:false,err:'Incorrect or expired PIN.'};
+    }
+    const pinCfg=DB.get().stockTakePin||{};
+    if(!pinCfg.expiresAt||new Date(pinCfg.expiresAt).getTime()<Date.now()) return {ok:false,err:'PIN has expired. Contact your manager.'};
+    const hash=await sha256(entered);
+    if(hash!==pinCfg.pin) return {ok:false,err:'Incorrect PIN. Try again.'};
+    _stTakeUnlocked=true; Auth._tempStockTake=pinCfg.expiresAt;  // D-044: central Auth.can honours the unlock
+    return {ok:true};
+  },
+  // AA-W5: generic PIN unlock modal for flows OUTSIDE the stock-take page (e.g. staff receiving an HO
+  // transfer under an active policy). onSuccess re-runs the blocked action after unlock.
+  _pinModalNext:null,
+  _pinUnlockModal(actionLabel,onSuccess){
+    const {hasPin}=this._pinSource();
+    if(!hasPin){ UI.modal('PIN required',`<div style="font-size:.85rem;color:#6b7280">A 24-hour PIN is needed to ${UI.esc(actionLabel)}, but no active PIN is set. Ask your Store Manager or Director to set one.</div>`,`<button class="btn btn-secondary" onclick="UI.closeModal()">OK</button>`); return; }
+    this._pinModalNext=onSuccess||null;
+    UI.modal('PIN required',`<div style="font-size:.85rem;color:#6b7280;margin-bottom:10px">Enter the 24-hour PIN to ${UI.esc(actionLabel)}.</div>
+      <input type="password" class="form-input" id="pin-modal-inp" maxlength="12" placeholder="Enter PIN" style="text-align:center;font-size:1.3rem;letter-spacing:5px" onkeydown="if(event.key==='Enter')Pages._pinModalSubmit().catch(console.error)">
+      <div id="pin-modal-err" style="color:#dc2626;font-size:.8rem;min-height:18px;margin-top:8px"></div>`,
+      `<button class="btn btn-secondary" onclick="UI.closeModal()">Cancel</button><button class="btn btn-primary" onclick="Pages._pinModalSubmit().catch(console.error)">Unlock</button>`);
+    setTimeout(()=>document.getElementById('pin-modal-inp')?.focus(),50);
+  },
+  async _pinModalSubmit(){
+    const entered=document.getElementById('pin-modal-inp')?.value;
+    const r=await this._verifyPinValue(entered);
+    if(!r.ok){ const e=document.getElementById('pin-modal-err'); if(e)e.textContent=r.err; return; }
+    UI.closeModal(); UI.toast('Unlocked — PIN window active','success');
+    const next=this._pinModalNext; this._pinModalNext=null;
+    if(typeof next==='function'){ try{ next(); }catch(e){console.error(e);} }
+  },
+  // AA-W5 (D-AA-5): action-time sudo for approve/resolve/delivery. STRICTLY inert pre-activation (no
+  // adopted policy → no prompt, behaviour unchanged). Under a policy: the sudo map decides — 'session'
+  // skips the prompt (the session proof satisfies the LA), 'password' re-prompts and the minted proof is
+  // held for the imminent push (Sync.holdActionProof).
+  async _actionSudo(purpose,label){
+    if(typeof Auth==='undefined'||!Auth._policy) return '__no_person_auth__';
+    if(Auth._policy.sudo&&Auth._policy.sudo[purpose]==='session') return '__session_ok__';
+    const p=await this._sudoPrompt(purpose,label);
+    if(p&&typeof Sync!=='undefined'&&Sync.holdActionProof) Sync.holdActionProof(purpose,p);
+    return p;
+  },
   _promptStockTakePin() {
-    const d=DB.get(); const pinCfg=d.stockTakePin||{};
+    const {src,hasPin}=this._pinSource();
     const now=Date.now();
-    const hasPin=pinCfg.pin&&pinCfg.expiresAt&&new Date(pinCfg.expiresAt).getTime()>now;
     const el=document.getElementById('page-stocktake');
     if(!hasPin){
       el.innerHTML=`<div style="display:flex;align-items:center;justify-content:center;min-height:300px">
@@ -5558,7 +5619,7 @@ const Pages = {
         </div></div>`;
       return;
     }
-    const expiresIn=Math.round((new Date(pinCfg.expiresAt).getTime()-now)/60000);
+    const expiresIn=Math.round((new Date(src.expiresAt).getTime()-now)/60000);
     el.innerHTML=`<div style="display:flex;align-items:center;justify-content:center;min-height:300px">
       <div style="text-align:center;max-width:340px">
         <div style="font-size:2.5rem;margin-bottom:16px">🔒</div>
@@ -5576,17 +5637,9 @@ const Pages = {
     setTimeout(()=>document.getElementById('st-pin-inp')?.focus(),50);
   },
   async _verifyStockTakePin(){
-    const d=DB.get(); const pinCfg=d.stockTakePin||{};
     const entered=document.getElementById('st-pin-inp')?.value;
-    const now=Date.now();
-    if(!pinCfg.expiresAt||new Date(pinCfg.expiresAt).getTime()<now){
-      document.getElementById('st-pin-err').textContent='PIN has expired. Contact your manager.';return;
-    }
-    const hash=await sha256(entered);
-      if(hash!==pinCfg.pin){
-      document.getElementById('st-pin-err').textContent='Incorrect PIN. Try again.';return;
-    }
-    _stTakeUnlocked=true; Auth._tempStockTake=pinCfg.expiresAt;  // D-044: let the central Auth.can('stockTakeCount') gate honour the unlock
+    const r=await this._verifyPinValue(entered);  // AA-W5: shared verify (server-side under an active policy)
+    if(!r.ok){ const e=document.getElementById('st-pin-err'); if(e)e.textContent=r.err; return; }
     UI.toast('Stock Take unlocked','success');
     navigateTo('stock-take');
   },
@@ -5614,13 +5667,31 @@ const Pages = {
     const pin=document.getElementById('new-st-pin')?.value.trim();
     if(!pin||pin.length<4){UI.toast('PIN must be 4-8 digits','error');return;}
     if(!/^\d+$/.test(pin)){UI.toast('PIN must contain only numbers','error');return;}
+    // AA-W5: under an ACTIVE policy the PIN is part of the policy blob — hashed SERVER-side (policyMerge),
+    // published via the always-password access-policy write. Pre-activation: legacy local set, unchanged.
+    if(typeof Auth!=='undefined'&&Auth._policy&&typeof Sync!=='undefined'&&Sync._accessPolicyWriteUrl){
+      const proof=await this._sudoPrompt('access-policy','set the 24-hour PIN');
+      if(proof===null)return;
+      const cur=this._apBuildDraft();
+      const r=await Sync.publishAccessPolicy(cur,proof,pin);
+      if(!r.ok){ UI.toast(r.reason==='needSudo'?'Password confirmation required':'PIN could not be published: '+(r.reason||'server refused'),'error'); return; }
+      UI.toast(`PIN set: ${pin} (valid 24h, all stores)`,'success');
+      try{await Sync._fetchRemoteConfig();}catch(e){}
+      this._refreshSettings('users'); return;
+    }
     const d=DB.get();
     const expiresAt=new Date(Date.now()+24*60*60*1000).toISOString();
     const hash=await sha256(pin); d.stockTakePin={pin:hash,expiresAt};
     if(!(await this._commitSettings('PIN could not be saved.')))return; UI.toast(`PIN set: ${pin} (valid 24h)`,'success'); this._refreshSettings('users');
   },
   async _clearStockTakePin(){
-    
+    if(typeof Auth!=='undefined'&&Auth._policy&&typeof Sync!=='undefined'&&Sync._accessPolicyWriteUrl){  // AA-W5: policy path
+      const proof=await this._sudoPrompt('access-policy','clear the 24-hour PIN');
+      if(proof===null)return;
+      const r=await Sync.publishAccessPolicy(this._apBuildDraft(),proof,null,true);
+      if(!r.ok){ UI.toast('PIN could not be cleared: '+(r.reason||'server refused'),'error'); return; }
+      UI.toast('PIN cleared','info'); try{await Sync._fetchRemoteConfig();}catch(e){} this._refreshSettings('users'); return;
+    }
     const d=DB.get(); d.stockTakePin={pin:null,expiresAt:null};
     if(!(await this._commitSettings('PIN could not be cleared.')))return; UI.toast('PIN cleared','info'); this._refreshSettings('users');
   },

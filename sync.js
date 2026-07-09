@@ -159,8 +159,43 @@ const Sync = {
     return b;
   },
 
-  // Wipe every in-memory person credential (lock/logout). Session proof + any transient sudo proofs.
-  clearPersonProofs() { this._sessionProof = null; },
+  // ── AA-W5: server-validated 24h PIN grant + action proofs for ingest validation ─────────────────────
+  // Under an ACTIVE access policy the PIN hash lives ONLY server-side (policy.pin, stripped from delivery);
+  // entering the PIN verifies online and mints a purpose='pin-grant' proof the ingest LAs demand on
+  // staff-role stock-take/receive rows (matrix D5 / LA-CHANGES §3-4/§9). Memory-only, wiped with the rest.
+  _pinGrantProof: null,   // { proof, expiresAt }
+  async pinUnlock(pin) {
+    if (!this._userVerifyUrl) return { ok: false, reason: 'config' };
+    let resp;
+    try {
+      resp = await fetch(this._userVerifyUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(this._withAuth({ op: 'pin', pin: String(pin || ''), actorUsername: this._actorUsername() })) });
+    } catch (e) { return { ok: false, reason: 'offline' }; }
+    if (!resp.ok) return { ok: false, reason: 'denied' };
+    const j = await resp.json().catch(() => ({}));
+    if (j.ok === true && j.proof) { this._pinGrantProof = { proof: j.proof, expiresAt: Number(j.expiresAt) || 0 }; return { ok: true, expiresAt: j.expiresAt }; }
+    return { ok: false, reason: 'denied' };
+  },
+  // Short-lived purpose-bound proofs minted at ACTION time (approve/resolve/delivery — D9-8 closure).
+  // Held ≤5 min (the proof TTL) purely so the imminent debounced push can attach them.
+  _actionProofs: {},
+  holdActionProof(purpose, proof) {
+    if (typeof proof === 'string' && proof && proof !== '__no_person_auth__' && proof !== '__session_ok__') this._actionProofs[purpose] = { proof, at: Date.now() };
+  },
+  // Attach person material to an INGEST request (push / steps-push): session proof + actor (as _withPerson),
+  // any live pin-grant, and the fresh action proofs. The LAs validate per row/step type (LA-CHANGES §3-4);
+  // extra fields are ignored by pre-AA endpoints, so this is inert until enforcement flips.
+  _withIngestProofs(body) {
+    const b = this._withPerson(body);
+    if (this._pinGrantProof && this._pinGrantProof.proof && this._pinGrantProof.expiresAt > Date.now()) b.pinProof = this._pinGrantProof.proof;
+    const live = {};
+    for (const [p, e] of Object.entries(this._actionProofs)) { if (e && (Date.now() - e.at) < 5 * 60 * 1000) live[p] = e.proof; else delete this._actionProofs[p]; }
+    if (Object.keys(live).length) b.sudoProofs = live;
+    return b;
+  },
+
+  // Wipe every in-memory person credential (lock/logout). Session proof + pin grant + action proofs.
+  clearPersonProofs() { this._sessionProof = null; this._pinGrantProof = null; this._actionProofs = {}; },
 
   // Director user management via the gated user-admin LA (Chunk 9, D9-2). op = create|setPassword|deactivate|
   // activate|setRole|unlock|list. Requires a purpose='user-admin' sudo proof (the caller mints it). Returns the
@@ -1235,7 +1270,7 @@ const Sync = {
       const resp = await fetch(this._pushUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(this._withAuth(payload)),
+        body: JSON.stringify(this._withIngestProofs(payload)),   // AA-W5: + session/pin/action proofs (inert until enforcement flips)
       });
 
       if (resp.status === 401) {
@@ -1847,7 +1882,7 @@ const Sync = {
       const payload = { data: { steps: eligible.map(s => Records.toSharePoint(s)) } };
       console.log('[Sync] Pushing ' + eligible.length + ' record-step(s)...');
 
-      const resp = await fetch(this._stepsPushUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withAuth(payload)) });
+      const resp = await fetch(this._stepsPushUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withIngestProofs(payload)) });  // AA-W5
       if (resp.status === 401) {  // Chunk 5: pause sync, no retry-loop (D6); steps stay pending
         this._handleUnauthorized('pushSteps');
         Sync._setStepPending(true);

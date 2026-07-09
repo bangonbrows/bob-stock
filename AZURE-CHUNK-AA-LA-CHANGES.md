@@ -33,14 +33,19 @@ Trigger `POST {auth:{deviceId,storeId,storeKey,directorKey}, proof, proposed, pi
 6. Response: `{ok, version}` ONLY — never echo the blob (it contains pin hash) or pinPlain.
 
 ## 2. Policy DELIVERY (config LA + pull-v2)
-- config LA: serve `access_policy` **minus the entire `pin` object** (verification is server-side now; no
-  client ever needs hash material) to device-authenticated callers, alongside master_data. Keep the
-  `ConfigType ne 'corporate_costs'` filter; add nothing to the anonymous path.
+- config LA: serve `access_policy` **minus `pin.hash` and `pin.salt`** (verification is server-side now; no
+  client ever needs hash material — `pin.expiresAt` is kept as the client's countdown/has-PIN hint) to
+  device-authenticated callers, alongside master_data. Keep the `ConfigType ne 'corporate_costs'` filter;
+  add nothing to the anonymous path.
 - pull-v2: echo `policyVersion` (the blob's `version`) on every page, exactly like the Chunk-10 scope echo —
   the client's bump detector (SR-4 purge lifecycle) keys off it.
 
 ## 3. push-v2 ingest validation (matrix rows 1/5/7/9/15 + D9-8 closure)
-Request gains optional `{proof, pinProof}`. Row classification → required check:
+Request gains optional `{proof, pinProof, sudoProofs}` — the client (AA-W5 `Sync._withIngestProofs`) attaches
+the 12h session proof as `proof`, any live pin-grant as `pinProof`, and action-time sudo proofs as a
+`sudoProofs: {purpose: proof}` map (a batch can carry rows from several actions). For a row type whose sudo
+map says 'password', validate `sudoProofs[<purpose>]`; 'session' accepts `proof`. Row classification →
+required check:
 | Row type in batch | evaluateAccess call |
 |---|---|
 | `in` (delivery intake) | `{action:'delivery', capability:'recordDelivery'}` |
