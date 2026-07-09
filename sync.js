@@ -303,6 +303,9 @@ const Sync = {
   async _fetchCorporateCosts() {
     if (!this._corpCostsUrl) return;
     if (!this._isCorporateDevice()) return;                     // franchise device: keep local cost, don't fetch
+    // AA-W3: under an adopted policy the ACCOUNT must hold seeCost — the server 403s regardless (SR-10);
+    // this avoids fetching + caching a payload the logged-in user can't view. Logged-out: device rule stands.
+    if (typeof Auth !== 'undefined' && Auth._policy && Auth.user && Auth.user() && !Auth.can('seeCost')) return;
     let resp;
     try { resp = await fetch(this._corpCostsUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this._withPerson({})) }); }  // Chunk 9: session proof
     catch (e) { return; }
@@ -324,6 +327,60 @@ const Sync = {
       if (p.costPrice !== val.value || p._costRv !== c._rv) { p.costPrice = val.value; p._costRv = c._rv; changed = true; }
     });
     if (changed) { try { await DB.commitDurable(); } catch (e) {} if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap(); this._rerender(); }
+  },
+
+  // ── AA-W3: access_policy adoption + SR-4 narrowing purge ──────────────────────────────────────────
+  // Version-monotonic adopt of the server-published policy blob. On a bump that REVOKES seeCost/seeArchive
+  // for the logged-in account, the now-unauthorized cached data is purged: the merged corporate-cost
+  // payload (products carrying the _costRv marker from _applyCorporateCosts) is scrubbed durably, and the
+  // in-memory archive overlay is dropped. A failed durable scrub raises 'bob_policy_purge_pending' which
+  // blocks backup export (same privacy lock as the Chunk-10 scope purge) and retries on the next adopt.
+  // NOTE (documented): locally-recorded costHistory rows are the device's OWN data and are NOT purged;
+  // the corp-costs BLOB is the "cached corporate payload" SR-4 targets. The server 403s all further cost
+  // reads regardless (SR-10).
+  async _applyAccessPolicy(raw) {
+    let blob;
+    try { blob = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return; }
+    if (!blob || typeof blob !== 'object' || !blob.roles || typeof blob.roles !== 'object') return;
+    const d = DB.get(); if (!d) return;
+    const curV = (d.accessPolicy && Number(d.accessPolicy.version)) || 0;
+    const newV = Number(blob.version) || 0;
+    if (d.accessPolicy && newV <= curV) {
+      if (typeof Auth !== 'undefined' && !Auth._policy) Auth.adoptPolicy(d.accessPolicy);   // boot path: make the persisted policy live
+      return;                                                                                // monotonic: never adopt a rollback
+    }
+    // narrowing detection for the LOGGED-IN account (SR-4) — resolve BEFORE the swap
+    let lostCost = false, lostArchive = false;
+    const u = (typeof Auth !== 'undefined' && Auth.user) ? Auth.user() : null;
+    if (u && typeof Auth.can === 'function') {
+      const hadCost = Auth.can('seeCost'), hadArch = Auth.can('seeArchive');
+      Auth.adoptPolicy(blob);
+      lostCost = hadCost && !Auth.can('seeCost');
+      lostArchive = hadArch && !Auth.can('seeArchive');
+    } else if (typeof Auth !== 'undefined' && Auth.adoptPolicy) {
+      Auth.adoptPolicy(blob);
+    }
+    d.accessPolicy = blob;
+    try { await DB.commitDurable(); } catch (e) {}   // persist failure: adopted in memory; next fetch retries
+    if (lostArchive) {
+      try {
+        if (typeof Stock !== 'undefined') Stock._archiveOverlay = null;
+        if (Array.isArray(d.transactions)) d.transactions = d.transactions.filter(t => !(t && t._archived));
+        if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
+      } catch (e) {}
+    }
+    if (lostCost) {
+      let changed = false;
+      (d.products || []).forEach(p => { if (p && p._costRv !== undefined) { p.costPrice = null; delete p._costRv; changed = true; } });
+      if (changed) {
+        let okc = false;
+        try { okc = await DB.commitDurable(); } catch (e) {}
+        try { if (okc) localStorage.removeItem('bob_policy_purge_pending'); else localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {}
+        if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap();
+      }
+    }
+    console.log('[Sync] access_policy v' + newV + ' adopted' + (lostCost || lostArchive ? ' (narrowing purge ran)' : ''));
+    this._rerender();
   },
 
   // ─── Multi-Tab Leader Election (Tier 2 Fix #15) ─────────────────────
@@ -421,6 +478,17 @@ const Sync = {
         }
       } catch (e) {
         console.warn('[Sync] stock_snapshot adopt failed (fold falls back to full-sum):', e);
+      }
+
+      // AA-W3 (Account Access): adopt the published access_policy. Absent item = pre-activation → the
+      // legacy Auth._caps seed governs (behaviour unchanged). Adoption is version-monotonic and runs the
+      // SR-4 narrowing purge for the logged-in account. Failure retains the previous policy (fail closed —
+      // the server enforces regardless).
+      try {
+        const apItem = data.items.find(i => i.ConfigType === 'access_policy');
+        if (apItem && apItem.ConfigData) await this._applyAccessPolicy(apItem.ConfigData);
+      } catch (e) {
+        console.warn('[Sync] access_policy adopt failed (previous policy retained):', e);
       }
 
       const syncItem = data.items.find(i => i.ConfigType === 'sync_config');
@@ -1465,6 +1533,15 @@ const Sync = {
         if (!scopeChecked) {
           scopeChecked = true;
           if (await this._reconcileScope(remote.scope)) return;
+          // AA-W3 (SR-4): the server also echoes the current access_policy version. A bump we haven't
+          // adopted yet forces a config re-fetch NOW (which adopts + runs the narrowing purge) instead of
+          // waiting for the next app launch.
+          try {
+            const pv = Number(remote.policyVersion);
+            if (Number.isFinite(pv) && pv > 0 && typeof Auth !== 'undefined' && pv > ((DB.get().accessPolicy && Number(DB.get().accessPolicy.version)) || 0)) {
+              this._fetchRemoteConfig().catch(() => {});
+            }
+          } catch (e) {}
         }
 
         // C1: capture the frozen ceiling from the first page response

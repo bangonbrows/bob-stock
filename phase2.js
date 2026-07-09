@@ -40,11 +40,14 @@ DB._migrate = function() {
 const Transfer = {
   EMAIL_URL: null,  // MFL-010: moved to AppConfig — fetched at runtime via Sync._emailUrl
 
-  _canCreate() { return ['franchisee','territory_manager','head_office','director'].includes(Auth.user()?.role); },  // D-018 transfer role matrix
-  _canReceive() { return Auth.isAtLeast('staff'); },
-  _canResolve() { return Auth.is('director'); },  // D-018: resolve (write-off) = director only
-  _canSetThresholds() { return Auth.is('director') || Auth.is('head_office'); },
-  _canCancel() { return Auth.is('director'); },  // D-044: cancel = Director ONLY (tightened from the D-018 franchisee&above set)
+  // AA-W3 D1: ALL transfer gates now route through the central Auth.can matrix (they were duplicate
+  // hard-coded role sets that had already drifted once, D-044). Seeds are identical sets — no behaviour
+  // change pre-activation; under an adopted access_policy these become Director-editable.
+  _canCreate() { return Auth.can('transferCreate'); },       // D-018 transfer role matrix
+  _canReceive() { return Auth.can('transferReceive'); },
+  _canResolve() { return Auth.can('resolveDiscrepancy'); },  // D-018: resolve (write-off) = director only
+  _canSetThresholds() { return Auth.can('editRefData'); },   // thresholds are ref data (same HO+director set)
+  _canCancel() { return Auth.can('transferCancel'); },       // D-044: cancel = Director ONLY
   _canViewHistory() { return Auth.can('viewTransferHistory'); },  // L3 #10: central cap (was isAtLeast('store_manager') which wrongly denied franchisee — ranks below store_manager)
 
   _txn(type, productId, qty, storeId, transferId, reason) {

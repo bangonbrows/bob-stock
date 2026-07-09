@@ -936,6 +936,7 @@ function generateDemoTransactions() {
     DB.commit();
     this._user = u;
     sessionStorage.setItem('bob_session_v5', JSON.stringify({ username: u.username, token: sessionToken }));
+    if (!this._policy && DB.get().accessPolicy) this.adoptPolicy(DB.get().accessPolicy);  // AA-W3: persisted policy governs from login
     return true;
   },
   restore() {
@@ -948,7 +949,7 @@ function generateDemoTransactions() {
       if (!username || !token) { sessionStorage.removeItem('bob_session_v5'); return; }
       // T2-02: Match ephemeral session UUID, not password hash
       const u = DB.get().users.find(u => u.username === username && u.currentSession === token);
-      if (u) { this._user = u; }
+      if (u) { this._user = u; if (!this._policy && DB.get().accessPolicy) this.adoptPolicy(DB.get().accessPolicy); }  // AA-W3
       else { sessionStorage.removeItem('bob_session_v5'); }
     } catch(e) { sessionStorage.removeItem('bob_session_v5'); }
   },
@@ -1007,16 +1008,69 @@ function generateDemoTransactions() {
     editSuppliers:      ['director'],
     viewReports:        ['director'],                                                          // profit / margin / cost-bearing reports
     viewTransferHistory:['store_manager','franchisee','territory_manager','head_office','director'], // everyone above staff (L3 #10; staff = shared store computer, excluded)
-    deleteMovement:     ['store_manager','franchisee','territory_manager','head_office','director']  // Wave M1 / GPTa-37: hard-delete a logged movement; staff use the 5-min Undo instead
+    deleteMovement:     ['store_manager','franchisee','territory_manager','head_office','director'], // Wave M1 / GPTa-37: hard-delete a logged movement; staff use the 5-min Undo instead
+    // AA-W3: the 5 VIEW toggles (D-AA-1) become caps. These seed sets reproduce TODAY'S behaviour exactly:
+    // cost column was Auth.is('director') (was index ~3256); archive was an ad-hoc 3-role check (~3086);
+    // charts = per-role nav emission (staff excluded); comparison per D10-4; selling price was UNGATED.
+    seeCost:            ['director'],
+    seeSellingPrice:    ['staff','store_manager','franchisee','territory_manager','head_office','director'],
+    seeArchive:         ['territory_manager','head_office','director'],
+    seeCharts:          ['store_manager','franchisee','territory_manager','head_office','director'],
+    seeComparativeCharts:['franchisee','territory_manager','head_office','director']
   },
+  // ── AA-W3: the ADOPTED access_policy overlay (Account Access chunk) ─────────────────────────────
+  // Auth._policy = the server-published access_policy blob (pin stripped SERVER-side before delivery).
+  // When adopted, can() resolves through the SR-7 order: explicit per-account override (FINAL) →
+  // 24h-PIN grant (stockTakeCount/transferReceive ONLY) → role/type default; unknown cap/role/no entry
+  // ⇒ DENY (fail closed). With NO adopted policy (pre-activation) can() falls back to the legacy _caps
+  // seed — behaviour identical to pre-AA builds. This MIRRORS resolveCapability() in
+  // azure-functions/src/functions/accessPolicy.js — keep the two in lockstep (parity sentinel); the
+  // server is the real gate either way (P-13).
+  _policy: null,
+  _PIN_CAPS: ['stockTakeCount', 'transferReceive'],
+  adoptPolicy(blob) {
+    if (!blob || typeof blob !== 'object' || !blob.roles || typeof blob.roles !== 'object') return false;
+    this._policy = blob; return true;
+  },
+  policyVersion() { return this._policy ? (Number(this._policy.version) || 0) : 0; },
   can(cap) {
+    const u = this._user;
+    if (!u || !cap) return false;
+    const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const pol = this._policy;
+    if (pol) {
+      const ovs = pol.overrides;
+      if (ovs && typeof ovs === 'object' && hasOwn(ovs, u.id)) {
+        const ov = ovs[u.id];
+        if (ov && typeof ov === 'object' && hasOwn(ov, cap)) return ov[cap] === true;   // override is FINAL (SR-7) — beats the PIN
+      }
+      if (this._PIN_CAPS.includes(cap) && this.hasTempStockTake()) return true;         // PIN lifts a type-default deny only
+      const roles = pol.roles;
+      if (roles && typeof roles === 'object' && hasOwn(roles, u.role)) {
+        const rd = roles[u.role];
+        if (rd && typeof rd === 'object' && hasOwn(rd, cap)) return rd[cap] === true;
+      }
+      return false;                                                                      // fail closed under an adopted policy
+    }
+    // pre-activation fallback: the legacy seed (unchanged pre-AA behaviour)
     const set = this._caps[cap];
     if (!set) return false;
-    const r = this._user?.role;
-    if (!r) return false;
     // Staff may hold a Director/HO-issued 24h temporary stock-take grant (Wave B temp code).
-    if (cap === 'stockTakeCount' && r === 'staff' && typeof this.hasTempStockTake === 'function' && this.hasTempStockTake()) return true;
-    return set.includes(r);
+    if (cap === 'stockTakeCount' && u.role === 'staff' && typeof this.hasTempStockTake === 'function' && this.hasTempStockTake()) return true;
+    return set.includes(u.role);
+  },
+  // Build the DEFAULT access_policy blob from the seed — reproduces today's behaviour EXCEPT the one
+  // Kunal-locked change (2026-07-07): the basic store account (staff) needs the 24h PIN to RECEIVE HO
+  // transfers → transferReceive default deny + PIN lift. PUBLISHING this blob is the activation moment
+  // (AA-W5 covering sentinel lands first). Used by the W4 seed/publish flow + the cutover runbook.
+  defaultPolicyBlob() {
+    const ROLES = ['staff', 'franchisee', 'store_manager', 'territory_manager', 'head_office', 'director'];
+    const roles = {};
+    ROLES.forEach(r => { roles[r] = {}; Object.keys(this._caps).forEach(c => { roles[r][c] = this._caps[c].includes(r); }); });
+    roles.staff.transferReceive = false;   // D-AA default: PIN-gated receive (SR-7 lift path)
+    const sudo = {};
+    ['publish', 'archive', 'user-admin', 'backup', 'approve', 'resolve', 'delivery', 'adjustment', 'cancel', 'access-policy'].forEach(k => { sudo[k] = 'password'; });
+    return { roles, overrides: {}, sudo };
   },
   _tempStockTake: null,  // expiry (ISO) set when a store computer unlocks via the 24h Stock-Take PIN; cleared on logout
   hasTempStockTake() { return !!(this._tempStockTake && new Date(this._tempStockTake).getTime() > Date.now()); }
@@ -2428,7 +2482,7 @@ const Pages = {
       `<button class="btn btn-secondary" onclick="Pages._rejectStockTake(this.dataset.id)" data-id="${UI.esc(t.id)}">Reject</button><button class="btn btn-primary" onclick="Pages._approveStockTake(this.dataset.id)" data-id="${UI.esc(t.id)}">✓ Approve & Adjust</button>`);
   },
   async _approveStockTake(takeId) {
-    if(!Auth.is('director')){UI.toast('Director approval only','error');return;}
+    if(!Auth.can('stockTakeApprove')){UI.toast('Director approval only','error');return;}  // AA-W3 D1: central cap (was Auth.is('director') — same set, now matrix-editable)
     if(this._stApproving)return; this._stApproving=true;
     try{
       const d=DB.get(); const t=(d.stockTakes||[]).find(x=>x.id===takeId);
@@ -2460,7 +2514,7 @@ const Pages = {
     } finally { this._stApproving=false; }
   },
   _rejectStockTake(takeId) {
-    if(!Auth.is('director')){UI.toast('Director approval only','error');return;}
+    if(!Auth.can('stockTakeApprove')){UI.toast('Director approval only','error');return;}  // AA-W3 D1: central cap
     UI.confirm('Reject Stock Take','Reject this stock take? No stock adjustments will be made and the count will be marked rejected.',async ()=>{
       const d=DB.get(); const t=(d.stockTakes||[]).find(x=>x.id===takeId); if(!t)return;
       if(t.status!=='pending'){UI.toast('Not pending','info');return;}
@@ -3083,14 +3137,14 @@ const Pages = {
     if (Array.isArray(Stock._archiveOverlay)) {
       return `<div style="font-size:.78rem;color:#065f46;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:8px 12px;margin-bottom:14px">✓ Archived history loaded — totals below INCLUDE archived movements ${bLabel}.</div>`;
     }
-    const canLoad = Auth.is('director') || Auth.is('head_office') || Auth.is('territory_manager');
+    const canLoad = Auth.can('seeArchive');  // AA-W3 D2: central cap (seed = same 3 roles as the old ad-hoc check)
     return `<div style="font-size:.78rem;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:14px">
       ⚠ This range extends ${bLabel}. Older movements are <strong>archived</strong> and are <strong>NOT included</strong> in the totals below (they would otherwise under-count).
       ${canLoad?`<button class="btn btn-secondary btn-sm" style="margin-left:8px" onclick="Pages._loadArchiveForReports()">Load archived data</button>`:'<em>Ask a Director to load the archive for full-history reports.</em>'}
     </div>`;
   },
   async _loadArchiveForReports() {
-    if (!(Auth.is('director')||Auth.is('head_office')||Auth.is('territory_manager'))) { UI.toast('Only a Director or Head Office can load archived data','error'); return; }
+    if (!Auth.can('seeArchive')) { UI.toast('You do not have permission to load archived data','error'); return; }  // AA-W3 D2: central cap
     const f=this._getRepFilters();
     UI.toast('Loading archived movements…','info');
     try {
@@ -3253,7 +3307,7 @@ const Pages = {
     const catF=_sp('sp-cat')?.value; const ptF=_sp('sp-pt')?.value; const search=_sp('sp-search')?.value.toLowerCase()||'';
     let prods=d.products.filter(p=>p.active&&(!catF||p.catId===catF)&&(!search||p.name.toLowerCase().includes(search)||p.id.toLowerCase().includes(search)));
     if(ptF){const catIds=d.categories.filter(c=>c.ptId===ptF).map(c=>c.id);prods=prods.filter(p=>catIds.includes(p.catId));}
-    const isDir=Auth.is('director'); // only Director sees cost price, not HO Admin
+    const isDir=Auth.can('seeCost'); // AA-W3 D2: cost/franchise-pricing columns keyed on the seeCost cap (seed = director only, so rendering is unchanged; granting seeCost also reveals the franchise-pricing columns — the EDIT actions stay behind editPricing)
     const franDiscOpts='<option value="">—</option><option value="5">5%</option><option value="10">10%</option><option value="20">20%</option><option value="25">25%</option><option value="50">50%</option><option value="75">75%</option><option value="100">100%</option>';
     _sp('sp-table').innerHTML=`<table><thead><tr><th>Ref</th><th>Product</th><th>Category</th><th>Type</th><th>Sell Price</th>${isDir?'<th>Cost Price</th><th style="min-width:130px">Franchise Discount</th><th>Franchise Price</th>':''}<th>Actions</th></tr></thead><tbody>${prods.map(p=>{
       const costPrice=Stock.currentCost(p.id);
@@ -3714,7 +3768,7 @@ const Pages = {
   async _exportBackup() {
     // Chunk 10 (audit GPT#4): if a store-scope purge is still pending (a prior purge failed to persist durably),
     // the local cache may still hold out-of-scope rows — block the whole-DB export until the device reconciles.
-    let _pp=false; try{ _pp=(typeof Sync!=='undefined'&&Sync._scopePurgePending)||localStorage.getItem('bob_scope_purge_pending')==='1'; }catch(e){}
+    let _pp=false; try{ _pp=(typeof Sync!=='undefined'&&Sync._scopePurgePending)||localStorage.getItem('bob_scope_purge_pending')==='1'||localStorage.getItem('bob_policy_purge_pending')==='1'; }catch(e){}  // AA-W3 (SR-4): a pending policy-narrowing purge blocks export the same way
     if(_pp){ UI.toast('Backup is paused while the app finishes a store-scope update. Sync once more, then try again.','error'); return; }
     // Chunk 9 (AGY-9-4): a backup is the whole database — gate it behind the sudo re-prompt like publish/archive.
     const _sp=await this._sudoPrompt('backup','download a full backup'); if(_sp===null)return;

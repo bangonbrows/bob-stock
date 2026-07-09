@@ -90,6 +90,7 @@ async function _persistAllToDexie(d) {
         await bobDB.meta.bulkPut([
           { key: '_v', value: d._v || 0 },
           { key: 'stockTakePin', value: d.stockTakePin || { pin: null, expiresAt: null } },
+          { key: 'accessPolicy', value: d.accessPolicy || null },  // AA-W3: adopted access_policy blob (server-published, pin already stripped server-side)
           // Fix #8: stockThresholds removed — thresholds now in d.thresholds table
         ]);
       }
@@ -132,6 +133,7 @@ async function _persistRefDataToDexie(d) {
         await bobDB.meta.bulkPut([
           { key: '_v', value: d._v || 0 },
           { key: 'stockTakePin', value: d.stockTakePin || { pin: null, expiresAt: null } },
+          { key: 'accessPolicy', value: d.accessPolicy || null },  // AA-W3: adopted access_policy blob (server-published, pin already stripped server-side)
           // Fix #8: stockThresholds removed — thresholds now in d.thresholds table
         ]);
       }
@@ -266,6 +268,7 @@ async function _loadFromDexie() {
 
   const metaV = await bobDB.meta.get('_v');
   const metaPin = await bobDB.meta.get('stockTakePin');
+  const metaPolicy = await bobDB.meta.get('accessPolicy');  // AA-W3
   // Fix #8: stockThresholds no longer loaded — thresholds unified in d.thresholds
 
   return {
@@ -283,6 +286,7 @@ async function _loadFromDexie() {
     deliveries,
     recordSteps,   // Chunk 4
     stockTakePin: metaPin ? metaPin.value : { pin: null, expiresAt: null },
+    accessPolicy: metaPolicy ? metaPolicy.value : null,  // AA-W3: null = pre-activation (legacy _caps seed governs)
     _v: metaV ? metaV.value : 0,
   };
 }
