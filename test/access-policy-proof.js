@@ -82,6 +82,15 @@ const mPin = AP.policyMerge(PEPPER, { current: POLICY, proposed: good, pinPlain:
 ok('pinPlain hashed server-side (64-hex, no plaintext)', mPin.ok && /^[0-9a-f]{64}$/.test(mPin.blob.pin.hash) && !JSON.stringify(mPin.blob).includes('4321'));
 ok('bad pin format rejected', AP.policyMerge(PEPPER, { current: POLICY, proposed: good, pinPlain: 'abc' }, NOW).reason === 'BAD_PIN');
 ok('pinClear removes pin', AP.policyMerge(PEPPER, { current: mPin.blob, proposed: good, pinClear: true }, NOW).blob.pin === null);
+// AA-03: optimistic concurrency (baseVersion) — POLICY is v3.
+ok('AA-03: matching baseVersion accepted', AP.policyMerge(PEPPER, { current: POLICY, proposed: good, baseVersion: 3 }, NOW).ok === true);
+ok('AA-03: STALE baseVersion rejected (lost-update guard)', AP.policyMerge(PEPPER, { current: POLICY, proposed: good, baseVersion: 2 }, NOW).reason === 'STALE_VERSION');
+ok('AA-03: omitted baseVersion still allowed (legacy)', AP.policyMerge(PEPPER, { current: POLICY, proposed: good }, NOW).ok === true);
+// AA-18: poisoned current.version resets base to 0 rather than wedging publishes.
+ok('AA-18: Infinity current version => next write is v1', AP.policyMerge(PEPPER, { current: { ...POLICY, version: Infinity }, proposed: good }, NOW).blob.version === 1);
+ok('AA-18: NaN current version => next write is v1', AP.policyMerge(PEPPER, { current: { ...POLICY, version: 'oops' }, proposed: good }, NOW).blob.version === 1);
+// AA-17: validatePin rejects an unparseable expiry (no NaN-exp grant).
+ok('AA-17: unparseable PIN expiry rejected', AP.validatePin(PEPPER, SECRET, { pin: '4321', actorUsername: 'booragoon', deviceContext: 'booragoon', policy: { pin: { salt: mPin.blob.pin.salt, hash: mPin.blob.pin.hash, expiresAt: 'not-a-date' } }, rows: ROWS }, NOW).ok === false);
 
 console.log('== validatePin (server-minted grant, matrix D5; AA-09 actorUsername contract) ==');
 const P_PIN = mPin.blob; // pin '4321', expires NOW+24h

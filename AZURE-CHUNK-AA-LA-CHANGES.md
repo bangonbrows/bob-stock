@@ -55,6 +55,16 @@ required check:
 | everything else | device auth + Chunk-10 scope only (unchanged) |
 Failures reject THOSE rows (`ACCESS_DENIED:<reason>`); in-scope unprivileged rows in the same batch still land.
 
+**AA-07/AA-08 — proof ABSENCE is RETRYABLE, proof REJECTION is permanent.** Distinguish two cases so a
+legitimate action isn't quarantined by a timing accident:
+- **Proof present but INVALID** (bad signature, wrong purpose, wrong device, tokenVersion bumped, account
+  denied) ⇒ permanent `ACCESS_DENIED` reject/quarantine (the real gate did its job).
+- **Proof ABSENT or EXPIRED** (the row lagged past the 5-min sudo TTL — connectivity drop, 5xx retry, the
+  Chunk-5 401 sync-pause, or a follower-tab relay that hadn't landed) ⇒ respond so the CLIENT keeps the row
+  PENDING and re-pushes (a `RETRY_PROOF` reason, treated like a soft/transient failure — NOT `rejected[]`).
+  The client re-mints on the next privileged interaction / re-prompt. A row must never be permanently lost
+  because its proof timed out in transit. (AA-07 relay + AA-08 TTL edge both land here.)
+
 ## 4. recordsteps-push ingest validation (matrix rows 4/6/7/8/9)
 Same shape. Step type → check: stock-take count/submit steps `{capability:'stockTakeCount', pinProof}`;
 approve step `{action:'approve', capability:'stockTakeApprove'}`; resolve `{action:'resolve',

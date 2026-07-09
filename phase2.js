@@ -1806,6 +1806,11 @@ window.TransferUI = {
     // grant then lifts Auth.can('transferReceive') (SR-7) and the server-minted pin-grant proof rides the
     // push for ingest validation. Inert pre-activation (staff receive freely, unchanged).
     if (!Transfer._canReceive() && Auth.user()?.role === 'staff' && typeof Pages !== 'undefined' && Pages._pinUnlockModal) {
+      // AA-26: if a Director has EXPLICITLY blocked receive for this account, the PIN can't lift it (override
+      // is FINAL) — don't offer a modal that would loop forever; say so plainly.
+      if (typeof Auth.overrideFor === 'function' && Auth.overrideFor('transferReceive') === false) {
+        UI.toast('Receiving transfers is turned off for this account.', 'error'); return;
+      }
       Pages._pinUnlockModal('receive this transfer', () => TransferUI.submitReceive(transferId));
       return;
     }

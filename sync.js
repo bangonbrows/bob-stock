@@ -173,14 +173,30 @@ const Sync = {
     } catch (e) { return { ok: false, reason: 'offline' }; }
     if (!resp.ok) return { ok: false, reason: 'denied' };
     const j = await resp.json().catch(() => ({}));
-    if (j.ok === true && j.proof) { this._pinGrantProof = { proof: j.proof, expiresAt: Number(j.expiresAt) || 0 }; return { ok: true, expiresAt: j.expiresAt }; }
+    if (j.ok === true && j.proof) { this._pinGrantProof = { proof: j.proof, expiresAt: Number(j.expiresAt) || 0 }; this._relayProof({ kind: 'pin', proof: j.proof, expiresAt: Number(j.expiresAt) || 0 }); return { ok: true, expiresAt: j.expiresAt }; }  // AA-07: relay the pin-grant to the leader
     return { ok: false, reason: 'denied' };
   },
   // Short-lived purpose-bound proofs minted at ACTION time (approve/resolve/delivery — D9-8 closure).
   // Held ≤5 min (the proof TTL) purely so the imminent debounced push can attach them.
   _actionProofs: {},
   holdActionProof(purpose, proof) {
-    if (typeof proof === 'string' && proof && proof !== '__no_person_auth__' && proof !== '__session_ok__') this._actionProofs[purpose] = { proof, at: Date.now() };
+    if (typeof proof === 'string' && proof && proof !== '__no_person_auth__' && proof !== '__session_ok__') {
+      this._actionProofs[purpose] = { proof, at: Date.now() };
+      this._relayProof({ kind: 'action', purpose, proof });   // AA-07: reach the leader tab (the only pusher)
+    }
+  },
+  // AA-07: privileged actions can happen in a NON-leader tab, but only the leader pushes. Relay the freshly
+  // minted proof to the leader IN MEMORY (BroadcastChannel — never persisted) so _withIngestProofs on the
+  // leader attaches it; otherwise the row pushes proof-less and gets permanently quarantined post-activation.
+  // Same origin = same logged-in user, so cross-tab relay stays within the account (P-13).
+  _relayProof(msg) { try { if (this._bc && !this._isLeader) this._bc.postMessage({ type: 'proof-relay', tabId: this._tabId, payload: msg }); } catch (e) {} },
+  _acceptRelayedProof(msg) {
+    if (!this._isLeader || !msg) return;                       // only the pusher stores relayed proofs
+    if (msg.kind === 'action' && typeof msg.purpose === 'string') this.holdActionProofLocal(msg.purpose, msg.proof);
+    else if (msg.kind === 'pin' && typeof msg.proof === 'string') this._pinGrantProof = { proof: msg.proof, expiresAt: Number(msg.expiresAt) || 0 };
+  },
+  holdActionProofLocal(purpose, proof) {   // store WITHOUT re-broadcasting (avoids a relay loop)
+    if (typeof proof === 'string' && proof) this._actionProofs[purpose] = { proof, at: Date.now() };
   },
   // Attach person material to an INGEST request (push / steps-push): session proof + actor (as _withPerson),
   // any live pin-grant, and the fresh action proofs. The LAs validate per row/step type (LA-CHANGES §3-4);
@@ -328,7 +344,10 @@ const Sync = {
   async publishAccessPolicy(proposed, sudoProof, pinPlain, pinClear) {
     if (!this._accessPolicyWriteUrl) return { ok: false, reason: 'no-endpoint' };
     if (this._userVerifyUrl && (!sudoProof || sudoProof === '__no_person_auth__')) return { ok: false, reason: 'needSudo' };
-    const body = { proposed, actorUsername: this._actorUsername() };
+    // AA-03: optimistic concurrency — the server rejects the write if the policy moved since we adopted, so
+    // a second Director (or the PIN-set path building from a stale draft) can't silently drop the first's edit.
+    const baseVersion = (typeof Auth !== 'undefined' && Auth.policyVersion) ? Auth.policyVersion() : 0;
+    const body = { proposed, actorUsername: this._actorUsername(), baseVersion };
     if (sudoProof && sudoProof !== '__no_person_auth__') body.proof = sudoProof;
     if (typeof pinPlain === 'string' && pinPlain) body.pinPlain = pinPlain;
     if (pinClear === true) body.pinClear = true;
@@ -398,24 +417,33 @@ const Sync = {
     if (!blob || typeof blob !== 'object' || !blob.roles || typeof blob.roles !== 'object') return;
     const d = DB.get(); if (!d) return;
     const curV = (d.accessPolicy && Number(d.accessPolicy.version)) || 0;
-    const newV = Number(blob.version) || 0;
+    const newV = Number(blob.version);
+    if (!Number.isFinite(newV) || newV < 0) return;                                          // AA-18: reject non-finite/negative version (can't wedge future publishes)
     if (d.accessPolicy && newV <= curV) {
       if (typeof Auth !== 'undefined' && !Auth._policy) Auth.adoptPolicy(d.accessPolicy);   // boot path: make the persisted policy live
+      await this._reconcilePolicyPurge();                                                     // AA-05: clear any stuck purge even on a no-op adopt
       return;                                                                                // monotonic: never adopt a rollback
     }
-    // narrowing detection for the LOGGED-IN account (SR-4) — resolve BEFORE the swap
-    let lostCost = false, lostArchive = false;
+    // AA-04: the narrowing decision runs off the DEVICE, not the session. The corp-cost payload
+    // (_costRv-marked products) is server-granted material; if the device holds it and EITHER the logged-in
+    // account loses seeCost OR we adopt while logged-OUT (the normal morning boot — can't evaluate per
+    // account), purge it. An authorized device re-populates via the seeCost-gated _fetchCorporateCosts.
+    const hadCostPayload = (d.products || []).some(p => p && p._costRv !== undefined);
+    let lostArchive = false, lostCost = false;
     const u = (typeof Auth !== 'undefined' && Auth.user) ? Auth.user() : null;
     if (u && typeof Auth.can === 'function') {
       const hadCost = Auth.can('seeCost'), hadArch = Auth.can('seeArchive');
       Auth.adoptPolicy(blob);
       lostCost = hadCost && !Auth.can('seeCost');
       lostArchive = hadArch && !Auth.can('seeArchive');
-    } else if (typeof Auth !== 'undefined' && Auth.adoptPolicy) {
-      Auth.adoptPolicy(blob);
+    } else {
+      if (typeof Auth !== 'undefined' && Auth.adoptPolicy) Auth.adoptPolicy(blob);
+      lostCost = hadCostPayload;                                                              // logged-out + holds cost payload ⇒ purge (device-safe)
     }
     d.accessPolicy = blob;
-    try { await DB.commitDurable(); } catch (e) {}   // persist failure: adopted in memory; next fetch retries
+    let okPolicy = false;
+    try { okPolicy = await DB.commitDurable(); } catch (e) {}
+    if (!okPolicy) { try { localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {} }  // AA-05(a): persist failed — force a reconcile so a reload can't silently un-narrow
     if (lostArchive) {
       try {
         if (typeof Stock !== 'undefined') Stock._archiveOverlay = null;
@@ -423,18 +451,30 @@ const Sync = {
         if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
       } catch (e) {}
     }
-    if (lostCost) {
-      let changed = false;
-      (d.products || []).forEach(p => { if (p && p._costRv !== undefined) { p.costPrice = null; delete p._costRv; changed = true; } });
-      if (changed) {
-        let okc = false;
-        try { okc = await DB.commitDurable(); } catch (e) {}
-        try { if (okc) localStorage.removeItem('bob_policy_purge_pending'); else localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {}
-        if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap();
-      }
-    }
+    if (lostCost) { try { localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {} await this._purgeCostPayload(); }
     console.log('[Sync] access_policy v' + newV + ' adopted' + (lostCost || lostArchive ? ' (narrowing purge ran)' : ''));
     this._rerender();
+  },
+  // AA-04/AA-05: device-level cost-payload scrub with a version-independent pending flag (mirrors the
+  // Chunk-10 scope purge). Removes the server-granted _costRv payload durably; a failed commit keeps
+  // 'bob_policy_purge_pending' set (blocks backup export) so the next boot/pull reconcile retries.
+  async _purgeCostPayload() {
+    const d = DB.get(); if (!d) return true;
+    let changed = false;
+    (d.products || []).forEach(p => { if (p && p._costRv !== undefined) { p.costPrice = null; delete p._costRv; changed = true; } });
+    if (!changed) { try { localStorage.removeItem('bob_policy_purge_pending'); } catch (e) {} return true; }
+    let ok = false;
+    try { ok = await DB.commitDurable(); } catch (e) {}
+    try { if (ok) localStorage.removeItem('bob_policy_purge_pending'); else localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {}
+    if (typeof Stock !== 'undefined' && Stock._invalidateThrMap) Stock._invalidateThrMap();
+    return ok;
+  },
+  // AA-05: version-independent reconciler — retries a stuck cost purge on boot + every pull, regardless of
+  // the policy version (the monotonic adopt guard can't re-trigger it). Called next to _reconcileScope.
+  async _reconcilePolicyPurge() {
+    let pending = false;
+    try { pending = localStorage.getItem('bob_policy_purge_pending') === '1'; } catch (e) {}
+    if (pending) await this._purgeCostPayload();
   },
 
   // ─── Multi-Tab Leader Election (Tier 2 Fix #15) ─────────────────────
@@ -876,10 +916,26 @@ const Sync = {
           setTimeout(() => this._tryClaimLeader(), Math.random() * 300);
           break;
 
+        case 'proof-relay':
+          // AA-07: a non-leader tab minted a privileged/pin proof — the leader (sole pusher) stores it in
+          // memory so the imminent push carries it. Ignored unless we're the leader.
+          this._acceptRelayedProof(msg.payload);
+          break;
+
         case 'db-updated':
           // Leader synced new data — refresh our cache
           if (!this._isLeader && typeof DB !== 'undefined' && DB.refresh) {
             DB.refresh().then(() => {
+              // AA-06: the leader may have adopted a new access_policy. A follower's real gate is
+              // Auth._policy (set only at login/restore/init), so re-adopt the refreshed persisted policy
+              // and retry a stuck cost purge — else the follower's can(revokedCap) stays stale until reload.
+              try {
+                if (typeof Auth !== 'undefined' && Auth.adoptPolicy) {
+                  const ap = DB.get().accessPolicy;
+                  if (ap) Auth.adoptPolicy(ap); else Auth._policy = null;
+                }
+              } catch (e) {}
+              this._reconcilePolicyPurge().catch(() => {});
               this._rerender();
               console.log('[Sync] Cache refreshed from leader sync.');
             });
@@ -1599,6 +1655,7 @@ const Sync = {
               this._fetchRemoteConfig().catch(() => {});
             }
           } catch (e) {}
+          this._reconcilePolicyPurge().catch(() => {});   // AA-05: retry a stuck cost purge every pull, version-independent
         }
 
         // C1: capture the frozen ceiling from the first page response

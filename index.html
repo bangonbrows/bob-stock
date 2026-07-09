@@ -1009,13 +1009,15 @@ function generateDemoTransactions() {
     viewReports:        ['director'],                                                          // profit / margin / cost-bearing reports
     viewTransferHistory:['store_manager','franchisee','territory_manager','head_office','director'], // everyone above staff (L3 #10; staff = shared store computer, excluded)
     deleteMovement:     ['store_manager','franchisee','territory_manager','head_office','director'], // Wave M1 / GPTa-37: hard-delete a logged movement; staff use the 5-min Undo instead
-    // AA-W3: the 5 VIEW toggles (D-AA-1) become caps. These seed sets reproduce TODAY'S behaviour exactly:
+    // AA-W3: the VIEW toggles (D-AA-1) become caps. These seed sets reproduce TODAY'S behaviour exactly:
     // cost column was Auth.is('director') (was index ~3256); archive was an ad-hoc 3-role check (~3086);
-    // charts = per-role nav emission (staff excluded); comparison per D10-4; selling price was UNGATED.
+    // comparison per D10-4; selling price was UNGATED. AA-02: `seeCharts` was DROPPED — general charts are
+    // scattered across the shared dashboard (staff land there too) with no clean guard point and are
+    // low-sensitivity; a matrix toggle that couldn't be enforced would lie. seeComparativeCharts (the
+    // cross-store report PAGE) IS enforceable and kept; seeSellingPrice is enforced on the products table.
     seeCost:            ['director'],
     seeSellingPrice:    ['staff','store_manager','franchisee','territory_manager','head_office','director'],
     seeArchive:         ['territory_manager','head_office','director'],
-    seeCharts:          ['store_manager','franchisee','territory_manager','head_office','director'],
     seeComparativeCharts:['franchisee','territory_manager','head_office','director'],
     // AA-W4: meta-capability — WHO may edit the access policy itself. Director-only, floored server-side
     // (always-password + policyMerge DIRECTOR_LOCKOUT invariant keeps directors holding it).
@@ -1036,6 +1038,16 @@ function generateDemoTransactions() {
     this._policy = blob; return true;
   },
   policyVersion() { return this._policy ? (Number(this._policy.version) || 0) : 0; },
+  // AA-26: does the current account carry an EXPLICIT per-account override for cap? Returns true/false when
+  // set, undefined when no override (so callers can tell "Director explicitly blocked" from "role default").
+  overrideFor(cap) {
+    const u = this._user, pol = this._policy;
+    if (!u || !pol || !pol.overrides || typeof pol.overrides !== 'object') return undefined;
+    const uname = String(u.username || '');
+    const ov = (uname && Object.prototype.hasOwnProperty.call(pol.overrides, uname)) ? pol.overrides[uname] : null;
+    if (ov && typeof ov === 'object' && Object.prototype.hasOwnProperty.call(ov, cap)) return ov[cap] === true;
+    return undefined;
+  },
   _RESERVED_CAP: { __proto__: 1, constructor: 1, prototype: 1 },  // AA-11: mirror accessPolicy.js RESERVED
   can(cap) {
     const u = this._user;
@@ -1679,7 +1691,7 @@ _toastQueue:[],
 const PIN = {
   _timer:null, _entry:'', _timeout:600000,
   reset() { clearTimeout(this._timer); this._timer=setTimeout(()=>this.lock(),this._timeout); },
-  lock()  { if(!Auth.user())return; if(typeof Sync!=='undefined'&&Sync.clearPersonProofs)Sync.clearPersonProofs(); /* Chunk 9 deep-audit: the idle/manual lock MUST wipe the in-memory session proof (its own contract) — else a walked-away, locked device still holds a 12h proof reachable via DevTools/background reads */ document.getElementById('pin-overlay').classList.add('show'); this._entry=''; this.renderDots(); },
+  lock()  { if(!Auth.user())return; if(typeof Sync!=='undefined'&&Sync.clearPersonProofs)Sync.clearPersonProofs(); _stTakeUnlocked=false; Auth._tempStockTake=null; /* AA-25: lock also clears the client PIN-unlock flag/grant — clearPersonProofs wipes the server pin-grant, so leaving _tempStockTake set would show the UI unlocked while every push is rejected proof-less. Force a re-PIN after an idle lock. */ /* Chunk 9 deep-audit: the idle/manual lock MUST wipe the in-memory session proof (its own contract) — else a walked-away, locked device still holds a 12h proof reachable via DevTools/background reads */ document.getElementById('pin-overlay').classList.add('show'); this._entry=''; this.renderDots(); },
   renderDots() {
     document.querySelectorAll('.pin-dot').forEach((d,i)=>d.classList.toggle('filled',i<this._entry.length));
     document.getElementById('pin-error').textContent='';
@@ -2849,6 +2861,7 @@ const Pages = {
 
   // ── HO: Store Comparison (with date range picker) ──
   hoComparison() {
+    if(!Auth.can('seeComparativeCharts')){navigateTo('log-movement');return;}  // AA-02: top-of-page guard (was nav-emission only; seed = franchisee+ so pre-activation parity holds)
     const d=DB.get(); const isFran=Auth.isFranchisee();
     const storeIds=isFran?Auth.storeIds():null;
     const isDir=Auth.is('director');
@@ -3316,13 +3329,14 @@ const Pages = {
     let prods=d.products.filter(p=>p.active&&(!catF||p.catId===catF)&&(!search||p.name.toLowerCase().includes(search)||p.id.toLowerCase().includes(search)));
     if(ptF){const catIds=d.categories.filter(c=>c.ptId===ptF).map(c=>c.id);prods=prods.filter(p=>catIds.includes(p.catId));}
     const isDir=Auth.can('seeCost'); // AA-W3 D2: cost/franchise-pricing columns keyed on the seeCost cap (seed = director only, so rendering is unchanged; granting seeCost also reveals the franchise-pricing columns — the EDIT actions stay behind editPricing)
+    const seeSell=Auth.can('seeSellingPrice'); // AA-02: hide the Sell Price column when the policy denies it (seed = everyone, so pre-activation the column shows exactly as before)
     const franDiscOpts='<option value="">—</option><option value="5">5%</option><option value="10">10%</option><option value="20">20%</option><option value="25">25%</option><option value="50">50%</option><option value="75">75%</option><option value="100">100%</option>';
-    _sp('sp-table').innerHTML=`<table><thead><tr><th>Ref</th><th>Product</th><th>Category</th><th>Type</th><th>Sell Price</th>${isDir?'<th>Cost Price</th><th style="min-width:130px">Franchise Discount</th><th>Franchise Price</th>':''}<th>Actions</th></tr></thead><tbody>${prods.map(p=>{
+    _sp('sp-table').innerHTML=`<table><thead><tr><th>Ref</th><th>Product</th><th>Category</th><th>Type</th>${seeSell?'<th>Sell Price</th>':''}${isDir?'<th>Cost Price</th><th style="min-width:130px">Franchise Discount</th><th>Franchise Price</th>':''}<th>Actions</th></tr></thead><tbody>${prods.map(p=>{
       const costPrice=Stock.currentCost(p.id);
       const franStore=d.stores.find(s=>s.isFranchise&&s.active);
       const discPct=(p.franchiseDiscount||null)??franStore?.franchiseDiscount??null;  // Wave M2 / GPTa-41: a stored 0 means "not set" → inherit store default
       const franPrice=p.price&&discPct!=null?p.price*(1-discPct/100):null;
-      return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td><td>${p.price?UI.fmt(p.price):(Stock.isConsumableProduct(p)?'<span style="color:#9ca3af;font-size:.75rem">Consumable</span>':'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>')}</td>${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
+      return `<tr><td style="color:#9ca3af;font-size:.75rem">${p.id}</td><td><strong>${p.name}</strong></td><td>${UI.catName(p.catId)}</td><td><span class="badge badge-rose">${UI.ptName(d.categories.find(c=>c.id===p.catId)?.ptId)}</span></td>${seeSell?`<td>${p.price?UI.fmt(p.price):(Stock.isConsumableProduct(p)?'<span style="color:#9ca3af;font-size:.75rem">Consumable</span>':'<span style="color:#d97706;font-size:.75rem">⚠ Missing</span>')}</td>`:''}${isDir?`<td>${costPrice!==null?`<strong>${UI.fmt(costPrice)}</strong>`:'<span class="badge badge-red" style="font-size:.7rem">Not set</span>'}</td><td><select class="form-select" style="font-size:.75rem;padding:3px 6px;max-width:120px" onchange="Pages._setProductFranDisc('${p.id}',this.value)">${franDiscOpts.replace(`value="${p.franchiseDiscount||''}"`,`value="${p.franchiseDiscount||''}" selected`)}</select>${discPct==null?'<span style="color:#dc2626;font-size:.68rem;margin-left:4px">⚠</span>':''}</td><td>${franPrice?`<span style="color:#7c3aed;font-weight:600">${UI.fmt(franPrice)}</span>`:'<span style="color:#9ca3af">—</span>'}</td>`:''}<td style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="Pages._editProductModal('${p.id}')">Edit</button><button class="btn btn-sm btn-danger" onclick="Pages._deleteProduct('${p.id}')">Remove</button></td></tr>`;
     }).join('')}</tbody></table>`;
   },
   async _setProductFranDisc(productId, val) {
@@ -3771,6 +3785,11 @@ const Pages = {
     const walk=v=>{ if(Array.isArray(v)){v.forEach(walk);} else if(v&&typeof v==='object'){ for(const k in v){ if(deny.has(k)) delete v[k]; else walk(v[k]); } } };
     walk(o);
     if(o&&o.stockTakePin&&typeof o.stockTakePin==='object') o.stockTakePin.pin=null;  // the live 24h stock-take PIN grant is reusable access — strip it
+    // AA-28: the access_policy is SERVER-owned and re-delivered on the next sync — it must NEVER travel in a
+    // backup. On EXPORT: don't leak the adopted policy. On IMPORT: a crafted backup can't push a device into
+    // an unpublished policy (a granting overrides map) or version-pin it (a high version blocking future
+    // server policies). Same under-inclusive-scrub root cause as the session/SAS strip.
+    if(o&&typeof o==='object') delete o.accessPolicy;
     return o;
   },
   async _exportBackup() {
@@ -3782,6 +3801,9 @@ const Pages = {
     const _sp=await this._sudoPrompt('backup','download a full backup'); if(_sp===null)return;
     const clean=this._scrubBackupSecrets(Auth._slimActorsDeep(JSON.parse(JSON.stringify(DB.get()))));  // SA-I-F1: slim actors; C1: + strip reusable session/config material
     if(Array.isArray(clean.transactions)) clean.transactions=clean.transactions.filter(t=>!(t&&t._archived));  // Chunk 8: report-overlay archived rows are session-only, never part of a backup (they live in the cloud archive)
+    if(typeof Auth!=='undefined'&&Auth._policy&&!Auth.can('seeCost')&&Array.isArray(clean.products)){  // AA-04: when the adopted policy denies seeCost, corporate cost must not leave in a backup (the server can't backstop data-at-rest)
+      clean.products.forEach(p=>{ if(p){ p.costPrice=null; delete p._costRv; } });
+    }
     let checksum=''; try{ checksum=await sha256(JSON.stringify(clean)); }catch(e){}
     clean._meta={ app:'bob-stock', backupFormat:this._BACKUP_FORMAT, exportedAt:new Date().toISOString(), checksum };  // C1: integrity markers (app id + schema/format + timestamp + checksum)
     const blob=new Blob([JSON.stringify(clean,null,2)],{type:'application/json'});
@@ -4886,7 +4908,7 @@ const Pages = {
     manageUsers:'Manage users', editRefData:'Edit products & reference data', editSuppliers:'Edit suppliers',
     viewReports:'View profit / margin reports', viewTransferHistory:'View transfer history', deleteMovement:'Delete logged movements',
     seeCost:'See cost prices', seeSellingPrice:'See selling prices', seeArchive:'See older / archived data',
-    seeCharts:'See charts', seeComparativeCharts:'See store-comparison charts', editAccessPolicy:'Edit this access policy'
+    seeComparativeCharts:'See store-comparison charts', editAccessPolicy:'Edit this access policy'
   },
   _AP_ROLE_LABELS: { staff:'Store account', store_manager:'Store manager', franchisee:'Franchisee', territory_manager:'Territory mgr', head_office:'Head office', director:'Director' },
   _AP_SUDO_LABELS: { publish:'Publish catalogue', archive:'Run ledger archive', 'user-admin':'User management', backup:'Backup export / restore', approve:'Approve stock takes', resolve:'Resolve discrepancies', delivery:'Record deliveries', adjustment:'Stock adjustments', cancel:'Cancel transfers', 'access-policy':'Edit access policy' },
@@ -5591,12 +5613,15 @@ const Pages = {
     setTimeout(()=>document.getElementById('pin-modal-inp')?.focus(),50);
   },
   async _pinModalSubmit(){
-    const entered=document.getElementById('pin-modal-inp')?.value;
-    const r=await this._verifyPinValue(entered);
-    if(!r.ok){ const e=document.getElementById('pin-modal-err'); if(e)e.textContent=r.err; return; }
-    UI.closeModal(); UI.toast('Unlocked — PIN window active','success');
-    const next=this._pinModalNext; this._pinModalNext=null;
-    if(typeof next==='function'){ try{ next(); }catch(e){console.error(e);} }
+    if(this._pinSubmitting)return; this._pinSubmitting=true;  // AA-27: re-entrancy guard — a double-tap must not fire the follow-on action twice / close the next dialog
+    try{
+      const entered=document.getElementById('pin-modal-inp')?.value;
+      const r=await this._verifyPinValue(entered);
+      if(!r.ok){ const e=document.getElementById('pin-modal-err'); if(e)e.textContent=r.err; return; }
+      UI.closeModal(); UI.toast('Unlocked — PIN window active','success');
+      const next=this._pinModalNext; this._pinModalNext=null;
+      if(typeof next==='function'){ try{ next(); }catch(e){console.error(e);} }
+    } finally { this._pinSubmitting=false; }
   },
   // AA-W5 (D-AA-5): action-time sudo for approve/resolve/delivery. STRICTLY inert pre-activation (no
   // adopted policy → no prompt, behaviour unchanged). Under a policy: the sudo map decides — 'session'

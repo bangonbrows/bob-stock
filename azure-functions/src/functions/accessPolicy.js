@@ -128,6 +128,14 @@ function policyMerge(pepper, body, nowMs) {
   const current = body.current && typeof body.current === 'object' ? body.current : null;
   const p = body.proposed && typeof body.proposed === 'object' ? body.proposed : null;
   if (!p) return { ok: false, reason: 'BAD_REQUEST' };
+  // AA-03: optimistic concurrency. If the caller sent the version it edited against, it MUST equal the
+  // current server version — otherwise a concurrent publish already advanced it and this write would silently
+  // overwrite the other Director's change. (Omitted baseVersion = legacy/unversioned caller, allowed.)
+  if (body.baseVersion != null) {
+    const bv = Number(body.baseVersion);
+    const cv = Number(current && current.version) || 0;
+    if (!Number.isFinite(bv) || bv !== cv) return { ok: false, reason: 'STALE_VERSION' };
+  }
 
   // roles
   if (!p.roles || typeof p.roles !== 'object' || Array.isArray(p.roles) || badKeys(p.roles, KEY_RE)) return { ok: false, reason: 'BAD_ROLES' };
@@ -158,7 +166,11 @@ function policyMerge(pepper, body, nowMs) {
     pin = { salt, hash: computeHash(pepper, PIN_USERNAME, salt, body.pinPlain), expiresAt: new Date(nowMs + 24 * 60 * 60 * 1000).toISOString() };
   }
 
-  const blob = { version: (Number(current && current.version) || 0) + 1, roles: p.roles, overrides: ovs, sudo: mergedSudo, pin };
+  // AA-18: integer-sanitise the base version so a poisoned `current.version` (Infinity/NaN/float/huge)
+  // can't wedge all future publishes. A non-finite or out-of-range current resets to 0.
+  const curV = Number(current && current.version);
+  const base = (Number.isInteger(curV) && curV >= 0 && curV < Number.MAX_SAFE_INTEGER) ? curV : 0;
+  const blob = { version: base + 1, roles: p.roles, overrides: ovs, sudo: mergedSudo, pin };
   const json = JSON.stringify(blob);
   if (json.length > MAX_POLICY_JSON) return { ok: false, reason: 'TOO_LARGE' };
   return { ok: true, blob, version: blob.version };
@@ -178,8 +190,10 @@ function validatePin(pepper, proofSecret, body, nowMs) {
   // burn equal hash work on every path (anti-oracle, same discipline as evaluateUser)
   const computed = computeHash(pepper, PIN_USERNAME, String((cfg && cfg.salt) || 'dummy-salt'), pinEntry || 'x');
   if (!cfg || !pinEntry) return { ok: false };
-  const expIso = toIso(cfg.expiresAt);
-  if (!(expIso !== '' && expIso > nowIso)) return { ok: false };                   // PIN expired/unset
+  // AA-17: numeric expiry guard — a lexical string compare on an unparseable expiresAt could pass; require a
+  // finite parse AND a future instant (never mint a grant whose exp would be NaN).
+  const expMsParsed = Date.parse(toIso(cfg.expiresAt));
+  if (!(Number.isFinite(expMsParsed) && expMsParsed > nowMs)) return { ok: false };  // PIN expired/unset/unparseable
   const sh = String(cfg.hash || '');
   if (!/^[0-9a-f]{64}$/i.test(sh)) return { ok: false };
   try {
@@ -189,7 +203,7 @@ function validatePin(pepper, proofSecret, body, nowMs) {
   const actor = typeof body.actorUsername === 'string' ? body.actorUsername : (typeof body.username === 'string' ? body.username : '');  // AA-09: prefer actorUsername; accept username for back-compat
   const row = rows.find(r => r && r.Username === actor);
   if (!row || !rowUsable(row, nowIso)) return { ok: false };
-  const expMs = Math.min(Date.parse(expIso), nowMs + 24 * 60 * 60 * 1000);
+  const expMs = Math.min(expMsParsed, nowMs + 24 * 60 * 60 * 1000);
   const payload = {
     u: String(row.UserId || ''), un: String(row.Username || ''), r: String(row.Role || ''),
     p: PIN_GRANT_PURPOSE, dc: deviceContext, tv: Number(row.TokenVersion) || 0,
