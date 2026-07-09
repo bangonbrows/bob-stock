@@ -1,9 +1,10 @@
 # Account Access Model — configurable permissions (SCOPE STUB — design WITH Kunal before building)
 
-**Status:** DESIGN DECISIONS LOCKED 2026-07-09 (Kunal + Claude design session) — see §Decisions below; they
-GOVERN the build. Next: spec review with Codex + AGY (paper review, parallel OK), then build + audit as its own
-chunk. Org-structure tools (§C) were SPLIT OUT to their own sibling chunk — see `AZURE-CHUNK-ORG-STRUCTURE.md`
-(D-AA-4). Originally captured 2026-07-07.
+**Status:** DESIGN DECISIONS LOCKED 2026-07-09 (Kunal + Claude design session) — see §Decisions below. SPEC
+REVIEW R1 DONE 2026-07-09 (Codex BLOCK ×8 + AGY, all findings triaged REAL) — adopted changes folded as
+§SR-1..SR-11 below; they GOVERN the build together with the Decisions. Next: Kunal reviews the fold → round 2
+with both auditors (convergence), then build + audit as its own chunk. Org-structure tools (§C) were SPLIT OUT
+to their own sibling chunk — see `AZURE-CHUNK-ORG-STRUCTURE.md` (D-AA-4). Originally captured 2026-07-07.
 
 ## What Kunal wants
 A **screen where the Director edits account access levels** — a UI over the permission matrix — with:
@@ -93,8 +94,9 @@ Director CAN do, WHICH ones re-prompt for the password (the D9-6 sudo second-fac
   franchisee) and force a capability on/off for it, overriding its type default. Store accounts are one-per-store
   (Chunk 9 account model), so the Booragoon example = an override on the Booragoon POS account. NO group rules
   ("all managers at store X") in v1 — expressible by ticking the individual accounts; addable later without
-  redesign because the matrix is data-driven. Resolution order: type default → per-account override → 24h-PIN
-  temp grant.
+  redesign because the matrix is data-driven. Resolution order: *(as first written:* type default → per-account
+  override → 24h-PIN temp grant — **ORDER SUPERSEDED by SR-7**: an explicit per-account override is FINAL and
+  beats the PIN grant.*)*
 - **(standing, 2026-07-07) the 24h-PIN-to-RECEIVE default** (store account needs the PIN to receive HO
   transfers — a behaviour CHANGE from today) lands as part of this chunk, with a covering sentinel.
 - **D-AA-3 — custom account types: PLUMBING now, UI deferred.** Roles become data-driven in this chunk (the
@@ -113,13 +115,69 @@ Director CAN do, WHICH ones re-prompt for the password (the D9-6 sudo second-fac
   set (publish / archive / user-admin / backup + the §D list) starts ON; day-to-day stock in/out OFF. FUTURE
   (Kunal): possibly extend the re-prompt policy to non-Director account types — capture, don't build.
 
-## Design shape (sketch — confirm at design time)
-- Persist an editable capability matrix + per-store overrides in AppConfig (master_data-style) OR a dedicated
-  `AccessPolicy` config item, published like the catalogue (Director-gated write, converges to devices).
-- The existing `Auth._caps` becomes the DEFAULT seed; the screen edits an overlay; `Auth.can(cap, storeId)`
-  consults type-default → per-store override → 24h-PIN grant.
-- CLIENT enforcement is UX/convenience (P-13); the SERVER (Chunk 10 scoping + the gated LAs) is the real gate —
-  so any capability that writes sensitive rows must ALSO be enforced server-side, not just in the editable UI.
+## ADOPTED SPEC-REVIEW CHANGES (R1 — Codex BLOCK ×8 + AGY, folded 2026-07-09)
+Both auditors reviewed the paper spec; every finding triaged REAL. These GOVERN the build alongside the
+Decisions. Where an SR conflicts with earlier sketch text, the SR wins.
+
+- **SR-1 (Codex-1 BLOCK + AGY convergent) — security floor EXTENDED to access-policy edits.** Editing the
+  capability matrix itself — type defaults, per-account overrides, role definitions, the PIN defaults — is
+  ALWAYS-password (sudo), non-disableable, exactly like editing the sudo policy and Director add/remove/
+  role-change. Rationale: the matrix IS the lock; an unlocked Director session must not be able to grant itself
+  (or any account) capabilities without re-auth. Extends D-AA-5(b).
+- **SR-2 (Codex-2 BLOCK + AGY convergent) — policy source of truth = SERVER-owned rows, fail-CLOSED.** The
+  Chunk-10 rule applied to policy: the gated LAs read the access policy AND the sudo policy ONLY from
+  server-owned `AccessPolicy` state — NEVER from client payloads, client-cached copies, or claims in the
+  request. Missing / stale / unparseable policy ⇒ FAIL CLOSED (deny the capability; for sudo evaluation, demand
+  a full sudo proof). The client's copy of the policy is display/UX only.
+- **SR-3 (Codex-3 + AGY convergent) — a per-capability P-13 ENFORCEMENT MATRIX is a REQUIRED build artifact.**
+  Before build, the spec must map EVERY capability (15 gates + 5 view toggles) to: server endpoint(s) touched,
+  proof purpose required, policy lookup performed, and failure mode (fail-closed). Capabilities with no server
+  surface are explicitly labelled CLIENT-ONLY-CONVENIENCE (per P-13, tamperable — accepted). Concrete hole
+  named by both auditors, closed here: **24h-PIN-to-receive is enforced SERVER-side** — the receive write path
+  must validate a server-issued PIN/capability grant, not just Chunk 10's ToStoreId scope check.
+- **SR-4 (Codex-4) — `accessPolicyVersion` lifecycle, mirroring Chunk 10's scopeVersion.** Every policy edit
+  bumps the version. On a NARROWING change (revoke of see-cost / see-selling / see-archive / comparative
+  charts / etc.), devices must PURGE the now-unauthorized cached data — cost fields, archive rows/overlays,
+  snapshots, report caches — and block the affected surface until a clean re-pull. Revoke must mean GONE, not
+  hidden.
+- **SR-5 (Codex-5) — doc contradiction fixed: the resolver is per-ACCOUNT, not per-store.** Policy overlay keys
+  on accountId (+ role name as the type-default key). `Auth.can(cap)` needs no storeId parameter for override
+  identity; StoreIds remain ROW-scope only (Chunk 10) and never identify an override. The superseded "per-store
+  override / `Auth.can(cap, storeId)`" sketch below is corrected.
+- **SR-6 (Codex-6 + AGY convergent) — D10-9 cutoff ENFORCEMENT ships in THIS chunk; the org chunk only ships
+  the tool that SETS cutoffs.** Archive-pull (and any cost-bearing history read) FAILS CLOSED for a franchise
+  store with no takeover-cutoff record: serve nothing older than the store's cutoff (or nothing pre-scope if no
+  cutoff exists). Granting "see older/archived data" to a franchisee must be INCAPABLE of exposing pre-takeover
+  corporate cost history, even before the org chunk exists.
+- **SR-7 (AGY, NEW) — explicit per-account override BEATS the 24h PIN.** Corrected resolution order:
+  **explicit per-account override (allow OR deny — FINAL) → 24h-PIN temp grant → type default.** The PIN lifts
+  a type-default restriction; it must never trump a Director's explicit deny. Supersedes the order first
+  written in D-AA-2.
+- **SR-8 (Codex-7) — proofs bind account + policy version; LAs evaluate CURRENT server policy.** Chunk-9 proofs
+  carry userId/role/purpose/device; under data-driven roles the LAs' authorization model is "evaluate the
+  current server-side policy for this action" — hard-coded role allowlists in LAs are demoted to
+  defense-in-depth only, never the real gate. Role STRINGS in a request are never trusted as authorization.
+- **SR-9 (Codex-8) — the manual-onboarding fallback is a CONTROLLED runbook, not hand edits.** Folded into
+  `AZURE-CHUNK-ORG-STRUCTURE.md`: if Claude onboards the new franchisee manually, it is via a scripted admin
+  path that updates StoreIds, scopeVersion, access-policy defaults, and the D10-9 cutoff ATOMICALLY. Direct
+  ad-hoc SharePoint row edits are forbidden under this model.
+- **SR-10 (AGY) — Chunk-6 cost-strip under a dynamic matrix defaults to STRIP.** When "see cost" becomes a
+  toggle, the server cost-strip's safe default is STRIP unless the policy explicitly grants see-cost;
+  missing/unreadable policy ⇒ strip (fail-closed). Sentinel coverage required for the strip-under-dynamic-policy
+  path (a misconfig must fail private, not fail exposed).
+- **SR-11 (AGY, acknowledged) — sudo toggles on purely-LOCAL actions are cosmetic.** Already the stated P-13
+  posture (§D): no server gate exists for local stock in/out, so a DevTools user can bypass the client prompt.
+  Recorded explicitly so no audit ever mistakes the local toggle for enforcement.
+
+## Design shape (sketch — corrected per SR-5/SR-7)
+- Persist an editable capability matrix + PER-ACCOUNT overrides in a dedicated `AccessPolicy` config item,
+  published like the catalogue (Director-gated write, sudo-floored per SR-1, converges to devices),
+  version-stamped per SR-4.
+- The existing `Auth._caps` becomes the DEFAULT seed keyed by role name; the screen edits an overlay keyed by
+  accountId; `Auth.can(cap)` consults: explicit per-account override (FINAL) → 24h-PIN temp grant → type
+  default. StoreIds are row-scope only (Chunk 10), never override identity.
+- CLIENT enforcement is UX/convenience (P-13); the SERVER (Chunk 10 scoping + the gated LAs reading
+  server-owned policy per SR-2/SR-8) is the real gate — every sensitive capability per the SR-3 matrix.
 - Interacts with Chunk 10 (row-level store scoping by the account's StoreIds).
 
 ## Sequencing (LOCKED 2026-07-09)

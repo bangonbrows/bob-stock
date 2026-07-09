@@ -5,8 +5,14 @@
 chunk is built, then build + audit as its own unit, BEFORE the 6-way milestone blind audit.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
-build slips past that, fallback = Claude onboards them manually (accounts + stores + scopes set up directly);
-the tools then serve the next onboarding.
+build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
+R1, Codex-8) the fallback is a CONTROLLED scripted runbook/admin path that updates StoreIds, scopeVersion,
+access-policy defaults, and the D10-9 takeover cutoff ATOMICALLY. Direct ad-hoc SharePoint row edits are
+FORBIDDEN — a hand edit that skips the scope-version bump leaves devices holding data they're no longer
+entitled to. The tools then serve the next onboarding.
+
+**NOTE (SR-6, folded 2026-07-09):** D10-9 cutoff ENFORCEMENT (archive/cost reads fail closed without a cutoff
+record) ships in the ACCOUNT ACCESS chunk; THIS chunk ships only the tooling that SETS cutoffs on conversion.
 
 ## Scope (from the Account Access chunk's §C, Kunal 2026-07-07)
 Director-facing tools that change the account/store TOPOLOGY (which stores exist, who owns them, which accounts
