@@ -15,6 +15,10 @@ const path = require('path');
 const fs = require('fs');
 
 const DEFAULT_REPO = path.resolve(__dirname, '..');
+// AA-12: the server resolver, required so S-247 can assert client/server parity in-gate (closes the
+// "mirrored verbatim" claim that had no test). Loaded against DEFAULT_REPO's module — mutation runs copy
+// accessPolicy.js into the temp repo, so a one-sided edit to EITHER resolver diverges and flips S-247.
+let AP_PARITY = null; try { AP_PARITY = require(path.join(DEFAULT_REPO, 'azure-functions', 'src', 'functions', 'accessPolicy.js')); } catch (e) {}
 
 async function newPage(b) { const ctx = await b.newContext({ timezoneId: 'Australia/Perth' }); const page = await ctx.newPage(); return { ctx, page }; }
 async function waitBoot(page, repo) {
@@ -2032,6 +2036,110 @@ async function runSmoke(repo) {
         } catch (e) { Auth._policy = null; return { threw: String(e && e.message) }; }   // a mutated guard throws on null policy — fail the sentinel, don't abort the suite
       });
       rec('S-240', 'AA: _actionSudo inert pre-activation; sudo map governs under policy; proof held', r.pre === '__no_person_auth__' && r.preNoPrompt === true && r.sess === '__session_ok__' && r.sessNoPrompt === true && r.pw === 'PROOF9' && r.prompts === 1 && r.held === 'PROOF9', `pre=${r.pre} sess=${r.sess} pw=${r.pw} prompts=${r.prompts} held=${r.held}`); await ctx.close(); }
+
+    // ═══ Account Access FIX round (AA-FIX): S-241..S-246 ══════════════════════════════════════════════
+
+    // S-241 (AA-04): adopting a narrowing policy while LOGGED OUT purges the device's cost payload (the normal
+    // morning-boot case) — the corp-cost blob must not survive on disk when nobody's logged in.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        const d = DB.get(); d.accessPolicy = null; Auth._policy = null; Auth._user = null;   // LOGGED OUT
+        const p = d.products.find(x => x.id === s.productId); p.costPrice = 12.5; p._costRv = 'rv1';
+        await Sync._applyAccessPolicy({ version: 1, roles: { director: { seeCost: true, editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const p2 = DB.get().products.find(x => x.id === s.productId);
+        return { cost: p2.costPrice, rv: p2._costRv };
+      }, s);
+      rec('S-241', 'AA-04: logged-out policy adoption purges the cost payload (device-level)', r.cost === null && r.rv === undefined, `cost=${r.cost} rv=${r.rv} (clean: null/undef)`); await ctx.close(); }
+
+    // S-242 (AA-05): the version-independent reconciler retries a STUCK cost purge (bob_policy_purge_pending)
+    // regardless of policy version — the monotonic adopt guard can't re-trigger it.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async (s) => {
+        try { localStorage.setItem('bob_policy_purge_pending', '1'); } catch (e) {}
+        const d = DB.get(); const p = d.products.find(x => x.id === s.productId); p.costPrice = 7; p._costRv = 'rv2';
+        await Sync._reconcilePolicyPurge();
+        const p2 = DB.get().products.find(x => x.id === s.productId);
+        let pend = '1'; try { pend = localStorage.getItem('bob_policy_purge_pending'); } catch (e) {}
+        return { cost: p2.costPrice, rv: p2._costRv, pend };
+      }, s);
+      rec('S-242', 'AA-05: version-independent reconciler clears a stuck cost purge', r.cost === null && r.rv === undefined && r.pend === null, `cost=${r.cost} rv=${r.rv} pend=${r.pend} (clean: null/undef/null)`); await ctx.close(); }
+
+    // S-243 (AA-28): the backup scrub strips a top-level accessPolicy — a crafted restore can't push a device
+    // into an unpublished policy or version-pin it.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const scrubbed = Pages._scrubBackupSecrets({ accessPolicy: { version: 99, roles: { staff: { seeCost: true } }, overrides: {}, sudo: {} }, products: [] });
+        return { hasPolicy: Object.prototype.hasOwnProperty.call(scrubbed, 'accessPolicy') };
+      });
+      rec('S-243', 'AA-28: backup scrub strips a smuggled accessPolicy blob', r.hasPolicy === false, `hasPolicy=${r.hasPolicy} (clean: false)`); await ctx.close(); }
+
+    // S-244 (AA-25): the idle/manual lock clears the client PIN-unlock grant — else the UI shows unlocked while
+    // every push is rejected proof-less (clearPersonProofs already wiped the server pin-grant).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        Auth._user = { id: 'u', username: 'x', role: 'staff', storeIds: ['karrinyup'] };
+        Auth._tempStockTake = new Date(Date.now() + 3600000).toISOString();
+        try { PIN.lock(); } catch (e) {}
+        const cleared = Auth._tempStockTake === null;
+        try { document.getElementById('pin-overlay').classList.remove('show'); } catch (e) {}
+        return { cleared };
+      });
+      rec('S-244', 'AA-25: idle lock clears the client PIN-unlock grant (_tempStockTake)', r.cleared === true, `cleared=${r.cleared} (clean: true)`); await ctx.close(); }
+
+    // S-245 (AA-02): seeCharts is GONE from _caps (dropped as unenforceable), and a seeSellingPrice deny is
+    // honoured by Auth.can (the products table hides the Sell Price column off this).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const hasCharts = Object.prototype.hasOwnProperty.call(Auth._caps, 'seeCharts');
+        Auth._user = { id: 'u', username: 'x', role: 'director', storeIds: [] };
+        Auth.adoptPolicy({ version: 1, roles: { staff: { seeSellingPrice: false }, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const reservedDenied = Auth.can('__proto__');   // AA-11: client RESERVED guard denies reserved cap names
+        Auth._user = { id: 'u2', username: 'y', role: 'staff', storeIds: [] };
+        const sellDenied = Auth.can('seeSellingPrice');
+        Auth._policy = null;
+        return { hasCharts, reservedDenied, sellDenied };
+      });
+      rec('S-245', 'AA-02/AA-11: seeCharts dropped; reserved-cap denied; seeSellingPrice deny honoured', r.hasCharts === false && r.reservedDenied === false && r.sellDenied === false, `hasCharts=${r.hasCharts} reservedDenied=${r.reservedDenied} sellDenied=${r.sellDenied} (clean: false/false/false)`); await ctx.close(); }
+
+    // S-246 (AA-02): the store-comparison PAGE has a top-of-page seeComparativeCharts guard (was nav-emission
+    // only) — a denied account is redirected, not shown cross-store data.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        let navdTo = ''; const _n = window.navigateTo; window.navigateTo = (x) => { navdTo = x; };
+        Auth._user = { id: 'u', username: 'x', role: 'staff', storeIds: ['karrinyup'] };
+        Auth.adoptPolicy({ version: 1, roles: { staff: { seeComparativeCharts: false }, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        try { Pages.hoComparison(); } catch (e) {}
+        window.navigateTo = _n; Auth._policy = null;
+        return { redirected: navdTo === 'log-movement' };
+      });
+      rec('S-246', 'AA-02: store-comparison page guarded by seeComparativeCharts (redirects when denied)', r.redirected === true, `redirected=${r.redirected} (clean: true)`); await ctx.close(); }
+
+    // S-247 (AA-12): CLIENT/SERVER PARITY — the same fixtures resolved by the live server resolveCapability
+    // (Node) and the client Auth.can (booted app) must AGREE. A one-sided edit to either resolver (the exact
+    // AA-11/AA-14 drift class) diverges and flips this. Overrides keyed by USERNAME (AA-01) on both sides.
+    { const POL = { version: 1, roles: { staff: { transferReceive: false, stockTakeCount: false, seeSellingPrice: true, recordDelivery: false }, director: { editCost: true, recordDelivery: true, editAccessPolicy: true } }, overrides: { boor: { transferReceive: false, recordDelivery: true } }, sudo: {} };
+      const CASES = [
+        { u: 'kunal', role: 'director', cap: 'editCost', pin: false }, { u: 'kunal', role: 'director', cap: 'launchMissiles', pin: false },
+        { u: 's', role: 'staff', cap: 'transferReceive', pin: false }, { u: 's', role: 'staff', cap: 'transferReceive', pin: true },
+        { u: 's', role: 'staff', cap: 'stockTakeCount', pin: true }, { u: 's', role: 'staff', cap: 'recordDelivery', pin: true },
+        { u: 'boor', role: 'staff', cap: 'transferReceive', pin: true }, { u: 'boor', role: 'staff', cap: 'recordDelivery', pin: false },
+        { u: 'x', role: 'unknownrole', cap: 'editCost', pin: false }, { u: 's', role: 'staff', cap: '__proto__', pin: false },
+      ];
+      const server = AP_PARITY ? CASES.map(c => AP_PARITY.resolveCapability(POL, c.cap, c.u, c.role, c.pin).ok === true) : [];
+      const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const client = await page.evaluate((args) => {
+        const { POL, CASES } = args;
+        return CASES.map(c => {
+          Auth._user = { id: 'id_' + c.u, username: c.u, role: c.role, storeIds: [] };
+          Auth.adoptPolicy(JSON.parse(JSON.stringify(POL)));
+          Auth._tempStockTake = c.pin ? new Date(Date.now() + 3600000).toISOString() : null;
+          const v = Auth.can(c.cap) === true;
+          Auth._policy = null; Auth._tempStockTake = null;
+          return v;
+        });
+      }, { POL, CASES });
+      const agree = AP_PARITY && server.length === client.length && server.every((s, i) => s === client[i]);
+      rec('S-247', 'AA-12: client Auth.can == server resolveCapability across fixtures', !!agree, `server=[${server}] client=[${client}]`); await ctx.close(); }
 
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
