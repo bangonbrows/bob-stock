@@ -1016,7 +1016,10 @@ function generateDemoTransactions() {
     seeSellingPrice:    ['staff','store_manager','franchisee','territory_manager','head_office','director'],
     seeArchive:         ['territory_manager','head_office','director'],
     seeCharts:          ['store_manager','franchisee','territory_manager','head_office','director'],
-    seeComparativeCharts:['franchisee','territory_manager','head_office','director']
+    seeComparativeCharts:['franchisee','territory_manager','head_office','director'],
+    // AA-W4: meta-capability — WHO may edit the access policy itself. Director-only, floored server-side
+    // (always-password + policyMerge DIRECTOR_LOCKOUT invariant keeps directors holding it).
+    editAccessPolicy:   ['director']
   },
   // ── AA-W3: the ADOPTED access_policy overlay (Account Access chunk) ─────────────────────────────
   // Auth._policy = the server-published access_policy blob (pin stripped SERVER-side before delivery).

@@ -20,9 +20,13 @@ logic-proven (`azure-functions/src/functions/accessPolicy.js`, 51-probe suite
 Trigger `POST {auth:{deviceId,storeId,storeKey,directorKey}, proof, proposed, pinPlain?, pinClear?}`.
 1. `validateKeys` — Director key REQUIRED (store key alone → 401, like catalogue-write).
 2. Read UserCredentials rows + current `access_policy` AppConfig row.
-3. `evaluateAccess {proof, action:'access-policy', deviceContext, policy:current, rows}` — the FLOOR makes
-   this always demand a fresh `access-policy` sudo proof, even on first write (no policy ⇒ NEED_SUDO ⇒ the
-   proof must be purpose-bound). 403 on failure.
+3. `evaluateAccess {proof, action:'access-policy', capability:'editAccessPolicy', deviceContext,
+   policy:current, rows}` — the FLOOR makes this always demand a fresh `access-policy` sudo proof, AND the
+   capability check pins WHO may edit (any account can mint a proof with its own password; the capability is
+   what stops a non-director using one here). **FIRST-EVER write (no `access_policy` row exists):** the
+   capability check has no policy to read — the LA instead requires the verified proof's `role === 'director'`
+   (evaluateAccess returns the current row's role). Subsequent writes: capability check + keep the role
+   assertion as defence-in-depth. 403 on any failure.
 4. `policyMerge {current, proposed, pinPlain?, pinClear?}` — reject reasons pass through to the client.
 5. If-Match write of the returned blob to AppConfig `access_policy` (retry loop, catalogue-write pattern);
    non-converge ⇒ `write_failed`, nothing changed.

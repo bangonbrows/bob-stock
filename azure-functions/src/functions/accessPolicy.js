@@ -133,6 +133,10 @@ function policyMerge(pepper, body, nowMs) {
   if (!p.roles || typeof p.roles !== 'object' || Array.isArray(p.roles) || badKeys(p.roles, KEY_RE)) return { ok: false, reason: 'BAD_ROLES' };
   for (const rd of Object.values(p.roles)) if (!validCapMap(rd)) return { ok: false, reason: 'BAD_ROLES' };
   if (!hasOwn(p.roles, 'director')) return { ok: false, reason: 'NO_DIRECTOR_ROLE' };   // can't define Directors away
+  // AA-W4 hole-close: the write path checks capability 'editAccessPolicy'; a blob that strips it from the
+  // director role would BRICK policy editing (and hand it to whoever holds an override). Directors keep it,
+  // always — reject, don't silently correct (same SR-1 posture as the floor).
+  if (!(p.roles.director && p.roles.director.editAccessPolicy === true)) return { ok: false, reason: 'DIRECTOR_LOCKOUT' };
   // overrides
   const ovs = p.overrides && typeof p.overrides === 'object' && !Array.isArray(p.overrides) ? p.overrides : {};
   if (badKeys(ovs, ID_RE)) return { ok: false, reason: 'BAD_OVERRIDES' };

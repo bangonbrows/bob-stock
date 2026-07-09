@@ -29,7 +29,7 @@ const POLICY = {
   version: 3,
   roles: {
     staff: { stockTakeCount: false, transferReceive: false, seeSellingPrice: true, recordDelivery: false },
-    director: { stockTakeCount: true, transferReceive: true, editCost: true, recordDelivery: true, stockTakeApprove: true },
+    director: { stockTakeCount: true, transferReceive: true, editCost: true, recordDelivery: true, stockTakeApprove: true, editAccessPolicy: true },
   },
   overrides: {},
   sudo: { publish: 'password', approve: 'password', delivery: 'session' },
@@ -73,6 +73,7 @@ const mFirst = AP.policyMerge(PEPPER, { current: null, proposed: good }, NOW);
 ok('first-ever write => version 1', mFirst.ok && mFirst.blob.version === 1);
 ok('FLOOR_VIOLATION rejected, not silently corrected (SR-1)', AP.policyMerge(PEPPER, { current: POLICY, proposed: { ...good, sudo: { 'access-policy': 'session' } } }, NOW).reason === 'FLOOR_VIOLATION');
 ok('proposal without director role rejected', AP.policyMerge(PEPPER, { current: POLICY, proposed: { ...good, roles: { staff: { editCost: false } } } }, NOW).reason === 'NO_DIRECTOR_ROLE');
+ok('proposal stripping director editAccessPolicy rejected (DIRECTOR_LOCKOUT)', AP.policyMerge(PEPPER, { current: POLICY, proposed: { ...good, roles: { ...POLICY.roles, director: { ...POLICY.roles.director, editAccessPolicy: false } } } }, NOW).reason === 'DIRECTOR_LOCKOUT');
 ok('__proto__ override key rejected', AP.policyMerge(PEPPER, { current: POLICY, proposed: { ...good, overrides: JSON.parse('{"__proto__":{"editCost":true}}') } }, NOW).ok === false);
 ok('non-boolean capability value rejected', AP.policyMerge(PEPPER, { current: POLICY, proposed: { ...good, roles: { director: { editCost: 'yes' } } } }, NOW).reason === 'BAD_ROLES');
 ok('bad role-name charset rejected', AP.policyMerge(PEPPER, { current: POLICY, proposed: { ...good, roles: { director: { editCost: true }, "bad role'name": {} } } }, NOW).reason === 'BAD_ROLES');
@@ -109,6 +110,12 @@ ok('capability with NO policy => NO_POLICY (fail closed)', E({ proof: sessDir, c
 ok('action with NO policy => sudo required (fail closed)', E({ proof: sessDir, action: 'delivery', deviceContext: '__director', policy: null, rows: ROWS }).reason === 'NEED_SUDO');
 ok('expired proof rejected', E({ proof: sessDir, capability: 'editCost', deviceContext: '__director', policy: POLICY, rows: ROWS }, NOW + 13 * 3600 * 1000).ok === false);
 ok('someone ELSE\'s pin grant is not yours', E({ proof: sessDir, pinProof: g1.proof, capability: 'transferReceive', deviceContext: '__director', policy: { ...POLICY, roles: { ...POLICY.roles, director: { ...POLICY.roles.director, transferReceive: false } } }, rows: ROWS }).ok === false);
+// AA-W4 hole-close: ANY account can mint an 'access-policy' proof with its own password — the CAPABILITY
+// is what stops a non-director using one at the policy-write gate.
+const apStaff = VU.mintProof(SECRET, rowStaff, 'access-policy', 'booragoon', NOW).proof;
+const apDir = VU.mintProof(SECRET, rowDir, 'access-policy', '__director', NOW).proof;
+ok('staff access-policy proof + editAccessPolicy capability => DENIED', E({ proof: apStaff, action: 'access-policy', capability: 'editAccessPolicy', deviceContext: 'booragoon', policy: POLICY, rows: ROWS }).ok === false);
+ok('director access-policy proof + editAccessPolicy capability => ok', E({ proof: apDir, action: 'access-policy', capability: 'editAccessPolicy', deviceContext: '__director', policy: POLICY, rows: ROWS }).ok === true);
 
 console.log(`\n== access-policy-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);
