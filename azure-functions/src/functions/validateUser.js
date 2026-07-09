@@ -27,8 +27,11 @@ const crypto = require('crypto');
 
 const SUDO_TTL_MS = 5 * 60 * 1000;          // purpose-bound sudo proofs
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // background gated reads
-const SUDO_PURPOSES = ['publish', 'archive', 'user-admin', 'backup', 'approve', 'resolve', 'delivery', 'adjustment'];
+const SUDO_PURPOSES = ['publish', 'archive', 'user-admin', 'backup', 'approve', 'resolve', 'delivery', 'adjustment', 'cancel', 'access-policy'];  // AA-W2: +cancel (transfer cancel ingest), +access-policy (SR-1 floored policy writes)
 const ALL_PURPOSES = ['session', ...SUDO_PURPOSES];
+// AA-W2: 'pin-grant' proofs are VERIFIABLE here but NOT mintable via the password path — they are minted
+// ONLY by accessPolicy.validatePin (a store account's own password must never self-grant the Director's PIN).
+const VERIFIABLE_PURPOSES = [...ALL_PURPOSES, 'pin-grant'];
 
 function computeHash(pepper, username, salt, secret) {
   return crypto.createHmac('sha256', pepper)
@@ -108,7 +111,7 @@ function evaluateUser(pepper, proofSecret, body, nowMs) {
 
 function verifyProofBody(proofSecret, body, nowMs) {
   const proof = typeof body.proof === 'string' ? body.proof : '';
-  const expected = Array.isArray(body.expectedPurposes) ? body.expectedPurposes.filter(p => ALL_PURPOSES.includes(p)) : [];
+  const expected = Array.isArray(body.expectedPurposes) ? body.expectedPurposes.filter(p => VERIFIABLE_PURPOSES.includes(p)) : [];
   const deviceContext = typeof body.deviceContext === 'string' ? body.deviceContext : '';
   const rows = Array.isArray(body.rows) ? body.rows : [];
   const dot = proof.lastIndexOf('.');
