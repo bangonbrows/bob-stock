@@ -48,7 +48,8 @@ for (const f of FILES) {
 // ---- size sanity ranges -----------------------------------------------------
 console.log('\n== Size sanity ==');
 // Wave D (GPT-ABC-H001): index.html/phase2.js upper bounds raised to current reality (index ~920KB after Wave A–D). verify-release.js is the authoritative release gate; this scaffold is supplemental.
-const SIZE = { 'index.html': [120000, 1500000], 'db.js': [8000, 60000], 'sync.js': [20000, 80000], 'phase2.js': [30000, 160000], 'sw.js': [1000, 12000] };
+// AA-W1 housekeeping: db.js/sync.js bounds raised to current reality (db ~65KB, sync ~121KB after Chunks 4-10 grew both).
+const SIZE = { 'index.html': [120000, 1500000], 'db.js': [30000, 130000], 'sync.js': [60000, 240000], 'phase2.js': [30000, 160000], 'sw.js': [1000, 12000] };
 for (const [f, [lo, hi]] of Object.entries(SIZE)) {
   const n = src[f].length;
   assert(`size in range: ${f} (${n})`, n >= lo && n <= hi, `expected ${lo}-${hi}`);
