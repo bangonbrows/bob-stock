@@ -1,8 +1,9 @@
 # Account Access Model — configurable permissions (SCOPE STUB — design WITH Kunal before building)
 
-**Status:** CAPTURED 2026-07-07 (Kunal). NOT yet designed/built. Kunal: *"I would like to discuss the account
-accesses when the time comes."* This is its own unit (a new chunk), to be designed together before any build —
-do NOT hard-code pieces of it early (avoids the churn "discover-before-touch" warns against).
+**Status:** DESIGN DECISIONS LOCKED 2026-07-09 (Kunal + Claude design session) — see §Decisions below; they
+GOVERN the build. Next: spec review with Codex + AGY (paper review, parallel OK), then build + audit as its own
+chunk. Org-structure tools (§C) were SPLIT OUT to their own sibling chunk — see `AZURE-CHUNK-ORG-STRUCTURE.md`
+(D-AA-4). Originally captured 2026-07-07.
 
 ## What Kunal wants
 A **screen where the Director edits account access levels** — a UI over the permission matrix — with:
@@ -43,7 +44,7 @@ A long list of individually toggleable permissions, e.g. (not exhaustive — mus
 Not limited to the fixed staff / store-manager / territory / franchisee / HO / director set — the Director can
 DEFINE a new account type with its own capability set. So roles become DATA-DRIVEN, not hard-coded.
 
-### C. Org-structure management (the account/store topology)
+### C. Org-structure management (the account/store topology) — SPLIT OUT (D-AA-4) → `AZURE-CHUNK-ORG-STRUCTURE.md`
 - **Convert a store → franchise store** (flip a company store to a franchise; the existing `isFranchise` /
   `isFranchiseOffice` store flags are the seed).
 - **Add a new franchisee + create their HO/office account** (onboard a franchisee: their store(s) + their
@@ -81,6 +82,37 @@ Director CAN do, WHICH ones re-prompt for the password (the D9-6 sudo second-fac
 - **P-13:** client toggles are UX; every capability that WRITES or reveals sensitive data (cost, archive) must
   be enforced SERVER-SIDE too (the gated LAs / scoping), not just hidden in the UI.
 
+## Decisions — KUNAL DECIDED 2026-07-09 (these govern the build)
+
+- **D-AA-1 — v1 toggle list: the 15 existing `Auth._caps` gates + 5 NEW view toggles** (see cost price, see
+  selling price, see older/archived data, see charts, see comparative charts). Kunal: current set is enough for
+  v1, BUT the list must stay EXTENSIBLE — adding a capability later must be cheap (data-driven where possible,
+  no screen redesign).
+- **D-AA-2 — overrides are PER-ACCOUNT only.** An override targets a SPECIFIC ACCOUNT (not a store, not a
+  type×store group): pick any account (a store's POS account, a particular manager, a territory manager, a
+  franchisee) and force a capability on/off for it, overriding its type default. Store accounts are one-per-store
+  (Chunk 9 account model), so the Booragoon example = an override on the Booragoon POS account. NO group rules
+  ("all managers at store X") in v1 — expressible by ticking the individual accounts; addable later without
+  redesign because the matrix is data-driven. Resolution order: type default → per-account override → 24h-PIN
+  temp grant.
+- **(standing, 2026-07-07) the 24h-PIN-to-RECEIVE default** (store account needs the PIN to receive HO
+  transfers — a behaviour CHANGE from today) lands as part of this chunk, with a covering sentinel.
+- **D-AA-3 — custom account types: PLUMBING now, UI deferred.** Roles become data-driven in this chunk (the
+  matrix keys on role NAMES as data, server included), but the "create a new type" screen/button is DEFERRED to
+  a later unit. No hard-coded assumption anywhere that the role set is exactly the current six.
+- **D-AA-4 — org-structure tools (§C) SPLIT into their own sibling chunk**, designed + built IMMEDIATELY AFTER
+  this one and BEFORE the 6-way milestone blind audit (so the audit covers both). TIMELINE DRIVER: Kunal is
+  onboarding a NEW FRANCHISEE in ~2–3 months (≈Sep–Oct 2026). Fallback if the build slips: Claude onboards them
+  manually (accounts/stores set up directly); the tools then serve the next one. **D10-9 (franchise-takeover
+  opening-balance cost cutoff) MOVES to that chunk** — it fires on store→franchise conversion, which is that
+  chunk's job. **D10-5 (scoped archive) STAYS HERE** as the "see older/archived data" toggle + scoped archive
+  pull.
+- **D-AA-5 — sudo policy: GLOBAL, floor fixed, current defaults.** (a) ONE business-wide policy shared by all
+  Directors (not per-Director). (b) Security floor confirmed: editing the sudo policy itself + Director
+  add/remove/role-change ALWAYS require the password — cannot be unchecked. (c) Defaults: the current hard-coded
+  set (publish / archive / user-admin / backup + the §D list) starts ON; day-to-day stock in/out OFF. FUTURE
+  (Kunal): possibly extend the re-prompt policy to non-Director account types — capture, don't build.
+
 ## Design shape (sketch — confirm at design time)
 - Persist an editable capability matrix + per-store overrides in AppConfig (master_data-style) OR a dedicated
   `AccessPolicy` config item, published like the catalogue (Director-gated write, converges to devices).
@@ -90,6 +122,13 @@ Director CAN do, WHICH ones re-prompt for the password (the D9-6 sudo second-fac
   so any capability that writes sensitive rows must ALSO be enforced server-side, not just in the editable UI.
 - Interacts with Chunk 10 (row-level store scoping by the account's StoreIds).
 
-## Sequencing (recommendation)
-Do AFTER Chunk 9's audit gate converges. Design this WITH Kunal (his request), then build + audit as its own
-chunk. The 24h-PIN-to-receive default lands as part of THIS unit (not hard-coded earlier).
+## Sequencing (LOCKED 2026-07-09)
+Chunks 5/6/8/9/10 are all built + dual-audited; design decisions above are locked. Order from here:
+1. Spec review of THIS chunk with Codex + AGY (paper review — both in parallel per the audit-parallel rule).
+2. Build + per-wave audits (this chunk).
+3. Design + build `AZURE-CHUNK-ORG-STRUCTURE.md` (D-AA-4; carries D10-9). Deadline pressure: new franchisee
+   ≈Sep–Oct 2026.
+4. Full 6-way milestone blind audit (covers both chunks).
+5. End-of-phase cutover (merge `azure-phase-5-8-server` → main, rotate secrets, mint prod accounts, delete test
+   rows).
+The 24h-PIN-to-receive default lands as part of THIS unit (not hard-coded earlier).
