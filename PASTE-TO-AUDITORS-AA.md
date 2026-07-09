@@ -26,9 +26,10 @@ this round), so there is no one-at-a-time contention.
 - Internal SERVER deep audit (independent session, driven against the DEPLOYED Azure Functions with real
   crypto + the deployed Logic App definitions) — **0 P0/P1/P2**, one P3 (non-atomic 3-item policy write,
   fails safe) tracked for staging-apply.
-- **Local gate at hand-off:** smoke **238/238** sentinels clean; Function logic proof **61/61**; full saboteur
-  sweep **__N__ CAUGHT / 0 BLIND** (Claude confirms this exact number in the cover note before sending);
-  static gates (verify-app / verify-release / csp-check) green.
+- **Local gate at hand-off:** smoke **239/239** sentinels clean; Function logic proof **61/61**; full saboteur
+  sweep **257 CAUGHT / 0 BLIND / 0 skipped** (single clean run, 2026-07-10); static gates
+  (verify-app / verify-release / csp-check) green. (This pack already reflects the external round — Codex
+  PASS-with-notes + AGY's finding resolved as AA-EXT-1; see `AZURE-CHUNK-AA-EXTERNAL-AUDIT-RESPONSE.md`.)
 - The whole feature is **inert pre-activation** — nothing changes until a Director publishes a policy AND the
   staging Logic Apps are switched to enforce. The live app on `main` is untouched.
 

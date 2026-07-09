@@ -45,6 +45,22 @@ Director publishes the default blob (S-231 proves the ONE behaviour change: stor
 PIN-gated). Server enforcement flips with the LA application + `_policyRequired` advertisement — staged like
 Chunk 5's `_authRequired`.
 
+## FINAL GATE + AUDITS (2026-07-10)
+- **Smoke: 239/239 sentinels clean.** Function logic proof: **61/61.** Static gates green.
+- **Full saboteur sweep: 257 CAUGHT / 0 BLIND / 0 skipped / 0 INFRA-FAIL** (single clean run). An earlier full
+  run flagged 1 blind (client RESERVED-cap guard was a broken object-literal `{__proto__}` that never matched
+  the string — FIXED to an array test mirroring the server Set) + 1 skip (S-238 anchor drifted on the AA-10
+  dataset change — re-anchored); both re-confirmed CAUGHT.
+- **Internal deep audits:** client (3 P1 + 11 P2 + 13 P3 → all fixed/accepted, re-verified) + server
+  (independent, driven against the DEPLOYED functions with real crypto → 0 P0/P1/P2, one P3 SRV soft-lock
+  tracked). See `audit-artifacts/AA-INTERNAL-AUDIT-*` + the staging ledger.
+- **External audits:** **Codex PASS-with-notes** (ran the full harness on an isolated worktree + Azure
+  read-only; only the tracked SRV-P3). **AGY BLOCK** ground-truthed — its P1 CSV finding was REAL but
+  mis-rated (client-only view hint; price is public catalogue data, P-13) → corrected to P3 + fixed as
+  **AA-EXT-1** (sentinel S-248). See `AZURE-CHUNK-AA-EXTERNAL-AUDIT-RESPONSE.md`. No blocking finding stands.
+- **Tracked for staging-apply (not code-fixed now, both fail safe):** SRV-P3 (non-atomic 3-item policy write
+  soft-lock) + the positive-path E2E (needs a throwaway `srvaudit_` test director).
+
 ## Saboteur proof (2026-07-09)
 Scoped run S-229..S-240: **12 CAUGHT / 0 BLIND / 0 INFRA-FAIL** (S-240's first sabotage variant crashed the
 suite at sentinel 18 — a mutated `_actionSudo` threw on null policy in unrelated approve flows; replaced with
