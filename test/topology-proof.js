@@ -105,5 +105,32 @@ ok('onboard duplicate franchiseeId rejected', T.planTopologyChange({ op: 'onboar
 
 function T_iso(ms) { return new Date(ms).toISOString(); }
 
+// ── W1-W2 external audit (Codex+AGY BLOCK) — one probe per finding, proving the fix ────────────────────
+console.log('== W1-W2 audit fixes (OS-A-F1..F8) ==');
+// OS-A-F1 (Codex-1): CONVERT cancels a NON-POS staff personal login too (store POS protected separately).
+const credsStaff = [{ id: 'pos_boor', Role: 'staff', StoreIds: ['boor'], Active: 1, isStorePOS: true }, { id: 'staff_personal', Role: 'staff', StoreIds: ['boor'], Active: 1 }];
+const convStaff = T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { ...stateHO, creds: credsStaff }, NOW);
+ok('OS-A-F1: convert keeps store POS, CANCELS non-POS staff', convStaff.plan.fanout.find(f => f.id === 'pos_boor').action === 'bump' && (() => { const f = convStaff.plan.fanout.find(x => x.id === 'staff_personal'); return f && f.active === false; })());
+// OS-A-F2 (Codex-2 + AGY-1): BUYBACK cancels the ex-franchisee's personal manager (was leaking HO data).
+const bbMgr = T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { ...stateFr, creds: [...stateFr.creds, { id: 'fr_mgr', Role: 'store_manager', StoreIds: ['boor'], Active: 1, franchiseeId: 'fr_a' }] }, NOW);
+ok('OS-A-F2: buyback deactivates the ex-franchisee manager (no HO-data leak)', (() => { const f = bbMgr.plan.fanout.find(x => x.id === 'fr_mgr'); return f && f.active === false && !f.StoreIds.includes('boor'); })());
+// OS-A-F3 (Codex-3): malformed / missing rate rejected on a franchise op.
+ok('OS-A-F3: non-numeric rate rejected', T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 'nope' }, stateHO, NOW).reason === 'BAD_RATE');
+ok('OS-A-F3: missing rate rejected', T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a' }, stateHO, NOW).reason === 'BAD_RATE');
+ok('OS-A-F3: out-of-range rate rejected', T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 250 }, stateHO, NOW).reason === 'BAD_RATE');
+// OS-A-F4 (Codex-4): backdated append over a CLOSED interval rejected.
+ok('OS-A-F4: append overlapping a closed interval rejected', T.appendPricingInterval([{ rate: 10, from: '2025-01-01T00:00:00Z', to: '2025-06-01T00:00:00Z' }, { rate: 15, from: '2025-06-01T00:00:00Z', to: '2025-09-01T00:00:00Z' }], 20, D('2025-08-01T00:00:00Z')).error === 'PRICING_BACKDATE');
+// OS-A-F5 (Codex-5): malformed multi-open-era state fails closed.
+ok('OS-A-F5: two open eras => resolveEra null', T.resolveEra([{ owner: 'fr_old', from: '2025-01-01T00:00:00Z', to: null }, { owner: 'fr_cur', from: '2025-06-01T00:00:00Z', to: null }], NOW) === null);
+ok('OS-A-F5: plan rejects a multi-open state', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { ...stateFr, eras: [{ owner: 'fr_old', from: '2025-01-01T00:00:00Z', to: null }, { owner: 'fr_cur', from: '2025-06-01T00:00:00Z', to: null }] }, NOW).reason === 'MALFORMED_STATE');
+// OS-A-F6 (Codex-6): omitted ids rejected (not accepted as the literal 'undefined').
+ok('OS-A-F6: missing storeId rejected', T.planTopologyChange({ op: 'create', type: 'HO' }, { store: null }, NOW).reason === 'BAD_STORE_ID');
+ok('OS-A-F6: onboard missing officeUsername rejected', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new' }, rate: 25 }, { store: null, eras: [], franchisees: [] }, NOW).reason === 'BAD_OFFICE_USERNAME');
+// OS-A-F7 (Codex-7): the route resolves per-product overrides.
+const routeStyle = (b) => ({ rate: T.resolvePricingForProduct(b.pricing, b.productId, b.dateMs) });
+ok('OS-A-F7: route resolves per-product override', routeStyle({ pricing: { '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], serum: [{ rate: 12, from: '2025-01-01T00:00:00Z', to: null }] }, productId: 'serum', dateMs: NOW }).rate === 12);
+// OS-A-F8 (AGY-2): add/onboard reject a store already owned by a franchisee (no direct fran→fran).
+ok('OS-A-F8: add to a franchise-owned store rejected (DIRECT_TRANSFER_FORBIDDEN)', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_b', rate: 25 }, { ...stateFr, franchisees: [{ franchiseeId: 'fr_a' }, { franchiseeId: 'fr_b' }] }, NOW).reason === 'DIRECT_TRANSFER_FORBIDDEN');
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);
