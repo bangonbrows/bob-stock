@@ -1,9 +1,9 @@
 # Org-Structure Chunk — store/franchise topology tools (SCOPE STUB — design after Account Access chunk)
 
-**Status:** DESIGN SESSION 2026-07-10 (Kunal) — decisions D-OS-1..8 + BUILD PLAN below. **Spec review R1
-2026-07-10: Codex BLOCK ×5 + AGY BLOCK ×5, ALL triaged REAL, folded as §OS-SR-1..9** (they rework the hard
-parts — atomicity, era-aware lens, offline safety). Next: Kunal reviews the fold → spec review ROUND 2
-(convergence) → build. Split from Account Access by **D-AA-4**. (Account Access chunk = ✅ DONE + triple-audited
+**Status:** DESIGN SESSION 2026-07-10 (Kunal) — decisions D-OS-1..8 + BUILD PLAN below. **Spec reviews: R1
+2026-07-10 (Codex BLOCK ×5 + AGY BLOCK ×5, all REAL) → §OS-SR-1..9; R2 2026-07-10 (BLOCK — all R1 folds
+CONFIRMED closed, 1 converged race + 2 refinements) → §OS-SR-5/7-amend + OS-SR-10/11.** Findings shrinking each
+round (10 → 3), converging. Next: Kunal reviews R2 fold → spec review ROUND 3 → build. Split from Account Access by **D-AA-4**. (Account Access chunk = ✅ DONE + triple-audited
 + AA-20 gated.)
 
 ## KUNAL DECISIONS (design session 2026-07-10)
@@ -127,7 +127,35 @@ with earlier text, the OS-SR wins.
   deleted it) but sees nothing live. Sequence: settle/transfer stock → buy back (scope ends, export handed
   over) → Director deactivates the office when ready.
 
-## NEXT: fold reviewed by Kunal → spec review ROUND 2 (Codex + AGY, convergence) → build + per-wave audits → milestone blind audit.
+## ADOPTED SPEC-REVIEW CHANGES (R2 — Codex BLOCK + AGY BLOCK, folded 2026-07-10)
+R2 confirmed ALL R1 folds (OS-SR-1..9) CLOSED. Both auditors CONVERGED on ONE race the R1 fold introduced
+(snapshot vs late offline rows); AGY added two refinements. All triaged REAL (rate-history ground-truthed:
+`franchiseDiscount` is a single scalar per store/product, no history — line ~605).
+
+- **OS-SR-5/7 AMENDMENT (Codex-1 + AGY-1, CONVERGED — the race the fold introduced).** OS-SR-5 (accept old-era
+  offline rows) clashed with OS-SR-7 (finalized opening snapshot): a pre-boundary offline row arriving AFTER
+  the snapshot is stamped would silently land in the OLD era and leave the NEW owner with ghost stock. FIX:
+  (a) the topology-change LA QUIESCES first — it keeps the change `pending` and the opening snapshot PROVISIONAL
+  until the store's devices have flushed their old-era queues, within a bounded drain window; (b) a pre-boundary
+  row that STILL arrives after the boundary is FINALIZED is QUARANTINED with a `stale_era` code and surfaced to
+  the Director for manual settlement/reconciliation — NEVER silently applied. So no silent opening-balance
+  corruption; late rows become a visible reconciliation item, not ghost stock.
+- **OS-SR-10 (AGY-2, anti-backdating) — the old-era flush is SERVER-AUTHORIZED, not client-timestamp-trusted.**
+  Client timestamps are attacker-controlled; "accept if timestamp ∈ old era" alone lets an ex-owner backdate a
+  row into a CLOSED era after access ended. The push-before-purge flush (OS-SR-5) is authorized by a ONE-SHOT,
+  EXPIRING, server-issued grace tied to the device's PREVIOUS scopeVersion/credential; ingest accepts old-era
+  rows ONLY within that bounded flush authorization. After the grace window (or once flushed), old-era writes
+  for that store from that ex-credential are REJECTED. Timestamp is never sufficient on its own.
+- **OS-SR-11 (AGY-3, decouple PRICING from OWNERSHIP; refines OS-SR-3) — GROUND-TRUTHED (no rate history
+  today).** A franchise loading can change WITHOUT an ownership change (Director renegotiates), so one ownership
+  era can't hold two rates. Split them: a store/franchise carries a dated PRICING-RATE HISTORY
+  (`{rate, from, to}` intervals), SEPARATE from ownership eras. Ownership eras govern VISIBILITY (which rows an
+  account sees); pricing intervals govern the NUMBER (which rate applies to a row's date). The lens + buy-back
+  export read the rate AS-OF each row's date from the pricing history (which may sub-divide an ownership era).
+  NOTE: this also fixes a PRE-EXISTING latent gap — any franchise-discount change today retroactively rewrites
+  past invoices because only the current scalar exists.
+
+## NEXT: R2 fold reviewed by Kunal → spec review ROUND 3 (Codex + AGY, convergence) → build + per-wave audits → milestone blind audit.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
 build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
