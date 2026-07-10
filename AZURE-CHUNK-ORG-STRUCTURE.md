@@ -168,10 +168,16 @@ with ONE remaining refinement (the completion of OS-SR-11), triaged REAL + folde
   append-only ledger (standard slowly-changing-dimension discipline). Without this, a Director editing a closed
   interval (10%→12% "to fix a setup mistake") would retroactively rewrite past invoices via the history table.
 
-## STATUS: AGY PASS; Codex's sole R3 finding (OS-SR-12) folded verbatim → expect Codex lift on a one-item
-re-confirm. Then the spec is CONVERGED and BUILD-READY.
+## ✅ STATUS: SPEC CONVERGED + BUILD-READY (2026-07-10). Codex PASS + AGY PASS on the OS-SR-12 re-confirm;
+both cleared for build. Governing set: D-OS-1..8 + BUILD PLAN + OS-SR-1..12. Journey: R1 BLOCK×10 → R2 BLOCK×3
+→ R3 (AGY PASS, Codex×1) → R4 both PASS.
 
-## NEXT: Codex one-item re-confirm of OS-SR-12 → CONVERGED → build + per-wave audits → milestone blind audit.
+## NEXT: BUILD (wave by wave, per-wave audits, same as Account Access) → milestone 6-way blind audit (covers
+both chunks) → cutover. Build order sketch: (W1) discovery + the topology-change contract/enforcement matrix;
+(W2) server — topology-change LA (pending/2-phase/reconcile) + ownership-era + pricing-history + snapshot;
+(W3) Chunk-10 companion: offline push-before-purge + server-authorized old-era flush (OS-SR-5/10);
+(W4) era-aware lens + [from,to) export; (W5) the Director wizard UI + preview; (W6) sentinels/saboteurs +
+full local gate + staging proof.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
 build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
