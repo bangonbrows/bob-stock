@@ -1,8 +1,10 @@
 # Org-Structure Chunk — store/franchise topology tools (SCOPE STUB — design after Account Access chunk)
 
-**Status:** DESIGN SESSION STARTED 2026-07-10 (Kunal) — decisions D-OS-1..5 below govern; a few detail opens
-remain (flagged) before build. Split out of the Account Access chunk by **D-AA-4**. Build + audit as its own
-unit, BEFORE the 6-way milestone blind audit. (Account Access chunk = ✅ DONE + triple-audited + AA-20 gated.)
+**Status:** DESIGN SESSION 2026-07-10 (Kunal) — decisions D-OS-1..8 + BUILD PLAN below. **Spec review R1
+2026-07-10: Codex BLOCK ×5 + AGY BLOCK ×5, ALL triaged REAL, folded as §OS-SR-1..9** (they rework the hard
+parts — atomicity, era-aware lens, offline safety). Next: Kunal reviews the fold → spec review ROUND 2
+(convergence) → build. Split from Account Access by **D-AA-4**. (Account Access chunk = ✅ DONE + triple-audited
++ AA-20 gated.)
 
 ## KUNAL DECISIONS (design session 2026-07-10)
 - **D-OS-1 — the two REAL upcoming cases (both needed, equal priority):** (A) an EXISTING HO store becomes a
@@ -73,7 +75,59 @@ atomic topology write + scope-version bumps + era records, Director-key + sudo g
 is convenience, the LA is the gate. Reuses Chunk 10 scope machinery + Account Access era-cutoff enforcement
 (both already built + audited).
 
-## NEXT: spec review (Codex + AGY, paper, parallel) → build + per-wave audits → milestone blind audit.
+## ADOPTED SPEC-REVIEW CHANGES (R1 — Codex BLOCK ×5 + AGY BLOCK ×5, folded 2026-07-10)
+Both auditors BLOCKED; every finding triaged REAL (the two code-touching ones ground-truthed against sync.js).
+These GOVERN the build and materially rework the hard parts my first draft hand-waved. Where an OS-SR conflicts
+with earlier text, the OS-SR wins.
+
+- **OS-SR-1 (Codex-1 + AGY-3, atomicity/split-brain) — a dedicated `topology-change` Logic App with a
+  PENDING/2-phase-commit + reconcile pattern.** SharePoint has NO cross-list transaction. The wizard sends ONE
+  INTENT payload (which store, what transition) to the LA; the LA: (a) writes a topology-change RECORD
+  `status:pending` (store, from-owner, to-owner, ts, the server-derived fanout), (b) applies every sub-change
+  idempotently (era close/open, per-credential StoreIds + scopeVersion, snapshot, cutoff, account
+  activate/deactivate), (c) marks the record `complete`. A crash mid-way is RESUMABLE — a reconcile sweep
+  re-applies missing steps idempotently. **Reads FAIL CLOSED for a store while a topology change on it is
+  pending.** NO client-orchestrated multi-write (also the P-13 fix).
+- **OS-SR-2 (Codex-2) — the SERVER derives the affected-credential set, never the client.** The LA recomputes
+  "ALL affected credentials" from server-owned rows (who holds this StoreId, the store's ownerHistory, the
+  franchisee's accounts). The client preview is DISPLAY-only; a tampered client payload can't omit an ex-owner/
+  manager/TM/POS from the fanout.
+- **OS-SR-3 (AGY-1, the lens must be ERA-AWARE) — GROUND-TRUTHED REAL.** Reports currently read the LIVE
+  `store/product.franchiseDiscount` + `isFranchise`, so a buy-back (flag off) would retroactively strip the
+  loading from PAST franchise-era invoices. Fix: each ownerHistory ERA record carries the franchise status +
+  franchiseDiscount% IN FORCE during that era; money in reports is computed per-row from the era covering THAT
+  ROW's date, not the live flag. Kunal's "flip the flag" is correct for CURRENT/ongoing; HISTORICAL/spanning
+  reports read the as-of-date era. (Still no baked-in costs — the lens just reads the rate from the era, not
+  the live store flag.)
+- **OS-SR-4 (Codex-3) — buy-back EXPORT bound to the CLOSED era interval [from, to), server-generated.** From
+  server-owned ownerHistory, filtered to the ex-franchisee's `[era.from, era.to)` (BOTH bounds) — never a
+  lower-bound-only or client-filtered report. HO's post-buy-back rows can't leak into the ex-franchisee's
+  usage/cost/profit export.
+- **OS-SR-5 (AGY-2, offline data loss) — GROUND-TRUTHED REAL: push BEFORE purge.** `_reconcileScope`
+  (sync.js:1889) purges immediately on a scope change with no pre-flush. Before ANY scope purge the client MUST
+  flush pending offline writes (offline queue + unsynced recordSteps/StockTransactions), and the ingest LAs
+  must accept rows whose timestamp falls in the device's OLD era window. **Chunk 10 CLIENT hardening, required
+  companion to this chunk** (protects every scope change, not just topology). A topology change must never wipe
+  unpushed offline work.
+- **OS-SR-6 (AGY-4) — device-bound roles see the CURRENT era only.** `store_account` (POS) + `store_manager`
+  lack a franchiseeId; by rule they are restricted to the currently-ACTIVE era for their StoreId — the physical
+  device follows current ownership and can never pull a prior owner's history after a hand-over. Franchisee/HO
+  accounts map to their owner's era(s). Define explicitly in the server read-rules.
+- **OS-SR-7 (AGY-5) — snapshot SERVER-side + atomic with the era boundary.** The D10-9 opening-balance snapshot
+  is captured inside the `topology-change` LA (a consistent server-side sum), stamped with the era boundary in
+  one motion — never client-generated mid-trading-day (which desyncs against live pushes).
+- **OS-SR-8 (Codex-5) — ownership keys off a STABLE franchisee ENTITY id, not the mutable account.**
+  `ownerHistory.owner` = a franchiseeId (stable entity), NOT the office-account/login row. Credentials MAP to
+  the franchiseeId. Deactivating + later recreating a franchisee's office account (or reusing a username) never
+  orphans or misattributes era history. Introduce the franchisee entity id.
+- **OS-SR-9 (Codex-4) — empty-office INVARIANT resolves the D-OS-4 tension.** An office account left active
+  after its last store leaves has ZERO stores ⇒ NO live store data (empty scope, reads return nothing).
+  Settlement is NOT done by pulling post-buy-back data: transfer/settle stock BEFORE the buy-back and/or via the
+  era-bounded EXPORT + an HO-run workflow. So "active for settlement" = the login still exists (Director hasn't
+  deleted it) but sees nothing live. Sequence: settle/transfer stock → buy back (scope ends, export handed
+  over) → Director deactivates the office when ready.
+
+## NEXT: fold reviewed by Kunal → spec review ROUND 2 (Codex + AGY, convergence) → build + per-wave audits → milestone blind audit.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
 build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
