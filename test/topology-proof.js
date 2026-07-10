@@ -139,7 +139,7 @@ ok('C1: eraWindowsFor([] on 2-open) => []', T.eraWindowsFor([{ owner: 'a', from:
 ok('C1: overlapping closed+open era => resolveEra null', T.resolveEra([{ owner: 'fr_old', from: '2025-01-01T00:00:00Z', to: '2025-12-01T00:00:00Z' }, { owner: 'HO', from: '2025-06-01T00:00:00Z', to: null }], D('2025-08-01T00:00:00Z')) === null);
 ok('C1: buyback on an overlapping-era state rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: 'fr_old', from: '2025-01-01T00:00:00Z', to: '2025-12-01T00:00:00Z' }, { owner: 'HO', from: '2025-06-01T00:00:00Z', to: null }], creds: [], franchisees: [] }, NOW).reason === 'MALFORMED_STATE');
 // C2: an EXISTING store with no current era fails closed (not treated as new).
-ok('C2: add on an existing store with NO era => NO_ERA_RECORD', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'NO_ERA_RECORD');
+ok('C2: add on an existing store whose only era is CLOSED (no open era) => NO_ERA_RECORD', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: '2025-06-01T00:00:00Z' }], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'NO_ERA_RECORD');
 // C3: pricing — same-rate backdate no longer short-circuits; multi-open series rejected.
 ok('C3a: same-rate backdated append rejected (no gap over the change date)', T.appendPricingInterval([{ rate: 25, from: '2025-12-01T00:00:00Z', to: null }], 25, D('2025-11-01T00:00:00Z')).error === 'PRICING_BACKDATE');
 ok('C3b: append to a multi-open series rejected', T.appendPricingInterval([{ rate: 10, from: '2025-01-01T00:00:00Z', to: null }, { rate: 15, from: '2025-06-01T00:00:00Z', to: null }], 20, NOW).error === 'MALFORMED_PRICING');
@@ -153,7 +153,7 @@ ok('D1: validEras-style — empty owner => resolveEra null', T.resolveEra([{ own
 ok('D1: empty owner => eraWindowsFor []', T.eraWindowsFor([{ owner: '', from: '2025-01-01T00:00:00Z', to: null }], '', true).length === 0);
 ok('D1: buyback on an empty-owner era rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: '', from: '2025-01-01T00:00:00Z', to: null }], creds: [], franchisees: [] }, NOW).ok === false);
 // D2: create-franchise on an EXISTING store rejected; a future-closed-only era is NOT current.
-ok('D2: create(franchise) with an existing store => STORE_EXISTS', T.planTopologyChange({ op: 'create', type: 'franchise', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'STORE_EXISTS');
+ok('D2: create(franchise) with a fully-existing store (store + open era) => STORE_EXISTS', T.planTopologyChange({ op: 'create', type: 'franchise', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: null }], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'STORE_EXISTS');
 ok('D2: add on a store whose only era is closed-in-future => NO_ERA_RECORD (no open era)', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: '2030-01-01T00:00:00Z' }], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'NO_ERA_RECORD');
 // D3: pricing close + resolve fail closed on a malformed (multi-open) series.
 ok('D3: closePricing on a multi-open series => MALFORMED_PRICING', T.closePricing([{ rate: 10, from: '2025-01-01T00:00:00Z', to: null }, { rate: 15, from: '2025-06-01T00:00:00Z', to: null }], NOW).error === 'MALFORMED_PRICING');
@@ -162,6 +162,21 @@ ok('D3: buyback on a multi-open pricing series rejected', T.planTopologyChange({
 // D4: store-POS login uniqueness.
 ok('D4: onboard where officeUsername === storeId rejected', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new', officeUsername: 'newst' }, rate: 25 }, { store: null, eras: [], creds: [], franchisees: [] }, NOW).reason === 'USERNAME_TAKEN');
 ok('D4: create HO whose storeId collides with an existing credential => STORE_LOGIN_TAKEN', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'office_taken' }, { store: null, eras: [], creds: [{ id: 'office_taken', Role: 'franchisee', StoreIds: [] }], franchisees: [] }, NOW).reason === 'STORE_LOGIN_TAKEN');
+
+// ── W1-W2 CONVERGENCE round 3 (Codex) — OS-A-E1..E2 ────────────────────────────────────────────────────
+console.log('== W1-W2 convergence R3 fixes (Codex OS-A-E1..E2) ==');
+// E1: store existence and era-history existence must agree.
+ok('E1: create(HO) with store:null but an existing era => STORE_ERA_MISMATCH', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'boor' }, { store: null, eras: [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: null }], creds: [], franchisees: [] }, NOW).reason === 'STORE_ERA_MISMATCH');
+ok('E1: add with store:null but an orphan era => STORE_ERA_MISMATCH', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: null, eras: [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: null }], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'STORE_ERA_MISMATCH');
+ok('E1: existing store with EMPTY history => STORE_ERA_MISMATCH', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [], creds: [], franchisees: [] }, NOW).reason === 'STORE_ERA_MISMATCH');
+// E2: pricing rate-value validation everywhere.
+ok('E2: stored out-of-range rate => resolvePricingRate null', T.resolvePricingRate([{ rate: 101, from: '2025-01-01T00:00:00Z', to: null }], NOW) === null);
+ok('E2: stored NaN rate => resolve null', T.resolvePricingRate([{ rate: NaN, from: '2025-01-01T00:00:00Z', to: null }], NOW) === null);
+ok('E2: append onto a series with a bad stored rate => MALFORMED_PRICING', T.appendPricingInterval([{ rate: -1, from: '2025-01-01T00:00:00Z', to: null }], 20, NOW).error === 'MALFORMED_PRICING');
+ok('E2: malformed product override fails CLOSED (no silent default fallback)', T.resolvePricingForProduct({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], serum: [{ rate: 999, from: '2025-01-01T00:00:00Z', to: null }] }, 'serum', NOW) === null);
+ok('E2: closePricing on a non-array series fails closed', T.closePricing('not-an-array', NOW).error === 'MALFORMED_PRICING');
+ok('E2: closeAllPricing on a non-array member fails closed', T.closeAllPricing({ '*': 'not-an-array' }, NOW).error === 'MALFORMED_PRICING');
+ok('E2: buyback with a future-ended closed pricing interval rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: 'fr_a', from: '2025-01-01T00:00:00Z', to: null }], pricing: { '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: '2030-01-01T00:00:00Z' }] }, creds: [], franchisees: [] }, NOW).reason === 'PRICING_BACKDATE');
 
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

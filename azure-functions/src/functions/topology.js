@@ -65,6 +65,12 @@ function validEras(eras) {
   if (!validIntervals(eras)) return false;
   return (Array.isArray(eras) ? eras : []).every(e => e && (e.owner === HO || reqId(e.owner)));
 }
+// A pricing series is valid intervals AND every interval's RATE is a valid percent (Codex conv-R3 F2:
+// validIntervals only checked geometry — a stored -1/101/NaN/Infinity rate slipped through and was resolved).
+function validPricingSeries(arr) {
+  if (!validIntervals(arr)) return false;
+  return (Array.isArray(arr) ? arr : []).every(p => p && validRate(p.rate));
+}
 // The single OPEN era (to:null), or null. Used by the PLANNER as "the current owner" — a topology change must
 // transition from the OPEN era, never a closed era that merely covers `now` (Codex conv-R2 F2: a future-dated
 // closed era must NOT read as current). resolveEra (below) is for HISTORICAL date lookups by the read LAs.
@@ -99,7 +105,7 @@ function eraWindowsFor(eras, ownerId, deviceBound) {
 
 // ── Pricing resolution (OS-SR-3/11 — rate as-of a row's date, from the append-only history) ────────────
 function resolvePricingRate(intervals, dateMs) {
-  if (!isFiniteMs(dateMs) || !validIntervals(intervals)) return null;   // Codex conv-R2 F3: malformed series (multi-open/overlap) ⇒ fail closed, never return the first rate
+  if (!isFiniteMs(dateMs) || !validPricingSeries(intervals)) return null;   // Codex conv-R2 F3 + R3 F2: malformed geometry OR a bad rate ⇒ fail closed, never resolve
   for (const p of intervals) {
     if (!p || typeof p.rate !== 'number') continue;
     const f = toMs(p.from); if (f === null || dateMs < f) continue;
@@ -119,9 +125,12 @@ const PRICING_DEFAULT_KEY = '*';
 function resolvePricingForProduct(storePricing, productId, dateMs) {
   if (Array.isArray(storePricing)) storePricing = { [PRICING_DEFAULT_KEY]: storePricing };  // OS-A-F7: tolerate a flat default series
   if (!storePricing || typeof storePricing !== 'object') return null;
-  const own = productId != null && Object.prototype.hasOwnProperty.call(storePricing, productId) ? storePricing[productId] : null;
-  const viaOwn = own ? resolvePricingRate(own, dateMs) : null;
-  if (viaOwn != null) return viaOwn;
+  if (productId != null && Object.prototype.hasOwnProperty.call(storePricing, productId)) {
+    const own = storePricing[productId];
+    if (!validPricingSeries(own)) return null;   // Codex conv-R3 F2: a MALFORMED override fails CLOSED — never silently fall back to the default rate
+    const viaOwn = resolvePricingRate(own, dateMs);
+    if (viaOwn != null) return viaOwn;            // a VALID override that simply doesn't cover this date ⇒ default applies (correct)
+  }
   return resolvePricingRate(storePricing[PRICING_DEFAULT_KEY], dateMs);
 }
 // Append a rate change to ONE key ('*' for the store default, or a productId for an override) inside the
@@ -139,9 +148,9 @@ function appendPricingForKey(storePricing, key, rate, nowMs) {
 // mutates a prior interval. A rate === current open rate is a no-op (no spurious interval). Returns the new
 // history or {error} on an immutability violation (e.g. a from earlier than the last closed interval).
 function appendPricingInterval(history, rate, nowMs) {
-  const h = Array.isArray(history) ? history.map(x => ({ ...x })) : [];
   if (rate != null && !validRate(rate)) return { error: 'BAD_RATE' };       // OS-A-F3: no NaN/out-of-range rate
-  if (!validIntervals(h)) return { error: 'MALFORMED_PRICING' };            // Codex conv F3: reject any malformed (multi-open OR overlapping) EXISTING series before touching it
+  if (history != null && !validPricingSeries(history)) return { error: 'MALFORMED_PRICING' };  // Codex conv-R3 F2: validate the RAW existing series (catches a non-array + bad stored rates), not the coerced copy
+  const h = Array.isArray(history) ? history.map(x => ({ ...x })) : [];
   const opens = h.filter(p => p && p.to == null);
   // Codex-F3(a): the backdate/overlap guard runs BEFORE the same-rate no-op — else a same-rate backdated
   // append short-circuits to ok while leaving a gap over the change date. OS-A-F4: new interval must start
@@ -158,8 +167,11 @@ function appendPricingInterval(history, rate, nowMs) {
 
 // Close the open pricing interval (buy-back → no franchise rate going forward).
 function closePricing(history, nowMs) {
+  if (history != null && !validPricingSeries(history)) return { error: 'MALFORMED_PRICING' };   // Codex conv-R3 F2: validate RAW (a non-array 'series' was silently becoming [])
   const h = Array.isArray(history) ? history.map(x => ({ ...x })) : [];
-  if (!validIntervals(h)) return { error: 'MALFORMED_PRICING' };   // Codex conv F3: a malformed (multi-open) series must fail closed, not close one and leave another open
+  // Codex conv-R3 F2: a closed interval ending in the FUTURE relative to nowMs would leave a franchise rate
+  // effective PAST the buy-back — reject (the engine never produces this; a malformed input must fail closed).
+  for (const p of h) { const t = p.to == null ? null : toMs(p.to); if (t != null && t > nowMs) return { error: 'PRICING_BACKDATE' }; }
   const open = h.find(p => p && p.to == null);
   if (open) { const of = toMs(open.from); if (of !== null && nowMs < of) return { error: 'PRICING_BACKDATE' }; open.to = iso(nowMs); }
   return { history: h };
@@ -232,6 +244,11 @@ function planTopologyChange(intent, state, nowMs) {
   const franchisees = Array.isArray(st.franchisees) ? st.franchisees : [];
   const eras = Array.isArray(st.eras) ? st.eras : [];
   if (!validEras(eras)) return { ok: false, reason: 'MALFORMED_STATE' };   // OS-A-F5/Codex-F1: fail closed on any malformed era history (multi-open OR overlapping)
+  // Codex conv-R3 F1: store-row existence and era-HISTORY existence must AGREE. A real store has both; a new
+  // store has neither. A mismatch (orphan history with no store row, or a store row with no history) is
+  // malformed ⇒ fail closed — this stops re-creating a storeId whose authoritative history already exists, and
+  // stops `add` fabricating a store around an orphan era.
+  if ((!!st.store) !== (eras.length > 0)) return { ok: false, reason: 'STORE_ERA_MISMATCH' };
   const pricing = (st.pricing && typeof st.pricing === 'object' && !Array.isArray(st.pricing)) ? st.pricing : {};  // per-store map: { '*': default series, <productId>: override series }
   const rec = { op, storeId, ts: iso(nowMs) };
 

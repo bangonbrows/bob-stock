@@ -52,6 +52,18 @@ Root-cause note: the earlier rounds fixed SPOTS; this round fixed the SHARED PRI
 both eras+pricing, `validEras` owner check, `openEraOwner` for the planner, `transitionEras` output check), so
 the adjacent-path class is closed, not just the 4 instances.
 
+## Convergence round 3 (2026-07-11): AGY PASS (definitive); Codex found 2 deeper invariant gaps — fixed
+AGY → **PASS** ("definitively cleared"). Codex → BLOCK with 2 root findings (validators checked one dimension
+but not another). Fixed by strengthening the shared primitives again. Suite now **82 PASS / 0 FAIL** (+10
+probes OS-A-E1..E2, incl. 2 earlier probes re-pointed to the correct reason codes).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **E1** | conv3-1 | P1 | store-row existence and era-HISTORY existence weren't validated TOGETHER (a storeId whose authoritative history exists could be re-created; `add` could fabricate a store around an orphan era) | planner asserts `(!!st.store) === (eras.length>0)` up front (`STORE_ERA_MISMATCH`) — real store = both, new store = neither |
+| **E2** | conv3-2 | P1 | `validIntervals` checked interval GEOMETRY but not the rate PAYLOADS: stored -1/101/NaN/Infinity resolved; a malformed override silently fell back to default; a non-array series became `[]`; a future-ended closed interval left a franchise rate live past buy-back | new `validPricingSeries` = `validIntervals` + every rate `validRate`; wired into resolve/append/close; resolve validates the RAW input; a malformed product override fails closed (no fallback); `closePricing` rejects a future-dated closed interval |
+
+## Status: AGY PASS ×3; Codex closing each successive deep corner — findings now down to shared-primitive
+strengthenings (rate payloads, store/era consistency). One more Codex re-check expected.
+
 ## Next
-Codex final re-check (AGY PASS twice) → OS-W3 (client sync-hardening). Nothing to externals beyond the two
-auditors engaged.
+Codex final re-check → OS-W3 (client sync-hardening). Nothing to externals beyond the two auditors engaged.
