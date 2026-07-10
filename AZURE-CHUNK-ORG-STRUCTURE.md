@@ -27,17 +27,53 @@ unit, BEFORE the 6-way milestone blind audit. (Account Access chunk = ✅ DONE +
 - **D-OS-5 (from 2026-07-09) — ex-franchisee gets a DATA EXPORT of their era at buy-back, not lingering
   live access** (their live scope ends; devices purge per Chunk 10). Export format/content = a design-open.
 
-## Remaining design-opens (settle before/at build)
-1. The TM multi-store cancel nuance (D-OS-2 above).
-2. Buy-back EXPORT: format (CSV bundle? scoped backup JSON?), content (their era's movements/invoices/stock
-   takes), and timing (auto at buy-back vs on-demand).
-3. Store-detail fields in wizard step 1 (name, phone, address?, type) + store-ID generation (auto vs manual).
-4. New-franchisee onboarding fields: the office/HO account (login username), the franchise discount/loading %,
-   which store(s).
-5. A **confirmation/preview step** before commit (RECOMMENDED): "This moves Booragoon from HO to Franchisee X.
-   X sees data from today forward; HO keeps full history; the store till stays, the 2 manager logins are
-   cancelled." — a plain-English summary of exactly what will change, before the atomic write. Strongly advise
-   yes given how consequential these ops are.
+## KUNAL DECISIONS round 2 (2026-07-10)
+- **D-OS-6 — buy-back EXPORT content:** for the ex-franchisee's ownership ERA, per product — (a) product
+  USAGE (quantities moved/consumed), (b) their COST for that usage (cost basis), (c) retail-sales
+  PROFITABILITY (retail revenue − cost). It's an accounting/tax hand-off. Format = CSV bundle (matches the
+  existing CSV exports); a wizard step at buy-back (per D-OS-5). NOT the raw ledger — the computed
+  usage/cost/profit summary.
+- **D-OS-7 — wizard field set is EXTENSIBLE.** Start with: store name, phone, type; franchise adds franchise
+  discount/loading % + the office-account login. Kunal: "if there's anything else we can add that later" —
+  build the field set so MORE fields can be added without a redesign (data-driven form, same spirit as the
+  data-driven role matrix).
+- **D-OS-8 — YES to the plain-English CONFIRMATION/PREVIEW step** before the atomic commit: a summary of
+  exactly what will change ("moves Booragoon HO→Franchisee X; X sees data from today; HO keeps full history;
+  store till stays; these 2 manager logins are cancelled") — Director confirms, then the atomic write fires.
+
+## DESIGN SHAPE / BUILD PLAN (2026-07-10 — build-ready pending spec review)
+**Data model — ownership ERAS.** A store carries `ownerHistory: [{ owner, from, to|null }]` (owner = 'HO' or a
+franchisee-account id). The CURRENT era is the open one (`to:null`). Every ownership transition CLOSES the
+open era (`to = now`) and OPENS a new one. Scope reads (Chunk 10) + cost/archive visibility (Account Access
+SR-6 era cutoffs) key off these — a scoped account sees a store's rows only within ITS era window(s).
+Born-franchise + existing-franchise stores get a baseline era seeded at cutover (Account Access §R2-1).
+
+**The wizard = ONE Director tool, sudo-floored, atomic (SR-9).** Operations:
+- **Create store** — HO-operated (owner HO, open era) OR born-franchise (pick/lookup franchisee → their era).
+- **Onboard NEW franchisee** — create the office/HO account (from the data-driven role matrix, D-AA-3) + their
+  first store, one flow. (Real case A.)
+- **Add store to EXISTING franchisee** — new store, owner = chosen existing franchisee, joins their scope.
+  (Real case B.)
+- **Convert HO store → franchise** — close HO era, open franchise era (this IS the D10-9 takeover cutoff = era
+  boundary); store POS account re-scoped to the franchisee (D-OS-2); personal staff/manager/TM accounts lose
+  this store from scope, deactivate if left with zero (D-OS-2 nuance).
+- **Buy-back franchise store → HO** — close franchise era, open HO era; ex-franchisee scope ends (devices
+  purge, Chunk 10); EXPORT step (D-OS-6); office account left ALONE for manual deactivation (D-OS-4).
+- **(NO direct fran→fran — D-OS-3: buy-back then reassign.)**
+
+**Every operation:** (1) plain-English PREVIEW (D-OS-8) → (2) Director sudo confirm → (3) ONE atomic write
+that updates: store flags/owner era, ALL affected credentials' StoreIds + scopeVersion (store POS, personal
+accounts, franchise office, ex-owner — R2 Codex-2), access-policy defaults for any new account, and the era
+boundary — so devices converge cleanly and no account is ever left seeing data it shouldn't (SR-9). Fallback
+if the tool isn't ready for the Sep–Oct franchisee = the SAME logic as a scripted admin runbook (SR-9), never
+ad-hoc SharePoint edits.
+
+**Server/client split:** client = the wizard UI + preview. Server (gated LAs) = the real enforcement — the
+atomic topology write + scope-version bumps + era records, Director-key + sudo gated (P-13); the client wizard
+is convenience, the LA is the gate. Reuses Chunk 10 scope machinery + Account Access era-cutoff enforcement
+(both already built + audited).
+
+## NEXT: spec review (Codex + AGY, paper, parallel) → build + per-wave audits → milestone blind audit.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
 build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
