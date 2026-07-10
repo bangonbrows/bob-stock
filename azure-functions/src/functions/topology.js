@@ -137,6 +137,7 @@ function resolvePricingForProduct(storePricing, productId, dateMs) {
 // per-store pricing map. Returns the updated map or {error}. Used by BOTH the topology planner (store default
 // at conversion) and the product-pricing edit path (per-product override) so every rate change is dated.
 function appendPricingForKey(storePricing, key, rate, nowMs) {
+  if (storePricing != null && (typeof storePricing !== 'object' || Array.isArray(storePricing))) return { error: 'MALFORMED_PRICING' };  // Codex conv-R4: a non-map fails closed, never silently becomes {}
   const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
   const r = appendPricingInterval(map[key], rate, nowMs);
   if (r.error) return { error: r.error };
@@ -179,6 +180,7 @@ function closePricing(history, nowMs) {
 // Buy-back closes EVERY open series (store default '*' AND every per-product override) — the store leaves the
 // franchise, so all franchise rates stop applying going forward; the closed intervals stay immutable.
 function closeAllPricing(storePricing, nowMs) {
+  if (storePricing != null && (typeof storePricing !== 'object' || Array.isArray(storePricing))) return { error: 'MALFORMED_PRICING' };  // Codex conv-R4: a non-map fails closed
   const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
   for (const k of Object.keys(map)) { const c = closePricing(map[k], nowMs); if (c.error) return { error: c.error }; map[k] = c.history; }
   return { pricing: map };
@@ -239,7 +241,18 @@ function planTopologyChange(intent, state, nowMs) {
   const op = intent.op;
   const storeId = intent.storeId;
   if (!reqId(storeId)) return { ok: false, reason: 'BAD_STORE_ID' };   // OS-A-F6: reject omitted/undefined id
-  const st = state && typeof state === 'object' ? state : {};
+  // Codex conv-R4 F1: the SERVER-STATE ENVELOPE must be VALIDATED, never silently coerced to defaults. A
+  // malformed collection (e.g. creds:'not-an-array') coerced to [] produced an EMPTY fanout on a convert —
+  // silently SKIPPING the personal-account cancellations (the data-leak fix) and POS bumps. A present-but-
+  // wrong-typed field FAILS CLOSED (a missing/undefined field may still default). And the state bundle MUST be
+  // for the store the intent names.
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return { ok: false, reason: 'BAD_STATE' };
+  const st = state;
+  if (st.creds != null && !Array.isArray(st.creds)) return { ok: false, reason: 'BAD_STATE' };
+  if (st.franchisees != null && !Array.isArray(st.franchisees)) return { ok: false, reason: 'BAD_STATE' };
+  if (st.eras != null && !Array.isArray(st.eras)) return { ok: false, reason: 'BAD_STATE' };
+  if (st.pricing != null && (typeof st.pricing !== 'object' || Array.isArray(st.pricing))) return { ok: false, reason: 'BAD_STATE' };
+  if (st.store != null && (typeof st.store !== 'object' || st.store.id !== storeId)) return { ok: false, reason: 'STORE_ID_MISMATCH' };  // the bundle must be FOR this store
   const creds = Array.isArray(st.creds) ? st.creds : [];
   const franchisees = Array.isArray(st.franchisees) ? st.franchisees : [];
   const eras = Array.isArray(st.eras) ? st.eras : [];

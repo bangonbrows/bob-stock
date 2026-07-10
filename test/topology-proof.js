@@ -178,5 +178,18 @@ ok('E2: closePricing on a non-array series fails closed', T.closePricing('not-an
 ok('E2: closeAllPricing on a non-array member fails closed', T.closeAllPricing({ '*': 'not-an-array' }, NOW).error === 'MALFORMED_PRICING');
 ok('E2: buyback with a future-ended closed pricing interval rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: 'fr_a', from: '2025-01-01T00:00:00Z', to: null }], pricing: { '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: '2030-01-01T00:00:00Z' }] }, creds: [], franchisees: [] }, NOW).reason === 'PRICING_BACKDATE');
 
+// ── W1-W2 CONVERGENCE round 4 (Codex) — OS-A-G1 (untrusted state envelope) ─────────────────────────────
+console.log('== W1-W2 convergence R4 fixes (Codex OS-A-G1) ==');
+const goodEras = [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: null }];
+ok('G1: convert with creds:non-array => BAD_STATE (not silent empty fanout)', T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: goodEras, creds: 'not-an-array', franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'BAD_STATE');
+ok('G1: pricing:non-map => BAD_STATE', T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: goodEras, creds: [], franchisees: [{ franchiseeId: 'fr_a' }], pricing: 'not-a-map' }, NOW).reason === 'BAD_STATE');
+ok('G1: eras:non-array => BAD_STATE', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'boor' }, { store: null, eras: 'not-an-array', creds: [], franchisees: [] }, NOW).reason === 'BAD_STATE');
+ok('G1: state bundle for the WRONG store => STORE_ID_MISMATCH', T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'karr' }, eras: goodEras, creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'STORE_ID_MISMATCH');
+ok('G1: non-object state => BAD_STATE', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'boor' }, 'not-a-state', NOW).reason === 'BAD_STATE');
+ok('G1: appendPricingForKey on a non-map => MALFORMED_PRICING', T.appendPricingForKey('not-a-map', '*', 25, NOW).error === 'MALFORMED_PRICING');
+ok('G1: closeAllPricing on a non-map => MALFORMED_PRICING', T.closeAllPricing('not-a-map', NOW).error === 'MALFORMED_PRICING');
+// regression: a VALID convert still produces the full fanout (proves the envelope guard didn't break the happy path)
+ok('G1 regression: a valid convert still cancels personal accts + bumps POS', (() => { const p = T.planTopologyChange({ op: 'convert', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: goodEras, creds: [{ id: 'pos_boor', Role: 'staff', StoreIds: ['boor'], isStorePOS: true }, { id: 'mgr', Role: 'store_manager', StoreIds: ['boor'] }], franchisees: [{ franchiseeId: 'fr_a', isFranchiseOffice: true }] }, NOW); return p.ok && p.plan.fanout.find(f => f.id === 'mgr').active === false && p.plan.fanout.find(f => f.id === 'pos_boor').action === 'bump'; })());
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

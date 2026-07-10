@@ -65,5 +65,14 @@ probes OS-A-E1..E2, incl. 2 earlier probes re-pointed to the correct reason code
 ## Status: AGY PASS ×3; Codex closing each successive deep corner — findings now down to shared-primitive
 strengthenings (rate payloads, store/era consistency). One more Codex re-check expected.
 
+## Convergence round 4 (2026-07-11): Codex found 1 root P1 (untrusted state envelope) — fixed
+Codex → BLOCK with 1 root P1 (9 probes): the planner SILENTLY COERCED a malformed/mismatched server-state
+envelope to defaults instead of failing closed — `creds:'not-an-array'` → `[]` → an EMPTY fanout on a convert,
+silently skipping the personal-account cancellations (the data-leak fix); and the state bundle's `store.id`
+was never checked against the intent's storeId. Fixed: the planner now VALIDATES the envelope
+(`BAD_STATE`/`STORE_ID_MISMATCH`) and the exported map helpers reject a non-map. Suite now **90 PASS / 0 FAIL**
+(+8 probes OS-A-G1, incl. a happy-path regression proving a valid convert still cancels personal accts + bumps
+the POS). Per Kunal's rule ([[feedback_audit_both_clean]]): keep iterating until BOTH auditors PASS.
+
 ## Next
-Codex final re-check → OS-W3 (client sync-hardening). Nothing to externals beyond the two auditors engaged.
+Codex re-check (round 5) → OS-W3. Nothing to externals beyond the two auditors engaged.
