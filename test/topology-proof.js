@@ -146,5 +146,22 @@ ok('C3b: append to a multi-open series rejected', T.appendPricingInterval([{ rat
 // C4: onboarding rejects a duplicate office username.
 ok('C4: onboard with a taken office username rejected', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new', officeUsername: 'office_taken' }, rate: 25 }, { store: null, eras: [], creds: [{ id: 'office_taken', Role: 'franchisee', StoreIds: [] }], franchisees: [] }, NOW).reason === 'USERNAME_TAKEN');
 
+// ── W1-W2 CONVERGENCE round 2 (Codex) — OS-A-D1..D4 ────────────────────────────────────────────────────
+console.log('== W1-W2 convergence R2 fixes (Codex OS-A-D1..D4) ==');
+// D1: empty/malformed era owner rejected everywhere.
+ok('D1: validEras-style — empty owner => resolveEra null', T.resolveEra([{ owner: '', from: '2025-01-01T00:00:00Z', to: null }], NOW) === null);
+ok('D1: empty owner => eraWindowsFor []', T.eraWindowsFor([{ owner: '', from: '2025-01-01T00:00:00Z', to: null }], '', true).length === 0);
+ok('D1: buyback on an empty-owner era rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: '', from: '2025-01-01T00:00:00Z', to: null }], creds: [], franchisees: [] }, NOW).ok === false);
+// D2: create-franchise on an EXISTING store rejected; a future-closed-only era is NOT current.
+ok('D2: create(franchise) with an existing store => STORE_EXISTS', T.planTopologyChange({ op: 'create', type: 'franchise', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'STORE_EXISTS');
+ok('D2: add on a store whose only era is closed-in-future => NO_ERA_RECORD (no open era)', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: '2030-01-01T00:00:00Z' }], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'NO_ERA_RECORD');
+// D3: pricing close + resolve fail closed on a malformed (multi-open) series.
+ok('D3: closePricing on a multi-open series => MALFORMED_PRICING', T.closePricing([{ rate: 10, from: '2025-01-01T00:00:00Z', to: null }, { rate: 15, from: '2025-06-01T00:00:00Z', to: null }], NOW).error === 'MALFORMED_PRICING');
+ok('D3: resolvePricingRate on a multi-open series => null (not the first rate)', T.resolvePricingRate([{ rate: 10, from: '2025-01-01T00:00:00Z', to: null }, { rate: 15, from: '2025-06-01T00:00:00Z', to: null }], NOW) === null);
+ok('D3: buyback on a multi-open pricing series rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: 'fr_a', from: '2025-01-01T00:00:00Z', to: null }], pricing: { '*': [{ rate: 10, from: '2025-01-01T00:00:00Z', to: null }, { rate: 15, from: '2025-06-01T00:00:00Z', to: null }] }, creds: [], franchisees: [] }, NOW).reason === 'MALFORMED_PRICING');
+// D4: store-POS login uniqueness.
+ok('D4: onboard where officeUsername === storeId rejected', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new', officeUsername: 'newst' }, rate: 25 }, { store: null, eras: [], creds: [], franchisees: [] }, NOW).reason === 'USERNAME_TAKEN');
+ok('D4: create HO whose storeId collides with an existing credential => STORE_LOGIN_TAKEN', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'office_taken' }, { store: null, eras: [], creds: [{ id: 'office_taken', Role: 'franchisee', StoreIds: [] }], franchisees: [] }, NOW).reason === 'STORE_LOGIN_TAKEN');
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

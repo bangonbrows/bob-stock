@@ -36,18 +36,18 @@ function safeId(s) { return typeof s === 'string' && ID_RE.test(s) && !RESERVED.
 function reqId(v) { return typeof v === 'string' && ID_RE.test(v) && !RESERVED.has(v); }
 // Audit OS-A-F3: a franchise rate must be a finite percent in [0,100] (mirrors catalogueMerge's guard).
 function validRate(r) { return typeof r === 'number' && Number.isFinite(r) && r >= 0 && r <= 100; }
-// Audit OS-A-F5 (+ Codex convergence F1): a WELL-FORMED era list = every entry parseable, sorted intervals
-// that do NOT overlap, and AT MOST ONE open era which must be the last. An empty list is valid (new store).
-// Anything else is malformed ⇒ every reader fails closed. Catches multi-open AND overlapping closed+open eras.
-function validEras(eras) {
-  if (!Array.isArray(eras)) return false;
-  if (eras.length === 0) return true;
+// Audit OS-A-F5 (+ Codex conv F1/F3): a WELL-FORMED interval list = every entry parseable, sorted, NON-
+// overlapping, and AT MOST ONE open interval (which is therefore last). Empty = valid. Shared by BOTH eras
+// and pricing series so there is ONE fail-closed definition, not per-path guards with adjacent bypasses.
+function validIntervals(arr) {
+  if (!Array.isArray(arr)) return false;
+  if (arr.length === 0) return true;
   const norm = [];
-  for (const e of eras) {
-    if (!e || typeof e.owner !== 'string') return false;
-    const f = toMs(e.from); if (f === null) return false;
-    const t = e.to == null ? null : toMs(e.to);
-    if (e.to != null && t === null) return false;   // unparseable end
+  for (const p of arr) {
+    if (!p || typeof p !== 'object') return false;
+    const f = toMs(p.from); if (f === null) return false;
+    const t = p.to == null ? null : toMs(p.to);
+    if (p.to != null && t === null) return false;   // unparseable end
     if (t != null && t < f) return false;            // end before start
     norm.push({ f, t });
   }
@@ -55,10 +55,20 @@ function validEras(eras) {
   let opens = 0;
   for (let i = 0; i < norm.length; i++) {
     if (norm[i].t === null) opens++;
-    if (i > 0) { const prevEnd = norm[i - 1].t === null ? Infinity : norm[i - 1].t; if (norm[i].f < prevEnd) return false; }  // overlap (an open prev ⇒ any later era overlaps ⇒ open must be last)
+    if (i > 0) { const prevEnd = norm[i - 1].t === null ? Infinity : norm[i - 1].t; if (norm[i].f < prevEnd) return false; }  // overlap (an open prev ⇒ any later interval overlaps ⇒ open must be last)
   }
   return opens <= 1;
 }
+// An era list is valid intervals AND every owner is 'HO' or a well-formed id (Codex conv-R2 F1: reject '' /
+// malformed owners — an empty owner was resolving into a live window + a blank export franchiseeId).
+function validEras(eras) {
+  if (!validIntervals(eras)) return false;
+  return (Array.isArray(eras) ? eras : []).every(e => e && (e.owner === HO || reqId(e.owner)));
+}
+// The single OPEN era (to:null), or null. Used by the PLANNER as "the current owner" — a topology change must
+// transition from the OPEN era, never a closed era that merely covers `now` (Codex conv-R2 F2: a future-dated
+// closed era must NOT read as current). resolveEra (below) is for HISTORICAL date lookups by the read LAs.
+function openEraOwner(eras) { const o = (Array.isArray(eras) ? eras : []).filter(e => e && e.to == null); return o.length === 1 ? { owner: o[0].owner, from: o[0].from } : null; }
 
 // ── Era resolution (OS-SR-6 visibility) ───────────────────────────────────────────────────────────────
 // eras = [{owner, from:<ISO>, to:<ISO|null>}]. Returns the owner whose [from,to) covers dateMs (to:null =
@@ -89,7 +99,7 @@ function eraWindowsFor(eras, ownerId, deviceBound) {
 
 // ── Pricing resolution (OS-SR-3/11 — rate as-of a row's date, from the append-only history) ────────────
 function resolvePricingRate(intervals, dateMs) {
-  if (!Array.isArray(intervals) || !isFiniteMs(dateMs)) return null;
+  if (!isFiniteMs(dateMs) || !validIntervals(intervals)) return null;   // Codex conv-R2 F3: malformed series (multi-open/overlap) ⇒ fail closed, never return the first rate
   for (const p of intervals) {
     if (!p || typeof p.rate !== 'number') continue;
     const f = toMs(p.from); if (f === null || dateMs < f) continue;
@@ -131,8 +141,8 @@ function appendPricingForKey(storePricing, key, rate, nowMs) {
 function appendPricingInterval(history, rate, nowMs) {
   const h = Array.isArray(history) ? history.map(x => ({ ...x })) : [];
   if (rate != null && !validRate(rate)) return { error: 'BAD_RATE' };       // OS-A-F3: no NaN/out-of-range rate
+  if (!validIntervals(h)) return { error: 'MALFORMED_PRICING' };            // Codex conv F3: reject any malformed (multi-open OR overlapping) EXISTING series before touching it
   const opens = h.filter(p => p && p.to == null);
-  if (opens.length > 1) return { error: 'MALFORMED_PRICING' };              // Codex-F3(b): a series must have ≤1 open interval
   // Codex-F3(a): the backdate/overlap guard runs BEFORE the same-rate no-op — else a same-rate backdated
   // append short-circuits to ok while leaving a gap over the change date. OS-A-F4: new interval must start
   // AT/AFTER the end of EVERY existing interval (not just the open one), so a closed period can't be overlapped.
@@ -149,6 +159,7 @@ function appendPricingInterval(history, rate, nowMs) {
 // Close the open pricing interval (buy-back → no franchise rate going forward).
 function closePricing(history, nowMs) {
   const h = Array.isArray(history) ? history.map(x => ({ ...x })) : [];
+  if (!validIntervals(h)) return { error: 'MALFORMED_PRICING' };   // Codex conv F3: a malformed (multi-open) series must fail closed, not close one and leave another open
   const open = h.find(p => p && p.to == null);
   if (open) { const of = toMs(open.from); if (of !== null && nowMs < of) return { error: 'PRICING_BACKDATE' }; open.to = iso(nowMs); }
   return { history: h };
@@ -163,11 +174,13 @@ function closeAllPricing(storePricing, nowMs) {
 
 // ── Era transition: close the open era, open a new one under newOwner ──────────────────────────────────
 function transitionEras(eras, newOwner, nowMs) {
-  if (!validEras(eras)) return { error: 'MALFORMED_ERAS' };   // OS-A-F5/Codex-F1: refuse to transition a malformed state (multi-open OR overlapping)
+  if (!validEras(eras)) return { error: 'MALFORMED_ERAS' };   // OS-A-F5/Codex-F1: refuse to transition a malformed input state
+  if (!(newOwner === HO || reqId(newOwner))) return { error: 'BAD_OWNER' };   // Codex conv-R2 F1: never open an era with a blank/malformed owner
   const e = Array.isArray(eras) ? eras.map(x => ({ ...x })) : [];
   const open = e.find(x => x && x.to == null);
   if (open) { const of = toMs(open.from); if (of !== null && nowMs < of) return { error: 'ERA_BACKDATE' }; open.to = iso(nowMs); }
   e.push({ owner: newOwner, from: iso(nowMs), to: null });
+  if (!validEras(e)) return { error: 'MALFORMED_ERAS' };   // Codex conv-R2 F2: reject if appending overlaps a closed-future era (output must stay well-formed)
   return { eras: e, closedOwner: open ? open.owner : null };
 }
 
@@ -222,28 +235,35 @@ function planTopologyChange(intent, state, nowMs) {
   const pricing = (st.pricing && typeof st.pricing === 'object' && !Array.isArray(st.pricing)) ? st.pricing : {};  // per-store map: { '*': default series, <productId>: override series }
   const rec = { op, storeId, ts: iso(nowMs) };
 
-  const currentOwner = resolveEra(eras, nowMs);   // null for a brand-new store
-  // Codex-F2: an EXISTING store must have a current era (seeded at cutover). st.store set but no current era =
-  // uninitialised/malformed ⇒ fail closed; never treat it as brand-new (which would skip the takeover snapshot
-  // + previous-owner sever). Only `create` legitimately has st.store == null.
+  // Codex conv-R2 F2: "current owner" is the OPEN era, NOT any closed era covering `now` (a future-dated
+  // closed era must never read as current). resolveEra (date lookup) is for the read LAs, not the planner.
+  const currentOwner = openEraOwner(eras);   // null for a brand-new store OR an all-closed (malformed) history
+  // Codex-F2: an EXISTING store must have an OPEN current era (seeded at cutover). st.store set but no open era
+  // ⇒ uninitialised/malformed ⇒ fail closed; never treat it as brand-new (which would skip the takeover
+  // snapshot + previous-owner sever). `create` legitimately has st.store == null (guarded per-branch below).
   if (op !== 'create' && st.store && !currentOwner) return { ok: false, reason: 'NO_ERA_RECORD' };
   const franchiseeExists = (fid) => franchisees.some(f => f && f.franchiseeId === fid);
-  // Codex-F4: an office/store-POS username must be UNIQUE across existing credentials + franchisee offices.
+  // Codex-F4 (+ conv-R2 F4): a login must be UNIQUE across existing credentials + franchisee offices. The store
+  // POS login == the storeId, so a new store must also not collide, and an onboard's office username must differ
+  // from the store's own POS login.
   const usernameTaken = (u) => creds.some(c => c && (c.username === u || c.Username === u || c.id === u)) || franchisees.some(f => f && f.officeUsername === u);
 
   // ---- create HO store ----
   if (op === 'create' && intent.type === 'HO') {
     if (st.store) return { ok: false, reason: 'STORE_EXISTS' };
+    if (usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: the new store POS login (=storeId) must be unique
     const e = transitionEras([], HO, nowMs); if (e.error) return { ok: false, reason: e.error };
     return { ok: true, plan: { eras: e.eras, pricing, fanout: [], createAccounts: [{ kind: 'storePOS', storeId }], snapshot: null, export: null, record: { ...rec, from: null, to: HO } } };
   }
 
   // ---- create born-franchise store (existing franchisee) OR add store to existing franchisee ----
   if ((op === 'create' && intent.type === 'franchise') || op === 'add') {
+    if (op === 'create' && st.store) return { ok: false, reason: 'STORE_EXISTS' };   // conv-R2 F2: create must target a NEW store
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3: a franchise op needs a valid rate
     if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3: no direct fran→fran (buy back to HO first)
+    if (!st.store && usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: a NEW store's POS login must be unique
     const wasHO = currentOwner && currentOwner.owner === HO;   // an existing HO store being handed over
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
@@ -257,9 +277,10 @@ function planTopologyChange(intent, state, nowMs) {
     const nf = intent.newFranchisee;
     if (!nf || !reqId(nf.franchiseeId) || franchiseeExists(nf.franchiseeId)) return { ok: false, reason: 'BAD_NEW_FRANCHISEE' };
     if (!reqId(nf.officeUsername)) return { ok: false, reason: 'BAD_OFFICE_USERNAME' };
-    if (usernameTaken(nf.officeUsername)) return { ok: false, reason: 'USERNAME_TAKEN' };   // Codex-F4: no duplicate office login
+    if (usernameTaken(nf.officeUsername) || nf.officeUsername === storeId) return { ok: false, reason: 'USERNAME_TAKEN' };   // Codex-F4 + conv-R2 F4: office login unique AND distinct from the store POS login
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3
     if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3
+    if (!st.store && usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: new store POS login unique
     const wasHO = currentOwner && currentOwner.owner === HO;
     const e = transitionEras(eras, nf.franchiseeId, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };

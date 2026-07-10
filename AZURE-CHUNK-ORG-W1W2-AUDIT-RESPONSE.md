@@ -36,6 +36,22 @@ Fixed; suite now **62 PASS / 0 FAIL** (+7 probes OS-A-C1..C4).
 | **C3** | conv-3 | P1 | F4 bypasses: (a) the same-rate no-op ran BEFORE the backdate guard (gap over the change date); (b) a multi-open pricing series was accepted | backdate/overlap guard + `MALFORMED_PRICING` (≤1 open) now run BEFORE the same-rate short-circuit |
 | **C4** | conv-4 | P2 | onboarding didn't enforce a UNIQUE office username (duplicate account requested) | planner rejects `USERNAME_TAKEN` when the office username collides with any existing credential or franchisee office |
 
+## Convergence round 2 (2026-07-11): AGY PASS; Codex found 4 ADJACENT paths — hardened the primitives
+AGY re-audited → **PASS** (all confirmed closed). Codex (82 probes) → BLOCK with 4 more, each an ADJACENT path
+the earlier per-spot fixes didn't cover. Rather than patch 4 more spots, the fix CONSOLIDATES the validation
+so the whole class is closed. Suite now **72 PASS / 0 FAIL** (+10 probes OS-A-D1..D4).
+
+| # | Codex | Sev | Finding | Fix (consolidated) |
+|---|---|---|---|---|
+| **D1** | conv2-1 | P1 | `validEras` accepted an EMPTY/malformed owner ('' resolved into a live window + blank export) | `validEras` now requires every owner = `HO` or `reqId`; `transitionEras` also rejects a bad `newOwner` (`BAD_OWNER`) |
+| **D2** | conv2-2 | P1 | the existing-store guard excluded ALL `create`; a future-dated CLOSED era read as "current" | planner "current owner" = the OPEN era only (`openEraOwner`); `create` branches reject a pre-existing store (`STORE_EXISTS`); `transitionEras` validates its OUTPUT so an append can't overlap a closed-future era |
+| **D3** | conv2-3 | P1 | the malformed-pricing guard was only on `append`; `closePricing`/`resolvePricingRate`/`closeAllPricing` didn't validate | one shared `validIntervals` now fail-closes EVERY pricing path (resolve returns null, close/append error `MALFORMED_PRICING`) — same definition as eras |
+| **D4** | conv2-4 | P2 | uniqueness covered only the office username, not the store-POS login (= storeId) | every create-POS op checks `usernameTaken(storeId)` (`STORE_LOGIN_TAKEN`); onboard's office username must also differ from the store's POS login |
+
+Root-cause note: the earlier rounds fixed SPOTS; this round fixed the SHARED PRIMITIVES (`validIntervals` for
+both eras+pricing, `validEras` owner check, `openEraOwner` for the planner, `transitionEras` output check), so
+the adjacent-path class is closed, not just the 4 instances.
+
 ## Next
-Codex one-more convergence re-check (AGY already PASS) → then OS-W3 (client sync-hardening). Nothing to
-externals beyond the two auditors engaged.
+Codex final re-check (AGY PASS twice) → OS-W3 (client sync-hardening). Nothing to externals beyond the two
+auditors engaged.
