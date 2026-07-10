@@ -132,5 +132,19 @@ ok('OS-A-F7: route resolves per-product override', routeStyle({ pricing: { '*': 
 // OS-A-F8 (AGY-2): add/onboard reject a store already owned by a franchisee (no direct fran→fran).
 ok('OS-A-F8: add to a franchise-owned store rejected (DIRECT_TRANSFER_FORBIDDEN)', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_b', rate: 25 }, { ...stateFr, franchisees: [{ franchiseeId: 'fr_a' }, { franchiseeId: 'fr_b' }] }, NOW).reason === 'DIRECT_TRANSFER_FORBIDDEN');
 
+// ── W1-W2 CONVERGENCE audit (Codex round 2) — OS-A-C1..C4 ──────────────────────────────────────────────
+console.log('== W1-W2 convergence fixes (Codex OS-A-C1..C4) ==');
+// C1: eraWindowsFor fails closed on malformed state; overlapping closed+open eras fail closed.
+ok('C1: eraWindowsFor([] on 2-open) => []', T.eraWindowsFor([{ owner: 'a', from: '2025-01-01T00:00:00Z', to: null }, { owner: 'b', from: '2025-06-01T00:00:00Z', to: null }], 'x', true).length === 0);
+ok('C1: overlapping closed+open era => resolveEra null', T.resolveEra([{ owner: 'fr_old', from: '2025-01-01T00:00:00Z', to: '2025-12-01T00:00:00Z' }, { owner: 'HO', from: '2025-06-01T00:00:00Z', to: null }], D('2025-08-01T00:00:00Z')) === null);
+ok('C1: buyback on an overlapping-era state rejected', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, { store: { id: 'boor' }, eras: [{ owner: 'fr_old', from: '2025-01-01T00:00:00Z', to: '2025-12-01T00:00:00Z' }, { owner: 'HO', from: '2025-06-01T00:00:00Z', to: null }], creds: [], franchisees: [] }, NOW).reason === 'MALFORMED_STATE');
+// C2: an EXISTING store with no current era fails closed (not treated as new).
+ok('C2: add on an existing store with NO era => NO_ERA_RECORD', T.planTopologyChange({ op: 'add', storeId: 'boor', toFranchiseeId: 'fr_a', rate: 25 }, { store: { id: 'boor' }, eras: [], creds: [], franchisees: [{ franchiseeId: 'fr_a' }] }, NOW).reason === 'NO_ERA_RECORD');
+// C3: pricing — same-rate backdate no longer short-circuits; multi-open series rejected.
+ok('C3a: same-rate backdated append rejected (no gap over the change date)', T.appendPricingInterval([{ rate: 25, from: '2025-12-01T00:00:00Z', to: null }], 25, D('2025-11-01T00:00:00Z')).error === 'PRICING_BACKDATE');
+ok('C3b: append to a multi-open series rejected', T.appendPricingInterval([{ rate: 10, from: '2025-01-01T00:00:00Z', to: null }, { rate: 15, from: '2025-06-01T00:00:00Z', to: null }], 20, NOW).error === 'MALFORMED_PRICING');
+// C4: onboarding rejects a duplicate office username.
+ok('C4: onboard with a taken office username rejected', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new', officeUsername: 'office_taken' }, rate: 25 }, { store: null, eras: [], creds: [{ id: 'office_taken', Role: 'franchisee', StoreIds: [] }], franchisees: [] }, NOW).reason === 'USERNAME_TAKEN');
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

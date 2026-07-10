@@ -24,6 +24,18 @@ didn't faithfully implement it in these 8 spots.
 - The 12 audit-fix probes are permanent (they'd catch any regression of these exact bugs). They join the
   suite that becomes the org chunk's sentinel set at OS-W6.
 
+## Convergence round (2026-07-11): AGY PASS; Codex found 4 more (deeper probing) — all fixed
+AGY re-audited → **PASS** (all 8 confirmed closed, cleared for W3). Codex re-audited with 82 probes → BLOCK
+with 4 more, ALL ground-truthed REAL (2 = incomplete corners of the first fixes, 2 = newly-surfaced gaps).
+Fixed; suite now **62 PASS / 0 FAIL** (+7 probes OS-A-C1..C4).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **C1** | conv-1 | P1 | F5 incomplete: `eraWindowsFor` had no malformed guard, and an OVERLAPPING closed+open era pair (not just multi-open) still resolved | new `validEras` = parseable + non-overlapping + ≤1 open (last); wired into `resolveEra`/`eraWindowsFor`/`transitionEras`/planner — all fail closed on any malformed history |
+| **C2** | conv-2 | P1 | an EXISTING store with no current era was treated as NEW (no prev-owner sever, no takeover snapshot) | planner fails closed `NO_ERA_RECORD` when `st.store` is set but `resolveEra` is null (only `create` may have no store) |
+| **C3** | conv-3 | P1 | F4 bypasses: (a) the same-rate no-op ran BEFORE the backdate guard (gap over the change date); (b) a multi-open pricing series was accepted | backdate/overlap guard + `MALFORMED_PRICING` (≤1 open) now run BEFORE the same-rate short-circuit |
+| **C4** | conv-4 | P2 | onboarding didn't enforce a UNIQUE office username (duplicate account requested) | planner rejects `USERNAME_TAKEN` when the office username collides with any existing credential or franchisee office |
+
 ## Next
-Re-audit (convergence) with the same pack → then OS-W3 (client sync-hardening). Nothing to externals beyond
-the two auditors already engaged.
+Codex one-more convergence re-check (AGY already PASS) → then OS-W3 (client sync-hardening). Nothing to
+externals beyond the two auditors engaged.
