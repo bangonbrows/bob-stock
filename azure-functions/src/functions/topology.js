@@ -68,6 +68,30 @@ function resolvePricingRate(intervals, dateMs) {
   return null;   // no rate in force ⇒ caller treats as no franchise loading (fail to no-discount, never guess)
 }
 
+// Per-PRODUCT rate resolution (Kunal 2026-07-10): different products carry different franchise %; the store
+// default is the fallback. `storePricing` = { '*': <default series>, '<productId>': <override series>, ... }.
+// The lens reads the PRODUCT's own dated series as-of the row's date if one exists, else the '*' default
+// series as-of that date. Every series is append-only + immutable (OS-SR-11/12), so a product-rate change is
+// also historically frozen — the same fix as the store default, applied per product.
+const PRICING_DEFAULT_KEY = '*';
+function resolvePricingForProduct(storePricing, productId, dateMs) {
+  if (!storePricing || typeof storePricing !== 'object') return null;
+  const own = productId != null && Object.prototype.hasOwnProperty.call(storePricing, productId) ? storePricing[productId] : null;
+  const viaOwn = own ? resolvePricingRate(own, dateMs) : null;
+  if (viaOwn != null) return viaOwn;
+  return resolvePricingRate(storePricing[PRICING_DEFAULT_KEY], dateMs);
+}
+// Append a rate change to ONE key ('*' for the store default, or a productId for an override) inside the
+// per-store pricing map. Returns the updated map or {error}. Used by BOTH the topology planner (store default
+// at conversion) and the product-pricing edit path (per-product override) so every rate change is dated.
+function appendPricingForKey(storePricing, key, rate, nowMs) {
+  const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
+  const r = appendPricingInterval(map[key], rate, nowMs);
+  if (r.error) return { error: r.error };
+  map[key] = r.history;
+  return { pricing: map };
+}
+
 // Append-only pricing change (OS-SR-12): CLOSE the open interval at nowMs, OPEN a new one from nowMs. NEVER
 // mutates a prior interval. A rate === current open rate is a no-op (no spurious interval). Returns the new
 // history or {error} on an immutability violation (e.g. a from earlier than the last closed interval).
@@ -90,6 +114,13 @@ function closePricing(history, nowMs) {
   const open = h.find(p => p && p.to == null);
   if (open) { const of = toMs(open.from); if (of !== null && nowMs < of) return { error: 'PRICING_BACKDATE' }; open.to = iso(nowMs); }
   return { history: h };
+}
+// Buy-back closes EVERY open series (store default '*' AND every per-product override) — the store leaves the
+// franchise, so all franchise rates stop applying going forward; the closed intervals stay immutable.
+function closeAllPricing(storePricing, nowMs) {
+  const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
+  for (const k of Object.keys(map)) { const c = closePricing(map[k], nowMs); if (c.error) return { error: c.error }; map[k] = c.history; }
+  return { pricing: map };
 }
 
 // ── Era transition: close the open era, open a new one under newOwner ──────────────────────────────────
@@ -148,7 +179,7 @@ function planTopologyChange(intent, state, nowMs) {
   const creds = Array.isArray(st.creds) ? st.creds : [];
   const franchisees = Array.isArray(st.franchisees) ? st.franchisees : [];
   const eras = Array.isArray(st.eras) ? st.eras : [];
-  const pricing = Array.isArray(st.pricing) ? st.pricing : [];
+  const pricing = (st.pricing && typeof st.pricing === 'object' && !Array.isArray(st.pricing)) ? st.pricing : {};  // per-store map: { '*': default series, <productId>: override series }
   const rec = { op, storeId, ts: iso(nowMs) };
 
   const currentOwner = resolveEra(eras, nowMs);   // may be null for a brand-new store
@@ -167,10 +198,10 @@ function planTopologyChange(intent, state, nowMs) {
     if (!safeId(String(fid)) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
     const wasHO = currentOwner && currentOwner.owner === HO;   // an existing HO store being handed over
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
-    const pr = appendPricingInterval(pricing, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: fid, oldFranchiseeId: e.closedOwner !== HO ? e.closedOwner : null, cancelPersonal: wasHO });
     const createAccounts = st.store ? [] : [{ kind: 'storePOS', storeId }];
-    return { ok: true, plan: { eras: e.eras, pricing: pr.history, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: fid } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: fid } } };
   }
 
   // ---- onboard NEW franchisee (+ first store, new or an existing HO store) ----
@@ -180,11 +211,11 @@ function planTopologyChange(intent, state, nowMs) {
     if (!safeId(String(nf.officeUsername))) return { ok: false, reason: 'BAD_OFFICE_USERNAME' };
     const wasHO = currentOwner && currentOwner.owner === HO;
     const e = transitionEras(eras, nf.franchiseeId, nowMs); if (e.error) return { ok: false, reason: e.error };
-    const pr = appendPricingInterval(pricing, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     const createAccounts = [{ kind: 'franchisee', franchiseeId: nf.franchiseeId, displayName: nf.displayName, officeUsername: nf.officeUsername }];
     if (!st.store) createAccounts.push({ kind: 'storePOS', storeId });
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: nf.franchiseeId, oldFranchiseeId: null, cancelPersonal: wasHO });
-    return { ok: true, plan: { eras: e.eras, pricing: pr.history, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: nf.franchiseeId } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: nf.franchiseeId } } };
   }
 
   // ---- convert HO store → franchise (existing franchisee) — the D-OS-1 case A when the franchisee exists ----
@@ -193,9 +224,9 @@ function planTopologyChange(intent, state, nowMs) {
     const fid = intent.toFranchiseeId;
     if (!safeId(String(fid)) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
-    const pr = appendPricingInterval(pricing, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: fid, oldFranchiseeId: null, cancelPersonal: true });
-    return { ok: true, plan: { eras: e.eras, pricing: pr.history, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: null, record: { ...rec, from: HO, to: fid } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: null, record: { ...rec, from: HO, to: fid } } };
   }
 
   // ---- buy-back franchise → HO ----
@@ -203,11 +234,11 @@ function planTopologyChange(intent, state, nowMs) {
     if (!currentOwner || currentOwner.owner === HO) return { ok: false, reason: 'NOT_FRANCHISE_OWNED' };
     const oldFid = currentOwner.owner;
     const e = transitionEras(eras, HO, nowMs); if (e.error) return { ok: false, reason: e.error };
-    const pr = closePricing(pricing, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    const pr = closeAllPricing(pricing, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: null, oldFranchiseeId: oldFid, cancelPersonal: false });
     // OS-SR-4: export the ex-franchisee's just-closed era [from,to) — server-generated later from this window.
     const closed = e.eras.find(x => x && x.owner === oldFid && x.to === iso(nowMs));
-    return { ok: true, plan: { eras: e.eras, pricing: pr.history, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: { franchiseeId: oldFid, storeId, from: closed ? closed.from : null, to: iso(nowMs) }, record: { ...rec, from: oldFid, to: HO } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: { franchiseeId: oldFid, storeId, from: closed ? closed.from : null, to: iso(nowMs) }, record: { ...rec, from: oldFid, to: HO } } };
   }
 
   return { ok: false, reason: 'UNKNOWN_OP' };
@@ -225,4 +256,4 @@ function handlerFactory(fn) {
 app.http('topologyPlan', { methods: ['POST'], authLevel: 'function', handler: handlerFactory((b, now) => planTopologyChange(b.intent, b.state, isFiniteMs(b.nowMs) ? b.nowMs : now)) });
 app.http('topologyResolve', { methods: ['POST'], authLevel: 'function', handler: handlerFactory((b) => ({ owner: resolveEra(b.eras, b.dateMs), rate: resolvePricingRate(b.pricing, b.dateMs) })) });
 
-module.exports = { resolveEra, eraWindowsFor, resolvePricingRate, appendPricingInterval, closePricing, transitionEras, deriveFanout, planTopologyChange, HO, PERSONAL_ROLES };
+module.exports = { resolveEra, eraWindowsFor, resolvePricingRate, resolvePricingForProduct, appendPricingInterval, appendPricingForKey, closePricing, closeAllPricing, transitionEras, deriveFanout, planTopologyChange, HO, PERSONAL_ROLES, PRICING_DEFAULT_KEY };
