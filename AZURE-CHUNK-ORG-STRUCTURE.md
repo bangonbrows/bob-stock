@@ -2,8 +2,9 @@
 
 **Status:** DESIGN SESSION 2026-07-10 (Kunal) — decisions D-OS-1..8 + BUILD PLAN below. **Spec reviews: R1
 2026-07-10 (Codex BLOCK ×5 + AGY BLOCK ×5, all REAL) → §OS-SR-1..9; R2 2026-07-10 (BLOCK — all R1 folds
-CONFIRMED closed, 1 converged race + 2 refinements) → §OS-SR-5/7-amend + OS-SR-10/11.** Findings shrinking each
-round (10 → 3), converging. Next: Kunal reviews R2 fold → spec review ROUND 3 → build. Split from Account Access by **D-AA-4**. (Account Access chunk = ✅ DONE + triple-audited
+CONFIRMED closed, 1 converged race + 2 refinements) → §OS-SR-5/7-amend + OS-SR-10/11.** R3 2026-07-10 (AGY PASS +
+Codex BLOCK×1) → §OS-SR-12. Findings 10 → 3 → 1, converged. Next: Codex one-item re-confirm of OS-SR-12 →
+BUILD. Split from Account Access by **D-AA-4**. (Account Access chunk = ✅ DONE + triple-audited
 + AA-20 gated.)
 
 ## KUNAL DECISIONS (design session 2026-07-10)
@@ -155,7 +156,22 @@ R2 confirmed ALL R1 folds (OS-SR-1..9) CLOSED. Both auditors CONVERGED on ONE ra
   NOTE: this also fixes a PRE-EXISTING latent gap — any franchise-discount change today retroactively rewrites
   past invoices because only the current scalar exists.
 
-## NEXT: R2 fold reviewed by Kunal → spec review ROUND 3 (Codex + AGY, convergence) → build + per-wave audits → milestone blind audit.
+## ADOPTED SPEC-REVIEW CHANGES (R3 — AGY PASS + Codex BLOCK×1, folded 2026-07-10)
+R3: **AGY PASS** (cleared for build — all R2 folds confirmed closed). **Codex** confirmed all R2 folds closed
+with ONE remaining refinement (the completion of OS-SR-11), triaged REAL + folded:
+
+- **OS-SR-12 (Codex-R3, pricing-history immutability) — completes OS-SR-11.** Pricing-rate intervals are
+  SERVER-OWNED and APPEND-ONLY once any row/invoice falls within them. A rate change creates a NEW interval
+  from an effective date — it NEVER mutates a prior interval. Correcting a closed/used interval is a
+  Director-AUDITED ADJUSTMENT path (a logged, visible correction record), not a silent overwrite of historical
+  pricing. So past invoices stay immutable through the pricing history exactly as they are through the
+  append-only ledger (standard slowly-changing-dimension discipline). Without this, a Director editing a closed
+  interval (10%→12% "to fix a setup mistake") would retroactively rewrite past invoices via the history table.
+
+## STATUS: AGY PASS; Codex's sole R3 finding (OS-SR-12) folded verbatim → expect Codex lift on a one-item
+re-confirm. Then the spec is CONVERGED and BUILD-READY.
+
+## NEXT: Codex one-item re-confirm of OS-SR-12 → CONVERGED → build + per-wave audits → milestone blind audit.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
 build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
