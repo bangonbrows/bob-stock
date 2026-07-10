@@ -27,7 +27,7 @@ const crypto = require('crypto');
 
 const SUDO_TTL_MS = 5 * 60 * 1000;          // purpose-bound sudo proofs
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // background gated reads
-const SUDO_PURPOSES = ['publish', 'archive', 'user-admin', 'backup', 'approve', 'resolve', 'delivery', 'adjustment', 'cancel', 'access-policy'];  // AA-W2: +cancel (transfer cancel ingest), +access-policy (SR-1 floored policy writes)
+const SUDO_PURPOSES = ['publish', 'archive', 'user-admin', 'backup', 'approve', 'resolve', 'delivery', 'adjustment', 'cancel', 'access-policy', 'topology-change'];  // AA-W2: +cancel, +access-policy; OS-W2: +topology-change (org wizard writes)
 const ALL_PURPOSES = ['session', ...SUDO_PURPOSES];
 // AA-W2: 'pin-grant' proofs are VERIFIABLE here but NOT mintable via the password path — they are minted
 // ONLY by accessPolicy.validatePin (a store account's own password must never self-grant the Director's PIN).
