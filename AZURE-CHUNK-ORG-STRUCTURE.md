@@ -1,8 +1,43 @@
 # Org-Structure Chunk — store/franchise topology tools (SCOPE STUB — design after Account Access chunk)
 
-**Status:** CAPTURED 2026-07-09, split out of the Account Access chunk by decision **D-AA-4**
-(`AZURE-CHUNK-ACCOUNT-ACCESS-SCOPE.md`). NOT yet designed. Design session with Kunal AFTER the Account Access
-chunk is built, then build + audit as its own unit, BEFORE the 6-way milestone blind audit.
+**Status:** DESIGN SESSION STARTED 2026-07-10 (Kunal) — decisions D-OS-1..5 below govern; a few detail opens
+remain (flagged) before build. Split out of the Account Access chunk by **D-AA-4**. Build + audit as its own
+unit, BEFORE the 6-way milestone blind audit. (Account Access chunk = ✅ DONE + triple-audited + AA-20 gated.)
+
+## KUNAL DECISIONS (design session 2026-07-10)
+- **D-OS-1 — the two REAL upcoming cases (both needed, equal priority):** (A) an EXISTING HO store becomes a
+  franchise under a **NEW franchisee** (convert + onboard-new-franchisee in one flow); (B) a **brand-new store**
+  joins an **EXISTING franchisee** (create store + assimilate into their scope). These are the concrete
+  ≈Sep–Oct scenarios — build both robustly.
+- **D-OS-2 — staff on CONVERSION (HO store → franchise):** the **store POS account STAYS** (same login; only
+  ownership/scope changes to the franchisee). But the **personal accounts scoped to that store — staff,
+  store-manager, territory-manager — are CANCELLED** (deactivated); the store becomes part of the franchisee's
+  account and the franchisee sets up their own people. **OPEN NUANCE (settle at build):** a territory manager
+  usually covers MULTIPLE stores — cancelling their whole account because ONE store converted would be wrong.
+  Rule to confirm: on conversion, REMOVE the converting store from each personal account's scope; DEACTIVATE
+  an account only if it is now left with ZERO stores (a single-store manager → deactivated; a multi-store TM →
+  keeps their other stores, just loses this one). Flag single-store vs multi-store at build.
+- **D-OS-3 — NO direct franchisee→franchisee sale path.** If a store moves between franchisees, the process is
+  **two steps: buy back to HO first, THEN reassign HO → the new franchisee** (both existing wizard paths). No
+  Tool 5. This also cleanly resets the ownership era (HO era between the two franchise eras) — the safest model.
+- **D-OS-4 — empty franchisee office account: MANUAL deactivation, NOT automatic.** When a franchisee's last
+  store leaves them (buy-back), there may still be **stock to transfer / settle**, so the wizard does NOT touch
+  the office account — the Director deactivates it manually AFTER stock/transfers are sorted. So a store-removal
+  leaves the office account active; cleanup is a separate manual step.
+- **D-OS-5 (from 2026-07-09) — ex-franchisee gets a DATA EXPORT of their era at buy-back, not lingering
+  live access** (their live scope ends; devices purge per Chunk 10). Export format/content = a design-open.
+
+## Remaining design-opens (settle before/at build)
+1. The TM multi-store cancel nuance (D-OS-2 above).
+2. Buy-back EXPORT: format (CSV bundle? scoped backup JSON?), content (their era's movements/invoices/stock
+   takes), and timing (auto at buy-back vs on-demand).
+3. Store-detail fields in wizard step 1 (name, phone, address?, type) + store-ID generation (auto vs manual).
+4. New-franchisee onboarding fields: the office/HO account (login username), the franchise discount/loading %,
+   which store(s).
+5. A **confirmation/preview step** before commit (RECOMMENDED): "This moves Booragoon from HO to Franchisee X.
+   X sees data from today forward; HO keeps full history; the store till stays, the 2 manager logins are
+   cancelled." — a plain-English summary of exactly what will change, before the atomic write. Strongly advise
+   yes given how consequential these ops are.
 
 **TIMELINE DRIVER (Kunal 2026-07-09):** a NEW FRANCHISEE is onboarding in ~2–3 months (≈Sep–Oct 2026). If the
 build slips past that, fallback = Claude onboards them manually — but per **SR-9** (Account Access spec review
@@ -85,9 +120,9 @@ Questions to settle at design:
   safe: a single cutoff breaks the moment a store changes hands TWICE (buy-back then re-franchise — the new
   franchisee must not inherit the PRIOR franchisee's or HO's history). D10-9's forward cutoff becomes the
   first era boundary, not a special case.
-- **Franchisee → franchisee SALE (AGY) — the wizard must handle a direct hand-off:** remove from Franchisee
-  A's scope + add to Franchisee B's scope + new era boundary so B sees nothing of A's history — one atomic
-  operation (SR-9). Add as a wizard path (or Tool 5) at design.
+- **Franchisee → franchisee SALE — RESOLVED (D-OS-3): NO direct path.** Kunal: do it as buy-back→HO then
+  reassign HO→new franchisee (two existing paths). The HO era between the two franchise eras IS the clean
+  boundary, so B never sees A's history — the ownership-era model handles it for free. Tool 5 dropped.
 - **Baseline era/cutoff record for EVERY franchise store (Codex R2-1):** born-franchise stores get one at
   creation; existing franchise stores get one seeded at cutover (that seeding ships with the Account Access
   chunk — see its §R2-1); this chunk's wizard maintains them from then on.
