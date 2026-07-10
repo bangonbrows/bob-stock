@@ -101,10 +101,20 @@ function evaluateAccess(pepper, proofSecret, body, nowMs) {
   if (!v.ok) return { ok: false, reason: action && (!policy || sudoRequirement(policy, action) === 'password') ? 'NEED_SUDO' : 'BAD_PROOF' };
 
   // 3. PIN grant (only consulted for PIN_CAPS): a separate proof, bound to the SAME account + device.
+  // AA-20: it is ALSO bound to the PIN EPOCH it was minted under. Clearing or changing the PIN bumps the
+  // policy's pinEpoch (policyMerge), so every outstanding grant with an older epoch is rejected IMMEDIATELY —
+  // "Clear PIN" is an instant kill-switch, not just a wait-for-expiry. (A grant still also self-expires ≤24h.)
   let hasPin = false;
   if (typeof body.pinProof === 'string' && body.pinProof) {
     const pv = verifyProofBody(proofSecret, { proof: body.pinProof, expectedPurposes: [PIN_GRANT_PURPOSE], deviceContext, rows: body.rows }, nowMs);
-    hasPin = pv.ok === true && pv.username === v.username;
+    let epochOk = false;
+    if (pv.ok) {
+      try {
+        const gp = JSON.parse(Buffer.from(String(body.pinProof).split('.')[0].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+        epochOk = (Number(gp.pe) || 0) === (Number(policy && policy.pinEpoch) || 0);   // stale epoch (PIN cleared/changed) => grant dead
+      } catch (e) { epochOk = false; }
+    }
+    hasPin = pv.ok === true && pv.username === v.username && epochOk;
   }
 
   // 4. Capability resolution (SR-7). No policy => FAIL CLOSED. AA-01: resolve by username.
@@ -159,18 +169,24 @@ function policyMerge(pepper, body, nowMs) {
 
   // pin: keep current unless pinPlain (set) or pinClear (remove)
   let pin = current && current.pin && typeof current.pin === 'object' ? current.pin : null;
+  // AA-20: pinEpoch bumps ONLY when the PIN is cleared or (re)set — NOT on unrelated policy edits. A grant is
+  // stamped with the epoch it was minted under; a bump instantly invalidates all outstanding grants ("Clear
+  // PIN" = immediate kill). Unrelated permission edits carry the epoch forward so live PIN unlocks survive them.
+  const curEpoch = Number(current && current.pinEpoch) || 0;
+  const pinChanged = body.pinClear === true || (typeof body.pinPlain === 'string' && body.pinPlain);
   if (body.pinClear === true) pin = null;
   if (typeof body.pinPlain === 'string' && body.pinPlain) {
     if (!/^\d{4,12}$/.test(body.pinPlain)) return { ok: false, reason: 'BAD_PIN' };
     const salt = crypto.randomBytes(16).toString('hex');
     pin = { salt, hash: computeHash(pepper, PIN_USERNAME, salt, body.pinPlain), expiresAt: new Date(nowMs + 24 * 60 * 60 * 1000).toISOString() };
   }
+  const pinEpoch = pinChanged ? curEpoch + 1 : curEpoch;
 
   // AA-18: integer-sanitise the base version so a poisoned `current.version` (Infinity/NaN/float/huge)
   // can't wedge all future publishes. A non-finite or out-of-range current resets to 0.
   const curV = Number(current && current.version);
   const base = (Number.isInteger(curV) && curV >= 0 && curV < Number.MAX_SAFE_INTEGER) ? curV : 0;
-  const blob = { version: base + 1, roles: p.roles, overrides: ovs, sudo: mergedSudo, pin };
+  const blob = { version: base + 1, roles: p.roles, overrides: ovs, sudo: mergedSudo, pin, pinEpoch };
   const json = JSON.stringify(blob);
   if (json.length > MAX_POLICY_JSON) return { ok: false, reason: 'TOO_LARGE' };
   return { ok: true, blob, version: blob.version };
@@ -207,6 +223,7 @@ function validatePin(pepper, proofSecret, body, nowMs) {
   const payload = {
     u: String(row.UserId || ''), un: String(row.Username || ''), r: String(row.Role || ''),
     p: PIN_GRANT_PURPOSE, dc: deviceContext, tv: Number(row.TokenVersion) || 0,
+    pe: Number(policy && policy.pinEpoch) || 0,   // AA-20: stamp the grant with the PIN epoch it was minted under
     iat: nowMs, exp: expMs, n: crypto.randomBytes(8).toString('hex'),
   };
   const b64 = Buffer.from(JSON.stringify(payload)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

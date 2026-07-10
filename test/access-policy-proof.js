@@ -46,7 +46,7 @@ ok('role default denies (staff stockTakeCount)', AP.resolveCapability(POLICY, 's
 ok('PIN grant lifts staff transferReceive', AP.resolveCapability(POLICY, 'transferReceive', 'booragoon', 'staff', true).ok === true);
 ok('PIN grant lifts staff stockTakeCount', AP.resolveCapability(POLICY, 'stockTakeCount', 'booragoon', 'staff', true).ok === true);
 ok('PIN grant does NOT lift non-PIN caps (recordDelivery)', AP.resolveCapability(POLICY, 'recordDelivery', 'booragoon', 'staff', true).ok === false);
-const P_OVR = { ...POLICY, overrides: { booragoon: { transferReceive: false, editCost: true } } };
+const P_OVR = { ...POLICY, pinEpoch: 1, overrides: { booragoon: { transferReceive: false, editCost: true } } };  // pinEpoch:1 so g1 (minted under P_PIN epoch 1) matches for the override-beats-pin test
 ok('explicit override DENY beats PIN grant (SR-7, AGY R1)', AP.resolveCapability(P_OVR, 'transferReceive', 'booragoon', 'staff', true).ok === false);
 ok('explicit override ALLOW beats role deny', AP.resolveCapability(P_OVR, 'editCost', 'booragoon', 'staff', false).ok === true);
 ok('override for ANOTHER account is ignored', AP.resolveCapability(P_OVR, 'editCost', 'someoneelse', 'staff', false).ok === false);
@@ -112,7 +112,15 @@ console.log('== evaluateAccess (end-to-end decision point, SR-2/SR-3/SR-8) ==');
 const E = (body, t) => AP.evaluateAccess(PEPPER, SECRET, body, t || NOW);
 ok('director session proof + editCost => ok', E({ proof: sessDir, capability: 'editCost', deviceContext: '__director', policy: POLICY, rows: ROWS }).ok === true);
 ok('staff receive w/o PIN => NEED_PIN', E({ proof: sessStaff, capability: 'transferReceive', deviceContext: 'booragoon', policy: POLICY, rows: ROWS }).reason === 'NEED_PIN');
-ok('staff receive WITH grant => ok via pin', E({ proof: sessStaff, pinProof: g1.proof, capability: 'transferReceive', deviceContext: 'booragoon', policy: POLICY, rows: ROWS }).via === 'pin');
+ok('staff receive WITH grant => ok via pin', E({ proof: sessStaff, pinProof: g1.proof, capability: 'transferReceive', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }).via === 'pin');  // P_PIN has pinEpoch 1, matching g1
+// AA-20: a grant is stamped with the PIN epoch it was minted under; a policy whose pinEpoch advanced (PIN
+// cleared/changed) rejects the stale grant immediately.
+ok('AA-20: grant rejected when policy pinEpoch advanced (Clear PIN kill-switch)', E({ proof: sessStaff, pinProof: g1.proof, capability: 'transferReceive', deviceContext: 'booragoon', policy: { ...P_PIN, pinEpoch: 2 }, rows: ROWS }).reason === 'NEED_PIN');
+ok('AA-20: same grant still valid at its own epoch', E({ proof: sessStaff, pinProof: g1.proof, capability: 'transferReceive', deviceContext: 'booragoon', policy: P_PIN, rows: ROWS }).ok === true);
+ok('AA-20: policyMerge bumps pinEpoch on pinClear', AP.policyMerge(PEPPER, { current: P_PIN, proposed: good, pinClear: true }, NOW).blob.pinEpoch === 2);
+ok('AA-20: policyMerge bumps pinEpoch on a new PIN', AP.policyMerge(PEPPER, { current: P_PIN, proposed: good, pinPlain: '5678' }, NOW).blob.pinEpoch === 2);
+ok('AA-20: unrelated edit carries pinEpoch forward (live PINs survive)', AP.policyMerge(PEPPER, { current: P_PIN, proposed: good }, NOW).blob.pinEpoch === 1);
+ok('AA-20: grant payload carries pe', (() => { try { const pl = JSON.parse(Buffer.from(g1.proof.split('.')[0].replace(/-/g,'+').replace(/_/g,'/'),'base64').toString()); return pl.pe === 1; } catch(e){ return false; } })());
 ok('override DENY beats presented grant (SR-7)', E({ proof: sessStaff, pinProof: g1.proof, capability: 'transferReceive', deviceContext: 'booragoon', policy: P_OVR, rows: ROWS }).ok === false);
 ok('action publish + session proof, map=password => NEED_SUDO', E({ proof: sessDir, action: 'publish', deviceContext: '__director', policy: POLICY, rows: ROWS }).reason === 'NEED_SUDO');
 ok('action delivery + session proof, map=session => ok', E({ proof: sessDir, action: 'delivery', deviceContext: '__director', policy: POLICY, rows: ROWS }).ok === true);

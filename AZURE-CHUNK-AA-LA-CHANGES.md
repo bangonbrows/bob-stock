@@ -99,6 +99,18 @@ changes touching `franchiseDiscount`/`price` ⇒ `editPricing`; supplier fields 
 `evaluateAccess {proof, action:'publish', capability:<cap>}` per distinct cap (≤4 calls); a failed cap
 rejects ITS rows via the existing `rejected[]`, the rest merge.
 
+## AA-20 (Kunal 2026-07-10): "Clear PIN" is an INSTANT kill-switch
+The policy blob carries `pinEpoch`. `policyMerge` bumps it ONLY when the PIN is cleared (`pinClear`) or
+(re)set (`pinPlain`) — NOT on unrelated permission edits. `validatePin` stamps each grant with the epoch it
+was minted under (`pe`); `evaluateAccess` rejects a grant whose `pe` ≠ the current policy's `pinEpoch`. So a
+"Clear PIN" (which bumps the epoch) invalidates every outstanding grant immediately, while the grant ALSO
+still self-expires ≤24h. **LA impact:** the `access-policy-write` LA already carries the full blob through
+`policyMerge` (pinEpoch computed server-side, written into `access_policy_secure` + the client copy); the
+`user-verify` `pin` op must pass the CURRENT `access_policy` (which now includes `pinEpoch`) to `validatePin`
+so the grant is stamped correctly; the ingest LAs (§3-4) pass the current policy to `evaluateAccess` (already
+required for the capability check) so the epoch check runs. No new fields on the wire beyond the blob's
+`pinEpoch`.
+
 ## 9. user-verify LA: new `pin` op
 `POST {auth, op:'pin', pin, actorUsername}` → device key gate → read UserCredentials rows + `access_policy`
 → `validatePin {pin, actorUsername, deviceContext:<LA-derived>, policy, rows}` → `{ok, proof, expiresAt}`.

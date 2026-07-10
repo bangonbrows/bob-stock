@@ -428,6 +428,14 @@ const Sync = {
     // (_costRv-marked products) is server-granted material; if the device holds it and EITHER the logged-in
     // account loses seeCost OR we adopt while logged-OUT (the normal morning boot — can't evaluate per
     // account), purge it. An authorized device re-populates via the seeCost-gated _fetchCorporateCosts.
+    // AA-20: a PIN clear/change bumps pinEpoch — drop this device's local PIN unlock so the UI matches the
+    // server (which now rejects the stale grant). Instant kill on adopt, not wait-for-expiry.
+    const oldEpoch = (d.accessPolicy && Number(d.accessPolicy.pinEpoch)) || 0;
+    if ((Number(blob.pinEpoch) || 0) !== oldEpoch) {
+      this._pinGrantProof = null;
+      try { if (typeof Auth !== 'undefined') Auth._tempStockTake = null; } catch (e) {}
+      try { if (typeof window !== 'undefined' && window.__clearStGrant) window.__clearStGrant(); } catch (e) {}  // clears the index.html module-scoped _stTakeUnlocked flag
+    }
     const hadCostPayload = (d.products || []).some(p => p && p._costRv !== undefined);
     let lostArchive = false, lostCost = false;
     const u = (typeof Auth !== 'undefined' && Auth.user) ? Auth.user() : null;

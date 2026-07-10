@@ -2160,6 +2160,29 @@ async function runSmoke(repo) {
       });
       rec('S-248', 'AA-EXT-1: CSV exports honour seeSellingPrice (no price column when denied)', r.stockDenied === true && r.prodDenied === true && r.stockAllowed === true, `stockDenied=${r.stockDenied} prodDenied=${r.prodDenied} stockAllowed=${r.stockAllowed} (clean: all true)`); await ctx.close(); }
 
+    // S-249 (AA-20): adopting a policy whose pinEpoch advanced (Director cleared/changed the PIN) drops this
+    // device's local PIN unlock immediately — the UI can't show unlocked while the server rejects the grant.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); d.accessPolicy = null; Auth._policy = null;
+        Auth._user = { id: 'u', username: 'sm', role: 'staff', storeIds: ['karrinyup'] };
+        await Sync._applyAccessPolicy({ version: 1, pinEpoch: 3, roles: { staff: {}, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        // simulate a live local PIN unlock
+        Auth._tempStockTake = new Date(Date.now() + 3600000).toISOString();
+        Sync._pinGrantProof = { proof: 'PG', expiresAt: Date.now() + 3600000 };
+        const before = !!Auth._tempStockTake && !!Sync._pinGrantProof;
+        // Director clears the PIN -> pinEpoch bumps to 4; device adopts
+        await Sync._applyAccessPolicy({ version: 2, pinEpoch: 4, roles: { staff: {}, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const afterTemp = Auth._tempStockTake, afterGrant = Sync._pinGrantProof;
+        // an UNRELATED edit (same pinEpoch) must NOT drop a fresh unlock
+        Auth._tempStockTake = new Date(Date.now() + 3600000).toISOString(); Sync._pinGrantProof = { proof: 'PG2', expiresAt: Date.now() + 3600000 };
+        await Sync._applyAccessPolicy({ version: 3, pinEpoch: 4, roles: { staff: { seeCharts: true }, director: { editAccessPolicy: true } }, overrides: {}, sudo: {} });
+        const survives = !!Auth._tempStockTake && !!Sync._pinGrantProof;
+        Auth._policy = null; Auth._tempStockTake = null; Sync._pinGrantProof = null;
+        return { before, clearedTemp: afterTemp === null, clearedGrant: afterGrant === null, survives };
+      }, s);
+      rec('S-249', 'AA-20: PIN epoch bump drops the local unlock; unrelated edit keeps it', r.before === true && r.clearedTemp === true && r.clearedGrant === true && r.survives === true, `before=${r.before} clearedTemp=${r.clearedTemp} clearedGrant=${r.clearedGrant} survives=${r.survives} (clean: all true)`); await ctx.close(); }
+
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
   return out;

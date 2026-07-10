@@ -1111,6 +1111,10 @@ const MUTATIONS = [
     find: "    const seeSell=Auth.can('seeSellingPrice'); // AA-EXT-1: the CSV must honour the same seeSellingPrice gate as the on-screen table (AGY external finding)",
     repl: "    const seeSell=true; // AA-EXT-1: the CSV must honour the same seeSellingPrice gate as the on-screen table (AGY external finding)",
     note: "AA-EXT-1: the stock CSV export ignores seeSellingPrice -> a denied role exports the full price list (the AGY external finding; consistency of the client-only view hint)" },
+  { id: 'S-249', file: 'sync.js',
+    find: "    if ((Number(blob.pinEpoch) || 0) !== oldEpoch) {",
+    repl: "    if (false) {",
+    note: "AA-20: adopting a policy with a bumped pinEpoch no longer drops the local PIN unlock -> after 'Clear PIN' the UI still shows unlocked while the server rejects every push (stale grant)" },
 ];
 
 function copyRepoTo(dir) {
