@@ -235,6 +235,21 @@ a legitimate store-level query that resolves the default. Suite now **165 PASS /
 The pricing-key guard is now complete on every surface: planner input, write helpers, the map keys AND the
 requested key on the read path.
 
+## Round 15 (2026-07-11): Codex found 1 P2 — append preserved a dirty EXISTING map key through the spread
+Codex → BLOCK with 1 P2: `appendPricingForKey` validated the REQUESTED key (R12) but spread the EXISTING map
+without validating ITS keys — so appending a valid key onto a dirty map (`'bad key!'`, a JSON.parse `__proto__`)
+returned an authoritative map still holding the dirty key, which the planner then refuses (the same
+helper/planner asymmetry as R12, one field over). Ground-truthed REAL. Fixed: append now sweeps the existing
+map's keys first (symmetric with `closeAllPricing`/planner/read). Suite now **168 PASS / 0 FAIL** (+3 probes
+OS-A-Q).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **Q** | rnd15-1 | P2 | `appendPricingForKey` checked the requested key but spread a dirty EXISTING map through unchanged → returned state the planner refuses | the existing map's keys are validated before the spread (`MALFORMED_PRICING`); clean-map appends unchanged |
+
+Every pricing surface now runs the SAME key sweep: planner input, `appendPricingForKey` (requested + existing),
+`closeAllPricing`, and `resolvePricingForProduct` (map keys + requested key).
+
 ## Next
-Codex round-15 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+Codex round-16 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.

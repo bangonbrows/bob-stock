@@ -342,5 +342,14 @@ ok('P2: a VALID unlisted productId ("MKU_9") still falls back to the default (25
 ok('P2: a VALID override productId ("EXT_1") still resolves its own rate (40)', T.resolvePricingForProduct(cleanP, 'EXT_1', NOW) === 40);
 ok('P2: a null productId (store-level query) still resolves the default (25)', T.resolvePricingForProduct(cleanP, null, NOW) === 25);
 
+// ── W1-W2 CONVERGENCE round 15 (Codex) — OS-A-Q (append validates the EXISTING map's keys too) ────────────
+console.log('== W1-W2 convergence R15 fixes (Codex OS-A-Q) ==');
+const sQ = (r) => [{ rate: r, from: '2025-01-01T00:00:00Z', to: null }];
+// Q1: appendPricingForKey must reject a dirty EXISTING map (not let a bad key ride through the spread).
+ok('Q1: append onto a map holding a malformed key => MALFORMED_PRICING', T.appendPricingForKey({ '*': sQ(25), 'bad key!': sQ(30) }, 'EXT_2', 40, NOW).error === 'MALFORMED_PRICING');
+ok('Q1: append onto a map holding a JSON.parse "__proto__" key => MALFORMED_PRICING', T.appendPricingForKey(JSON.parse('{"*":[{"rate":25,"from":"2025-01-01T00:00:00Z","to":null}],"__proto__":[{"rate":30,"from":"2025-01-01T00:00:00Z","to":null}]}'), 'EXT_3', 40, NOW).error === 'MALFORMED_PRICING');
+// Q2: appending onto a CLEAN map still works unchanged.
+ok('Q2: append onto a clean map still works', (() => { const r = T.appendPricingForKey({ '*': sQ(25) }, 'EXT_2', 40, NOW); return !r.error && Array.isArray(r.pricing['EXT_2']) && r.pricing['EXT_2'][0].rate === 40; })());
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

@@ -158,6 +158,10 @@ function appendPricingForKey(storePricing, key, rate, nowMs) {
   // validate the KEY itself (not just the map) — else a direct consumer mints an authoritative map with a
   // malformed/reserved key (`'bad key!'`, `'__proto__'`) that the planner then refuses to operate on.
   if (key !== PRICING_DEFAULT_KEY && !reqId(key)) return { error: 'MALFORMED_PRICING' };
+  // Codex R15 P2: validate the EXISTING map's keys too (symmetry with closeAllPricing/planner/read) — else a
+  // dirty key ('bad key!', a JSON.parse '__proto__') rides through the spread into the returned authoritative
+  // map, which the planner then refuses to operate on.
+  if (storePricing) { for (const k of Object.keys(storePricing)) if (k !== PRICING_DEFAULT_KEY && !reqId(k)) return { error: 'MALFORMED_PRICING' }; }
   const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
   const r = appendPricingInterval(map[key], rate, nowMs);
   if (r.error) return { error: r.error };
