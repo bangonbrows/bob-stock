@@ -144,6 +144,10 @@ function resolvePricingForProduct(storePricing, productId, dateMs) {
 // at conversion) and the product-pricing edit path (per-product override) so every rate change is dated.
 function appendPricingForKey(storePricing, key, rate, nowMs) {
   if (storePricing != null && (typeof storePricing !== 'object' || Array.isArray(storePricing))) return { error: 'MALFORMED_PRICING' };  // Codex conv-R4: a non-map fails closed, never silently becomes {}
+  // Codex R12 P2: this exported helper is used by BOTH the planner AND the product-pricing edit path. It must
+  // validate the KEY itself (not just the map) — else a direct consumer mints an authoritative map with a
+  // malformed/reserved key (`'bad key!'`, `'__proto__'`) that the planner then refuses to operate on.
+  if (key !== PRICING_DEFAULT_KEY && !reqId(key)) return { error: 'MALFORMED_PRICING' };
   const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
   const r = appendPricingInterval(map[key], rate, nowMs);
   if (r.error) return { error: r.error };
@@ -188,6 +192,9 @@ function closePricing(history, nowMs) {
 function closeAllPricing(storePricing, nowMs) {
   if (storePricing != null && (typeof storePricing !== 'object' || Array.isArray(storePricing))) return { error: 'MALFORMED_PRICING' };  // Codex conv-R4: a non-map fails closed
   const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
+  // Codex R12 P2: validate the KEYS too (symmetry with appendPricingForKey) — this exported helper must not
+  // process/return an authoritative map with a malformed/reserved key.
+  for (const k of Object.keys(map)) if (k !== PRICING_DEFAULT_KEY && !reqId(k)) return { error: 'MALFORMED_PRICING' };
   for (const k of Object.keys(map)) { const c = closePricing(map[k], nowMs); if (c.error) return { error: c.error }; map[k] = c.history; }
   return { pricing: map };
 }

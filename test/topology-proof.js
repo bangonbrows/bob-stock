@@ -306,5 +306,17 @@ ok('M5: a malformed pricing key ("bad key!") => MALFORMED_PRICING', T.planTopolo
 // M6: onboard's newFranchisee.displayName must be a string.
 ok('M6: onboard with a non-string displayName => BAD_NEW_FRANCHISEE', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new', displayName: 42, officeUsername: 'fran_new' }, rate: 25 }, ST({ store: null }), NOW).reason === 'BAD_NEW_FRANCHISEE');
 
+// ── W1-W2 CONVERGENCE round 12 (Codex) — OS-A-N (exported pricing helpers validate the KEY, not just the map) ─
+console.log('== W1-W2 convergence R12 fixes (Codex OS-A-N) ==');
+// N1: appendPricingForKey is exported + used by the product-pricing edit path — it must reject a malformed key,
+// else a direct consumer mints authoritative state the planner later refuses (MALFORMED_PRICING asymmetry).
+ok('N1: appendPricingForKey with a malformed key ("bad key!") => MALFORMED_PRICING', T.appendPricingForKey({}, 'bad key!', 30, NOW).error === 'MALFORMED_PRICING');
+ok('N1: appendPricingForKey with a reserved key ("__proto__") => MALFORMED_PRICING', T.appendPricingForKey({}, '__proto__', 30, NOW).error === 'MALFORMED_PRICING');
+ok('N1: appendPricingForKey with the default "*" key still WORKS', (() => { const r = T.appendPricingForKey({}, '*', 30, NOW); return !r.error && Array.isArray(r.pricing['*']) && r.pricing['*'][0].rate === 30; })());
+ok('N1: appendPricingForKey with a valid productId key ("EXT_1") still WORKS', (() => { const r = T.appendPricingForKey({}, 'EXT_1', 30, NOW); return !r.error && Array.isArray(r.pricing['EXT_1']); })());
+// N2: closeAllPricing (also exported) validates keys symmetrically.
+ok('N2: closeAllPricing on a malformed-key map => MALFORMED_PRICING', T.closeAllPricing({ 'bad key!': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }] }, NOW).error === 'MALFORMED_PRICING');
+ok('N2: closeAllPricing on a valid map ("*" + productId) still WORKS', (() => { const r = T.closeAllPricing({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_1': [{ rate: 30, from: '2025-01-01T00:00:00Z', to: null }] }, NOW); return !r.error && r.pricing['*'][0].to !== null && r.pricing['EXT_1'][0].to !== null; })());
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

@@ -189,7 +189,22 @@ Note the `__proto__` pricing-key probe is built via `JSON.parse` (an object LITE
 prototype, not a key) — that matches the real ingress (`request.json()`), where `__proto__` becomes a genuine
 own key; the guard rejects it before any `{ ...pricing }` spread, so no prototype pollution.
 
+## Round 12 (2026-07-11): Codex found 1 P2 — the sweep guarded the planner INPUT but not the exported helpers
+Codex → BLOCK with 1 P2: the proactive sweep validated pricing-map keys at the planner's INPUT boundary
+(`planTopologyChange`), but the EXPORTED helper `appendPricingForKey` — used by both the planner AND the
+product-pricing edit path — didn't validate the `key` before `map[key] = …`, so a direct consumer could mint an
+authoritative map with a malformed/reserved key (`'bad key!'`) that the planner then refuses (an asymmetry: the
+helper produces state the planner won't operate on). Ground-truthed REAL. Fixed both exported map-level helpers
+(`appendPricingForKey` + `closeAllPricing`) to validate keys (`'*'` or a well-formed productId → else
+`MALFORMED_PRICING`). Suite now **153 PASS / 0 FAIL** (+6 probes OS-A-N).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **N** | rnd12-1 | P2 | `appendPricingForKey`/`closeAllPricing` (exported, used by the product-pricing edit path) validated the map but not the KEY → a direct consumer mints a bad-key authoritative map the planner later rejects | both helpers now validate every key is `'*'` or a well-formed productId (`MALFORMED_PRICING`); closes the input/helper asymmetry |
+
+Note: this is the sweep's own principle applied one layer out — the sweep locked the planner's front door; Codex
+found the same guard was missing on the exported side-door. Now symmetric.
+
 ## Next
-Codex round-12 re-check on the swept HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per
-[[feedback_audit_both_clean]] keep looping until Codex also returns a clean PASS. The sweep should sharply reduce
-the remaining adjacent-corner surface.
+Codex round-13 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+looping until Codex also returns a clean PASS.
