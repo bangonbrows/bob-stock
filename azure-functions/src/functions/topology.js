@@ -305,7 +305,8 @@ function planTopologyChange(intent, state, nowMs) {
   // into the store POS and let it KEEP the converted store. They must be strict booleans; franchiseeId, if
   // present, must be a well-formed id. Fail closed on any deviation.
   if (!st.creds.every(c => c && typeof c === 'object' && reqId(c.id) && typeof c.Role === 'string' && KNOWN_ROLES.has(c.Role)   // Codex R10 P1: role must be a KNOWN role (an unknown role holding the store would survive ownership change with no fanout)
-      && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string')
+      && Array.isArray(c.StoreIds) && c.StoreIds.every(s => reqId(s))   // sweep: each StoreId a WELL-FORMED id (reject a reserved/injected/malformed scope entry), not just any string
+      && (c.username === undefined || typeof c.username === 'string') && (c.Username === undefined || typeof c.Username === 'string')   // sweep: the optional login aliases feed uniqueness checks — must be strings
       && (c.isStorePOS === undefined || typeof c.isStorePOS === 'boolean')
       && (c.isFranchiseOffice === undefined || typeof c.isFranchiseOffice === 'boolean')
       // Codex R11 P2: `Active` gates isActiveCred (the inactive-office guard). It is NOT a fanout truthiness
@@ -328,10 +329,24 @@ function planTopologyChange(intent, state, nowMs) {
   { const offSeen = new Set(); for (const c of st.creds) { if (c.isFranchiseOffice === true) { if (offSeen.has(c.franchiseeId)) return { ok: false, reason: 'DUPLICATE_OFFICE' }; offSeen.add(c.franchiseeId); } } }
   // Codex R11 P2 (OS-SR-8): the franchisee entity is the STABLE identity — every row must be a well-formed
   // object with a valid franchiseeId, and the id must be UNIQUE (two rows for one id = ambiguous server truth).
-  if (!st.franchisees.every(f => f && typeof f === 'object' && !Array.isArray(f) && reqId(f.franchiseeId))) return { ok: false, reason: 'BAD_FRANCHISEE' };
+  if (!st.franchisees.every(f => f && typeof f === 'object' && !Array.isArray(f) && reqId(f.franchiseeId)
+      && (f.officeUsername === undefined || f.officeUsername === null || reqId(f.officeUsername))   // sweep: office login must be a well-formed id (feeds usernameTaken)
+      && (f.officeStoreId === undefined || f.officeStoreId === null || reqId(f.officeStoreId))       // sweep: office store id well-formed
+      && (f.displayName === undefined || f.displayName === null || typeof f.displayName === 'string'))) return { ok: false, reason: 'BAD_FRANCHISEE' };
   { const fSeen = new Set(); for (const f of st.franchisees) { if (fSeen.has(f.franchiseeId)) return { ok: false, reason: 'DUPLICATE_FRANCHISEE' }; fSeen.add(f.franchiseeId); } }
+  // sweep (OS-SR-8 login namespace): credential ids and franchisee office usernames share ONE login namespace —
+  // no identifier may collide ACROSS accounts (a cred id == an office username = two accounts, one login). The
+  // per-collection dupe checks above don't catch a cross-collection collision. Aliases WITHIN one account (its
+  // id == its own username) are fine — dedupe per-account before checking the global set.
+  { const logins = new Set();
+    const claim = (identifiers) => { const own = new Set(identifiers.filter(u => u != null)); for (const u of own) { if (logins.has(u)) return true; } for (const u of own) logins.add(u); return false; };
+    for (const c of st.creds) { if (claim([c.id, c.username, c.Username])) return { ok: false, reason: 'DUPLICATE_LOGIN' }; }
+    for (const f of st.franchisees) { if (claim([f.officeUsername])) return { ok: false, reason: 'DUPLICATE_LOGIN' }; } }
   // Codex conv-R5 F2: validate EVERY pricing series in the map (not only the touched key), else a malformed
   // per-product override rides into the committed plan.
+  // sweep: every pricing-map KEY must be the default '*' or a well-formed productId (block a reserved/injected
+  // key like '__proto__'); every VALUE a valid series.
+  if (!Object.keys(st.pricing).every(k => k === PRICING_DEFAULT_KEY || reqId(k))) return { ok: false, reason: 'MALFORMED_PRICING' };
   if (!Object.values(st.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };
   const creds = st.creds;
   const franchisees = st.franchisees;
@@ -407,6 +422,8 @@ function planTopologyChange(intent, state, nowMs) {
     const nf = intent.newFranchisee;
     if (!nf || !reqId(nf.franchiseeId) || franchiseeExists(nf.franchiseeId)) return { ok: false, reason: 'BAD_NEW_FRANCHISEE' };
     if (!reqId(nf.officeUsername)) return { ok: false, reason: 'BAD_OFFICE_USERNAME' };
+    if (nf.displayName != null && typeof nf.displayName !== 'string') return { ok: false, reason: 'BAD_NEW_FRANCHISEE' };   // sweep: displayName flows into the created account
+    if (usernameTaken(nf.franchiseeId)) return { ok: false, reason: 'USERNAME_TAKEN' };   // sweep: the new franchiseeId must not collide with an existing login either
     if (usernameTaken(nf.officeUsername) || nf.officeUsername === storeId) return { ok: false, reason: 'USERNAME_TAKEN' };   // Codex-F4 + conv-R2 F4: office login unique AND distinct from the store POS login
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3
     if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3

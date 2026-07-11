@@ -168,6 +168,28 @@ kept `active:false`, duplicate-entity→DUPLICATE_FRANCHISEE; happy-path convert
 still succeeds. Root-cause note: L1/L2 extend the R9 truthiness + R10 activation-preservation work to the last two
 spots (the `Active` field type + the buyback ex-office); L3 extends row-validation from `creds` to `franchisees`.
 
+## PROACTIVE SCHEMA SWEEP (2026-07-11, Kunal-approved) — close the whole "untrusted field" class at once
+Rather than keep taking Codex's adjacent-corner findings one round at a time (rounds 6–11 were all the same
+class: type/validate/uniquify each server-supplied field), a single proactive pass hardened EVERY remaining
+field the planner reads. No Codex finding prompted these — they pre-empt the class. Suite now **147 PASS / 0
+FAIL** (+11 probes OS-A-M). All ground-truthed against production data shapes (store ids, product ids like
+`EXT_1`/`MKU_12`, `head_office` all remain `reqId`-valid — no legitimate state rejected).
+
+| Field / invariant | Before | After |
+|---|---|---|
+| credential `StoreIds` entries | any string | every entry a WELL-FORMED id (`reqId`) — reject reserved/injected/malformed scope (`BAD_CREDENTIAL`) |
+| credential `username`/`Username` aliases | unvalidated (fed uniqueness) | must be strings (`BAD_CREDENTIAL`) |
+| franchisee `officeUsername` / `officeStoreId` | unvalidated | well-formed ids if present (`BAD_FRANCHISEE`) |
+| franchisee `displayName` | unvalidated | string if present (`BAD_FRANCHISEE`) |
+| login namespace | per-collection dupes only | cred ids + franchisee office usernames are ONE namespace — no cross-collision (`DUPLICATE_LOGIN`); within-account aliases (id==own username) still allowed |
+| pricing-map KEYS | unvalidated (only values) | `'*'` or a well-formed productId — blocks an injected/reserved key incl. a JSON.parse-created `__proto__` (`MALFORMED_PRICING`) |
+| onboard `newFranchisee.displayName` | unvalidated | string (`BAD_NEW_FRANCHISEE`); new franchiseeId also checked against the login namespace (`USERNAME_TAKEN`) |
+
+Note the `__proto__` pricing-key probe is built via `JSON.parse` (an object LITERAL `{'__proto__':…}` sets the
+prototype, not a key) — that matches the real ingress (`request.json()`), where `__proto__` becomes a genuine
+own key; the guard rejects it before any `{ ...pricing }` spread, so no prototype pollution.
+
 ## Next
-Codex round-12 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
-looping until Codex also returns a clean PASS.
+Codex round-12 re-check on the swept HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per
+[[feedback_audit_both_clean]] keep looping until Codex also returns a clean PASS. The sweep should sharply reduce
+the remaining adjacent-corner surface.

@@ -284,5 +284,27 @@ ok('L3: two franchisee entities with the same id => DUPLICATE_FRANCHISEE', T.pla
 ok('L3: a franchisee row with no franchiseeId => BAD_FRANCHISEE', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, franchisees: [{ officeUsername: 'a' }] }), NOW).reason === 'BAD_FRANCHISEE');
 ok('L3: a primitive franchisee entry => BAD_FRANCHISEE', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, franchisees: [42] }), NOW).reason === 'BAD_FRANCHISEE');
 
+// ── PROACTIVE SCHEMA SWEEP (Kunal-approved) — OS-A-M (close the whole "untrusted field" class at once) ──
+console.log('== proactive schema sweep (OS-A-M) ==');
+// M1: every StoreId scope entry must be a WELL-FORMED id (not just any string) — block reserved/injected.
+ok('M1: a StoreId of "__proto__" => BAD_CREDENTIAL', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, creds: [{ id: 'u', Role: 'staff', StoreIds: ['__proto__'] }] }), NOW).reason === 'BAD_CREDENTIAL');
+ok('M1: a malformed StoreId ("bad id!") => BAD_CREDENTIAL', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, creds: [{ id: 'u', Role: 'staff', StoreIds: ['bad id!'] }] }), NOW).reason === 'BAD_CREDENTIAL');
+// M2: the optional login-alias fields must be strings (they feed uniqueness).
+ok('M2: a non-string username alias => BAD_CREDENTIAL', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, creds: [{ id: 'u', Role: 'staff', StoreIds: [], username: 123 }] }), NOW).reason === 'BAD_CREDENTIAL');
+// M3: franchisee entity optional fields validated.
+ok('M3: a franchisee officeUsername that is a number => BAD_FRANCHISEE', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, franchisees: [{ franchiseeId: 'fr_a', officeUsername: 42 }] }), NOW).reason === 'BAD_FRANCHISEE');
+ok('M3: a franchisee displayName that is a number => BAD_FRANCHISEE', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, franchisees: [{ franchiseeId: 'fr_a', displayName: 42 }] }), NOW).reason === 'BAD_FRANCHISEE');
+// M4: credential ids and franchisee office usernames share ONE login namespace — no cross-collision.
+ok('M4: a cred id colliding with a franchisee officeUsername => DUPLICATE_LOGIN', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, creds: [{ id: 'shared', Role: 'staff', StoreIds: [] }], franchisees: [{ franchiseeId: 'fr_a', officeUsername: 'shared' }] }), NOW).reason === 'DUPLICATE_LOGIN');
+ok('M4: two franchisees sharing one officeUsername => DUPLICATE_LOGIN', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, franchisees: [{ franchiseeId: 'fr_a', officeUsername: 'shared' }, { franchiseeId: 'fr_b', officeUsername: 'shared' }] }), NOW).reason === 'DUPLICATE_LOGIN');
+ok('M4 regression: a cred whose username EQUALS its own id is NOT a self-collision', T.planTopologyChange({ op: 'create', type: 'HO', storeId: 'newst' }, ST({ store: null, creds: [{ id: 'same', Role: 'staff', StoreIds: [], username: 'same' }] }), NOW).ok === true);
+// M5: pricing-map keys must be '*' or a well-formed productId — block an injected/reserved key.
+// NB: a `{ '__proto__': … }` object LITERAL sets the prototype, not a key — but the real path is JSON.parse(body),
+// which creates a genuine own '__proto__' key. Build it that way so the probe exercises the real attack surface.
+ok('M5: a pricing key of "__proto__" (as JSON.parse yields) => MALFORMED_PRICING', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, ST({ store: { id: 'boor' }, eras: frEra2, creds: [posB, offAboor], franchisees: [{ franchiseeId: 'fr_a' }], pricing: JSON.parse('{"*":[{"rate":25,"from":"2025-06-01T00:00:00Z","to":null}],"__proto__":[{"rate":10,"from":"2025-06-01T00:00:00Z","to":null}]}') }), NOW).reason === 'MALFORMED_PRICING');
+ok('M5: a malformed pricing key ("bad key!") => MALFORMED_PRICING', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, ST({ store: { id: 'boor' }, eras: frEra2, creds: [posB, offAboor], franchisees: [{ franchiseeId: 'fr_a' }], pricing: { '*': openP2['*'], 'bad key!': [{ rate: 10, from: '2025-06-01T00:00:00Z', to: null }] } }), NOW).reason === 'MALFORMED_PRICING');
+// M6: onboard's newFranchisee.displayName must be a string.
+ok('M6: onboard with a non-string displayName => BAD_NEW_FRANCHISEE', T.planTopologyChange({ op: 'onboard', storeId: 'newst', newFranchisee: { franchiseeId: 'fr_new', displayName: 42, officeUsername: 'fran_new' }, rate: 25 }, ST({ store: null }), NOW).reason === 'BAD_NEW_FRANCHISEE');
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);
