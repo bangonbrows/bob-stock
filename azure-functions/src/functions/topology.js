@@ -248,21 +248,30 @@ function planTopologyChange(intent, state, nowMs) {
   // for the store the intent names.
   if (!state || typeof state !== 'object' || Array.isArray(state)) return { ok: false, reason: 'BAD_STATE' };
   const st = state;
-  if (st.creds != null && !Array.isArray(st.creds)) return { ok: false, reason: 'BAD_STATE' };
-  if (st.franchisees != null && !Array.isArray(st.franchisees)) return { ok: false, reason: 'BAD_STATE' };
-  if (st.eras != null && !Array.isArray(st.eras)) return { ok: false, reason: 'BAD_STATE' };
-  if (st.pricing != null && (typeof st.pricing !== 'object' || Array.isArray(st.pricing))) return { ok: false, reason: 'BAD_STATE' };
+  // Codex conv-R5 F1/F2: the LA always supplies the COMPLETE server-owned state, so every collection must be
+  // PRESENT and correctly typed — a MISSING one is NOT defaulted (omitting creds previously produced an empty
+  // fanout, re-opening the exact security hole). Missing/wrong-type ⇒ BAD_STATE.
+  if (!Array.isArray(st.creds)) return { ok: false, reason: 'BAD_STATE' };
+  if (!Array.isArray(st.franchisees)) return { ok: false, reason: 'BAD_STATE' };
+  if (!Array.isArray(st.eras)) return { ok: false, reason: 'BAD_STATE' };
+  if (!st.pricing || typeof st.pricing !== 'object' || Array.isArray(st.pricing)) return { ok: false, reason: 'BAD_STATE' };
   if (st.store != null && (typeof st.store !== 'object' || st.store.id !== storeId)) return { ok: false, reason: 'STORE_ID_MISMATCH' };  // the bundle must be FOR this store
-  const creds = Array.isArray(st.creds) ? st.creds : [];
-  const franchisees = Array.isArray(st.franchisees) ? st.franchisees : [];
-  const eras = Array.isArray(st.eras) ? st.eras : [];
+  // Codex conv-R5 F1: validate EVERY credential ROW — a malformed row (no id, StoreIds not an array, primitive
+  // entry) was SILENTLY SKIPPED by deriveFanout, meaning a required cancellation was never emitted. Fail closed.
+  if (!st.creds.every(c => c && typeof c === 'object' && reqId(c.id) && typeof c.Role === 'string' && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string'))) return { ok: false, reason: 'BAD_CREDENTIAL' };
+  // Codex conv-R5 F2: validate EVERY pricing series in the map (not only the touched key), else a malformed
+  // per-product override rides into the committed plan.
+  if (!Object.values(st.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };
+  const creds = st.creds;
+  const franchisees = st.franchisees;
+  const eras = st.eras;
+  const pricing = st.pricing;
   if (!validEras(eras)) return { ok: false, reason: 'MALFORMED_STATE' };   // OS-A-F5/Codex-F1: fail closed on any malformed era history (multi-open OR overlapping)
-  // Codex conv-R3 F1: store-row existence and era-HISTORY existence must AGREE. A real store has both; a new
-  // store has neither. A mismatch (orphan history with no store row, or a store row with no history) is
-  // malformed ⇒ fail closed — this stops re-creating a storeId whose authoritative history already exists, and
-  // stops `add` fabricating a store around an orphan era.
+  // Codex conv-R3 F1 + R5 F2: store-row, era-HISTORY, and pricing-HISTORY existence must AGREE. A real store
+  // has ownership history; a NEW store (no store row, no eras) must ALSO have no orphan pricing history — else a
+  // storeId whose financial history exists could be re-created.
   if ((!!st.store) !== (eras.length > 0)) return { ok: false, reason: 'STORE_ERA_MISMATCH' };
-  const pricing = (st.pricing && typeof st.pricing === 'object' && !Array.isArray(st.pricing)) ? st.pricing : {};  // per-store map: { '*': default series, <productId>: override series }
+  if (eras.length === 0 && Object.values(pricing).some(v => Array.isArray(v) && v.length > 0)) return { ok: false, reason: 'STORE_ERA_MISMATCH' };
   const rec = { op, storeId, ts: iso(nowMs) };
 
   // Codex conv-R2 F2: "current owner" is the OPEN era, NOT any closed era covering `now` (a future-dated

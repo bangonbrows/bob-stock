@@ -74,5 +74,25 @@ was never checked against the intent's storeId. Fixed: the planner now VALIDATES
 (+8 probes OS-A-G1, incl. a happy-path regression proving a valid convert still cancels personal accts + bumps
 the POS). Per Kunal's rule ([[feedback_audit_both_clean]]): keep iterating until BOTH auditors PASS.
 
+## Convergence round 6 (2026-07-11): Codex found 2 root P1s (envelope completeness) — fixed
+Codex → BLOCK with 2 root P1s: the round-4 envelope guard validated container TYPES but still (a) permitted a
+whole collection to be MISSING (coerced to a default → the same empty-fanout data-leak class) and accepted a
+malformed credential ROW (e.g. `StoreIds` as a bare string, a row with no id, a primitive entry); and (b)
+validated pricing only at the TOUCHED series, so an untouched malformed product override elsewhere in the map
+slipped through. Fixed: the planner now requires ALL collections present (`creds`/`franchisees`/`eras`/`pricing`)
+and fails closed on any missing one; validates EVERY credential row (`BAD_CREDENTIAL`); validates the WHOLE
+pricing map (`MALFORMED_PRICING`); and catches orphan pricing history on a store with no era
+(`STORE_ERA_MISMATCH`). Suite now **98 PASS / 0 FAIL** (+8 probes OS-A-H1..H4).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **H (env-1)** | rnd6-1 | P1 | envelope validated container types but permitted a MISSING collection (coerced to default) and a malformed credential row | planner requires all four collections present (`BAD_STATE` on any omission); every cred row validated for `id`/`Role`/`StoreIds`-array (`BAD_CREDENTIAL`) |
+| **H (env-2)** | rnd6-2 | P1 | authoritative pricing validated only at the touched series, not as a complete store state | whole `pricing` map validated up front (`MALFORMED_PRICING`); orphan pricing history with no era caught (`STORE_ERA_MISMATCH`) |
+
+Root-cause note: rounds 3-6 progressively tightened the SAME primitive — server-state trust. R3 tied store↔era,
+R4 rejected malformed containers, R6 now rejects incomplete containers + malformed rows + whole-map pricing. The
+"untrusted envelope" class is now closed at the container, row, and cross-collection levels.
+
 ## Next
-Codex re-check (round 5) → OS-W3. Nothing to externals beyond the two auditors engaged.
+Codex re-check (round 7) → then OS-W3. AGY has PASSed rounds 2-5; re-confirm AGY on the round-6 state envelope.
+Nothing to externals beyond the two auditors engaged.
