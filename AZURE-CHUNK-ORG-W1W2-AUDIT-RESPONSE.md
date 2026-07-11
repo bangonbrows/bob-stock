@@ -104,6 +104,22 @@ string→BAD_CREDENTIAL, no-id→BAD_CREDENTIAL, primitive-cred→BAD_CREDENTIAL
 serum-not-a-series→MALFORMED_PRICING, orphan-history→STORE_ERA_MISMATCH. No code change needed; re-sent to Codex
 pinned to the correct commit.
 
+## Round 8 (2026-07-11): AGY PASS (definitive); Codex found 2 deeper P1s on the CORRECT tree — fixed
+Re-run on the right commit (`8a49c65`). AGY → **PASS** (round-6 envelope confirmed, "cleared for Wave 3"). Codex
+confirmed H1–H4 CLOSED, then dug one level deeper and found 2 real P1s the row/envelope validation didn't reach:
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **I1** | rnd8-1 | P1 | credential validation covered container/row TYPES but not the FANOUT-DRIVING fields or key invariants: `isStorePOS`/`isFranchiseOffice` are read by TRUTHINESS in `deriveFanout`, so a non-boolean (`'false'` is truthy) flipped a personal staff cred into the store POS (kept the converted store) or minted a bogus office; duplicate cred ids emitted conflicting actions; and nothing asserted the store-POS or target-office creds actually EXIST | row validator now requires `isStorePOS`/`isFranchiseOffice` be strict booleans + `franchiseeId` a well-formed id (`BAD_CREDENTIAL`); duplicate id rejected (`DUPLICATE_CREDENTIAL`); existing store must carry its POS cred (`NO_STORE_POS`); convert/add/create-franchise must find the target owner's office cred (`NO_TARGET_OFFICE`) |
+| **I2** | rnd8-2 | P1 | ownership/franchisee-entity/active-pricing were not cross-validated: a live franchise era owned by a `fr_ghost` with no `franchisees` entity could be bought back (exporting for a ghost); and a franchise store with `pricing:{}`, `{'*':[]}`, or only a past-closed default was bought back closing NO active franchise rate | for any open non-HO era the planner now asserts the owner has a stable franchisee entity (`ORPHAN_ERA_OWNER`) AND an OPEN default `'*'` pricing interval exists (`NO_ACTIVE_PRICING`) |
+
+Ground-truthed by replaying Codex's own 10 repros against HEAD: **10/10 CLOSED**. Suite now **109 PASS / 0 FAIL**
+(+11 probes OS-A-I1..I2 incl. a well-formed-buyback happy-path regression). Root-cause note: rounds 3–8 have
+progressively hardened the SAME axis — trust in the server-supplied state — from era geometry (R3) → rate
+payloads (R3) → container types (R4) → completeness + rows (R6) → **fanout-field semantics + cross-collection
+consistency (R8)**. The state boundary is now validated at every level: envelope, row, field-semantics, and
+cross-collection invariant.
+
 ## Next
-Codex round-8 re-check pinned to `8a49c65`/HEAD → then OS-W3. Both auditors effectively aligned (AGY PASS; Codex
-findings already implemented) — reconfirm Codex on the right tree to close the loop per [[feedback_audit_both_clean]].
+Codex round-9 re-check on HEAD → then OS-W3. AGY PASS ×5 (rounds 2–8). Per [[feedback_audit_both_clean]] keep
+looping until Codex also returns a clean PASS.

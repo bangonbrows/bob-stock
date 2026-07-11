@@ -256,9 +256,20 @@ function planTopologyChange(intent, state, nowMs) {
   if (!Array.isArray(st.eras)) return { ok: false, reason: 'BAD_STATE' };
   if (!st.pricing || typeof st.pricing !== 'object' || Array.isArray(st.pricing)) return { ok: false, reason: 'BAD_STATE' };
   if (st.store != null && (typeof st.store !== 'object' || st.store.id !== storeId)) return { ok: false, reason: 'STORE_ID_MISMATCH' };  // the bundle must be FOR this store
-  // Codex conv-R5 F1: validate EVERY credential ROW — a malformed row (no id, StoreIds not an array, primitive
-  // entry) was SILENTLY SKIPPED by deriveFanout, meaning a required cancellation was never emitted. Fail closed.
-  if (!st.creds.every(c => c && typeof c === 'object' && reqId(c.id) && typeof c.Role === 'string' && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string'))) return { ok: false, reason: 'BAD_CREDENTIAL' };
+  // Codex conv-R5 F1 + R7 F1: validate EVERY credential ROW — a malformed row (no id, StoreIds not an array,
+  // primitive entry) was SILENTLY SKIPPED by deriveFanout, meaning a required cancellation was never emitted.
+  // R7: the fanout-driving flags (isStorePOS / isFranchiseOffice / Active) are read by TRUTHINESS in
+  // deriveFanout, so a non-boolean (e.g. the string 'false', which is truthy) would flip a personal staff cred
+  // into the store POS and let it KEEP the converted store. They must be strict booleans; franchiseeId, if
+  // present, must be a well-formed id. Fail closed on any deviation.
+  if (!st.creds.every(c => c && typeof c === 'object' && reqId(c.id) && typeof c.Role === 'string'
+      && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string')
+      && (c.isStorePOS === undefined || typeof c.isStorePOS === 'boolean')
+      && (c.isFranchiseOffice === undefined || typeof c.isFranchiseOffice === 'boolean')
+      && (c.franchiseeId === undefined || c.franchiseeId === null || reqId(c.franchiseeId)))) return { ok: false, reason: 'BAD_CREDENTIAL' };
+  // Codex R7 F1: credential ids are primary keys — a duplicate id would emit TWO conflicting fanout actions
+  // (a bump AND a setStoreIds) for the same account. Reject a duplicated id.
+  { const seen = new Set(); for (const c of st.creds) { if (seen.has(c.id)) return { ok: false, reason: 'DUPLICATE_CREDENTIAL' }; seen.add(c.id); } }
   // Codex conv-R5 F2: validate EVERY pricing series in the map (not only the touched key), else a malformed
   // per-product override rides into the committed plan.
   if (!Object.values(st.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };
@@ -286,6 +297,21 @@ function planTopologyChange(intent, state, nowMs) {
   // POS login == the storeId, so a new store must also not collide, and an onboard's office username must differ
   // from the store's own POS login.
   const usernameTaken = (u) => creds.some(c => c && (c.username === u || c.Username === u || c.id === u)) || franchisees.some(f => f && f.officeUsername === u);
+  // Codex R7 F1: an EXISTING store is a going concern → its store-POS device credential MUST be present in the
+  // supplied state (the LA passes the complete server rows). Without it deriveFanout emits no POS bump and the
+  // store's device login silently drops out of scope. `create` targets a NEW store (POS is created), so exempt.
+  const storePOSExists = creds.some(c => c.isStorePOS === true && c.StoreIds.includes(storeId));
+  if (op !== 'create' && st.store && !storePOSExists) return { ok: false, reason: 'NO_STORE_POS' };
+  // Codex R7 F2: cross-collection consistency for a LIVE (open) franchise era. The current franchise owner MUST
+  // have a stable franchisee entity (OS-SR-8) — else buyback exports for an orphan `fr_ghost` — AND the store
+  // MUST carry an OPEN default '*' pricing interval (seeded when it became a franchise) — else buyback closes no
+  // active franchise rate. Either gap = a structurally impossible state; fail closed.
+  if (currentOwner && currentOwner.owner !== HO) {
+    if (!franchiseeExists(currentOwner.owner)) return { ok: false, reason: 'ORPHAN_ERA_OWNER' };
+    const def = pricing[PRICING_DEFAULT_KEY];
+    if (!(Array.isArray(def) && def.some(i => i && i.to == null))) return { ok: false, reason: 'NO_ACTIVE_PRICING' };
+  }
+  const officeCredFor = (fid) => creds.some(c => c.isFranchiseOffice === true && c.franchiseeId === fid);
 
   // ---- create HO store ----
   if (op === 'create' && intent.type === 'HO') {
@@ -300,8 +326,9 @@ function planTopologyChange(intent, state, nowMs) {
     if (op === 'create' && st.store) return { ok: false, reason: 'STORE_EXISTS' };   // conv-R2 F2: create must target a NEW store
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
+    if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3: no direct fran→fran (buy back to HO first) — a franchise-owned store rejects `add` outright
+    if (!officeCredFor(fid)) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3: a franchise op needs a valid rate
-    if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3: no direct fran→fran (buy back to HO first)
     if (!st.store && usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: a NEW store's POS login must be unique
     const wasHO = currentOwner && currentOwner.owner === HO;   // an existing HO store being handed over
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
@@ -334,6 +361,7 @@ function planTopologyChange(intent, state, nowMs) {
     if (!currentOwner || currentOwner.owner !== HO) return { ok: false, reason: 'NOT_HO_OWNED' };
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
+    if (!officeCredFor(fid)) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
