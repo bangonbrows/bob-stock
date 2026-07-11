@@ -290,6 +290,23 @@ with a dirty `EXT_9` in the map) — now fails closed too. Suite **191 PASS / 0 
 Every pricing surface now validates the WHOLE map — keys AND values: planner input, append (requested key +
 existing keys + all values), closeAll (keys + per-series), resolve (keys + all values + requested key).
 
+## ✅ ROUND 19 (2026-07-12): CODEX PASS — CHECKPOINT CONVERGED
+Codex → **PASS, no numbered findings**, on `3a29b3e` (HEAD `d4d1dd4` docs-only). Its round-19 probe suite covered
+dirty default/product endpoints, malformed `to`, bad rates, non-array series, multi-open untouched product
+series, JSON `__proto__`, append/read/closeAll symmetry, flat-array read tolerance, and planner buyback over
+helper-produced clean maps — **no repro survived**. Combined with AGY's repeated PASSes (rounds 2–9 + re-confirms
+through the envelope/fanout rounds), **both auditors are clean** per the convergence rule.
+
+**Final state:** `topology.js` @ `3a29b3e` · `test/topology-proof.js` = **191 probes / 0 FAIL** (43 original +
+148 audit-fix regressions OS-A-F…T across 18 fix rounds + 1 proactive sweep). Every finding in this doc was
+ground-truthed against the real module before fixing; every fix carries a permanent regression probe; the probes
+become the org chunk's sentinel set at OS-W6.
+
+**Convergence arc:** planner-logic bugs (R1–2) → shared-primitive geometry/payload validation (R3–5) →
+state-envelope completeness + row schemas (R6–8) → role/flag semantics + cross-collection invariants (R9–11) →
+proactive whole-schema sweep → pricing key/value symmetry across all surfaces + strict ISO-UTC endpoints
+(R12–18). The server foundation fails closed on every malformed-state class both auditors could construct.
+
 ## Next
-Codex round-19 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
-looping until Codex also returns a clean PASS.
+OS-W2 checkpoint CLOSED. → OS-W3 (Chunk-10 companion: offline push-before-purge — touches LIVE sync.js, needs
+Kunal's explicit go + a map-only discovery pass first per the discover-before-touch rule).
