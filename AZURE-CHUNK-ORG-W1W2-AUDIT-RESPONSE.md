@@ -93,6 +93,17 @@ Root-cause note: rounds 3-6 progressively tightened the SAME primitive — serve
 R4 rejected malformed containers, R6 now rejects incomplete containers + malformed rows + whole-map pricing. The
 "untrusted envelope" class is now closed at the container, row, and cross-collection levels.
 
+## Round 7 (2026-07-11): AGY PASS; Codex BLOCK — but against a STALE commit (already fixed)
+AGY → **PASS** ("cleared for Wave 3"; confirmed the round-4 envelope guard). Codex → BLOCK with 2 P1s — **but
+the report header says "Audited detached commit 6c016d2"**, which is the round-4 commit, TWO commits behind HEAD
+(`8a49c65` = round-6 fix, `06017df` = pack refresh). Codex's 2 P1s (missing collections default to empty +
+malformed credential rows; pricing validated only at the touched series) are the EXACT findings round 6 already
+closed. Ground-truthed by replaying Codex's own 7 repros against current HEAD via `planTopologyChange` (the
+`topologyPlan` route passes `b.state` through unchanged): **7/7 CLOSED** — creds-omitted→BAD_STATE, StoreIds-
+string→BAD_CREDENTIAL, no-id→BAD_CREDENTIAL, primitive-cred→BAD_CREDENTIAL, pricing-omitted→BAD_STATE,
+serum-not-a-series→MALFORMED_PRICING, orphan-history→STORE_ERA_MISMATCH. No code change needed; re-sent to Codex
+pinned to the correct commit.
+
 ## Next
-Codex re-check (round 7) → then OS-W3. AGY has PASSed rounds 2-5; re-confirm AGY on the round-6 state envelope.
-Nothing to externals beyond the two auditors engaged.
+Codex round-8 re-check pinned to `8a49c65`/HEAD → then OS-W3. Both auditors effectively aligned (AGY PASS; Codex
+findings already implemented) — reconfirm Codex on the right tree to close the loop per [[feedback_audit_both_clean]].
