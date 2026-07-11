@@ -364,5 +364,20 @@ ok('R1: a numeric CLOSED end (to:1) also fails closed', T.resolvePricingRate([{ 
 ok('R2: ISO-string era still resolves', T.resolveEra([{ owner: 'fr_a', from: '2025-01-01T00:00:00Z', to: null }], NOW).owner === 'fr_a');
 ok('R2: ISO-string pricing still resolves', T.resolvePricingRate([{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], NOW) === 25);
 
+// ── W1-W2 CONVERGENCE round 17 (Codex) — OS-A-S (endpoints must be STRICT ISO-UTC, not just parseable strings) ─
+console.log('== W1-W2 convergence R17 fixes (Codex OS-A-S) ==');
+// S1: Date.parse-tolerated NON-ISO strings must fail closed.
+ok("S1: resolveEra with from:'0' => null", T.resolveEra([{ owner: 'fr_a', from: '0', to: null }], NOW) === null);
+ok("S1: resolvePricingRate with from:'0' => null", T.resolvePricingRate([{ rate: 25, from: '0', to: null }], NOW) === null);
+ok("S1: a human-format date ('June 1, 2025') => null", T.resolveEra([{ owner: 'fr_a', from: 'June 1, 2025', to: null }], NOW) === null);
+ok("S1: a date-only string ('2025-01-01', no time/Z) => null (contract = full ISO-UTC)", T.resolveEra([{ owner: 'fr_a', from: '2025-01-01', to: null }], NOW) === null);
+ok("S1: a non-UTC offset ('2025-01-01T00:00:00+08:00') => null (Z only)", T.resolveEra([{ owner: 'fr_a', from: '2025-01-01T00:00:00+08:00', to: null }], NOW) === null);
+ok("S1: an impossible component ('2025-02-30T00:00:00Z') => null", T.resolveEra([{ owner: 'fr_a', from: '2025-02-30T00:00:00Z', to: null }], NOW) === null);
+ok("S1: the planner fails closed on a from:'0' era", T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, ST({ store: { id: 'boor' }, eras: [{ owner: 'fr_a', from: '0', to: null }], creds: [posB, offAboor], franchisees: [{ franchiseeId: 'fr_a' }], pricing: openP2 }), NOW).ok === false);
+// S2: both legitimate ISO-UTC shapes (fixtures' no-millis + the engine's iso() with millis) still resolve.
+ok('S2: ISO-UTC without millis still resolves', T.resolveEra([{ owner: 'fr_a', from: '2025-01-01T00:00:00Z', to: null }], NOW).owner === 'fr_a');
+ok('S2: ISO-UTC with millis (engine iso()) still resolves', T.resolveEra([{ owner: 'fr_a', from: '2025-01-01T00:00:00.000Z', to: null }], NOW).owner === 'fr_a');
+ok('S2: a full engine transition still emits eras the validator accepts', (() => { const e = T.transitionEras([{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: null }], 'fr_a', NOW); return !e.error && e.eras.length === 2 && T.resolveEra(e.eras, NOW).owner === 'fr_a'; })());
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

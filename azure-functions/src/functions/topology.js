@@ -35,6 +35,20 @@ function isActiveCred(c) { return c.Active !== 0 && c.Active !== false; }
 
 function isFiniteMs(v) { return typeof v === 'number' && Number.isFinite(v); }
 function toMs(iso) { const t = Date.parse(iso); return Number.isFinite(t) ? t : null; }
+// Codex R17 P2: `typeof string` + Date.parse is NOT an ISO check — Date.parse accepts '0' (→ year 2000, local
+// tz) and 'June 1, 2025'. The contract (ENFORCEMENT-MATRIX) requires from:<ISO>/to:<ISO|null>, and the engine
+// itself only ever emits iso() = 'YYYY-MM-DDTHH:MM:SS(.sss)Z'. Accept exactly that shape (UTC 'Z' only, so no
+// device-timezone ambiguity), then let Date.parse reject impossible components (e.g. 2025-02-30 → NaN).
+const ISO_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+function isIsoUtc(v) {
+  if (typeof v !== 'string' || !ISO_UTC_RE.test(v)) return false;
+  const t = Date.parse(v);
+  if (!Number.isFinite(t)) return false;
+  // ROUND-TRIP: Date.parse rolls impossible components over (2025-02-30 → Mar 2) instead of rejecting them.
+  // Re-serialize and compare against the input (fraction normalised to 3 digits) — a rolled-over date differs.
+  const [base, frac = ''] = v.slice(0, -1).split('.');
+  return new Date(t).toISOString() === base + '.' + (frac + '000').slice(0, 3) + 'Z';
+}
 function iso(ms) { return new Date(ms).toISOString(); }
 function safeId(s) { return typeof s === 'string' && ID_RE.test(s) && !RESERVED.has(s); }
 // Audit OS-A-F6: require a RAW string id — `String(undefined)` is the literal 'undefined' which passes ID_RE,
@@ -51,11 +65,10 @@ function validIntervals(arr) {
   const norm = [];
   for (const p of arr) {
     if (!p || typeof p !== 'object') return false;
-    // Codex R16 P2: endpoints must be ISO STRINGS (the contract + what the engine itself emits via iso()).
-    // Date.parse coerces, so a NUMERIC from/to (e.g. 0) parsed "successfully" and became authoritative
-    // era/pricing state — carried into the buyback export boundary. Type-check before parsing.
-    if (typeof p.from !== 'string') return false;
-    if (p.to != null && typeof p.to !== 'string') return false;
+    // Codex R16+R17 P2: endpoints must be STRICT ISO-UTC strings (the contract + what iso() emits) — not merely
+    // strings Date.parse tolerates ('0' → year 2000, 'June 1, 2025'). isIsoUtc enforces the exact shape.
+    if (!isIsoUtc(p.from)) return false;
+    if (p.to != null && !isIsoUtc(p.to)) return false;
     const f = toMs(p.from); if (f === null) return false;
     const t = p.to == null ? null : toMs(p.to);
     if (p.to != null && t === null) return false;   // unparseable end
