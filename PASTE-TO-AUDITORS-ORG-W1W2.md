@@ -7,10 +7,18 @@ Director-wizard UI (OS-W5), the client sync-hardening (OS-W3), and the era-aware
 in this checkpoint — do not fault their absence; review what's here. Branch: `azure-phase-5-8-server`.
 Both auditors run **in parallel** (paper + LOCAL logic; the Logic Apps are NOT applied to staging yet).
 
+> **RE-CHECK CONTEXT (round 7, 2026-07-11):** this checkpoint has been through 6 fix rounds. AGY PASSed rounds
+> 2–5; Codex has kept finding deeper corners, all ground-truthed REAL and fixed. The full round history + every
+> finding→fix is in `AZURE-CHUNK-ORG-W1W2-AUDIT-RESPONSE.md` — **read it first**, then try to break the CURRENT
+> code. Round 6 (just fixed) hardened the server-state envelope: the planner now requires ALL collections
+> present, validates every credential ROW, validates the WHOLE pricing map, and catches orphan pricing history.
+> The suite is now **98 probes** (`node test/topology-proof.js`). Do not re-report anything already listed as
+> fixed in the response doc unless you can show it still repros on the current tree (commit `8a49c65`).
+
 ## Non-negotiables (framework rules)
 - **RUN it, don't just read it.** `azure-functions/src/functions/topology.js` is PURE — it takes the intent +
   server-owned rows (creds, eras, pricing, franchisees) IN THE REQUEST BODY, so you can drive the real
-  decision engine directly (same as `accessPolicy.js`). Run `node test/topology-proof.js` (43 probes) AND
+  decision engine directly (same as `accessPolicy.js`). Run `node test/topology-proof.js` (98 probes) AND
   write your OWN adversarial probes against the real module — do not trust the suite.
 - **Report ONLY.** Numbered findings (P0/P1/P2/P3 + concrete repro). Claude is sole engineer and ground-truths
   every finding.
@@ -26,7 +34,8 @@ Both auditors run **in parallel** (paper + LOCAL logic; the Logic Apps are NOT a
 | `AZURE-CHUNK-ORG-ENFORCEMENT-MATRIX.md` | OS-W1 CONTRACT: each topology op → server truth; discovery findings D-OS-F1..F7 |
 | `AZURE-CHUNK-ORG-LA-CHANGES.md` | OS-W2 staging Logic App orchestration spec (pending/2-phase/reconcile) — NOT applied yet |
 | `azure-functions/src/functions/topology.js` | OS-W2 CODE: the pure topology engine (`planTopologyChange` + era/pricing/fanout helpers) |
-| `test/topology-proof.js` | OS-W2 logic proof — **43 probes, all pass on clean code** |
+| `test/topology-proof.js` | OS-W2 logic proof — **98 probes, all pass on clean code** (43 original + 55 audit-fix regressions) |
+| `AZURE-CHUNK-ORG-W1W2-AUDIT-RESPONSE.md` | The full round 1–6 finding→fix history — read before re-reporting |
 
 ## What the engine does (so you calibrate)
 `planTopologyChange(intent, state, nowMs)` takes ONE Director intent (create / onboard-new-franchisee /
