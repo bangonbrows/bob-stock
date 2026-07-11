@@ -8,15 +8,14 @@ in this checkpoint — do not fault their absence; review what's here. Branch: `
 Both auditors run **in parallel** (paper + LOCAL logic; the Logic Apps are NOT applied to staging yet).
 
 > **RE-CHECK CONTEXT (round 11, 2026-07-11):** this checkpoint has been through 9 fix rounds. AGY PASSed rounds
-> 2–8; Codex has kept finding deeper corners, all ground-truthed REAL and fixed. The full round history + every
+> 2–9; Codex has kept finding deeper corners, all ground-truthed REAL and fixed. The full round history + every
 > finding→fix is in `AZURE-CHUNK-ORG-W1W2-AUDIT-RESPONSE.md` — **read it first**, then try to break the CURRENT
-> code. Round 8 (just fixed) hardened the credential fanout-field semantics + cross-collection invariants: the
-> planner now requires `isStorePOS`/`isFranchiseOffice` be strict booleans (a truthy `'false'` string flipped a
-> staff cred into the store POS), rejects duplicate credential ids, requires the store-POS + target-office creds
-> to be present, and asserts a live franchise era has both a stable franchisee entity and an OPEN default `'*'`
-> pricing interval. The suite is now **121 probes** (`node test/topology-proof.js`). Do not re-report anything
-> already listed as fixed in the response doc unless you can show it still repros on the current tree (commit
-> `a8e617d`).
+> code. Round 9 (just fixed) hardened credential role/flag CONSISTENCY (`isStorePOS ⟹ staff`,
+> `isFranchiseOffice ⟹ franchisee+franchiseeId`, mutually exclusive), required the ex-owner's office credential
+> on buyback (`NO_EXOFFICE`), and added `'*'` pricing/era COVERAGE alignment (no franchise rate during an HO era;
+> franchise eras fully+contiguously covered — `PRICING_ERA_MISALIGNED`; legitimate HO-era gaps still permitted).
+> The suite is now **121 probes** (`node test/topology-proof.js`). Do not re-report anything already listed as
+> fixed in the response doc unless you can show it still repros on the current tree (commit `c807928`).
 
 ## Non-negotiables (framework rules)
 - **RUN it, don't just read it.** `azure-functions/src/functions/topology.js` is PURE — it takes the intent +
