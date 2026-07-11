@@ -136,6 +136,11 @@ function resolvePricingForProduct(storePricing, productId, dateMs) {
   // the lens was read back as authoritative pricing — treat any bad key as malformed ⇒ null (no franchise rate,
   // never guess). Keys must be '*' or a well-formed productId.
   if (!Object.keys(storePricing).every(k => k === PRICING_DEFAULT_KEY || reqId(k))) return null;
+  // Codex R14 P2: the REQUESTED productId must also be well-formed (symmetry with the map keys). A malformed/
+  // reserved/non-string productId (`'bad key!'`, `'__proto__'`, `42`) previously MISSED the override lookup and
+  // silently fell through to the '*' default — treating corrupt input as a valid unlisted product. Fail closed.
+  // (null/undefined productId is a legitimate STORE-level query ⇒ resolve the default.)
+  if (productId != null && !reqId(productId)) return null;
   if (productId != null && Object.prototype.hasOwnProperty.call(storePricing, productId)) {
     const own = storePricing[productId];
     if (!validPricingSeries(own)) return null;   // Codex conv-R3 F2: a MALFORMED override fails CLOSED — never silently fall back to the default rate

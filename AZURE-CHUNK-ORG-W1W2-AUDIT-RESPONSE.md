@@ -220,6 +220,21 @@ guess). Suite now **159 PASS / 0 FAIL** (+6 probes OS-A-O).
 The pricing-key guard is now enforced on ALL THREE paths: planner INPUT (`planTopologyChange`), WRITE helpers
 (`appendPricingForKey`/`closeAllPricing`), and READ (`resolvePricingForProduct`). No remaining asymmetry.
 
+## Round 14 (2026-07-11): Codex found 1 P2 — the REQUESTED productId wasn't validated (only the map keys were)
+Codex → BLOCK with 1 P2, the last symmetry corner: R13 validated the pricing-map KEYS, but
+`resolvePricingForProduct` didn't validate the REQUESTED `productId` — a malformed/reserved/non-string productId
+(`'bad key!'`, `'__proto__'`, `42`) MISSED the override lookup and silently fell through to the `'*'` default,
+treating corrupt input as a valid unlisted product. Ground-truthed REAL (returned the default 25). Fixed: a
+non-null requested productId must be well-formed (`reqId`) else fail closed (`null`); a `null` productId is still
+a legitimate store-level query that resolves the default. Suite now **165 PASS / 0 FAIL** (+6 probes OS-A-P).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **P** | rnd14-1 | P2 | `resolvePricingForProduct` validated the map keys but not the REQUESTED productId → a malformed/reserved productId silently got the store default instead of failing closed | a non-null requested productId must be well-formed (`reqId`) ⇒ else `null`; VALID-but-unlisted still gets the default, `null` (store query) still gets the default |
+
+The pricing-key guard is now complete on every surface: planner input, write helpers, the map keys AND the
+requested key on the read path.
+
 ## Next
-Codex round-14 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+Codex round-15 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.

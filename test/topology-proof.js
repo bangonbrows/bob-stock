@@ -330,5 +330,17 @@ ok('O2: clean map — a valid product override resolves to its own rate', T.reso
 ok('O2: clean map — an unlisted product falls back to the "*" default', T.resolvePricingForProduct({ '*': goodMapO['*'], 'EXT_1': [{ rate: 40, from: '2025-01-01T00:00:00Z', to: null }] }, 'MKU_9', NOW) === 25);
 ok('O2: a flat default array (OS-A-F7 tolerance) still resolves', T.resolvePricingForProduct([{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_1', NOW) === 25);
 
+// ── W1-W2 CONVERGENCE round 14 (Codex) — OS-A-P (the REQUESTED productId is validated, not just map keys) ──
+console.log('== W1-W2 convergence R14 fixes (Codex OS-A-P) ==');
+const cleanP = { '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_1': [{ rate: 40, from: '2025-01-01T00:00:00Z', to: null }] };
+// P1: a MALFORMED requested productId must fail closed (not silently get the store default).
+ok('P1: a malformed requested productId ("bad key!") => null', T.resolvePricingForProduct(cleanP, 'bad key!', NOW) === null);
+ok('P1: a reserved requested productId ("__proto__") => null', T.resolvePricingForProduct(cleanP, '__proto__', NOW) === null);
+ok('P1: a non-string requested productId (42) => null', T.resolvePricingForProduct(cleanP, 42, NOW) === null);
+// P2: legitimate cases unchanged — a VALID unlisted product gets the default; an override wins; a store-level (null) query gets the default.
+ok('P2: a VALID unlisted productId ("MKU_9") still falls back to the default (25)', T.resolvePricingForProduct(cleanP, 'MKU_9', NOW) === 25);
+ok('P2: a VALID override productId ("EXT_1") still resolves its own rate (40)', T.resolvePricingForProduct(cleanP, 'EXT_1', NOW) === 40);
+ok('P2: a null productId (store-level query) still resolves the default (25)', T.resolvePricingForProduct(cleanP, null, NOW) === 25);
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);
