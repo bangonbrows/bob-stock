@@ -154,6 +154,10 @@ function resolvePricingForProduct(storePricing, productId, dateMs) {
   // the lens was read back as authoritative pricing — treat any bad key as malformed ⇒ null (no franchise rate,
   // never guess). Keys must be '*' or a well-formed productId.
   if (!Object.keys(storePricing).every(k => k === PRICING_DEFAULT_KEY || reqId(k))) return null;
+  // R18 pre-empt (same class as the append fix): every series' VALUES must be valid too — a corrupt UNRELATED
+  // series in the map means the store's pricing state is not trustworthy; fail closed rather than resolve
+  // around it (symmetric with the planner's whole-map validation).
+  if (!Object.values(storePricing).every(v => validPricingSeries(v))) return null;
   // Codex R14 P2: the REQUESTED productId must also be well-formed (symmetry with the map keys). A malformed/
   // reserved/non-string productId (`'bad key!'`, `'__proto__'`, `42`) previously MISSED the override lookup and
   // silently fell through to the '*' default — treating corrupt input as a valid unlisted product. Fail closed.
@@ -180,6 +184,10 @@ function appendPricingForKey(storePricing, key, rate, nowMs) {
   // dirty key ('bad key!', a JSON.parse '__proto__') rides through the spread into the returned authoritative
   // map, which the planner then refuses to operate on.
   if (storePricing) { for (const k of Object.keys(storePricing)) if (k !== PRICING_DEFAULT_KEY && !reqId(k)) return { error: 'MALFORMED_PRICING' }; }
+  // Codex R18 P2: validate every series' VALUES too, not only the touched key — an UNTOUCHED series with a dirty
+  // endpoint (from:'0') previously rode through the spread into the returned authoritative map (the same
+  // helper/planner asymmetry as R12/R15, now for interval values). Whole-map sweep, symmetric with the planner.
+  if (storePricing) { for (const v of Object.values(storePricing)) if (!validPricingSeries(v)) return { error: 'MALFORMED_PRICING' }; }
   const map = storePricing && typeof storePricing === 'object' ? { ...storePricing } : {};
   const r = appendPricingInterval(map[key], rate, nowMs);
   if (r.error) return { error: r.error };

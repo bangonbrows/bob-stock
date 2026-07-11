@@ -379,5 +379,15 @@ ok('S2: ISO-UTC without millis still resolves', T.resolveEra([{ owner: 'fr_a', f
 ok('S2: ISO-UTC with millis (engine iso()) still resolves', T.resolveEra([{ owner: 'fr_a', from: '2025-01-01T00:00:00.000Z', to: null }], NOW).owner === 'fr_a');
 ok('S2: a full engine transition still emits eras the validator accepts', (() => { const e = T.transitionEras([{ owner: 'HO', from: '2025-01-01T00:00:00Z', to: null }], 'fr_a', NOW); return !e.error && e.eras.length === 2 && T.resolveEra(e.eras, NOW).owner === 'fr_a'; })());
 
+// ── W1-W2 CONVERGENCE round 18 (Codex) — OS-A-T (whole-map VALUE validation on append + read) ─────────────
+console.log('== W1-W2 convergence R18 fixes (Codex OS-A-T) ==');
+// T1: append must validate every series' VALUES, not just the touched key (untouched dirty endpoints rode through).
+ok("T1: append with a dirty UNTOUCHED default series (from:'0') => MALFORMED_PRICING", T.appendPricingForKey({ '*': [{ rate: 25, from: '0', to: null }] }, 'EXT_2', 30, NOW).error === 'MALFORMED_PRICING');
+ok("T1: append with a dirty UNTOUCHED product override => MALFORMED_PRICING", T.appendPricingForKey({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_9': [{ rate: 99, from: '0', to: null }] }, '*', 30, NOW).error === 'MALFORMED_PRICING');
+ok('T1: append on a fully-clean map still works', (() => { const r = T.appendPricingForKey({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }] }, 'EXT_2', 30, NOW); return !r.error && Array.isArray(r.pricing['EXT_2']); })());
+// T2 (pre-empt, same class): the READ path also fails closed on a corrupt UNRELATED series in the map.
+ok('T2: resolve with a dirty UNRELATED series in the map => null', T.resolvePricingForProduct({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_9': [{ rate: 99, from: '0', to: null }] }, 'EXT_1', NOW) === null);
+ok('T2: resolve on a fully-clean map still works', T.resolvePricingForProduct({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_1': [{ rate: 40, from: '2025-01-01T00:00:00Z', to: null }] }, 'EXT_1', NOW) === 40);
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

@@ -274,6 +274,22 @@ OS-A-S incl. date-only, non-UTC-offset, impossible-component, both legitimate IS
 |---|---|---|---|---|
 | **S** | rnd17-1 | P2 | R16's string check still fed Date.parse's permissive grammar — `'0'`/human-format dates became authoritative endpoints | `isIsoUtc`: strict ISO-UTC regex + finite parse + ROUND-TRIP equality (rejects rolled-over components) |
 
+## Round 18 (2026-07-12): Codex found 1 P2 — append spread UNTOUCHED series with dirty VALUES; read pre-empted
+Codex → BLOCK with 1 P2: `appendPricingForKey` validated map KEYS (R15) and the TOUCHED series, but spread
+untouched series through unchanged — a dirty endpoint (`from:'0'`) in an untouched series rode into the returned
+map (the R12/R15 helper/planner asymmetry, now for interval VALUES). Ground-truthed REAL and fixed: append now
+validates EVERY series (whole-map sweep, symmetric with the planner). **Pre-empted the same-class read gap in the
+same commit**: `resolvePricingForProduct` resolved around a corrupt UNRELATED series (returned the default 25
+with a dirty `EXT_9` in the map) — now fails closed too. Suite **191 PASS / 0 FAIL** (+5 probes OS-A-T).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **T1** | rnd18-1 | P2 | append validated keys + the touched series but spread untouched series' dirty VALUES through | whole-map `validPricingSeries` sweep in `appendPricingForKey` (`MALFORMED_PRICING`) |
+| **T2** | pre-empt | P2 | (same class, found by me before Codex) the read path resolved around a corrupt unrelated series | whole-map value sweep in `resolvePricingForProduct` ⇒ `null` |
+
+Every pricing surface now validates the WHOLE map — keys AND values: planner input, append (requested key +
+existing keys + all values), closeAll (keys + per-series), resolve (keys + all values + requested key).
+
 ## Next
-Codex round-18 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+Codex round-19 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.
