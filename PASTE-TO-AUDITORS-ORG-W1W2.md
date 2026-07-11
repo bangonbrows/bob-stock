@@ -20,9 +20,12 @@ Both auditors run **in parallel** (paper + LOCAL logic; the Logic Apps are NOT a
 > constrained to `'*'`/productId (blocks a JSON.parse `__proto__` key). **Round 12 (just fixed)** extended the
 > pricing-key guard from the planner INPUT to the EXPORTED helpers (`appendPricingForKey`/`closeAllPricing`, also
 > used by the product-pricing edit path), which previously could mint a bad-key map the planner then refuses →
-> now `MALFORMED_PRICING`. The suite is now **159 probes** (`node test/topology-proof.js`). Do not re-report
-> anything already listed as fixed in the response doc unless you can show it still repros on the current tree
-> (commit `8642499`).
+> now `MALFORMED_PRICING`. **Round 13 (just fixed)** completed the pricing-key symmetry: the READ helper
+> `resolvePricingForProduct` (era-aware lens + `topologyResolve` route) now also fails closed on a malformed/
+> reserved map key (previously it read the key back as authoritative pricing). The guard is now enforced on all
+> THREE paths — planner input, write helpers, and read. The suite is now **159 probes**
+> (`node test/topology-proof.js`). Do not re-report anything already listed as fixed in the response doc unless
+> you can show it still repros on the current tree (commit `8642499`).
 
 ## Non-negotiables (framework rules)
 - **RUN it, don't just read it.** `azure-functions/src/functions/topology.js` is PURE — it takes the intent +
