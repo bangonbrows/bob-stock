@@ -10,13 +10,12 @@ Both auditors run **in parallel** (paper + LOCAL logic; the Logic Apps are NOT a
 > **RE-CHECK CONTEXT (round 13, 2026-07-11):** this checkpoint has been through 11 fix rounds. AGY PASSed rounds
 > 2–9; Codex has kept finding deeper corners, all ground-truthed REAL and fixed. The full round history + every
 > finding→fix is in `AZURE-CHUNK-ORG-W1W2-AUDIT-RESPONSE.md` — **read it first**, then try to break the CURRENT
-> code. Round 10 (just fixed) closed a role-enum leak (a credential with an unknown/legacy `Role` holding the
-> store survived convert+buyback with no fanout) — the row validator now requires `Role ∈ KNOWN_ROLES`
-> (`staff`/`store_manager`/`territory_manager`/`franchisee`/`director`/`head_office`); plus rejects an inactive
-> target office (`INACTIVE_TARGET_OFFICE`), a duplicate office per franchisee (`DUPLICATE_OFFICE`), and mints the
-> onboard office already scoped to its first store. The suite is now **136 probes** (`node test/topology-proof.js`).
-> Do not re-report anything already listed as fixed in the response doc unless you can show it still repros on the
-> current tree (commit `4e85d10`).
+> code. Round 11 (just fixed) closed 3 P2 corners adjacent to the R10 fixes: `Active` is now type-checked
+> (a truthy string `'false'` defeated the inactive-office guard) → `BAD_CREDENTIAL`; BUYBACK now preserves the
+> ex-office's active state instead of reactivating a Director-deactivated office; and franchisee ENTITY rows are
+> validated + unique (`BAD_FRANCHISEE` / `DUPLICATE_FRANCHISEE`, OS-SR-8). The suite is now **136 probes**
+> (`node test/topology-proof.js`). Do not re-report anything already listed as fixed in the response doc unless
+> you can show it still repros on the current tree (commit `2cb8e97`).
 
 ## Non-negotiables (framework rules)
 - **RUN it, don't just read it.** `azure-functions/src/functions/topology.js` is PURE — it takes the intent +
