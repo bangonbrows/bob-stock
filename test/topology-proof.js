@@ -318,5 +318,17 @@ ok('N1: appendPricingForKey with a valid productId key ("EXT_1") still WORKS', (
 ok('N2: closeAllPricing on a malformed-key map => MALFORMED_PRICING', T.closeAllPricing({ 'bad key!': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }] }, NOW).error === 'MALFORMED_PRICING');
 ok('N2: closeAllPricing on a valid map ("*" + productId) still WORKS', (() => { const r = T.closeAllPricing({ '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_1': [{ rate: 30, from: '2025-01-01T00:00:00Z', to: null }] }, NOW); return !r.error && r.pricing['*'][0].to !== null && r.pricing['EXT_1'][0].to !== null; })());
 
+// ── W1-W2 CONVERGENCE round 13 (Codex) — OS-A-O (the READ helper/route fails closed on a malformed map key) ─
+console.log('== W1-W2 convergence R13 fixes (Codex OS-A-O) ==');
+const goodMapO = { '*': [{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }] };
+// O1: resolvePricingForProduct (the era-aware lens + topologyResolve route) must fail closed on a bad map key.
+ok('O1: resolve with a malformed map key ("bad key!") => null (fail closed)', T.resolvePricingForProduct({ '*': goodMapO['*'], 'bad key!': [{ rate: 30, from: '2025-01-01T00:00:00Z', to: null }] }, 'bad key!', NOW) === null);
+ok('O1: resolve with a JSON.parse "__proto__" map key => null', T.resolvePricingForProduct(JSON.parse('{"*":[{"rate":25,"from":"2025-01-01T00:00:00Z","to":null}],"__proto__":[{"rate":30,"from":"2025-01-01T00:00:00Z","to":null}]}'), '__proto__', NOW) === null);
+ok('O1: resolve with a malformed key present but querying the DEFAULT still fails closed', T.resolvePricingForProduct({ '*': goodMapO['*'], 'bad key!': [{ rate: 30, from: '2025-01-01T00:00:00Z', to: null }] }, 'EXT_1', NOW) === null);
+// O2: a CLEAN map still resolves correctly (override + default fallback).
+ok('O2: clean map — a valid product override resolves to its own rate', T.resolvePricingForProduct({ '*': goodMapO['*'], 'EXT_1': [{ rate: 40, from: '2025-01-01T00:00:00Z', to: null }] }, 'EXT_1', NOW) === 40);
+ok('O2: clean map — an unlisted product falls back to the "*" default', T.resolvePricingForProduct({ '*': goodMapO['*'], 'EXT_1': [{ rate: 40, from: '2025-01-01T00:00:00Z', to: null }] }, 'MKU_9', NOW) === 25);
+ok('O2: a flat default array (OS-A-F7 tolerance) still resolves', T.resolvePricingForProduct([{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], 'EXT_1', NOW) === 25);
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);

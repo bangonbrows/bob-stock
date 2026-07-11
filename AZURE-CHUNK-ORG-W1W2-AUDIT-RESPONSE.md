@@ -205,6 +205,21 @@ helper produces state the planner won't operate on). Ground-truthed REAL. Fixed 
 Note: this is the sweep's own principle applied one layer out — the sweep locked the planner's front door; Codex
 found the same guard was missing on the exported side-door. Now symmetric.
 
+## Round 13 (2026-07-11): Codex found 1 P2 — the READ path (lens/route) didn't fail closed on a bad map key
+Codex → BLOCK with 1 P2 completing the symmetry: R12 fixed the WRITE helpers + planner INPUT to reject a
+malformed pricing-map key, but the READ helper `resolvePricingForProduct` (used by the era-aware lens and the
+`topologyResolve` route) read a reserved/malformed key (`'bad key!'`, a JSON.parse `__proto__`) back as
+AUTHORITATIVE pricing instead of failing closed. Ground-truthed REAL (returned rate 30). Fixed:
+`resolvePricingForProduct` now rejects a map with any malformed key ⇒ returns null (no franchise rate, never
+guess). Suite now **159 PASS / 0 FAIL** (+6 probes OS-A-O).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **O** | rnd13-1 | P2 | `resolvePricingForProduct` (read lens + `topologyResolve` route) didn't validate map keys → a malformed/reserved key resolved as authoritative pricing | the read path now fails closed (`null`) on any non-`'*'`/non-productId key — symmetric with the write helpers + planner input |
+
+The pricing-key guard is now enforced on ALL THREE paths: planner INPUT (`planTopologyChange`), WRITE helpers
+(`appendPricingForKey`/`closeAllPricing`), and READ (`resolvePricingForProduct`). No remaining asymmetry.
+
 ## Next
-Codex round-13 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+Codex round-14 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.

@@ -131,6 +131,11 @@ const PRICING_DEFAULT_KEY = '*';
 function resolvePricingForProduct(storePricing, productId, dateMs) {
   if (Array.isArray(storePricing)) storePricing = { [PRICING_DEFAULT_KEY]: storePricing };  // OS-A-F7: tolerate a flat default series
   if (!storePricing || typeof storePricing !== 'object') return null;
+  // Codex R13 P2: the READ path must fail closed on a malformed pricing map, symmetric with the write/planner
+  // paths (R12). A reserved/malformed KEY (e.g. a JSON.parse-created '__proto__', or 'bad key!') that reached
+  // the lens was read back as authoritative pricing — treat any bad key as malformed ⇒ null (no franchise rate,
+  // never guess). Keys must be '*' or a well-formed productId.
+  if (!Object.keys(storePricing).every(k => k === PRICING_DEFAULT_KEY || reqId(k))) return null;
   if (productId != null && Object.prototype.hasOwnProperty.call(storePricing, productId)) {
     const own = storePricing[productId];
     if (!validPricingSeries(own)) return null;   // Codex conv-R3 F2: a MALFORMED override fails CLOSED — never silently fall back to the default rate
