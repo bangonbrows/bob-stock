@@ -51,6 +51,11 @@ function validIntervals(arr) {
   const norm = [];
   for (const p of arr) {
     if (!p || typeof p !== 'object') return false;
+    // Codex R16 P2: endpoints must be ISO STRINGS (the contract + what the engine itself emits via iso()).
+    // Date.parse coerces, so a NUMERIC from/to (e.g. 0) parsed "successfully" and became authoritative
+    // era/pricing state — carried into the buyback export boundary. Type-check before parsing.
+    if (typeof p.from !== 'string') return false;
+    if (p.to != null && typeof p.to !== 'string') return false;
     const f = toMs(p.from); if (f === null) return false;
     const t = p.to == null ? null : toMs(p.to);
     if (p.to != null && t === null) return false;   // unparseable end

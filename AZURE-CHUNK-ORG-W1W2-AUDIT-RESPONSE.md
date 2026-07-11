@@ -250,6 +250,18 @@ OS-A-Q).
 Every pricing surface now runs the SAME key sweep: planner input, `appendPricingForKey` (requested + existing),
 `closeAllPricing`, and `resolvePricingForProduct` (map keys + requested key).
 
+## Round 16 (2026-07-12): Codex found 1 P2 — interval endpoints were parseable but not TYPE-checked
+Codex → BLOCK with 1 P2: `validIntervals` accepted any value `Date.parse` could coerce — so a NUMERIC `from:0`
+became authoritative era/pricing state and rode into the buyback export boundary (OS-SR-4 depends on a clean
+`[from,to)`). Ground-truthed REAL. Fixed in the SHARED primitive: `validIntervals` now requires `from`/`to` be
+ISO STRINGS (what the engine itself emits via `iso()`) before parsing — one fix closes eras AND pricing on every
+path (resolve/transition/planner/helpers). Suite now **176 PASS / 0 FAIL** (+8 probes OS-A-R incl. Date-object
+and numeric-closed-end variants + ISO happy paths).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **R** | rnd16-1 | P2 | interval `from`/`to` accepted anything Date.parse coerces (numeric 0, a Date object) → malformed history became authoritative and reached the buyback export | `validIntervals` type-checks endpoints as strings before parsing — shared primitive, so all era + pricing paths fail closed at once |
+
 ## Next
-Codex round-16 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+Codex round-17 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.

@@ -351,5 +351,18 @@ ok('Q1: append onto a map holding a JSON.parse "__proto__" key => MALFORMED_PRIC
 // Q2: appending onto a CLEAN map still works unchanged.
 ok('Q2: append onto a clean map still works', (() => { const r = T.appendPricingForKey({ '*': sQ(25) }, 'EXT_2', 40, NOW); return !r.error && Array.isArray(r.pricing['EXT_2']) && r.pricing['EXT_2'][0].rate === 40; })());
 
+// ── W1-W2 CONVERGENCE round 16 (Codex) — OS-A-R (interval endpoints must be ISO STRINGS, not just parseable) ─
+console.log('== W1-W2 convergence R16 fixes (Codex OS-A-R) ==');
+// R1: a NUMERIC from/to parsed via Date.parse coercion and became authoritative era/pricing state.
+ok('R1: resolveEra with a numeric from (0) => null (fail closed)', T.resolveEra([{ owner: 'fr_a', from: 0, to: null }], NOW) === null);
+ok('R1: resolvePricingRate with a numeric from (0) => null', T.resolvePricingRate([{ rate: 25, from: 0, to: null }], NOW) === null);
+ok('R1: a numeric era endpoint in the planner state fails closed', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, ST({ store: { id: 'boor' }, eras: [{ owner: 'fr_a', from: 0, to: null }], creds: [posB, offAboor], franchisees: [{ franchiseeId: 'fr_a' }], pricing: openP2 }), NOW).ok === false);
+ok('R1: a numeric pricing endpoint in the planner state fails closed', T.planTopologyChange({ op: 'buyback', storeId: 'boor' }, ST({ store: { id: 'boor' }, eras: frEra2, creds: [posB, offAboor], franchisees: [{ franchiseeId: 'fr_a' }], pricing: { '*': [{ rate: 25, from: 0, to: null }] } }), NOW).ok === false);
+ok('R1: a Date-object endpoint also fails closed (strings only)', T.resolveEra([{ owner: 'fr_a', from: new Date('2025-01-01'), to: null }], NOW) === null);
+ok('R1: a numeric CLOSED end (to:1) also fails closed', T.resolvePricingRate([{ rate: 25, from: '2025-01-01T00:00:00Z', to: 1e15 }], NOW) === null);
+// R2: legitimate ISO strings unchanged.
+ok('R2: ISO-string era still resolves', T.resolveEra([{ owner: 'fr_a', from: '2025-01-01T00:00:00Z', to: null }], NOW).owner === 'fr_a');
+ok('R2: ISO-string pricing still resolves', T.resolvePricingRate([{ rate: 25, from: '2025-01-01T00:00:00Z', to: null }], NOW) === 25);
+
 console.log(`\n== topology-proof: ${pass} PASS · ${fail} FAIL ==`);
 process.exit(fail ? 1 : 0);
