@@ -17,9 +17,12 @@ Both auditors run **in parallel** (paper + LOCAL logic; the Logic Apps are NOT a
 > SCHEMA SWEEP** (see the response doc's "PROACTIVE SCHEMA SWEEP" section) hardened EVERY remaining server-supplied
 > field the planner reads — `StoreIds` entries must be well-formed ids, login-alias/office fields typed, credential
 > ids + franchisee office usernames de-duped across ONE login namespace (`DUPLICATE_LOGIN`), pricing-map KEYS
-> constrained to `'*'`/productId (blocks a JSON.parse `__proto__` key). The suite is now **153 probes**
-> (`node test/topology-proof.js`). Do not re-report anything already listed as fixed in the response doc unless
-> you can show it still repros on the current tree (commit `06a4d47`).
+> constrained to `'*'`/productId (blocks a JSON.parse `__proto__` key). **Round 12 (just fixed)** extended the
+> pricing-key guard from the planner INPUT to the EXPORTED helpers (`appendPricingForKey`/`closeAllPricing`, also
+> used by the product-pricing edit path), which previously could mint a bad-key map the planner then refuses →
+> now `MALFORMED_PRICING`. The suite is now **153 probes** (`node test/topology-proof.js`). Do not re-report
+> anything already listed as fixed in the response doc unless you can show it still repros on the current tree
+> (commit `06a4d47`).
 
 ## Non-negotiables (framework rules)
 - **RUN it, don't just read it.** `azure-functions/src/functions/topology.js` is PURE — it takes the intent +
