@@ -228,7 +228,9 @@ function deriveFanout(creds, storeId, opts) {
     }
     if (oldFranchiseeId && c.franchiseeId === oldFranchiseeId && c.isFranchiseOffice && has) {
       const next = ids.filter(x => x !== storeId);
-      out.push({ id: c.id, action: 'setStoreIds', StoreIds: next, active: true });   // left ACTIVE even if empty (D-OS-4)
+      // D-OS-4: the ex-office is NOT deactivated by losing the store (stays active even if empty). Codex R11 P2:
+      // but it must not be REACTIVATED either — a Director-deactivated office stays deactivated. Preserve state.
+      out.push({ id: c.id, action: 'setStoreIds', StoreIds: next, active: isActiveCred(c) });
       continue;
     }
     if (cancelPersonal && has && PERSONAL_ROLES.includes(String(c.Role))) {
@@ -306,6 +308,10 @@ function planTopologyChange(intent, state, nowMs) {
       && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string')
       && (c.isStorePOS === undefined || typeof c.isStorePOS === 'boolean')
       && (c.isFranchiseOffice === undefined || typeof c.isFranchiseOffice === 'boolean')
+      // Codex R11 P2: `Active` gates isActiveCred (the inactive-office guard). It is NOT a fanout truthiness
+      // flag, so SharePoint's 1/0 is allowed — but a STRING (`'false'` is truthy) would defeat the guard. Accept
+      // only boolean or 0/1.
+      && (c.Active === undefined || typeof c.Active === 'boolean' || c.Active === 0 || c.Active === 1)
       && (c.franchiseeId === undefined || c.franchiseeId === null || reqId(c.franchiseeId))
       // Codex R9 F1: the fanout flags must be CONSISTENT with the role, not just well-typed booleans. A store
       // POS is a `staff`-role device login; a franchise office is a `franchisee`-role login WITH a franchiseeId;
@@ -320,6 +326,10 @@ function planTopologyChange(intent, state, nowMs) {
   // Codex R10 note: a franchisee has exactly ONE office credential — two office rows for one franchiseeId would
   // both gain the store on convert (double scope). Reject more than one office per franchisee.
   { const offSeen = new Set(); for (const c of st.creds) { if (c.isFranchiseOffice === true) { if (offSeen.has(c.franchiseeId)) return { ok: false, reason: 'DUPLICATE_OFFICE' }; offSeen.add(c.franchiseeId); } } }
+  // Codex R11 P2 (OS-SR-8): the franchisee entity is the STABLE identity — every row must be a well-formed
+  // object with a valid franchiseeId, and the id must be UNIQUE (two rows for one id = ambiguous server truth).
+  if (!st.franchisees.every(f => f && typeof f === 'object' && !Array.isArray(f) && reqId(f.franchiseeId))) return { ok: false, reason: 'BAD_FRANCHISEE' };
+  { const fSeen = new Set(); for (const f of st.franchisees) { if (fSeen.has(f.franchiseeId)) return { ok: false, reason: 'DUPLICATE_FRANCHISEE' }; fSeen.add(f.franchiseeId); } }
   // Codex conv-R5 F2: validate EVERY pricing series in the map (not only the touched key), else a malformed
   // per-product override rides into the committed plan.
   if (!Object.values(st.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };

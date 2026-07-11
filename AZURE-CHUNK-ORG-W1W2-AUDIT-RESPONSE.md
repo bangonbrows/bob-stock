@@ -153,6 +153,21 @@ inactive-office→INACTIVE_TARGET_OFFICE, duplicate-office→DUPLICATE_OFFICE, o
 regression proves a valid convert with director/head_office creds present still succeeds (they are correctly NOT
 removed on ownership change).
 
+## Round 11 (2026-07-11): AGY PASS; Codex found 3 P2s adjacent to the R10 fixes — fixed
+AGY → **PASS** (R10 confirmed). Codex (on `4e85d10`) → BLOCK with 3 P2s, each an adjacent corner the R10 fixes
+didn't cover. All ground-truthed REAL and fixed. Suite now **136 PASS / 0 FAIL** (+7 probes OS-A-L).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **L1** | rnd11-1 | P2 | `Active` wasn't row-validated; `isActiveCred` only treats `0`/`false` as inactive, so `Active:'false'` (a truthy string) defeated the R10 inactive-office guard and the office gained scope | row validator now requires `Active` be boolean or `0`/`1` (SharePoint) — a string fails closed (`BAD_CREDENTIAL`); same truthiness class as the R9 `isStorePOS:'false'` bug |
+| **L2** | rnd11-2 | P2 | R10 fixed the TARGET office on convert/add, but BUYBACK's ex-office branch emitted `active:true`, REACTIVATING a Director-deactivated ex-office | the ex-office fanout now preserves state (`active: isActiveCred(c)`) — stays active if active (D-OS-4), stays deactivated if deactivated |
+| **L3** | rnd11-3 | P2 | `franchisees` was only checked `Array.isArray`; `franchiseeExists` used `some()`, so two entity rows could claim one stable `franchiseeId` (ambiguous server truth, violates OS-SR-8) | every franchisee row must be an object with a valid `franchiseeId` (`BAD_FRANCHISEE`) and the id must be unique (`DUPLICATE_FRANCHISEE`) |
+
+Ground-truthed by replaying Codex's probe artifact against HEAD: string-Active→BAD_CREDENTIAL, inactive-ex-office
+kept `active:false`, duplicate-entity→DUPLICATE_FRANCHISEE; happy-path convert with director/head_office rows
+still succeeds. Root-cause note: L1/L2 extend the R9 truthiness + R10 activation-preservation work to the last two
+spots (the `Active` field type + the buyback ex-office); L3 extends row-validation from `creds` to `franchisees`.
+
 ## Next
-Codex round-11 re-check on HEAD → then OS-W3. AGY PASS ×6 (rounds 2–9); re-confirm AGY on the round-10 role enum.
-Per [[feedback_audit_both_clean]] keep looping until Codex also returns a clean PASS.
+Codex round-12 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+looping until Codex also returns a clean PASS.
