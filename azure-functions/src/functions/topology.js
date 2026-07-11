@@ -24,8 +24,14 @@ const HO = 'HO';
 // `staff` is included — the shared store POS (isStorePOS) is protected earlier in deriveFanout and STAYS; only
 // a staff login WITHOUT isStorePOS is a cancellable personal account.
 const PERSONAL_ROLES = ['staff', 'store_manager', 'territory_manager'];
+// Codex R10 P1: the COMPLETE set of credential roles this system issues (matches the client). A credential with
+// any OTHER role (legacy/typo/injected) holding the store would survive an ownership change with NO fanout
+// action — re-opening the live-scope leak. The planner fails closed on any unknown role (as accessPolicy does).
+const KNOWN_ROLES = new Set(['staff', 'store_manager', 'territory_manager', 'franchisee', 'director', 'head_office']);
 const ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
+// A credential is ACTIVE unless explicitly deactivated (SharePoint stores the flag as 1/0 or true/false).
+function isActiveCred(c) { return c.Active !== 0 && c.Active !== false; }
 
 function isFiniteMs(v) { return typeof v === 'number' && Number.isFinite(v); }
 function toMs(iso) { const t = Date.parse(iso); return Number.isFinite(t) ? t : null; }
@@ -296,7 +302,7 @@ function planTopologyChange(intent, state, nowMs) {
   // deriveFanout, so a non-boolean (e.g. the string 'false', which is truthy) would flip a personal staff cred
   // into the store POS and let it KEEP the converted store. They must be strict booleans; franchiseeId, if
   // present, must be a well-formed id. Fail closed on any deviation.
-  if (!st.creds.every(c => c && typeof c === 'object' && reqId(c.id) && typeof c.Role === 'string'
+  if (!st.creds.every(c => c && typeof c === 'object' && reqId(c.id) && typeof c.Role === 'string' && KNOWN_ROLES.has(c.Role)   // Codex R10 P1: role must be a KNOWN role (an unknown role holding the store would survive ownership change with no fanout)
       && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string')
       && (c.isStorePOS === undefined || typeof c.isStorePOS === 'boolean')
       && (c.isFranchiseOffice === undefined || typeof c.isFranchiseOffice === 'boolean')
@@ -311,6 +317,9 @@ function planTopologyChange(intent, state, nowMs) {
   // Codex R7 F1: credential ids are primary keys — a duplicate id would emit TWO conflicting fanout actions
   // (a bump AND a setStoreIds) for the same account. Reject a duplicated id.
   { const seen = new Set(); for (const c of st.creds) { if (seen.has(c.id)) return { ok: false, reason: 'DUPLICATE_CREDENTIAL' }; seen.add(c.id); } }
+  // Codex R10 note: a franchisee has exactly ONE office credential — two office rows for one franchiseeId would
+  // both gain the store on convert (double scope). Reject more than one office per franchisee.
+  { const offSeen = new Set(); for (const c of st.creds) { if (c.isFranchiseOffice === true) { if (offSeen.has(c.franchiseeId)) return { ok: false, reason: 'DUPLICATE_OFFICE' }; offSeen.add(c.franchiseeId); } } }
   // Codex conv-R5 F2: validate EVERY pricing series in the map (not only the touched key), else a malformed
   // per-product override rides into the committed plan.
   if (!Object.values(st.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };
@@ -355,7 +364,7 @@ function planTopologyChange(intent, state, nowMs) {
   // Codex R9 F3: the '*' pricing history must ALIGN with the ownership eras (covers franchise periods with no
   // gap; no franchise rate during an HO period). Applies to any store that has history.
   if (eras.length > 0 && !pricingAlignsWithEras(pricing, eras, nowMs)) return { ok: false, reason: 'PRICING_ERA_MISALIGNED' };
-  const officeCredFor = (fid) => creds.some(c => c.isFranchiseOffice === true && c.franchiseeId === fid);
+  const officeCredFor = (fid) => creds.find(c => c.isFranchiseOffice === true && c.franchiseeId === fid) || null;
 
   // ---- create HO store ----
   if (op === 'create' && intent.type === 'HO') {
@@ -371,7 +380,8 @@ function planTopologyChange(intent, state, nowMs) {
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
     if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3: no direct fran→fran (buy back to HO first) — a franchise-owned store rejects `add` outright
-    if (!officeCredFor(fid)) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
+    { const office = officeCredFor(fid); if (!office) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
+      if (!isActiveCred(office)) return { ok: false, reason: 'INACTIVE_TARGET_OFFICE' }; }   // Codex R10 note: a topology change must not silently reactivate a Director-deactivated office
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3: a franchise op needs a valid rate
     if (!st.store && usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: a NEW store's POS login must be unique
     const wasHO = currentOwner && currentOwner.owner === HO;   // an existing HO store being handed over
@@ -394,7 +404,9 @@ function planTopologyChange(intent, state, nowMs) {
     const wasHO = currentOwner && currentOwner.owner === HO;
     const e = transitionEras(eras, nf.franchiseeId, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
-    const createAccounts = [{ kind: 'franchisee', franchiseeId: nf.franchiseeId, displayName: nf.displayName, officeUsername: nf.officeUsername }];
+    // Codex R10 note: the new office account is born SCOPED to its first store — else, applied literally, it
+    // would start empty and the franchisee couldn't see the store they were just onboarded onto.
+    const createAccounts = [{ kind: 'franchisee', franchiseeId: nf.franchiseeId, displayName: nf.displayName, officeUsername: nf.officeUsername, StoreIds: [storeId] }];
     if (!st.store) createAccounts.push({ kind: 'storePOS', storeId });
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: nf.franchiseeId, oldFranchiseeId: null, cancelPersonal: wasHO });
     return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: nf.franchiseeId } } };
@@ -405,7 +417,8 @@ function planTopologyChange(intent, state, nowMs) {
     if (!currentOwner || currentOwner.owner !== HO) return { ok: false, reason: 'NOT_HO_OWNED' };
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
-    if (!officeCredFor(fid)) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
+    { const office = officeCredFor(fid); if (!office) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
+      if (!isActiveCred(office)) return { ok: false, reason: 'INACTIVE_TARGET_OFFICE' }; }   // Codex R10 note: a topology change must not silently reactivate a Director-deactivated office
     if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };

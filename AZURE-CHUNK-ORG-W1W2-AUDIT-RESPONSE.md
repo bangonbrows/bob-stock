@@ -137,6 +137,22 @@ geometry → rate payloads → container types → completeness/rows → fanout-
 consistency + cross-collection billing-coverage invariants**. The engine now rejects a franchise state that is
 structurally valid but semantically impossible.
 
+## Round 10 (2026-07-11): Codex BLOCK — 1 root P1 (role enum) + 3 hardening notes — all fixed
+Codex (on the correct tree `c807928`) → BLOCK with 1 P1 blocker + 3 weaker notes in its probe artifact. All
+ground-truthed REAL and fixed (fix-everything). Suite now **129 PASS / 0 FAIL** (+8 probes OS-A-K).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **K1** | rnd10-P1 | P1 | validation accepted ANY string `Role`, but `deriveFanout` only removes the KNOWN personal roles — so a credential with an unknown/legacy role (`legacy_manager`) holding the store survived BOTH convert and buyback with no fanout action, keeping live scope after ownership change (the same leak class prior rounds hardened) | row validator now requires `Role ∈ KNOWN_ROLES` (`staff`/`store_manager`/`territory_manager`/`franchisee`/`director`/`head_office` — matches the client); any other role fails closed (`BAD_CREDENTIAL`), as accessPolicy already does for unknown roles |
+| **K2** | rnd10-n1 | P2 | a topology change silently REACTIVATED a Director-deactivated target office (fanout set it active) | convert/add/create-franchise reject an inactive target office (`INACTIVE_TARGET_OFFICE`); office deactivation stays Director-controlled |
+| **K3** | rnd10-n2 | P2 | two office creds for one franchisee were both accepted and both gained the store (double scope) | at most one office credential per franchiseeId (`DUPLICATE_OFFICE`) |
+| **K4** | rnd10-n3 | P3 | onboard's `createAccounts` franchisee entry carried no StoreIds → applied literally, the new office is born with no scope for its first store | the minted franchisee account now carries `StoreIds:[storeId]` |
+
+Ground-truthed by replaying Codex's own probe artifact against HEAD: unknown-role→BAD_CREDENTIAL (convert+buyback),
+inactive-office→INACTIVE_TARGET_OFFICE, duplicate-office→DUPLICATE_OFFICE, onboard account now scoped. A happy-path
+regression proves a valid convert with director/head_office creds present still succeeds (they are correctly NOT
+removed on ownership change).
+
 ## Next
-Codex round-10 re-check on HEAD → then OS-W3. AGY PASS ×6 (rounds 2–9). Per [[feedback_audit_both_clean]] keep
-looping until Codex also returns a clean PASS.
+Codex round-11 re-check on HEAD → then OS-W3. AGY PASS ×6 (rounds 2–9); re-confirm AGY on the round-10 role enum.
+Per [[feedback_audit_both_clean]] keep looping until Codex also returns a clean PASS.
