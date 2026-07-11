@@ -234,6 +234,40 @@ function deriveFanout(creds, storeId, opts) {
   return out;
 }
 
+// Codex R9 F3: the DEFAULT '*' pricing history must ALIGN with the ownership eras — franchise rates cover the
+// franchise periods with NO gaps, and NO franchise pricing exists during an HO period. The engine's own outputs
+// satisfy this by construction (append on the era boundary, close on buy-back); a state that VIOLATES it is
+// corrupt and would export a wrong/partial billing window. Returns true iff aligned. `eras`/pricing assumed
+// already geometry-valid (validEras + validPricingSeries) by the caller.
+function pricingAlignsWithEras(pricing, eras, nowMs) {
+  const win = (x) => [toMs(x.from), x.to == null ? Infinity : toMs(x.to)];
+  const overlaps = (a0, a1, b0, b1) => a0 < b1 && b0 < a1;
+  const HOwins = eras.filter(e => e.owner === HO).map(win);
+  const frWins = eras.filter(e => e.owner !== HO).map(win);
+  // 1) NO pricing interval (default OR any per-product override) may overlap an HO era — a franchise rate must
+  //    never be effective while the store is HO-owned.
+  for (const k of Object.keys(pricing)) {
+    for (const iv of (Array.isArray(pricing[k]) ? pricing[k] : [])) {
+      const [f, t] = win(iv);
+      if (f === null) return false;
+      for (const [h0, h1] of HOwins) if (overlaps(f, t, h0, h1)) return false;
+    }
+  }
+  // 2) every FRANCHISE era must be fully + contiguously covered by the default '*' series (no uncovered gap).
+  const def = (Array.isArray(pricing[PRICING_DEFAULT_KEY]) ? pricing[PRICING_DEFAULT_KEY] : []).map(win).sort((a, b) => a[0] - b[0]);
+  for (const [e0, e1] of frWins) {
+    let cursor = e0;
+    for (const [p0, p1] of def) {
+      if (p1 <= cursor) continue;
+      if (p0 > cursor) break;          // gap before this interval → not covered
+      cursor = p1;
+      if (cursor >= e1) break;
+    }
+    if (cursor < e1) return false;
+  }
+  return true;
+}
+
 // ── The planner ────────────────────────────────────────────────────────────────────────────────────────
 function planTopologyChange(intent, state, nowMs) {
   if (!intent || typeof intent !== 'object') return { ok: false, reason: 'BAD_INTENT' };
@@ -266,7 +300,14 @@ function planTopologyChange(intent, state, nowMs) {
       && Array.isArray(c.StoreIds) && c.StoreIds.every(s => typeof s === 'string')
       && (c.isStorePOS === undefined || typeof c.isStorePOS === 'boolean')
       && (c.isFranchiseOffice === undefined || typeof c.isFranchiseOffice === 'boolean')
-      && (c.franchiseeId === undefined || c.franchiseeId === null || reqId(c.franchiseeId)))) return { ok: false, reason: 'BAD_CREDENTIAL' };
+      && (c.franchiseeId === undefined || c.franchiseeId === null || reqId(c.franchiseeId))
+      // Codex R9 F1: the fanout flags must be CONSISTENT with the role, not just well-typed booleans. A store
+      // POS is a `staff`-role device login; a franchise office is a `franchisee`-role login WITH a franchiseeId;
+      // the two kinds are mutually exclusive. Without this a `store_manager` could set isStorePOS to dodge
+      // cancellation, or a `staff` login could pose as an office and gain store scope.
+      && !(c.isStorePOS === true && c.isFranchiseOffice === true)
+      && (c.isStorePOS !== true || c.Role === 'staff')
+      && (c.isFranchiseOffice !== true || (c.Role === 'franchisee' && reqId(c.franchiseeId))))) return { ok: false, reason: 'BAD_CREDENTIAL' };
   // Codex R7 F1: credential ids are primary keys — a duplicate id would emit TWO conflicting fanout actions
   // (a bump AND a setStoreIds) for the same account. Reject a duplicated id.
   { const seen = new Set(); for (const c of st.creds) { if (seen.has(c.id)) return { ok: false, reason: 'DUPLICATE_CREDENTIAL' }; seen.add(c.id); } }
@@ -311,6 +352,9 @@ function planTopologyChange(intent, state, nowMs) {
     const def = pricing[PRICING_DEFAULT_KEY];
     if (!(Array.isArray(def) && def.some(i => i && i.to == null))) return { ok: false, reason: 'NO_ACTIVE_PRICING' };
   }
+  // Codex R9 F3: the '*' pricing history must ALIGN with the ownership eras (covers franchise periods with no
+  // gap; no franchise rate during an HO period). Applies to any store that has history.
+  if (eras.length > 0 && !pricingAlignsWithEras(pricing, eras, nowMs)) return { ok: false, reason: 'PRICING_ERA_MISALIGNED' };
   const officeCredFor = (fid) => creds.some(c => c.isFranchiseOffice === true && c.franchiseeId === fid);
 
   // ---- create HO store ----
@@ -373,6 +417,9 @@ function planTopologyChange(intent, state, nowMs) {
   if (op === 'buyback') {
     if (!currentOwner || currentOwner.owner === HO) return { ok: false, reason: 'NOT_FRANCHISE_OWNED' };
     const oldFid = currentOwner.owner;
+    // Codex R9 F2: the ex-owner's office credential must EXIST and currently HOLD the store — else deriveFanout
+    // emits no scope-removal and the departed franchisee keeps the (now-HO) store in scope. Mirrors NO_TARGET_OFFICE.
+    if (!creds.some(c => c.isFranchiseOffice === true && c.franchiseeId === oldFid && c.StoreIds.includes(storeId))) return { ok: false, reason: 'NO_EXOFFICE' };
     const e = transitionEras(eras, HO, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = closeAllPricing(pricing, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     // OS-A-F2 (both auditors, P1): ownership is CHANGING → the ex-franchisee's personal staff/mgr/TM lose the

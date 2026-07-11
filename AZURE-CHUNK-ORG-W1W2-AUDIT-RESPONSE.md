@@ -120,6 +120,23 @@ payloads (R3) → container types (R4) → completeness + rows (R6) → **fanout
 consistency (R8)**. The state boundary is now validated at every level: envelope, row, field-semantics, and
 cross-collection invariant.
 
+## Round 9 (2026-07-11): AGY PASS (again); Codex found 3 deeper semantic/cross-collection gaps — fixed
+AGY → **PASS** (round-8 confirmed). Codex (on the correct tree `a8e617d`) confirmed R8 CLOSED, then found 3
+adjacent gaps the type/row checks didn't reach. All ground-truthed REAL (8/8 repros reproduced ok:true, then
+8/8 CLOSED after the fix). Suite now **121 PASS / 0 FAIL** (+12 probes OS-A-J1..J3 incl. a legitimate-HO-gap
+happy-path regression).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **J1** | rnd9-1 | P1 | fanout flags were type-checked but not ROLE-consistent: a `store_manager` with `isStorePOS` posed as the POS (dodged cancellation), a `staff` with `isFranchiseOffice` posed as an office (gained scope), and a cred with BOTH flags was accepted (POS branch won) | row validator now enforces: `isStorePOS ⟹ Role==='staff'`; `isFranchiseOffice ⟹ Role==='franchisee' && franchiseeId`; the two flags are mutually exclusive (`BAD_CREDENTIAL`) |
+| **J2** | rnd9-2 | P1 | buyback didn't require the EX-owner's office credential to exist and hold the store, so the scope-removal was silently skipped and the departed franchisee kept the now-HO store | buyback asserts an office cred for the current owner exists AND contains `storeId` (`NO_EXOFFICE`) — mirror of `NO_TARGET_OFFICE` |
+| **J3** | rnd9-3 | P1 | pricing wasn't checked for coverage ALIGNMENT with the eras: a franchise era with pricing starting late (uncovered month), a mid-series gap, or an HO store carrying open franchise pricing all passed → buyback would export a wrong/partial billing window | new `pricingAlignsWithEras`: no pricing interval (default OR override) may overlap an HO era, and every franchise era must be fully+contiguously covered by the `'*'` series (`PRICING_ERA_MISALIGNED`); permits legitimate HO-era gaps |
+
+Root-cause note: rounds 3–9 have hardened the SAME axis (trust in server state) at deepening levels — era
+geometry → rate payloads → container types → completeness/rows → fanout-field semantics → **role/flag
+consistency + cross-collection billing-coverage invariants**. The engine now rejects a franchise state that is
+structurally valid but semantically impossible.
+
 ## Next
-Codex round-9 re-check on HEAD → then OS-W3. AGY PASS ×5 (rounds 2–8). Per [[feedback_audit_both_clean]] keep
+Codex round-10 re-check on HEAD → then OS-W3. AGY PASS ×6 (rounds 2–9). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.
