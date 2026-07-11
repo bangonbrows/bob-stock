@@ -262,6 +262,18 @@ and numeric-closed-end variants + ISO happy paths).
 |---|---|---|---|---|
 | **R** | rnd16-1 | P2 | interval `from`/`to` accepted anything Date.parse coerces (numeric 0, a Date object) → malformed history became authoritative and reached the buyback export | `validIntervals` type-checks endpoints as strings before parsing — shared primitive, so all era + pricing paths fail closed at once |
 
+## Round 17 (2026-07-12): Codex found 1 P2 — string endpoints weren't STRICT ISO (Date.parse tolerance)
+Codex → BLOCK with 1 P2 refining R16: `typeof === 'string'` + Date.parse is not an ISO check — `'0'` (→ year
+2000, device-local tz!) and `'June 1, 2025'` passed. Ground-truthed REAL. Fixed: new `isIsoUtc` enforces the
+exact `iso()` shape (`YYYY-MM-DDTHH:MM:SS(.sss)Z`, UTC only) AND round-trips the parsed value so a rolled-over
+impossible component (`2025-02-30` → Mar 2 — found by my own probe while writing the regression) also fails
+closed. One shared primitive covers eras + pricing everywhere. Suite now **186 PASS / 0 FAIL** (+10 probes
+OS-A-S incl. date-only, non-UTC-offset, impossible-component, both legitimate ISO shapes, engine round-trip).
+
+| # | Codex | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **S** | rnd17-1 | P2 | R16's string check still fed Date.parse's permissive grammar — `'0'`/human-format dates became authoritative endpoints | `isIsoUtc`: strict ISO-UTC regex + finite parse + ROUND-TRIP equality (rejects rolled-over components) |
+
 ## Next
-Codex round-17 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
+Codex round-18 re-check on HEAD → then OS-W3. AGY PASS ×7 (rounds 2–10). Per [[feedback_audit_both_clean]] keep
 looping until Codex also returns a clean PASS.
