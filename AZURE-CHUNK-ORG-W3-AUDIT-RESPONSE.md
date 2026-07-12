@@ -21,10 +21,15 @@ Both auditors ran the harness on isolated worktrees against `ca1ad4c`. They CONV
   was committed at `b57d0fc` (`268 CAUGHT / 0 BLIND / 0 skipped / 0 INFRA-FAIL of 268`, banked in
   `AZURE-CHUNK-ORG-W3-SCOPE.md`). The round-2 sweep (now 269 mutations, + S-260) result lands below.
 
-### Round-1 fix gate
+### Round-1 fix gate — FINAL
 smoke **251/251** (S-254 now covers the 423 hold; S-257 covers thresholds; NEW S-260 covers the nested timer
-discipline) · topology-proof 191/191 · syntax/static clean · full saboteur sweep (269 mutations) **running** —
-final count appended here before the re-check is dispatched.
+discipline) · topology-proof 191/191 · syntax/static clean · **FULL SABOTEUR SWEEP: 269 CAUGHT / 0 BLIND /
+0 skipped / 0 INFRA-FAIL of 269.**
+
+Honest note on that sweep: the FIRST post-fix sweep came back 268/1-BLIND — the blind one was the brand-new
+S-260 itself (it watched `_syncRetryTimer`, but `_scheduleSyncRetry` sets `_markRetryTimer`; and the field
+starts UNDEFINED, so `=== null` was wrong too). The saboteur layer caught the defective sentinel exactly as
+designed; fixed, targeted-verified (S-260 CAUGHT + clean 251/251), then the definitive full sweep above.
 
 ## Next
 Codex + AGY round-2 re-check on the fix commit. Per the convergence rule: loop until BOTH clean.
