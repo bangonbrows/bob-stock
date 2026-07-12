@@ -1,10 +1,11 @@
 # OS-W3 SCOPE — Chunk-10 companion: offline flush-before-purge + era-aware re-bootstrap (CLIENT)
 
 **Status:** SCOPE REVIEW R4 FOLDED (2026-07-12) — R1: Codex×5 + AGY×3 → W3-SR-1..8; R2: converged TOCTOU
-amendment + Codex×2 → W3-SR-9/10; R3: AGY PASS + Codex×3 → W3-SR-10 amended, W3-SR-11/12; R4: AGY PASS + Codex×2 → W3-SR-13/14; **R5: AGY PASS (third consecutive, "completely airtight"); Codex×2 →
-W3-SR-15 (`_topologyHold` clears only on a non-hold, NON-ABORTING page-1; `pullSteps()` also suppresses while
-purge-pending) + W3-SR-16 (the detector moves to the DB LAYER — `DB._scopeGuardOnWrite` in every durable
-writer; draft-transfer writes bypassed `scheduleSync`)**. ALL ground-truthed REAL. Awaiting R6 → build.
+amendment + Codex×2 → W3-SR-9/10; R3: AGY PASS + Codex×3 → W3-SR-10 amended, W3-SR-11/12; R4: AGY PASS + Codex×2 → W3-SR-13/14; R5: AGY PASS + Codex×2 → W3-SR-15/16.
+**✅ R6 (2026-07-12): CONVERGED — AGY PASS ("structurally perfect, proceed to build", 4th consecutive) +
+Codex CLEAN ("no numbered findings"; independently traced the remaining live write paths and confirmed
+coverage). SPEC LOCKED @ `dcceaf8` — BUILD AUTHORIZED.** 6 rounds, 16 folds (W3-SR-1..16), zero code written
+during review.
 **Touches:** `sync.js` + `db.js` (**the LIVE sync engine** — first org-chunk wave that edits live-app files).
 Branch `azure-phase-5-8-server`; nothing deploys until the end-of-phase cutover.
 **Spec anchors (converged):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain window),
