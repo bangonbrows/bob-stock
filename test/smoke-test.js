@@ -2392,9 +2392,13 @@ async function runSmoke(repo) {
         await DB.addTransactionDurable({ id: 'sw3_amb_1', date: UI.todayLocal(), storeId: 'karrinyup', productId: DB.get().products[0].id, type: 'out', qty: 1, staffName: 'T', _synced: false });
         Sync._unauthorized = false; Sync._pushUrl = 'https://sw3pushamb.test/x'; Sync._stepsPushUrl = null;
         Sync._syncLock = true;                                  // simulate being inside pull's held lock
-        Sync._syncRetryTimer = null; Sync._retryCount = 0;
+        // NB (saboteur round-2 BLIND fix): _scheduleSyncRetry sets _markRetryTimer, NOT _syncRetryTimer —
+        // the first version of this sentinel watched the wrong variable and proved nothing.
+        if (Sync._markRetryTimer) { clearTimeout(Sync._markRetryTimer); Sync._markRetryTimer = null; }
+        Sync._syncRetryTimer = null; Sync._retryCount = 0; Sync._markRetryCount = 0;
         await Sync._drainPendingLocked();                        // ambiguous ack → the guarded branch
-        const out = { timer: Sync._syncRetryTimer === null, lockHeld: Sync._syncLock === true, rowKept: DB.get().transactions.some(t => t.id === 'sw3_amb_1' && !t._synced) };
+        const out = { timer: Sync._markRetryTimer == null && Sync._syncRetryTimer == null, lockHeld: Sync._syncLock === true, rowKept: DB.get().transactions.some(t => t.id === 'sw3_amb_1' && !t._synced) };   // == null: the timer field starts UNDEFINED until first use
+        if (Sync._markRetryTimer) { clearTimeout(Sync._markRetryTimer); Sync._markRetryTimer = null; }
         Sync._syncLock = false;
         return out;
       }, s);
