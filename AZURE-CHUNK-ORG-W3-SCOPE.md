@@ -1,9 +1,11 @@
 # OS-W3 SCOPE — Chunk-10 companion: offline flush-before-purge + era-aware re-bootstrap (CLIENT)
 
-**Status:** SCOPE REVIEW R3 FOLDED (2026-07-12) — R1: Codex×5 + AGY×3 → W3-SR-1..8; R2: converged TOCTOU
-amendment + Codex×2 → W3-SR-9/10; **R3: AGY PASS (0 findings, "logically impenetrable"); Codex×3 → W3-SR-10
-amended (suppression inside `pullSteps()`), W3-SR-11 (re-armable reconcile — the signature is a cache, never a
-guarantee), W3-SR-12 (hold envelope FORBIDS `maxId`/`scope`)**. ALL ground-truthed REAL. Awaiting R4 → build.
+**Status:** SCOPE REVIEW R4 FOLDED (2026-07-12) — R1: Codex×5 + AGY×3 → W3-SR-1..8; R2: converged TOCTOU
+amendment + Codex×2 → W3-SR-9/10; R3: AGY PASS + Codex×3 → W3-SR-10 amended, W3-SR-11/12; **R4: AGY PASS
+(second consecutive, "mathematically sound… proceed to build"); Codex×2 → W3-SR-13 (`_topologyHold` lifecycle
+pinned: cleared only by a non-hold page-1 pull, fail-closed on errors), W3-SR-14 (out-of-scope re-arm detection
+also runs at the COMMON write entry `scheduleSync()`, covering leader-originated late writes)**. ALL
+ground-truthed REAL. Awaiting R5 → build.
 **Touches:** `sync.js` + `db.js` (**the LIVE sync engine** — first org-chunk wave that edits live-app files).
 Branch `azure-phase-5-8-server`; nothing deploys until the end-of-phase cutover.
 **Spec anchors (converged):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain window),
@@ -42,6 +44,8 @@ staging-apply items — **W3 builds the CLIENT side**, safe with today's LAs AND
 | **W3-SR-10** | Codex R2-3 → **AMENDED R3** | the hold was specified for the LEDGER pull only; `poll()` runs `pullSteps()` right after (sync.js:2198) with its own endpoint + cursor (`bob_last_step_sp_id`, sync.js:2059) → step metadata for the quiesced store could merge and the STEP cursor advance while the ledger is fail-closed. **R3: gating only `poll()`/`_runSyncCycle` missed `init()`'s first-run path, which calls `pull()` then `pullSteps()` DIRECTLY (sync.js:2279, 2282)** | the suppression lives INSIDE `pullSteps()` itself — an entry guard `if (this._topologyHold) return;` — so EVERY caller (poll, cycle, init, any future sequence) is covered by construction; `push()`/`pushSteps()` still attempt (the drain window). The steps-pull LA's own fail-closed check is spec'd as a staging-apply item; S-W3-10 covers the init/first-run path explicitly |
 | **W3-SR-11** | Codex R3-1 | a follower write serialised AFTER the atomic purge commit + signature record leaves an out-of-scope row on a device that is now "reconciled by signature" — later cycles no-op (sync.js:1885), the push gets rejected, and the row lingers forever (privacy residual, not loss) | the reconcile is RE-ARMABLE: the leader's `local-write` refresh handler (sync.js:957) and every page-1 pull run a cheap out-of-scope check (any row whose store ∉ the recorded `bob_scope_sig` scope, using the same per-table filters); a hit sets `bob_scope_purge_pending` + clears the recorded signature, so the NEXT cycle re-runs the full flush→purge path. The signature is a cache, never a guarantee — detection re-arms reconciliation. S-W3-2 extended: a late row must be purged on the next cycle (after flush), never accepted as steady-state |
 | **W3-SR-12** | Codex R3-2 | the pinned 200 hold envelope wasn't SAFE for today's deployed clients if it carried `maxId`: current clients capture `remote.maxId` (sync.js:1670) and on an empty page ADVANCE the ledger cursor to that ceiling (sync.js:1700) → withheld rows are skipped forever when the hold lifts | the pinned contract now FORBIDS fields: a hold response is EXACTLY `{topologyPending:true, items:[], policyVersion:<current>}` — **no `maxId`, no `scope`** (either would make an old client advance its cursor / run a purge mid-quiesce). S-W3-5 asserts the omissions; the staging-apply E2E asserts the REAL LA omits them (mock-must-match-server) |
+| **W3-SR-13** | Codex R4-1 | the `_topologyHold` LIFECYCLE wasn't pinned — a sticky flag would suppress `pullSteps()` forever after the hold lifts (steps sync permanently disabled) | PINNED: `_topologyHold` is SET only by a hold response and CLEARED by the next page-1 pull that returns a NON-hold response; a network error / thrown pull leaves it UNCHANGED (fail closed — steps stay suppressed until the ledger confirms the hold lifted). It is in-memory only (a reload re-derives it from the next pull). S-W3-10 adds "hold → normal pull → `pullSteps()` resumes" |
+| **W3-SR-14** | Codex R4-2 | the re-arm detection (W3-SR-11) ran on follower `local-write` + page-1 pull — but a LEADER-originated late write (stale modal/draft in the leader tab) only triggers `scheduleSync()` → debounced push (sync.js:2114/2124), no detection; a rejected push or going offline leaves the row unlocked until some later pull | the out-of-scope detector runs at the COMMON write entry: inside `scheduleSync()` (every durable local write funnels through it, leader or follower) in addition to the `local-write` refresh handler + page-1 pull. Any durable write of an out-of-scope row re-arms the purge-pending lock BEFORE/WITH the push attempt, regardless of push outcome or connectivity. S-W3-2 gains a leader-originated late-row case |
 
 ## The design (post-R1)
 
@@ -55,9 +59,11 @@ In `_reconcileScope`, before ANY purge:
 3. On refusal: raise `bob_scope_purge_pending` (existing mechanics, sync.js:1894-1898), do NOT record the new
    signature, retry next cycle. Egress-invalid rows are durably `_rejected` (W3-SR-6) so they can't livelock.
 4. Only a clean atomic walk purges + resets cursors + records the signature.
-5. **The signature is a CACHE, never a guarantee (W3-SR-11):** the `local-write` refresh handler and every
-   page-1 pull run a cheap out-of-scope detection; any hit clears the signature + sets the purge-pending lock
-   so the next cycle re-runs flush→purge. A late follower write can therefore linger at most one cycle.
+5. **The signature is a CACHE, never a guarantee (W3-SR-11/14):** the out-of-scope detector runs at the COMMON
+   write entry `scheduleSync()` (every durable write, leader or follower), in the `local-write` refresh
+   handler, AND on every page-1 pull; any hit clears the signature + sets the purge-pending lock so the next
+   cycle re-runs flush→purge. A late write is locked before/with its push attempt regardless of connectivity;
+   it can linger at most one cycle.
 
 **W3-2 ERA/TOPOLOGY-VERSION RE-BOOTSTRAP (GAP-2; per W3-SR-3/7).**
 - Pull LA echoes per-store `topologyVersion`s (mirrors the `policyVersion` echo, sync.js:1661). Client persists
@@ -91,7 +97,9 @@ Sentinels (join the smoke gate):
   the old refresh→persist window — proving the single `rw` transaction serialises it (the row survives either
   by aborting the purge or by landing after the commit; it is NEVER annihilated)** (W3-SR-2 R2 amendment) —
   **AND (W3-SR-11) a row landing AFTER commit + signature record is detected by the re-arm check and purged on
-  the NEXT cycle (after flush); "lands after commit" is never accepted as steady-state**.
+  the NEXT cycle (after flush); "lands after commit" is never accepted as steady-state** — **including a
+  LEADER-originated late row (stale modal in the leader tab): the `scheduleSync()` detector locks it
+  before/with the push attempt, even offline or on a rejected push (W3-SR-14)**.
 - **S-W3-3** flush fails (offline) → NO purge, privacy lock, signature not advanced, retries; **includes a
   local egress-invalid row that gets durably `_rejected` and stops blocking**.
 - **S-W3-4** `topologyVersion` bump with unchanged StoreIds → flush → wipe → cursor reset, **asserting the
@@ -110,7 +118,9 @@ Sentinels (join the smoke gate):
 - **S-W3-10** during a ledger topology hold, `pullSteps()` does NOT run — enforced by ITS OWN entry guard, and
   the sentinel exercises the `init()` first-run path (`pull()` → `pullSteps()` direct, sync.js:2279/2282), not
   just `poll()`: the step cursor (`bob_last_step_sp_id`) is untouched and no step metadata for the quiesced
-  store merges, while `push()`/`pushSteps()` still attempt (W3-SR-10 R3 amendment).
+  store merges, while `push()`/`pushSteps()` still attempt (W3-SR-10 R3 amendment) — **AND (W3-SR-13) the
+  lifecycle: hold → normal pull → `pullSteps()` RESUMES; a thrown/errored pull leaves the flag unchanged
+  (fail closed)**.
 Full local gate before hand-off: smoke (240+new), topology-proof 191, saboteur sweep (concurrency 10), static
 gates, change-safety sweep on the touched call-graph (`poll`/`pull`/`push`/`pushSteps`/`_reconcileScope`/
 `purgeToScope` callers). Mock-must-match-server: the pinned pull-echo contract is proven against the REAL LA at
