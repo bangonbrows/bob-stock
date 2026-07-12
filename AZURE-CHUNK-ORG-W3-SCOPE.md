@@ -1,11 +1,10 @@
 # OS-W3 SCOPE — Chunk-10 companion: offline flush-before-purge + era-aware re-bootstrap (CLIENT)
 
 **Status:** SCOPE REVIEW R4 FOLDED (2026-07-12) — R1: Codex×5 + AGY×3 → W3-SR-1..8; R2: converged TOCTOU
-amendment + Codex×2 → W3-SR-9/10; R3: AGY PASS + Codex×3 → W3-SR-10 amended, W3-SR-11/12; **R4: AGY PASS
-(second consecutive, "mathematically sound… proceed to build"); Codex×2 → W3-SR-13 (`_topologyHold` lifecycle
-pinned: cleared only by a non-hold page-1 pull, fail-closed on errors), W3-SR-14 (out-of-scope re-arm detection
-also runs at the COMMON write entry `scheduleSync()`, covering leader-originated late writes)**. ALL
-ground-truthed REAL. Awaiting R5 → build.
+amendment + Codex×2 → W3-SR-9/10; R3: AGY PASS + Codex×3 → W3-SR-10 amended, W3-SR-11/12; R4: AGY PASS + Codex×2 → W3-SR-13/14; **R5: AGY PASS (third consecutive, "completely airtight"); Codex×2 →
+W3-SR-15 (`_topologyHold` clears only on a non-hold, NON-ABORTING page-1; `pullSteps()` also suppresses while
+purge-pending) + W3-SR-16 (the detector moves to the DB LAYER — `DB._scopeGuardOnWrite` in every durable
+writer; draft-transfer writes bypassed `scheduleSync`)**. ALL ground-truthed REAL. Awaiting R6 → build.
 **Touches:** `sync.js` + `db.js` (**the LIVE sync engine** — first org-chunk wave that edits live-app files).
 Branch `azure-phase-5-8-server`; nothing deploys until the end-of-phase cutover.
 **Spec anchors (converged):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain window),
@@ -46,6 +45,8 @@ staging-apply items — **W3 builds the CLIENT side**, safe with today's LAs AND
 | **W3-SR-12** | Codex R3-2 | the pinned 200 hold envelope wasn't SAFE for today's deployed clients if it carried `maxId`: current clients capture `remote.maxId` (sync.js:1670) and on an empty page ADVANCE the ledger cursor to that ceiling (sync.js:1700) → withheld rows are skipped forever when the hold lifts | the pinned contract now FORBIDS fields: a hold response is EXACTLY `{topologyPending:true, items:[], policyVersion:<current>}` — **no `maxId`, no `scope`** (either would make an old client advance its cursor / run a purge mid-quiesce). S-W3-5 asserts the omissions; the staging-apply E2E asserts the REAL LA omits them (mock-must-match-server) |
 | **W3-SR-13** | Codex R4-1 | the `_topologyHold` LIFECYCLE wasn't pinned — a sticky flag would suppress `pullSteps()` forever after the hold lifts (steps sync permanently disabled) | PINNED: `_topologyHold` is SET only by a hold response and CLEARED by the next page-1 pull that returns a NON-hold response; a network error / thrown pull leaves it UNCHANGED (fail closed — steps stay suppressed until the ledger confirms the hold lifted). It is in-memory only (a reload re-derives it from the next pull). S-W3-10 adds "hold → normal pull → `pullSteps()` resumes" |
 | **W3-SR-14** | Codex R4-2 | the re-arm detection (W3-SR-11) ran on follower `local-write` + page-1 pull — but a LEADER-originated late write (stale modal/draft in the leader tab) only triggers `scheduleSync()` → debounced push (sync.js:2114/2124), no detection; a rejected push or going offline leaves the row unlocked until some later pull | the out-of-scope detector runs at the COMMON write entry: inside `scheduleSync()` (every durable local write funnels through it, leader or follower) in addition to the `local-write` refresh handler + page-1 pull. Any durable write of an out-of-scope row re-arms the purge-pending lock BEFORE/WITH the push attempt, regardless of push outcome or connectivity. S-W3-2 gains a leader-originated late-row case |
+| **W3-SR-15** | Codex R5-1 | the W3-SR-13 clear-point collides with a scope-purge abort: a NON-hold page-1 pull can still ABORT for scope reconciliation (sync.js:1654/1890) — clearing `_topologyHold` there would resume `pullSteps()` while the device is still under `bob_scope_purge_pending` | TWO pins: (a) `_topologyHold` clears only on a non-hold page-1 that COMPLETES scope reconciliation without abort; (b) belt-and-braces, `pullSteps()`'s entry guard ALSO suppresses while `bob_scope_purge_pending` is set — steps never advance while the ledger is unreconciled, whatever the flag's state. S-W3-10 adds the "non-hold pull that aborts on purge failure → steps still suppressed" case |
+| **W3-SR-16** | Codex R5-2 | `scheduleSync()` is NOT the true choke point: draft-transfer durable writes bypass it — `DB.addTransferDurable` (phase2.js:163 → db.js:1009) and `DB.updateTransferDurable` (phase2.js:199 → db.js:1018) persist to Dexie and return without `scheduleSync()`/`_afterLedgerWrite` → a stale draft-transfer modal writes an out-of-scope row with NO detector and NO push | the detector moves DOWN to the DB LAYER: a single `DB._scopeGuardOnWrite(row…)` hook invoked by EVERY durable writer (`addTransactionDurable`, `addTransferDurable`, `updateTransferDurable`, the recordSteps writers, and any future durable writer — enumerated in the build checklist) sets the purge-pending lock + clears the signature on any out-of-scope write; `scheduleSync()` keeps its check as defence-in-depth. S-W3-2 adds the draft-transfer (add + update) cases |
 
 ## The design (post-R1)
 
@@ -59,11 +60,12 @@ In `_reconcileScope`, before ANY purge:
 3. On refusal: raise `bob_scope_purge_pending` (existing mechanics, sync.js:1894-1898), do NOT record the new
    signature, retry next cycle. Egress-invalid rows are durably `_rejected` (W3-SR-6) so they can't livelock.
 4. Only a clean atomic walk purges + resets cursors + records the signature.
-5. **The signature is a CACHE, never a guarantee (W3-SR-11/14):** the out-of-scope detector runs at the COMMON
-   write entry `scheduleSync()` (every durable write, leader or follower), in the `local-write` refresh
-   handler, AND on every page-1 pull; any hit clears the signature + sets the purge-pending lock so the next
-   cycle re-runs flush→purge. A late write is locked before/with its push attempt regardless of connectivity;
-   it can linger at most one cycle.
+5. **The signature is a CACHE, never a guarantee (W3-SR-11/14/16):** the out-of-scope detector is a DB-LAYER
+   hook (`DB._scopeGuardOnWrite`) invoked by EVERY durable writer (transactions, transfers add+update,
+   recordSteps — enumerated in the build checklist), plus defence-in-depth checks in `scheduleSync()`, the
+   `local-write` refresh handler, and every page-1 pull; any hit clears the signature + sets the purge-pending
+   lock so the next cycle re-runs flush→purge. A late write is locked AT the write itself, regardless of
+   connectivity; it can linger at most one cycle.
 
 **W3-2 ERA/TOPOLOGY-VERSION RE-BOOTSTRAP (GAP-2; per W3-SR-3/7).**
 - Pull LA echoes per-store `topologyVersion`s (mirrors the `policyVersion` echo, sync.js:1661). Client persists
@@ -98,8 +100,9 @@ Sentinels (join the smoke gate):
   by aborting the purge or by landing after the commit; it is NEVER annihilated)** (W3-SR-2 R2 amendment) —
   **AND (W3-SR-11) a row landing AFTER commit + signature record is detected by the re-arm check and purged on
   the NEXT cycle (after flush); "lands after commit" is never accepted as steady-state** — **including a
-  LEADER-originated late row (stale modal in the leader tab): the `scheduleSync()` detector locks it
-  before/with the push attempt, even offline or on a rejected push (W3-SR-14)**.
+  LEADER-originated late row (stale modal in the leader tab): the DB-layer `_scopeGuardOnWrite` locks it AT the
+  write, even offline or on a rejected push (W3-SR-14/16), with explicit draft-transfer cases
+  (`addTransferDurable` + `updateTransferDurable`, which bypass `scheduleSync`)**.
 - **S-W3-3** flush fails (offline) → NO purge, privacy lock, signature not advanced, retries; **includes a
   local egress-invalid row that gets durably `_rejected` and stops blocking**.
 - **S-W3-4** `topologyVersion` bump with unchanged StoreIds → flush → wipe → cursor reset, **asserting the
@@ -120,7 +123,8 @@ Sentinels (join the smoke gate):
   just `poll()`: the step cursor (`bob_last_step_sp_id`) is untouched and no step metadata for the quiesced
   store merges, while `push()`/`pushSteps()` still attempt (W3-SR-10 R3 amendment) — **AND (W3-SR-13) the
   lifecycle: hold → normal pull → `pullSteps()` RESUMES; a thrown/errored pull leaves the flag unchanged
-  (fail closed)**.
+  (fail closed)** — **AND (W3-SR-15) a non-hold pull that ABORTS on scope-purge failure keeps steps suppressed
+  (the entry guard also honours `bob_scope_purge_pending`)**.
 Full local gate before hand-off: smoke (240+new), topology-proof 191, saboteur sweep (concurrency 10), static
 gates, change-safety sweep on the touched call-graph (`poll`/`pull`/`push`/`pushSteps`/`_reconcileScope`/
 `purgeToScope` callers). Mock-must-match-server: the pinned pull-echo contract is proven against the REAL LA at
