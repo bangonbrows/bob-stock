@@ -1,10 +1,9 @@
 # OS-W3 SCOPE — Chunk-10 companion: offline flush-before-purge + era-aware re-bootstrap (CLIENT)
 
-**Status:** SCOPE REVIEW R2 FOLDED (2026-07-12) — R1: Codex BLOCK×5 + AGY×3 → W3-SR-1..8; R2: AGY+Codex
-CONVERGED on falsifying the R1 W3-SR-2 mitigation (single-atomic-transaction fix folded) + Codex×2 more
-(W3-SR-9 policyVersion-on-hold, W3-SR-10 steps-pull hold). ALL ground-truthed REAL. Awaiting R3 → build.
-AGY R2 verdict on everything else: "folds 1,3,4,5,6,7,8 are robust… once the single-transaction wrapper is
-adopted, the W3 design is completely locked down and ready for build."
+**Status:** SCOPE REVIEW R3 FOLDED (2026-07-12) — R1: Codex×5 + AGY×3 → W3-SR-1..8; R2: converged TOCTOU
+amendment + Codex×2 → W3-SR-9/10; **R3: AGY PASS (0 findings, "logically impenetrable"); Codex×3 → W3-SR-10
+amended (suppression inside `pullSteps()`), W3-SR-11 (re-armable reconcile — the signature is a cache, never a
+guarantee), W3-SR-12 (hold envelope FORBIDS `maxId`/`scope`)**. ALL ground-truthed REAL. Awaiting R4 → build.
 **Touches:** `sync.js` + `db.js` (**the LIVE sync engine** — first org-chunk wave that edits live-app files).
 Branch `azure-phase-5-8-server`; nothing deploys until the end-of-phase cutover.
 **Spec anchors (converged):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain window),
@@ -40,7 +39,9 @@ staging-apply items — **W3 builds the CLIENT side**, safe with today's LAs AND
 | **W3-SR-7** | Codex-4 | a scalar `bob_topo_ver` misses multi-store era changes (store A at v10, store B bumps 2→3 — a scalar/max stays 10, B never re-bootstraps) | `bob_topo_vers` is a JSON MAP keyed by storeId (`{"boor":3,"karr":10"}`); the reconcile compares PER STORE and wipes exactly the bumped store(s); sentinel: the LOWER-version store changes while the max does not |
 | **W3-SR-8** | Codex-5 | `topologyPending` had no pinned HTTP/envelope contract; the live client returns before JSON on non-ok (sync.js:1642) so a 423-with-body would read as a generic failure; a 200-body mock would pass while the real contract fails | PINNED CONTRACT: the pull LA signals a quiesced store with **HTTP 200** + `{topologyPending:true, items:[], policyVersion:<current>}` — deliberately 200 so TODAY'S deployed clients treat it as a harmless empty pull (no rows served = fail-closed, no cursor damage), and W3 clients show the hold. The client ALSO defensively parses a non-2xx JSON body for the flag (belt-and-braces). S-W3-5 pins both the 200-envelope and the non-2xx defensive path; the staging-apply E2E proves the REAL LA emits it (mock-must-match-server rule) |
 | **W3-SR-9** | Codex R2-2 | the R1 hold envelope OMITTED `policyVersion` — a Director demotion landing while the store is topology-pending gives the client no bump signal (`_reconcilePolicyPurge` only retries an ALREADY-SET pending flag, sync.js:482; it doesn't discover a new policy) → revoked cost visibility persists for the whole hold | the hold envelope CARRIES `policyVersion` (added to the pinned contract above) and the client processes the policyVersion check on hold responses exactly as on normal page-1 pulls (W3-0 ordering); S-W3-7 gains a topology-hold + policyVersion-bump case |
-| **W3-SR-10** | Codex R2-3 | the hold was specified for the LEDGER pull only; `poll()` runs `pullSteps()` right after (sync.js:2198) with its own endpoint + cursor (`bob_last_step_sp_id`, sync.js:2059) → step metadata for the quiesced store could merge and the STEP cursor advance while the ledger is fail-closed | a ledger hold sets a per-cycle `_topologyHold` flag; `poll()`/`_runSyncCycle` SKIP `pullSteps()` while held (both cursors untouched); `push()`/`pushSteps()` still attempt (the drain window). The steps-pull LA's own fail-closed check is spec'd as a staging-apply item (server-side mirror); new sentinel S-W3-10 |
+| **W3-SR-10** | Codex R2-3 → **AMENDED R3** | the hold was specified for the LEDGER pull only; `poll()` runs `pullSteps()` right after (sync.js:2198) with its own endpoint + cursor (`bob_last_step_sp_id`, sync.js:2059) → step metadata for the quiesced store could merge and the STEP cursor advance while the ledger is fail-closed. **R3: gating only `poll()`/`_runSyncCycle` missed `init()`'s first-run path, which calls `pull()` then `pullSteps()` DIRECTLY (sync.js:2279, 2282)** | the suppression lives INSIDE `pullSteps()` itself — an entry guard `if (this._topologyHold) return;` — so EVERY caller (poll, cycle, init, any future sequence) is covered by construction; `push()`/`pushSteps()` still attempt (the drain window). The steps-pull LA's own fail-closed check is spec'd as a staging-apply item; S-W3-10 covers the init/first-run path explicitly |
+| **W3-SR-11** | Codex R3-1 | a follower write serialised AFTER the atomic purge commit + signature record leaves an out-of-scope row on a device that is now "reconciled by signature" — later cycles no-op (sync.js:1885), the push gets rejected, and the row lingers forever (privacy residual, not loss) | the reconcile is RE-ARMABLE: the leader's `local-write` refresh handler (sync.js:957) and every page-1 pull run a cheap out-of-scope check (any row whose store ∉ the recorded `bob_scope_sig` scope, using the same per-table filters); a hit sets `bob_scope_purge_pending` + clears the recorded signature, so the NEXT cycle re-runs the full flush→purge path. The signature is a cache, never a guarantee — detection re-arms reconciliation. S-W3-2 extended: a late row must be purged on the next cycle (after flush), never accepted as steady-state |
+| **W3-SR-12** | Codex R3-2 | the pinned 200 hold envelope wasn't SAFE for today's deployed clients if it carried `maxId`: current clients capture `remote.maxId` (sync.js:1670) and on an empty page ADVANCE the ledger cursor to that ceiling (sync.js:1700) → withheld rows are skipped forever when the hold lifts | the pinned contract now FORBIDS fields: a hold response is EXACTLY `{topologyPending:true, items:[], policyVersion:<current>}` — **no `maxId`, no `scope`** (either would make an old client advance its cursor / run a purge mid-quiesce). S-W3-5 asserts the omissions; the staging-apply E2E asserts the REAL LA omits them (mock-must-match-server) |
 
 ## The design (post-R1)
 
@@ -54,6 +55,9 @@ In `_reconcileScope`, before ANY purge:
 3. On refusal: raise `bob_scope_purge_pending` (existing mechanics, sync.js:1894-1898), do NOT record the new
    signature, retry next cycle. Egress-invalid rows are durably `_rejected` (W3-SR-6) so they can't livelock.
 4. Only a clean atomic walk purges + resets cursors + records the signature.
+5. **The signature is a CACHE, never a guarantee (W3-SR-11):** the `local-write` refresh handler and every
+   page-1 pull run a cheap out-of-scope detection; any hit clears the signature + sets the purge-pending lock
+   so the next cycle re-runs flush→purge. A late follower write can therefore linger at most one cycle.
 
 **W3-2 ERA/TOPOLOGY-VERSION RE-BOOTSTRAP (GAP-2; per W3-SR-3/7).**
 - Pull LA echoes per-store `topologyVersion`s (mirrors the `policyVersion` echo, sync.js:1661). Client persists
@@ -62,11 +66,13 @@ In `_reconcileScope`, before ANY purge:
   even though still in scope, then cursors reset and the new era re-pulls clean.
 - Backward compatible: no echo (today's LA) = no-op.
 
-**W3-3 TOPOLOGY-HOLD HANDLING (GAP-3; per W3-SR-8/9/10).**
-- Pinned envelope: HTTP 200 `{topologyPending:true, items:[], policyVersion:<current>}` (+ defensive non-2xx
-  JSON parse). The client processes `policyVersion` on hold responses exactly as on normal pulls (W3-SR-9).
-- A ledger hold sets `_topologyHold` for the cycle: `pullSteps()` is SKIPPED (both cursors untouched,
-  W3-SR-10); `push()`/`pushSteps()` still attempt (the drain window).
+**W3-3 TOPOLOGY-HOLD HANDLING (GAP-3; per W3-SR-8/9/10/12).**
+- Pinned envelope: HTTP 200, EXACTLY `{topologyPending:true, items:[], policyVersion:<current>}` — **no
+  `maxId`, no `scope`** (W3-SR-12; either would damage today's deployed clients) (+ defensive non-2xx JSON
+  parse). The client processes `policyVersion` on hold responses exactly as on normal pulls (W3-SR-9).
+- A ledger hold sets `_topologyHold`; the skip lives INSIDE `pullSteps()` as an entry guard so every caller —
+  poll, cycle, AND `init()`'s first-run path (sync.js:2279/2282) — is covered by construction (W3-SR-10 R3
+  amendment); `push()`/`pushSteps()` still attempt (the drain window).
 - Client status: calm ("Store update in progress — syncing will resume shortly"), normal poll cadence retries;
   rejections follow the rejected-row path (server quarantines `stale_era` for Director settlement).
 
@@ -83,13 +89,16 @@ Sentinels (join the smoke gate):
   (lock held)** — pushed via the internal drain, then purged.
 - **S-W3-2** `purgeToScopeAtomic` refuses to drop an unsynced row, **with a follower Dexie write landing in
   the old refresh→persist window — proving the single `rw` transaction serialises it (the row survives either
-  by aborting the purge or by landing after the commit; it is NEVER annihilated)** (W3-SR-2 R2 amendment).
+  by aborting the purge or by landing after the commit; it is NEVER annihilated)** (W3-SR-2 R2 amendment) —
+  **AND (W3-SR-11) a row landing AFTER commit + signature record is detected by the re-arm check and purged on
+  the NEXT cycle (after flush); "lands after commit" is never accepted as steady-state**.
 - **S-W3-3** flush fails (offline) → NO purge, privacy lock, signature not advanced, retries; **includes a
   local egress-invalid row that gets durably `_rejected` and stops blocking**.
 - **S-W3-4** `topologyVersion` bump with unchanged StoreIds → flush → wipe → cursor reset, **asserting the
   old-era rows actually left Dexie**.
 - **S-W3-5** `topologyPending` (pinned 200-envelope AND defensive non-2xx body) → calm hold, cursors
-  untouched, push still attempted.
+  untouched, push still attempted — **AND (W3-SR-12) asserts the envelope carries NO `maxId` and NO `scope`
+  (a hold body containing `maxId` must NOT advance the ledger cursor even on a W3 client — defence in depth)**.
 - **S-W3-6** (regression) a normal scope change with nothing pending behaves exactly as today.
 - **S-W3-7** a failed/stuck scope flush does NOT prevent a pending AA policy downgrade from executing
   (`_reconcilePolicyPurge` runs and cost fields drop) — **AND a policyVersion bump arriving on a topology-HOLD
@@ -98,9 +107,10 @@ Sentinels (join the smoke gate):
   re-bootstraps.
 - **S-W3-9** per-table predicates: a synced legacy delivery/stockTake/transfer purges fine; an unsynced
   recordStep blocks the purge.
-- **S-W3-10** during a ledger topology hold, `pullSteps()` does NOT run: the step cursor
-  (`bob_last_step_sp_id`) is untouched and no step metadata for the quiesced store merges, while
-  `push()`/`pushSteps()` still attempt (W3-SR-10).
+- **S-W3-10** during a ledger topology hold, `pullSteps()` does NOT run — enforced by ITS OWN entry guard, and
+  the sentinel exercises the `init()` first-run path (`pull()` → `pullSteps()` direct, sync.js:2279/2282), not
+  just `poll()`: the step cursor (`bob_last_step_sp_id`) is untouched and no step metadata for the quiesced
+  store merges, while `push()`/`pushSteps()` still attempt (W3-SR-10 R3 amendment).
 Full local gate before hand-off: smoke (240+new), topology-proof 191, saboteur sweep (concurrency 10), static
 gates, change-safety sweep on the touched call-graph (`poll`/`pull`/`push`/`pushSteps`/`_reconcileScope`/
 `purgeToScope` callers). Mock-must-match-server: the pinned pull-echo contract is proven against the REAL LA at
