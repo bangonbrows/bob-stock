@@ -960,7 +960,12 @@ const Sync = {
           if (this._isLeader && typeof DB !== 'undefined' && DB.refresh) {
             clearTimeout(this._localWriteDebounce);
             this._localWriteDebounce = setTimeout(() => {
-              DB.refresh().then(() => this.scheduleSync());
+              DB.refresh().then(() => {
+                // OS-W3 (W3-SR-11): a follower write may be out-of-scope vs the recorded signature — re-arm
+                // the reconcile BEFORE scheduling the push (the sig is a cache, never a guarantee).
+                try { if (DB.reArmScopeIfOutOfScope) DB.reArmScopeIfOutOfScope(); } catch (e) {}
+                this.scheduleSync();
+              });
             }, 400);
           }
           break;
@@ -1249,10 +1254,13 @@ const Sync = {
    * Only transactions without _synced=true are sent. After a successful push,
    * they are marked _synced=true in local storage.
    */
-  async push(_isRetry) {
+  async push(_isRetry, _nested) {
     if (this._unauthorized) return;  // Chunk 5 (D6): paused after a 401 until keys change
-    // T3-02: _isRetry flag allows retry to re-enter push() without releasing the lock
-    if (this._syncLock && !_isRetry) {
+    // T3-02: _isRetry flag allows retry to re-enter push() without releasing the lock.
+    // OS-W3 (W3-SR-1): _nested=true = called from INSIDE an already-locked cycle (the flush-before-purge
+    // drain in _reconcileScope, which runs under pull()'s lock). Nested mode NEVER touches the lock and NEVER
+    // schedules a retry timer — the caller owns the lock and the reconcile loop retries next cycle.
+    if (this._syncLock && !_isRetry && !_nested) {
       console.log('[Sync] Sync already in progress, skipping push.');
       return;
     }
@@ -1261,7 +1269,7 @@ const Sync = {
       return;
     }
 
-    this._syncLock = true;
+    if (!_nested) this._syncLock = true;
     this._showStatus('Syncing...', 'info', 0);
 
     try {
@@ -1305,6 +1313,10 @@ const Sync = {
       if (_rejected.length > 0) {
         console.warn(`[Sync] EGRESS: ${_rejected.length} hostile/invalid local row(s) excluded from push (not propagated): ${_rejected.map(t => t.id).join(', ')}`);
         try { if (typeof Diag !== 'undefined') Diag.log('sync', `egress-excluded ${_rejected.length} invalid local rows: ${_rejected.map(t => t.id).join(', ')}`); } catch (e) {}
+        // OS-W3 (W3-SR-6): DURABLY mark egress-excluded rows _rejected — the server will never see them, so
+        // without a durable flag they'd block the scope-purge pending guard forever (livelock, not loss). Same
+        // persistence path as server rejections; they surface in the existing rejected-rows status.
+        try { await DB.markTransactionsRejected(new Map(_rejected.map(t => [t.id, { code: 'EGRESS_INVALID', reason: 'excluded by client egress validation' }]))); } catch (e) { console.warn('[Sync] egress-reject flag failed (will retry next cycle):', e); }
       }
 
       if (unsynced.length === 0) {
@@ -1528,7 +1540,12 @@ const Sync = {
       console.error('[Sync] Push error:', err);
       this._retryCount++;
 
-      if (this._retryCount <= this._maxRetries) {
+      if (_nested) {
+        // OS-W3 (W3-SR-1): nested drain never schedules a retry timer — mark pending; the reconcile
+        // loop (or the next cycle) retries. The caller owns the lock.
+        Sync._setPending(true);
+        this._retryCount = 0;
+      } else if (this._retryCount <= this._maxRetries) {
         this._showStatus(`Sync failed, retrying (${this._retryCount}/${this._maxRetries})...`, 'warning');
         const delay = 2000 * this._retryCount;
         // T3-02: Keep lock held during retry delay — call push(true) to skip lock check
@@ -1543,11 +1560,13 @@ const Sync = {
         this._retryCount = 0;
       }
     } finally {
-      if (!this._skipLockRelease) {
-        this._syncLock = false;
-        this._drainSyncQueue();  // Wave L2r1 (GPT P2): run a manual/reconnect cycle that collided with this raw push
+      if (!_nested) {
+        if (!this._skipLockRelease) {
+          this._syncLock = false;
+          this._drainSyncQueue();  // Wave L2r1 (GPT P2): run a manual/reconnect cycle that collided with this raw push
+        }
+        this._skipLockRelease = false;
       }
-      this._skipLockRelease = false;
     }
   },
 
@@ -1648,15 +1667,12 @@ const Sync = {
         const remote = await resp.json();
         const items = (remote && Array.isArray(remote.items)) ? remote.items : [];
 
-        // Chunk 10 (store isolation): the server echoes this device's effective store scope. If it changed
-        // since last sync, purge out-of-scope local rows and re-bootstrap from a clean cursor (D10-3), then
-        // abort this cycle — the next pull re-fetches the in-scope set from scratch. Runs once, on page 1.
+        // Chunk 10 (store isolation) + OS-W3: page-1 reconciliation, in a PINNED ORDER (W3-SR-4/9: the AA
+        // policy checks run FIRST and unconditionally — no scope purge, topology hold, or abort may starve a
+        // cost-visibility downgrade; the hold envelope carries policyVersion precisely so this works mid-hold).
         if (!scopeChecked) {
           scopeChecked = true;
-          if (await this._reconcileScope(remote.scope)) return;
-          // AA-W3 (SR-4): the server also echoes the current access_policy version. A bump we haven't
-          // adopted yet forces a config re-fetch NOW (which adopts + runs the narrowing purge) instead of
-          // waiting for the next app launch.
+          // 1) AA policy (W3-0): version bump → config re-fetch NOW; stuck cost purge retried every pull.
           try {
             const pv = Number(remote.policyVersion);
             if (Number.isFinite(pv) && pv > 0 && typeof Auth !== 'undefined' && pv > ((DB.get().accessPolicy && Number(DB.get().accessPolicy.version)) || 0)) {
@@ -1664,6 +1680,20 @@ const Sync = {
             }
           } catch (e) {}
           this._reconcilePolicyPurge().catch(() => {});   // AA-05: retry a stuck cost purge every pull, version-independent
+          // 2) Topology hold (OS-SR-1 / W3-SR-8/12/13): a quiesced store's pull is HTTP 200
+          //    {topologyPending:true, items:[], policyVersion} — no maxId, no scope. Show a calm hold, leave
+          //    EVERY cursor untouched, and set _topologyHold (suppresses pullSteps; pushes still drain).
+          if (remote.topologyPending === true) {
+            this._topologyHold = true;
+            this._showStatus('Store update in progress — syncing will resume shortly', 'info', 0);
+            console.log('[Sync] topology hold — ledger pull deferred, cursors untouched.');
+            return;
+          }
+          // 3) Store scope + per-store topology versions (D10-3 + W3-2). Abort on change/failure — the next
+          //    pull re-bootstraps. _topologyHold clears ONLY here: a non-hold page-1 that COMPLETES scope
+          //    reconciliation without abort (W3-SR-13/15).
+          if (await this._reconcileScope(remote.scope, remote.topologyVersions)) return;
+          this._topologyHold = false;
         }
 
         // C1: capture the frozen ceiling from the first page response
@@ -1878,22 +1908,49 @@ const Sync = {
   // narrowed, or scope enforcement just switched on). Purge those rows and reset the pull cursor so the
   // in-scope set re-pulls cleanly. Returns true if the caller should ABORT this cycle (scope changed).
   // Returns false when the server sent no scope (older LA — backward compatible) or the scope is unchanged.
-  async _reconcileScope(scopeArr) {
-    if (!Array.isArray(scopeArr)) return false;               // server didn't echo scope — no-op
+  async _reconcileScope(scopeArr, topoVersEcho) {
+    if (!Array.isArray(scopeArr)) return false;               // server didn't echo scope — no-op (older LA; the
+                                                              // topologyVersions echo is pinned to ARRIVE WITH scope)
+    // OS-W3 W3-SR-7: per-store topology (era) versions — a bumped store re-bootstraps EVEN IF the StoreIds
+    // signature is unchanged (a POS keeps ['boor'] across convert/buyback but must drop the old era's data).
+    const topoWipe = [];
+    let newTopoVers = null;
+    if (topoVersEcho && typeof topoVersEcho === 'object' && !Array.isArray(topoVersEcho)) {
+      let prevTopo = {};
+      try { prevTopo = JSON.parse(localStorage.getItem('bob_topo_vers') || '{}') || {}; } catch (e) { prevTopo = {}; }
+      for (const sid of Object.keys(topoVersEcho)) {
+        const nv = Number(topoVersEcho[sid]);
+        if (!Number.isFinite(nv)) continue;
+        const pv = Number(prevTopo[sid]);
+        if (Number.isFinite(pv) && nv > pv) topoWipe.push(sid);   // era bumped → wipe that store (W3-SR-3)
+      }
+      newTopoVers = topoVersEcho;
+    }
     const sig = JSON.stringify([...scopeArr].sort());
     let prev = null; try { prev = localStorage.getItem('bob_scope_sig'); } catch (e) {}
-    if (sig === prev) return false;                            // scope unchanged — normal pull continues
+    const sigChanged = sig !== prev;
+    // W3-SR-11/14: the signature is a CACHE, never a guarantee — even unchanged, a late out-of-scope row
+    // (follower or leader write that landed after the last purge) re-arms reconciliation here.
+    const lateRows = !sigChanged && !scopeArr.includes('*')
+      && typeof DB !== 'undefined' && DB.hasOutOfScopeRows && DB.hasOutOfScopeRows(scopeArr);
+    if (!sigChanged && topoWipe.length === 0 && !lateRows) return false;   // steady state — normal pull continues
 
-    // Scope changed (or first-ever sync). '*' = full access → nothing to purge, just record the signature.
-    if (!scopeArr.includes('*')) {
-      const ok = await DB.purgeToScope(scopeArr);
+    // OS-SR-5 / W3-SR-1: FLUSH BEFORE PURGE — drain pending rows via the lock-aware internal drain (we are
+    // under pull()'s _syncLock). Best-effort; purgeToScopeAtomic independently refuses if anything pending
+    // would drop, so a failed/offline flush fails CLOSED below.
+    await this._drainPendingLocked();
+
+    const needPurge = !scopeArr.includes('*') || topoWipe.length > 0;
+    if (needPurge) {
+      // W3-SR-2 (R2 amendment): ONE atomic Dexie rw transaction — disk read, per-table pending predicates,
+      // abort-by-throw, clear+bulkPut. Refuses (false) if any un-pushed row would drop.
+      const ok = await DB.purgeToScopeAtomic(scopeArr, { wipeStores: topoWipe });
       if (!ok) {
-        // durable purge failed — the device may still hold out-of-scope rows. FAIL CLOSED: raise a privacy lock
-        // (blocks backup export, warns) and do NOT record the new sig, so every later cycle re-attempts the purge
-        // until it durably succeeds (audit GPT#4).
+        // FAIL CLOSED: raise the privacy lock (blocks backup export, warns), do NOT record the new sig/versions,
+        // so every later cycle re-attempts flush→purge until it durably succeeds (audit GPT#4 + OS-SR-5).
         this._scopePurgePending = true;
         try { localStorage.setItem('bob_scope_purge_pending', '1'); } catch (e) {}
-        console.error('[Sync] scope purge failed — privacy lock raised, will retry every cycle.');
+        console.error('[Sync] scope purge failed/refused — privacy lock raised, will retry every cycle.');
         this._showStatus('Finishing a store-scope update — some actions are paused until it completes', 'warning', 0);
         return true;
       }
@@ -1910,7 +1967,8 @@ const Sync = {
     try { localStorage.setItem('bob_last_sp_id', '0'); } catch (e) {}
     try { localStorage.setItem('bob_last_step_sp_id', '0'); } catch (e) {}
     try { localStorage.setItem('bob_scope_sig', sig); } catch (e) {}
-    console.log('[Sync] store scope changed → purged out-of-scope data + cursor reset. New scope:', sig);
+    if (newTopoVers) { try { localStorage.setItem('bob_topo_vers', JSON.stringify(newTopoVers)); } catch (e) {} }
+    console.log('[Sync] scope/era reconciled → flushed, purged, cursors reset. scope=' + sig + (topoWipe.length ? ' wiped=' + topoWipe.join(',') : '') + (lateRows ? ' (late-row re-arm)' : ''));
     return true;                                               // abort this cycle; next pull re-bootstraps
   },
 
@@ -1920,11 +1978,13 @@ const Sync = {
   // to push ONLY once ALL its ledger rows are confirmed _synced — so the record can never claim a stock
   // effect (e.g. "received") before the stock itself has landed. The cycle runs ledger push FIRST, then
   // pushSteps (see _runSyncCycle / scheduleSync / poll), which is what makes the ordering hold.
-  async pushSteps() {
+  async pushSteps(_nested) {
     if (!this._stepsPushUrl) return;                 // steps sync disabled (pre-Chunk-4 config) — graceful no-op
     if (typeof Records === 'undefined') return;
-    if (this._syncLock) { console.log('[Sync] Sync in progress, skipping pushSteps.'); return; }
-    this._syncLock = true;
+    // OS-W3 (W3-SR-1): _nested=true = called from inside an already-locked cycle (the reconcile drain);
+    // nested mode never touches the lock (the caller owns it).
+    if (this._syncLock && !_nested) { console.log('[Sync] Sync in progress, skipping pushSteps.'); return; }
+    if (!_nested) this._syncLock = true;
     try {
       if (typeof DB !== 'undefined' && DB.refresh) await DB.refresh();
       const data = DB.get();
@@ -1993,15 +2053,35 @@ const Sync = {
       console.log('[Sync] Steps push: ' + landed.size + ' synced, ' + rejRows.length + ' rejected, ' + failRows.length + ' failed, ' + unaccounted + ' unaccounted, ' + held.length + ' held.');
     } catch (err) {
       console.error('[Sync] pushSteps error:', err);
-      Sync._setStepPending(true); this._scheduleSyncRetry();
+      Sync._setStepPending(true);
+      if (!_nested) this._scheduleSyncRetry();       // OS-W3 (W3-SR-1): nested drain retries via the reconcile loop, not a timer
     } finally {
-      this._syncLock = false;
-      this._drainSyncQueue();
+      if (!_nested) {
+        this._syncLock = false;
+        this._drainSyncQueue();
+      }
     }
+  },
+
+  // OS-W3 (W3-SR-1): the lock-aware internal drain used by _reconcileScope's flush-before-purge. Runs the
+  // real push bodies RE-ENTRANTLY under the caller's already-held _syncLock (nested mode: no lock churn, no
+  // retry timers). Ledger first, then steps (R1 ordering preserved). Best-effort — the caller re-checks
+  // pending state afterwards and fails closed if anything is still unsynced.
+  async _drainPendingLocked() {
+    try { await this.push(false, true); } catch (e) { console.warn('[Sync] drain push failed:', e); }
+    try { await this.pushSteps(true); } catch (e) { console.warn('[Sync] drain pushSteps failed:', e); }
   },
 
   async pullSteps() {
     if (!this._stepsPullUrl) return;                 // steps sync disabled — graceful no-op
+    // OS-W3 (W3-SR-10/13/15): steps must NEVER advance while the ledger is held or unreconciled. The guard
+    // lives HERE (not at call sites) so every caller — poll, _runSyncCycle, init()'s first-run direct path,
+    // and any future sequence — is covered by construction. _topologyHold clears only when a non-hold page-1
+    // pull COMPLETES scope reconciliation (see pull()); a pending scope purge independently suppresses.
+    if (this._topologyHold) { console.log('[Sync] topology hold — skipping pullSteps.'); return; }
+    if (this._scopePurgePending || (() => { try { return localStorage.getItem('bob_scope_purge_pending') === '1'; } catch (e) { return false; } })()) {
+      console.log('[Sync] scope purge pending — skipping pullSteps.'); return;
+    }
     if (typeof Records === 'undefined') return;
     if (this._syncLock) { console.log('[Sync] Sync in progress, skipping pullSteps.'); return; }
     this._syncLock = true;
@@ -2113,6 +2193,10 @@ const Sync = {
    */
   scheduleSync() {
     Sync._setPending(true);
+    // OS-W3 (W3-SR-14, defence-in-depth): every durable write funnels here or through the DB-layer
+    // _scopeGuardOnWrite — either detector re-arms the purge lock the moment an out-of-scope row exists,
+    // regardless of push outcome or connectivity.
+    try { if (typeof DB !== 'undefined' && DB.reArmScopeIfOutOfScope) DB.reArmScopeIfOutOfScope(); } catch (e) {}
     if (!this._isLeader) {
       // Follower tab — notify leader so it refreshes cache and pushes
       if (this._bc) {

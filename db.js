@@ -378,34 +378,133 @@ const DB = {
    * an out-of-scope store stays visible — mirrors the server's either-end read rule.
    * AWAITABLE — returns true only when the pared-down dataset is durably persisted.
    */
-  async purgeToScope(scopeArr) {
-    if (!this._cache) return false;
+  async purgeToScope(scopeArr) { return this.purgeToScopeAtomic(scopeArr, {}); },   // OS-W3: legacy entry delegates to the atomic path (defence in depth for any caller)
+
+  /**
+   * OS-W3 (W3-SR-2 R2 amendment + W3-SR-3/5): the ATOMIC scope purge. Disk READ, per-table pending-predicate
+   * evaluation, and the clear+bulkPut rewrite all run inside ONE Dexie `rw` transaction, so the native
+   * IndexedDB lock excludes follower-tab writes for the whole read→diff→write critical section (the R1
+   * refresh→persist sequence had an annihilation window between its two separate transactions).
+   *
+   * opts.wipeStores (W3-SR-3): stores to drop EVEN THOUGH still in scope — an ownership-era bump re-pulls the
+   * store onto a clean slate (a POS keeps ['boor'] across convert/buyback; the plain scope filter would keep
+   * everything and leak the prior owner's local history).
+   *
+   * REFUSES (returns false, disk untouched) if any row it would drop is still un-pushed: per-table predicates
+   * (W3-SR-5) — transactions/recordSteps carry `_synced`/`_rejected` and are checked PER ROW; the unflagged
+   * tables (stockTakes/deliveries/thresholds/transfers/deletedTransactions) are derived metadata whose durable
+   * representation is the ledger + steps, droppable once no flagged dropped row is pending. Callers flush
+   * first (Sync._drainPendingLocked) — this guard is the belt-and-braces invariant, so even a future caller
+   * that forgets the flush cannot lose data. costHistory is product-level (Chunk-6) — never touched.
+   */
+  async purgeToScopeAtomic(scopeArr, opts) {
     const scope = Array.isArray(scopeArr) ? scopeArr : [];
-    if (scope.includes('*')) return true;                       // sees all — nothing to purge
+    const wipe = new Set(((opts && Array.isArray(opts.wipeStores)) ? opts.wipeStores : []).filter(s => s != null));
+    const seesAll = scope.includes('*');
+    if (seesAll && wipe.size === 0) return true;                // sees all, nothing era-wiped — no purge
     const allow = new Set(scope);
-    const inScope = (v) => v != null && allow.has(v);
-    const c = this._cache;
-    const before = (c.transactions || []).length;
-    // Audit fix (GPT#4): build a FILTERED COPY and persist it durably BEFORE swapping the live cache — a persist
-    // failure must not leave the in-memory cache pared down while disk still holds the out-of-scope rows (which
-    // would then reappear on the next reload). On failure the cache is untouched and the caller keeps the device
-    // unreconciled (Sync._reconcileScope holds the scope-purge-pending lock until a durable purge succeeds).
-    const nd = Object.assign({}, c);
-    nd.transactions        = (c.transactions || []).filter(t => inScope(t && t.storeId));
-    nd.deletedTransactions = (c.deletedTransactions || []).filter(t => inScope(t && t.storeId));
-    nd.stockTakes          = (c.stockTakes || []).filter(t => inScope(t && t.storeId));
-    nd.deliveries          = (c.deliveries || []).filter(t => inScope(t && t.storeId));
-    nd.thresholds          = (c.thresholds || []).filter(t => inScope(t && t.storeId));
-    // two-ended rows: keep if EITHER end is in scope (incoming transfers stay receivable)
-    nd.transfers   = (c.transfers || []).filter(t => t && (inScope(t.fromStoreId) || inScope(t.toStoreId)));
-    nd.recordSteps = (c.recordSteps || []).filter(s => s && (inScope(s.ownerStoreId) || inScope(s.fromStoreId) || inScope(s.toStoreId)));
-    // costHistory is product-level corporate cost (Chunk-6 gated), not per-store movement — left intact.
-    const ok = await _persistAllToDexie(nd);                    // durable FIRST
-    if (!ok) { console.error('[DB] purgeToScope: durable persist FAILED — cache left intact, device stays unreconciled'); return false; }
-    this._cache = nd;                                           // swap ONLY after disk is written
-    if (typeof Stock !== 'undefined' && Stock._buildCache) Stock._buildCache();
-    console.log(`[DB] purgeToScope(${JSON.stringify(scope)}): transactions ${before} -> ${(nd.transactions || []).length}, durable=true`);
+    const keep = (v) => v != null && !wipe.has(v) && (seesAll || allow.has(v));
+    const counts = { before: 0, after: 0 };
+    _pendingWrites++;
+    try {
+      await bobDB.transaction('rw',
+        bobDB.transactions, bobDB.deletedTransactions, bobDB.stockTakes,
+        bobDB.deliveries, bobDB.thresholds, bobDB.transfers, bobDB.recordSteps,
+        async () => {
+          // 1) READ the definitive DISK state inside the transaction (never the in-memory cache)
+          const [txns, delTxns, takes, delivs, thrs, trans, steps] = await Promise.all([
+            bobDB.transactions.toArray(), bobDB.deletedTransactions.toArray(), bobDB.stockTakes.toArray(),
+            bobDB.deliveries.toArray(), bobDB.thresholds.toArray(), bobDB.transfers.toArray(), bobDB.recordSteps.toArray(),
+          ]);
+          const keepTxn  = (t) => !!t && keep(t.storeId);
+          // two/three-ended rows: keep if ANY end is in the kept set (incoming transfers stay receivable)
+          const keepTwo  = (t) => !!t && (keep(t.fromStoreId) || keep(t.toStoreId));
+          const keepStep = (s) => !!s && (keep(s.ownerStoreId) || keep(s.fromStoreId) || keep(s.toStoreId));
+          // 2) PENDING PREDICATES on the EXACT rows being dropped — abort-by-throw leaves disk pristine
+          const pendTxn  = txns.filter(t => t && !keepTxn(t) && !t._synced && !t._rejected);
+          const pendStep = steps.filter(s => s && !keepStep(s) && !s._synced && !s._rejected);
+          if (pendTxn.length || pendStep.length) {
+            console.warn(`[DB] purgeToScopeAtomic REFUSED: ${pendTxn.length} unsynced txn(s) + ${pendStep.length} unsynced step(s) would drop — flush first (fail closed).`);
+            throw new Error('SCOPE_PURGE_PENDING_ROWS');
+          }
+          // 3) CLEAR + BULKPUT the filtered rows — same transaction, no interleaving window
+          const ntx = txns.filter(keepTxn);
+          counts.before = txns.length; counts.after = ntx.length;
+          const put = (tbl, rows) => tbl.clear().then(() => rows.length ? tbl.bulkPut(rows) : null);
+          await Promise.all([
+            put(bobDB.transactions, ntx),
+            put(bobDB.deletedTransactions, delTxns.filter(keepTxn)),
+            put(bobDB.stockTakes, takes.filter(keepTxn)),
+            put(bobDB.deliveries, delivs.filter(keepTxn)),
+            put(bobDB.thresholds, thrs.filter(keepTxn)),
+            put(bobDB.transfers, trans.filter(keepTwo)),
+            put(bobDB.recordSteps, steps.filter(keepStep)),
+          ]);
+        });
+    } catch (e) {
+      const refused = e && e.message === 'SCOPE_PURGE_PENDING_ROWS';
+      console.error('[DB] purgeToScopeAtomic ' + (refused ? 'refused (pending rows) — device stays unreconciled' : 'FAILED: ' + e));
+      _pendingWrites--;
+      return false;
+    }
+    _pendingWrites--;
+    // 4) reload the in-memory cache from the COMMITTED disk state (never swap a pre-built copy)
+    try { await this.refresh(); } catch (e) { console.warn('[DB] post-purge refresh failed (disk is authoritative):', e); }
+    console.log(`[DB] purgeToScopeAtomic(${JSON.stringify(scope)}${wipe.size ? ' wipe=' + [...wipe].join(',') : ''}): transactions ${counts.before} -> ${counts.after}, durable=true`);
     return true;
+  },
+
+  // ─── OS-W3 (W3-SR-11/14/16): the out-of-scope write guard — "the signature is a cache, never a guarantee" ──
+  // Reads the recorded scope signature; null = no scope recorded yet or full access ('*') = nothing to guard.
+  _recordedScopeSet() {
+    try {
+      const raw = localStorage.getItem('bob_scope_sig');
+      if (!raw) return null;
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr) || arr.includes('*')) return null;
+      return new Set(arr);
+    } catch (e) { return null; }
+  },
+  // Cheap cache-based detection: any per-store row outside `scopeArr`? (either-end rule for transfers/steps)
+  hasOutOfScopeRows(scopeArr) {
+    const c = this._cache; if (!c) return false;
+    const allow = new Set(Array.isArray(scopeArr) ? scopeArr : []);
+    if (allow.has('*')) return false;
+    const inS = (v) => v != null && allow.has(v);
+    const outOne = (t) => t && t.storeId != null && !inS(t.storeId);
+    return (c.transactions || []).some(outOne)
+      || (c.stockTakes || []).some(outOne)
+      || (c.deliveries || []).some(outOne)
+      || (c.transfers || []).some(t => t && (t.fromStoreId != null || t.toStoreId != null) && !inS(t.fromStoreId) && !inS(t.toStoreId))
+      || (c.recordSteps || []).some(s => s && (s.ownerStoreId != null || s.fromStoreId != null || s.toStoreId != null) && !inS(s.ownerStoreId) && !inS(s.fromStoreId) && !inS(s.toStoreId));
+  },
+  // Re-arm: if the cache holds any row outside the RECORDED scope, clear the signature + raise the purge lock
+  // so the next cycle re-runs flush→purge. Called from scheduleSync (defence in depth), the leader's
+  // local-write refresh, and page-1 pulls (via Sync._reconcileScope's lateRows check).
+  reArmScopeIfOutOfScope() {
+    const rec = this._recordedScopeSet();
+    if (!rec) return false;
+    if (!this.hasOutOfScopeRows([...rec])) return false;
+    try { localStorage.setItem('bob_scope_purge_pending', '1'); localStorage.removeItem('bob_scope_sig'); } catch (e) {}
+    try { if (typeof Sync !== 'undefined') Sync._scopePurgePending = true; } catch (e) {}
+    console.warn('[DB] out-of-scope row detected post-reconcile — purge re-armed (W3-SR-11).');
+    return true;
+  },
+  // W3-SR-16: the DB-LAYER write guard — invoked SYNCHRONOUSLY by every durable writer with the store id(s)
+  // the write touches (either-end rule: any recorded-in-scope id = in scope). A stale-UI write to a departed
+  // store locks the device AT the write, regardless of scheduleSync coverage, push outcome, or connectivity.
+  _scopeGuardOnWrite(storeIds) {
+    try {
+      const rec = this._recordedScopeSet();
+      if (!rec) return;
+      const ids = (Array.isArray(storeIds) ? storeIds : [storeIds]).filter(v => v != null);
+      if (ids.length === 0) return;
+      if (ids.some(v => rec.has(v))) return;
+      localStorage.setItem('bob_scope_purge_pending', '1');
+      localStorage.removeItem('bob_scope_sig');
+      try { if (typeof Sync !== 'undefined') Sync._scopePurgePending = true; } catch (e) {}
+      console.warn('[DB] durable write outside recorded scope — purge re-armed at the write (W3-SR-16).');
+    } catch (e) {}
   },
 
   /**
@@ -532,6 +631,7 @@ const DB = {
     if (!this._cache) return false;
     if (!this._cache.recordSteps) this._cache.recordSteps = [];
     if (step && this._cache.recordSteps.some(s => s.stepId === step.stepId)) return true;  // dedupe by stepId
+    if (step) this._scopeGuardOnWrite([step.ownerStoreId, step.fromStoreId, step.toStoreId]);   // OS-W3 (W3-SR-16)
     this._cache.recordSteps.push(step);
     const ok = await _appendRecord('recordSteps', step);
     if (!ok) this._cache.recordSteps = this._cache.recordSteps.filter(s => s !== step);
@@ -548,6 +648,7 @@ const DB = {
     const _seen = new Set(this._cache.recordSteps.map(s => s.stepId));
     steps = steps.filter(s => { if (!s || _seen.has(s.stepId)) return false; _seen.add(s.stepId); return true; });
     if (steps.length === 0) return true;
+    if (!(opts && opts.remote)) for (const s of steps) this._scopeGuardOnWrite([s.ownerStoreId, s.fromStoreId, s.toStoreId]);   // OS-W3 (W3-SR-16), per row
     this._cache.recordSteps.push(...steps);
     const ok = await _appendRecords('recordSteps', steps);
     if (!ok) {
@@ -951,6 +1052,7 @@ const DB = {
   async addTransactionDurable(txn) {
     if (!this._cache) return false;
     if (txn && this._cache.transactions.some(t => t.id === txn.id)) return true; // MFL-023 dedupe
+    if (txn) this._scopeGuardOnWrite(txn.storeId);   // OS-W3 (W3-SR-16): lock at the write if out-of-scope
     this._cache.transactions.push(txn);
     if (typeof Stock !== 'undefined' && Stock._applyDelta) {
       Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
@@ -969,6 +1071,7 @@ const DB = {
     const _seen = new Set(this._cache.transactions.map(t => t.id));
     txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // MFL-023/DA-1: dedupe vs cache AND within the batch (running set)
     if (txns.length === 0) return true;
+    if (!(opts && opts.remote)) for (const t of txns) this._scopeGuardOnWrite(t && t.storeId);   // OS-W3 (W3-SR-16), PER ROW (the either-end rule is per-row, never per-batch); remote pull-merge rows are server-scoped already
     this._cache.transactions.push(...txns);
     if (typeof Stock !== 'undefined' && Stock._applyDelta) {
       for (const txn of txns) Stock._applyDelta(txn.storeId, txn.productId, txn.type, txn.qty);
@@ -1009,6 +1112,7 @@ const DB = {
   async addTransferDurable(transfer) {
     if (!this._cache) return false;
     if (!this._cache.transfers) this._cache.transfers = [];
+    if (transfer) this._scopeGuardOnWrite([transfer.fromStoreId, transfer.toStoreId]);   // OS-W3 (W3-SR-16): draft transfers bypass scheduleSync — guard lives here
     this._cache.transfers.push(transfer);
     const ok = await _appendRecord('transfers', transfer);
     if (!ok) this._cache.transfers = this._cache.transfers.filter(t => t !== transfer);
@@ -1017,6 +1121,7 @@ const DB = {
 
   async updateTransferDurable(transfer, transferSnapshot) {
     if (!this._cache) return false;
+    if (transfer) this._scopeGuardOnWrite([transfer.fromStoreId, transfer.toStoreId]);   // OS-W3 (W3-SR-16)
     const ok = await _appendRecord('transfers', transfer);
     if (!ok && transferSnapshot) {
       // Restore the transfer object to its pre-mutation state
@@ -1033,6 +1138,7 @@ const DB = {
     // Wave I (Tier 2 / I-6): build the tombstone, then delete + put it in ONE Dexie transaction —
     // atomic (both or neither). skipTombstone = applying a remote tombstone → write neither.
     const ts = (options && options.skipTombstone) ? null : this._makeTombstone(original, txnId, options);
+    if (ts) this._scopeGuardOnWrite(ts.storeId != null ? ts.storeId : original.storeId);   // OS-W3 (W3-SR-16): a tombstone is a durable unsynced write too
     this._cache.transactions = this._cache.transactions.filter(t => t.id !== txnId);
     if (ts) this._cache.transactions.push(ts);
     // Rebuild from the ledger (avoids the move_out reverse-delta hazard, MFL-006)
@@ -1063,6 +1169,9 @@ const DB = {
 
   async atomicTransferWriteDurable(transactions, transfer, transferSnapshot) {
     if (!this._cache) return false;
+    // OS-W3 (W3-SR-16): guard every row being written (per-row for txns; either-end for the transfer)
+    if (transactions) for (const t of transactions) { if (t) this._scopeGuardOnWrite(t.storeId); }
+    if (transfer) this._scopeGuardOnWrite([transfer.fromStoreId, transfer.toStoreId]);
     if (transactions && transactions.length > 0) {
       const _seen = new Set(this._cache.transactions.map(t => t.id));
       transactions = transactions.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // DA-1/CONV-2: dedupe vs cache + within batch
@@ -1102,6 +1211,7 @@ const DB = {
   async atomicDeliveryWrite(txns) {
     // A-F1: a delivery is ALL-OR-NOTHING across transactions + deliveries + costHistory + products
     if (!this._cache) return false;
+    if (txns) for (const t of txns) { if (t) this._scopeGuardOnWrite(t.storeId); }   // OS-W3 (W3-SR-16), per row
     if (txns && txns.length > 0) {
       const _seen = new Set(this._cache.transactions.map(t => t.id));
       txns = txns.filter(t => { if (!t || _seen.has(t.id)) return false; _seen.add(t.id); return true; });  // DA-1/CONV-2: dedupe vs cache + within batch

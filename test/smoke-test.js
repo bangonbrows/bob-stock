@@ -1769,8 +1769,12 @@ async function runSmoke(repo) {
     { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
       const r = await page.evaluate(async () => {
         const d = DB.get();
-        d.transactions = [ { id:'t1', storeId:'karrinyup', productId:'P1', type:'in', qty:1 }, { id:'t2', storeId:'whitford', productId:'P1', type:'in', qty:1 }, { id:'t3', storeId:'ardross', productId:'P1', type:'in', qty:1 } ];
+        // OS-W3: the purge now reads DISK inside one atomic transaction (W3-SR-2) — seed durably, as SYNCED
+        // history (an unsynced seed would correctly REFUSE the purge; that case is S-258's job).
+        d.transactions = [ { id:'t1', storeId:'karrinyup', productId:'P1', type:'in', qty:1, _synced:true }, { id:'t2', storeId:'whitford', productId:'P1', type:'in', qty:1, _synced:true }, { id:'t3', storeId:'ardross', productId:'P1', type:'in', qty:1, _synced:true } ];
         d.transfers = [ { id:'tr1', fromStoreId:'karrinyup', toStoreId:'ardross' }, { id:'tr2', fromStoreId:'whitford', toStoreId:'ardross' } ];
+        await bobDB.transactions.clear(); await bobDB.transactions.bulkPut(d.transactions);
+        await bobDB.transfers.clear(); await bobDB.transfers.bulkPut(d.transfers);
         const ok = await DB.purgeToScope(['karrinyup']);
         const dd = DB.get();
         return { ok, stores: dd.transactions.map(t => t.storeId).sort(), transfers: dd.transfers.map(t => t.id).sort() };
@@ -1782,10 +1786,12 @@ async function runSmoke(repo) {
     { const { ctx, page } = await newPage(b); await waitBoot(page, repo); await setup(page);
       const r = await page.evaluate(async () => {
         try { localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup', 'whitford'])); } catch(e){}
-        const d = DB.get(); d.transactions = [ { id:'a', storeId:'karrinyup', productId:'P1', type:'in', qty:1 }, { id:'b', storeId:'whitford', productId:'P1', type:'in', qty:1 } ];
+        // OS-W3: seed DURABLY as synced history — the atomic purge reads disk (W3-SR-2)
+        const d = DB.get(); d.transactions = [ { id:'a', storeId:'karrinyup', productId:'P1', type:'in', qty:1, _synced:true }, { id:'b', storeId:'whitford', productId:'P1', type:'in', qty:1, _synced:true } ];
+        await bobDB.transactions.clear(); await bobDB.transactions.bulkPut(d.transactions);
         Sync._lastSyncId = 500; Sync._lastStepSyncId = 300;
         const changed = await Sync._reconcileScope(['karrinyup']);
-        const purged = DB.get().transactions.every(t => t.storeId === 'karrinyup');
+        const purged = DB.get().transactions.length === 1 && DB.get().transactions.every(t => t.storeId === 'karrinyup');   // OS-W3: assert the KEPT row is present (not vacuous)
         const unchanged = await Sync._reconcileScope(['karrinyup']);
         const star = await Sync._reconcileScope(['*']);
         let sig = null; try { sig = localStorage.getItem('bob_scope_sig'); } catch(e){}
@@ -2182,6 +2188,215 @@ async function runSmoke(repo) {
         return { before, clearedTemp: afterTemp === null, clearedGrant: afterGrant === null, survives };
       }, s);
       rec('S-249', 'AA-20: PIN epoch bump drops the local unlock; unrelated edit keeps it', r.before === true && r.clearedTemp === true && r.clearedGrant === true && r.survives === true, `before=${r.before} clearedTemp=${r.clearedTemp} clearedGrant=${r.clearedGrant} survives=${r.survives} (clean: all true)`); await ctx.close(); }
+
+    // ═══ OS-W3 sentinels (S-250..S-259 = S-W3-1..10): offline flush-before-purge + era re-bootstrap + hold ═══
+    // Each block uses its own context (fresh IndexedDB/localStorage). Endpoints use distinct hostnames so the
+    // Node-side route handlers can capture per-endpoint traffic (push bodies, steps-pull hits) for ordering
+    // assertions. A generic logic.azure.com catch-all absorbs boot-time calls (registered FIRST = matched LAST).
+
+    // S-250 (S-W3-1): pending offline row for an out-of-scope store SURVIVES a scope change on the REAL poll
+    // path (pull holds _syncLock) — pushed via the lock-aware drain, THEN purged. The old code lost it.
+    { const { ctx, page } = await newPage(b); const pushBodies = [];
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3push.test**', r => { const b2 = JSON.parse(r.request().postData() || '{}'); pushBodies.push(b2); const ids = ((b2.data && b2.data.transactions) || []).map(t => t.TransactionId); r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: ids, duplicates: [], rejected: [], failed: [] }) }); });
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 5, scope: ['karrinyup'] }) }));
+      await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        // NB: the departing store must EXIST in the shared catalogue (a real store leaving THIS DEVICE's
+        // scope) — a fictional id would be egress-invalid and durably rejected, which is a DIFFERENT case (S-252).
+        const txn = { id: 'sw3_pending_1', date: UI.todayLocal(), storeId: 'whitford', productId: DB.get().products[0].id, type: 'out', qty: 1, staffName: 'T', _synced: false };
+        await DB.addTransactionDurable(txn);                                   // seeded BEFORE the sig is recorded
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['whitford', 'karrinyup'].sort()));
+        localStorage.removeItem('bob_scope_purge_pending');
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = 'https://sw3push.test/x'; Sync._stepsPullUrl = null; Sync._stepsPushUrl = null;
+        Sync._lastSyncId = 5;
+        await Sync.poll();
+        const gone = !DB.get().transactions.some(t => t.id === 'sw3_pending_1');
+        return { gone, sig: localStorage.getItem('bob_scope_sig'), cursor: localStorage.getItem('bob_last_sp_id'), pendingLock: localStorage.getItem('bob_scope_purge_pending') };
+      }, s);
+      const pushedIt = pushBodies.some(b2 => ((b2.data && b2.data.transactions) || []).some(t => t.TransactionId === 'sw3_pending_1'));
+      rec('S-250', 'W3-1: offline row for a departing store is PUSHED (locked drain) then purged on the poll path', pushedIt === true && r.gone === true && r.sig === JSON.stringify(['karrinyup']) && r.cursor === '0' && r.pendingLock !== '1', `pushed=${pushedIt} purged=${r.gone} sig=${r.sig} cursor=${r.cursor} lock=${r.pendingLock} (clean: pushed+purged, sig=[karrinyup], cursor=0, no lock)`); await ctx.close(); }
+
+    // S-251 (S-W3-2): the ATOMIC purge never annihilates a concurrent follower Dexie write — it serialises
+    // strictly before (purge refuses: unsynced drop) or after (row survives the commit). Then the re-arm
+    // detector catches a surviving out-of-scope row (the signature is a cache, never a guarantee).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup']));
+        const late = { id: 'sw3_follower_1', date: UI.todayLocal(), storeId: 'gonestore', productId: 'x', type: 'out', qty: 1, _synced: false };
+        // race the atomic purge against a follower-style DIRECT Dexie write (bypasses cache + guards)
+        const [purged] = await Promise.all([
+          DB.purgeToScopeAtomic(['karrinyup'], {}),
+          (async () => { await new Promise(res => setTimeout(res, 0)); try { await bobDB.transactions.put(late); } catch (e) {} })(),
+        ]);
+        const onDisk = !!(await bobDB.transactions.get('sw3_follower_1'));
+        await DB.refresh();
+        const rearmed = onDisk ? DB.reArmScopeIfOutOfScope() : true;   // if it landed, detection must re-arm
+        return { purged, onDisk, rearmed, lock: localStorage.getItem('bob_scope_purge_pending') };
+      }, s);
+      rec('S-251', 'W3-2: atomic purge serialises a concurrent follower write (never annihilated) + re-arm detects a survivor', r.onDisk === true && r.rearmed === true && r.lock === '1', `onDisk=${r.onDisk} rearmed=${r.rearmed} lock=${r.lock} (clean: row survived on disk, re-armed, lock raised)`); await ctx.close(); }
+
+    // S-252 (S-W3-3): a failed flush (offline push) means NO purge, privacy lock raised, signature NOT
+    // advanced — and an egress-INVALID pending row is durably _rejected so it cannot livelock the guard.
+    { const { ctx, page } = await newPage(b); let pushMode = 'fail';
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3push.test**', r => { if (pushMode === 'fail') return r.abort(); const b2 = JSON.parse(r.request().postData() || '{}'); const ids = ((b2.data && b2.data.transactions) || []).map(t => t.TransactionId); r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: ids, duplicates: [], rejected: [], failed: [] }) }); });
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 5, scope: ['karrinyup'] }) }));
+      await waitBoot(page, repo); const s = await setup(page);
+      const r1 = await page.evaluate(async () => {
+        const good = { id: 'sw3_good_1', date: UI.todayLocal(), storeId: 'whitford', productId: DB.get().products[0].id, type: 'out', qty: 1, staffName: 'T', _synced: false };
+        const bad  = { id: 'sw3_bad_1',  date: UI.todayLocal(), storeId: 'whitford', productId: 'no_such_product', type: 'out', qty: 1, staffName: 'T', _synced: false };  // egress-invalid: unknown product
+        await DB.addTransactionDurable(good); await DB.addTransactionDurable(bad);
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['whitford', 'karrinyup'].sort()));
+        localStorage.removeItem('bob_scope_purge_pending');
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = 'https://sw3push.test/x'; Sync._stepsPullUrl = null; Sync._stepsPushUrl = null; Sync._lastSyncId = 5;
+        await Sync.poll();   // flush FAILS → purge must refuse
+        return { stillThere: DB.get().transactions.some(t => t.id === 'sw3_good_1'), lock: localStorage.getItem('bob_scope_purge_pending'), sig: localStorage.getItem('bob_scope_sig') };
+      }, s);
+      pushMode = 'ok';
+      const r2 = await page.evaluate(async () => {
+        // "later, once online": the poll's pending-drain push scheduled a retry that still HOLDS the lock —
+        // fast-forward past it deterministically (the timer releases it within seconds in real life)
+        if (Sync._syncRetryTimer) { clearTimeout(Sync._syncRetryTimer); Sync._syncRetryTimer = null; }
+        Sync._syncLock = false; Sync._skipLockRelease = false; Sync._retryCount = 0; Sync._syncing = false;
+        await Sync.poll();   // flush works now: good row accepted; bad row durably _rejected; purge proceeds
+        const t = DB.get().transactions;
+        return { goodGone: !t.some(x => x.id === 'sw3_good_1'), badGone: !t.some(x => x.id === 'sw3_bad_1'), lock: localStorage.getItem('bob_scope_purge_pending'), sig: localStorage.getItem('bob_scope_sig') };
+      }, s);
+      rec('S-252', 'W3-3: failed flush = no purge + lock + sig frozen; egress-invalid row is durably rejected (no livelock)', r1.stillThere === true && r1.lock === '1' && r1.sig === JSON.stringify(['whitford', 'karrinyup'].sort()) && r2.goodGone === true && r2.badGone === true && r2.lock !== '1' && r2.sig === JSON.stringify(['karrinyup']), `offline: kept=${r1.stillThere} lock=${r1.lock} | online: goodGone=${r2.goodGone} badGone=${r2.badGone} lock=${r2.lock} sig=${r2.sig}`); await ctx.close(); }
+
+    // S-253 (S-W3-4 + S-W3-8): a per-store topologyVersion bump with UNCHANGED StoreIds wipes exactly the
+    // bumped store's rows from Dexie (old-era leak) — including the lower-version store of a multi-store map
+    // (a scalar/max implementation would miss it).
+    { const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 5, scope: ['storeA', 'storeB'], topologyVersions: { storeA: 10, storeB: 3 } }) }));
+      await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        await DB.addTransactionDurable({ id: 'sw3_eraA', date: UI.todayLocal(), storeId: 'storeA', productId: 'x', type: 'out', qty: 1, _synced: true });
+        await DB.addTransactionDurable({ id: 'sw3_eraB', date: UI.todayLocal(), storeId: 'storeB', productId: 'x', type: 'out', qty: 1, _synced: true });
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['storeA', 'storeB'].sort()));
+        localStorage.setItem('bob_topo_vers', JSON.stringify({ storeA: 10, storeB: 2 }));   // B bumps 2→3; max (10) unchanged
+        localStorage.removeItem('bob_scope_purge_pending');
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = null; Sync._stepsPullUrl = null; Sync._stepsPushUrl = null; Sync._lastSyncId = 5;
+        await Sync.poll();
+        const t = DB.get().transactions;
+        return { aKept: t.some(x => x.id === 'sw3_eraA'), bGone: !t.some(x => x.id === 'sw3_eraB'), vers: localStorage.getItem('bob_topo_vers'), cursor: localStorage.getItem('bob_last_sp_id') };
+      }, s);
+      rec('S-253', 'W3-4/8: per-store era bump (unchanged StoreIds, max unchanged) wipes EXACTLY the bumped store from Dexie', r.aKept === true && r.bGone === true && r.vers === JSON.stringify({ storeA: 10, storeB: 3 }) && r.cursor === '0', `aKept=${r.aKept} bGone=${r.bGone} vers=${r.vers} cursor=${r.cursor} (clean: A kept, B wiped, map updated, cursor reset)`); await ctx.close(); }
+
+    // S-254 (S-W3-5 + hold lifecycle): the pinned hold envelope leaves EVERY cursor untouched (even a
+    // defence-in-depth maxId in the body must not advance it), suppresses pullSteps, keeps pushes flowing —
+    // and a later NORMAL pull clears the hold so steps RESUME.
+    { const { ctx, page } = await newPage(b); let holdMode = true; let stepsPullHits = 0;
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: holdMode ? JSON.stringify({ topologyPending: true, items: [], policyVersion: 1, maxId: 9000 }) : JSON.stringify({ items: [], maxId: 7, scope: ['karrinyup'] }) }));
+      await page.route('**sw3spull.test**', r => { stepsPullHits++; r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 0 }) }); });
+      await waitBoot(page, repo); const s = await setup(page);
+      const r1 = await page.evaluate(async () => {
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup'])); localStorage.removeItem('bob_scope_purge_pending');
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = null; Sync._stepsPullUrl = 'https://sw3spull.test/x'; Sync._stepsPushUrl = null;
+        Sync._lastSyncId = 7; Sync._lastStepSyncId = 4; localStorage.setItem('bob_last_sp_id', '7'); localStorage.setItem('bob_last_step_sp_id', '4');
+        await Sync.poll();
+        return { hold: Sync._topologyHold === true, cursor: Sync._lastSyncId, stepCursor: localStorage.getItem('bob_last_step_sp_id') };
+      }, s);
+      const hitsDuringHold = stepsPullHits; holdMode = false;
+      const r2 = await page.evaluate(async () => { await Sync.poll(); return { hold: Sync._topologyHold, cursor: Sync._lastSyncId }; }, s);
+      rec('S-254', 'W3-5: hold envelope freezes cursors (maxId in body ignored) + suppresses steps; normal pull resumes', r1.hold === true && r1.cursor === 7 && r1.stepCursor === '4' && hitsDuringHold === 0 && r2.hold === false && stepsPullHits > 0, `hold=${r1.hold} cursor=${r1.cursor} stepCursor=${r1.stepCursor} stepsHitsDuringHold=${hitsDuringHold} resumedHits=${stepsPullHits} (clean: frozen at 7/4, 0 hits during hold, >0 after)`); await ctx.close(); }
+
+    // S-255 (S-W3-10/15): a NON-hold pull that ABORTS on scope-purge failure keeps pullSteps suppressed via
+    // the purge-pending arm of the entry guard (the hold flag alone is not the invariant).
+    { const { ctx, page } = await newPage(b); let stepsPullHits = 0;
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3push.test**', r => r.abort());   // flush cannot succeed
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 5, scope: ['karrinyup'] }) }));
+      await page.route('**sw3spull.test**', r => { stepsPullHits++; r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 0 }) }); });
+      await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        await DB.addTransactionDurable({ id: 'sw3_blocker', date: UI.todayLocal(), storeId: 'whitford', productId: DB.get().products[0].id, type: 'out', qty: 1, staffName: 'T', _synced: false });
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['whitford', 'karrinyup'].sort())); localStorage.removeItem('bob_scope_purge_pending');
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = 'https://sw3push.test/x'; Sync._stepsPullUrl = 'https://sw3spull.test/x'; Sync._stepsPushUrl = null; Sync._lastSyncId = 5;
+        await Sync.poll();   // non-hold pull → reconcile aborts (flush fails, purge refuses)
+        return { lock: localStorage.getItem('bob_scope_purge_pending'), hold: Sync._topologyHold, stepCursor: Sync._lastStepSyncId };
+      }, s);
+      rec('S-255', 'W3-10/15: a non-hold pull aborting on purge failure still suppresses pullSteps (purge-pending arm)', r.lock === '1' && stepsPullHits === 0, `lock=${r.lock} stepsHits=${stepsPullHits} hold=${r.hold} (clean: lock=1, 0 steps hits)`); await ctx.close(); }
+
+    // S-256 (S-W3-7): NO STARVATION — the AA policy checks fire on a HOLD envelope carrying a policyVersion
+    // bump, AND while the scope purge is stuck (page-1 order: policy first, unconditional).
+    { const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ topologyPending: true, items: [], policyVersion: 99 }) }));
+      await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        let cfgFetched = 0, purgeRan = 0;
+        Sync._fetchRemoteConfig = async () => { cfgFetched++; };
+        Sync._reconcilePolicyPurge = async () => { purgeRan++; };
+        localStorage.setItem('bob_scope_purge_pending', '1');   // stuck scope purge must NOT starve policy
+        Sync._scopePurgePending = true;
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = null; Sync._stepsPullUrl = null; Sync._stepsPushUrl = null; Sync._lastSyncId = 5;
+        const d = DB.get(); d.accessPolicy = { version: 1 };
+        await Sync.poll();   // hold envelope + stuck purge — BOTH must still run the policy path
+        return { cfgFetched, purgeRan, hold: Sync._topologyHold };
+      }, s);
+      rec('S-256', 'W3-7: policyVersion bump on a HOLD envelope + stuck scope purge still adopts policy + runs cost purge', r.cfgFetched >= 1 && r.purgeRan >= 1 && r.hold === true, `cfgFetched=${r.cfgFetched} purgeRan=${r.purgeRan} hold=${r.hold} (clean: both >=1 during hold)`); await ctx.close(); }
+
+    // S-257 (S-W3-2 leader-arm + S-W3-16): a leader-originated late write — including the DRAFT-TRANSFER
+    // writers that bypass scheduleSync — is locked AT the write by the DB-layer guard.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const armed = [];
+        const reset = () => { localStorage.setItem('bob_scope_sig', JSON.stringify(['karrinyup'])); localStorage.removeItem('bob_scope_purge_pending'); };
+        reset(); await DB.addTransferDurable({ id: 'sw3_draft1', fromStoreId: 'gonestore', toStoreId: 'alsogone', status: 'draft', items: [] });
+        armed.push(localStorage.getItem('bob_scope_purge_pending') === '1' && !localStorage.getItem('bob_scope_sig'));
+        reset(); await DB.updateTransferDurable({ id: 'sw3_draft1', fromStoreId: 'gonestore', toStoreId: 'alsogone', status: 'draft', items: [{ productId: 'x', qty: 1 }] });
+        armed.push(localStorage.getItem('bob_scope_purge_pending') === '1');
+        reset(); await DB.addTransactionDurable({ id: 'sw3_leader1', date: UI.todayLocal(), storeId: 'gonestore', productId: 'x', type: 'out', qty: 1, _synced: false });
+        armed.push(localStorage.getItem('bob_scope_purge_pending') === '1');
+        reset(); await DB.addTransferDurable({ id: 'sw3_draft2', fromStoreId: 'karrinyup', toStoreId: 'gonestore', status: 'draft', items: [] });   // either-end IN scope → must NOT arm
+        armed.push(localStorage.getItem('bob_scope_purge_pending') !== '1');
+        return armed;
+      }, s);
+      rec('S-257', 'W3-16: DB-layer guard locks at the write (draft-transfer add/update + txn); in-scope either-end does not arm', r.every(Boolean), `[draftAdd,draftUpdate,txn,inScopeNoArm]=${JSON.stringify(r)} (clean: all true)`); await ctx.close(); }
+
+    // S-258 (S-W3-9): per-table pending predicates — synced-only legacy metadata (delivery/stockTake/transfer)
+    // purges fine; a single unsynced out-of-scope recordStep REFUSES the purge.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get();
+        (d.stockTakes = d.stockTakes || []).push({ id: 'sw3_take', storeId: 'gonestore', date: UI.todayLocal(), items: [] });
+        (d.deliveries = d.deliveries || []).push({ id: 'sw3_deliv', storeId: 'gonestore', date: UI.todayLocal(), items: [] });
+        (d.transfers = d.transfers || []).push({ id: 'sw3_tr', fromStoreId: 'gonestore', toStoreId: 'gonestore2', status: 'received' });
+        await bobDB.stockTakes.bulkPut(d.stockTakes); await bobDB.deliveries.bulkPut(d.deliveries); await bobDB.transfers.bulkPut(d.transfers);
+        const ok1 = await DB.purgeToScopeAtomic(['karrinyup'], {});   // no flagged pending rows → proceeds
+        const legacyGone = !(await bobDB.stockTakes.get('sw3_take')) && !(await bobDB.deliveries.get('sw3_deliv')) && !(await bobDB.transfers.get('sw3_tr'));
+        await DB.addStepDurable({ stepId: 'sw3_step1', ownerStoreId: 'gonestore', kind: 'stocktake', _synced: false });
+        const ok2 = await DB.purgeToScopeAtomic(['karrinyup'], {});   // unsynced step would drop → REFUSE
+        const stepKept = !!(await bobDB.recordSteps.get('sw3_step1'));
+        return { ok1, legacyGone, ok2, stepKept };
+      }, s);
+      rec('S-258', 'W3-9: synced legacy metadata purges; an unsynced out-of-scope recordStep refuses the purge', r.ok1 === true && r.legacyGone === true && r.ok2 === false && r.stepKept === true, `ok1=${r.ok1} legacyGone=${r.legacyGone} ok2=${r.ok2} stepKept=${r.stepKept} (clean: true,true,false,true)`); await ctx.close(); }
+
+    // S-259 (S-W3-6, regression): a NORMAL scope change with nothing pending behaves exactly as before —
+    // one purge, cursor reset, signature recorded, no privacy lock.
+    { const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 5, scope: ['karrinyup'] }) }));
+      await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        await DB.addTransactionDurable({ id: 'sw3_synced1', date: UI.todayLocal(), storeId: 'gonestore', productId: 'x', type: 'out', qty: 1, _synced: true });
+        localStorage.setItem('bob_scope_sig', JSON.stringify(['gonestore', 'karrinyup'].sort())); localStorage.removeItem('bob_scope_purge_pending');
+        Sync._isLeader = true; Sync._unauthorized = false; Sync._topologyHold = false; Sync._syncLock = false;
+        Sync._pullUrl = 'https://sw3pull.test/x'; Sync._pushUrl = null; Sync._stepsPullUrl = null; Sync._stepsPushUrl = null; Sync._lastSyncId = 5;
+        await Sync.poll();
+        return { gone: !DB.get().transactions.some(t => t.id === 'sw3_synced1'), sig: localStorage.getItem('bob_scope_sig'), cursor: localStorage.getItem('bob_last_sp_id'), lock: localStorage.getItem('bob_scope_purge_pending') };
+      }, s);
+      rec('S-259', 'W3-6 regression: normal scope change (nothing pending) purges + resets exactly as before', r.gone === true && r.sig === JSON.stringify(['karrinyup']) && r.cursor === '0' && r.lock !== '1', `gone=${r.gone} sig=${r.sig} cursor=${r.cursor} lock=${r.lock} (clean: purged, sig recorded, cursor 0, no lock)`); await ctx.close(); }
 
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
