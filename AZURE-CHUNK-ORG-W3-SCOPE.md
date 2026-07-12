@@ -6,6 +6,15 @@ amendment + Codex×2 → W3-SR-9/10; R3: AGY PASS + Codex×3 → W3-SR-10 amende
 Codex CLEAN ("no numbered findings"; independently traced the remaining live write paths and confirmed
 coverage). SPEC LOCKED @ `dcceaf8` — BUILD AUTHORIZED.** 6 rounds, 16 folds (W3-SR-1..16), zero code written
 during review.
+
+**✅ BUILD COMPLETE + FULLY GATED (2026-07-12), build commit `7aa4733`, audit hand-off `ca1ad4c`.**
+All 16 folds implemented (map in `PASTE-TO-AUDITORS-ORG-W3.md`). **FINAL GATE: smoke 250/250 (incl. the 10
+new W3 sentinels S-250..S-259) · topology-proof 191/191 · CSP + static PASS · call-graph sweep clean (every
+legacy caller of the changed functions unchanged) · FULL SABOTEUR SWEEP 268 CAUGHT / 0 BLIND / 0 skipped /
+0 INFRA-FAIL of 268** (incl. 10 new W3 mutations, one per new sentinel, + S-222/S-223 re-anchored to the
+atomic purge / new reconcile — their old anchors lived in the replaced code). Full log:
+`scratchpad/saboteur-w3-final.log` (session) — summary line banked here. External build review (Codex + AGY,
+parallel) dispatched on `ca1ad4c`.
 **Touches:** `sync.js` + `db.js` (**the LIVE sync engine** — first org-chunk wave that edits live-app files).
 Branch `azure-phase-5-8-server`; nothing deploys until the end-of-phase cutover.
 **Spec anchors (converged):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain window),
