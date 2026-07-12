@@ -1,114 +1,103 @@
 # OS-W3 SCOPE — Chunk-10 companion: offline flush-before-purge + era-aware re-bootstrap (CLIENT)
 
-**Status:** MAP COMPLETE (2026-07-12) — awaiting Kunal read → Codex+AGY parallel scope review → build.
+**Status:** SCOPE REVIEW R1 FOLDED (2026-07-12) — Codex BLOCK×5 + AGY falsifications×3, ALL ground-truthed
+REAL and folded as **W3-SR-1..8** below — awaiting R2 re-review → build.
 **Touches:** `sync.js` + `db.js` (**the LIVE sync engine** — first org-chunk wave that edits live-app files).
 Branch `azure-phase-5-8-server`; nothing deploys until the end-of-phase cutover.
-**Spec anchors (already converged, R1–R4):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain
-window before snapshot finalization), OS-SR-10 (server-authorized one-shot old-era flush; stale_era
-quarantine), OS-SR-6 (device-bound roles see the current era only), OS-SR-1 (pull fails closed while
-`topology_pending`). LA-side counterparts are SPEC'D in `AZURE-CHUNK-ORG-LA-CHANGES.md` and stay
-staging-apply items — **W3 builds the CLIENT side** and must be safe with today's LAs AND the future ones.
+**Spec anchors (converged):** OS-SR-5 (push-before-purge), OS-SR-5/7 amendment (bounded drain window),
+OS-SR-10 (server-authorized one-shot old-era flush; `stale_era` quarantine), OS-SR-6 (device-bound roles see
+the current era only), OS-SR-1 (pull fails closed while `topology_pending`). LA-side counterparts stay
+staging-apply items — **W3 builds the CLIENT side**, safe with today's LAs AND the future ones.
 
 ## The mapped ground truth (file:line, verified 2026-07-12)
 
-**GAP-1 — offline data loss on scope change (the headline bug; ground-truthed REAL).**
-- The 30s background `poll()` runs `pull()` FIRST (sync.js:2197) and only drains pending pushes AFTER
-  (sync.js:2204).
-- `pull()` calls `_reconcileScope(remote.scope)` on page 1 (sync.js:1656 → 1881). On a changed scope it calls
-  `DB.purgeToScope(scopeArr)` (sync.js:1889) IMMEDIATELY — no pre-flush.
-- `DB.purgeToScope` (db.js:381) filters every per-store table by store membership ONLY — it makes **no
-  exception for rows not yet uploaded** (`!t._synced && !t._rejected`, the same predicate push() uses at
-  sync.js:1278).
-- Net: a device holding **unsent offline entries** for a store that leaves its scope (e.g. a TM's store is
-  reassigned while their phone is offline) has those entries **deleted before they were ever pushed** =
-  permanent stock-ledger loss. The manual path (`_runSyncCycle`, sync.js:2158) happens to push first, but the
-  background poll — the common path — does not.
+**GAP-1 — offline data loss on scope change (the headline bug).**
+- `poll()` runs `pull()` FIRST (sync.js:2197); pending pushes drain only AFTER (sync.js:2204).
+- `pull()` → `_reconcileScope` (sync.js:1656 → 1881) → `DB.purgeToScope` (sync.js:1889) with no pre-flush.
+- `DB.purgeToScope` (db.js:381) filters by store membership only — no exception for un-uploaded rows.
+- Net: unsent offline entries for a store leaving scope are deleted before ever being pushed.
 
 **GAP-2 — era changes with an unchanged store list never re-bootstrap.**
-- The only reconcile trigger is the sorted-StoreIds signature (`bob_scope_sig`, sync.js:1883).
-- A CONVERT/BUYBACK keeps the store POS's StoreIds identical (`['boor']` before and after), so the signature
-  never changes → no purge, no cursor reset. But the OWNERSHIP ERA changed: a device-bound role must see the
-  CURRENT era only (OS-SR-6), and its stale local rows/caches from the prior era linger. Today there is no
-  client trigger tied to the era/topology version at all.
+- Only trigger = sorted-StoreIds signature (sync.js:1883). CONVERT/BUYBACK keeps a POS's StoreIds identical →
+  no purge, no cursor reset, prior-era data lingers (violates OS-SR-6).
 
 **GAP-3 — no client handling for the fail-closed topology window.**
-- The (spec'd) topology LA quiesces a store mid-change: pull FAILS CLOSED for that store while
-  `topology_pending` (OS-SR-1; LA-CHANGES §"pull-v2 fails closed"). The current client treats any non-ok pull
-  as a generic "Data may be stale" warning (sync.js:1642-1645) — no hold/deny semantics, no retry messaging,
-  and a mid-window scope echo could still race the purge.
+- A quiesced store's failed pull is a generic "stale" warning (sync.js:1642-1645); no hold semantics.
 
-## The design (what W3 builds — all client-side)
+## SCOPE REVIEW R1 (2026-07-12): Codex BLOCK×5 + AGY×3 — all REAL, all folded
 
-**W3-1 FLUSH-BEFORE-PURGE (closes GAP-1).**
-In `_reconcileScope`, before ANY `purgeToScope`:
-1. Attempt a bounded flush: `push()` + `pushSteps()` of all pending rows (they already send regardless of
-   store — sync.js:1278).
-2. Re-check after the flush: if ANY row that the purge would drop is still `!_synced && !_rejected` → **do
-   NOT purge, do NOT record the new signature**; raise the existing `bob_scope_purge_pending` privacy lock
-   (same fail-closed mechanics as the current durable-purge failure, sync.js:1894-1898) and retry next cycle.
-3. Only when every to-be-dropped row is durably synced (or explicitly `_rejected`) does the purge + cursor
-   reset + signature record proceed.
-- **Per-row check, not an aggregate** (framework rule: invariant ≠ per-item validation) — the guard walks the
-  exact rows the purge would drop, mirroring `purgeToScope`'s own filters (incl. either-end transfer/step
-  retention).
-- **Belt-and-braces invariant in `DB.purgeToScope` itself:** it independently refuses (returns false) if its
-  filtered-copy diff would drop any unsynced, unrejected row. Defence in depth: even a future caller that
-  forgets the flush cannot lose data. (A `_rejected` row is server-refused hostile/invalid input — it may drop.)
-- Rejected/held rows for a departed store that the server will never accept: after the bounded retry window
-  they surface via the existing rejected-rows status path; they are NEVER silently dropped (they stay under the
-  privacy lock until pushed, rejected, or the Director settles — matching stale_era semantics server-side).
+| # | Auditor | Finding (ground-truthed) | Fold |
+|---|---|---|---|
+| **W3-SR-1** | Codex-1 | `_reconcileScope` runs INSIDE pull's `_syncLock` (set sync.js:1608); public `push()` no-ops under the lock (sync.js:1255) and `pushSteps()` always does (sync.js:1926) → the designed flush would silently skip and the device locks forever | the flush uses a NEW lock-aware internal drain primitive (`_drainPendingLocked()`) that runs the push bodies re-entrantly under the already-held lock (the `_isRetry` pattern, sync.js:1254), never the public entrypoints; sentinel S-W3-1 must exercise the REAL poll path (lock held) |
+| **W3-SR-2** | AGY-1 | multi-tab TOCTOU: `purgeToScope` diffs + rewrites from the LEADER's in-memory `_cache` (db.js:393); a follower's Dexie write landing after the flush but before the purge is annihilated by `_persistAllToDexie` overwriting disk from stale memory | `purgeToScope` must `await DB.refresh()` internally IMMEDIATELY before building the filtered copy + safety diff, so both evaluate the definitive DISK state; the refresh→diff→persist sequence documents the remaining window and the leader re-checks pending flags after persist (S-W3-2 simulates a concurrent Dexie-direct write during the flush await) |
+| **W3-SR-3** | AGY-2 | POS old-era leak: an era bump with the store still IN scope purges NOTHING (`allow.has` keeps it, db.js:386) → the incoming owner's device retains the ex-owner's full local ledger (OS-SR-6 violation) | on a `topologyVersion` bump, `_reconcileScope` passes the affected store(s) as an explicit `wipeStores` argument; `purgeToScope(scopeArr, {wipeStores})` drops those stores' rows EVEN THOUGH in-scope (after the same flush-first + unsynced guard), so the new era pulls onto a clean slate; S-W3-4 asserts the old-era rows actually LEFT Dexie |
+| **W3-SR-4** | AGY-3 | policy-purge starvation: `_reconcileScope`'s early `return` (sync.js:1656) — and the new topology hold — skip the AA `policyVersion` check + `_reconcilePolicyPurge` (sync.js:1660-1666); a stuck scope purge (days offline) leaves a demoted user with elevated cost visibility | REORDER: the policyVersion check + `_reconcilePolicyPurge` run BEFORE `_reconcileScope` and unconditionally on every page-1 pull (they are field-level and independent of store scope); no scope/topology outcome may starve them; new sentinel S-W3-7 |
+| **W3-SR-5** | Codex-2 | the unsynced-row guard is underspecified for tables without transaction-style flags: `purgeToScope` also drops stockTakes/deliveries/thresholds/transfers (db.js:396-400) which carry no `_synced`; a mechanical `!_synced` check blocks forever on historical rows | PER-TABLE pending predicates, pinned here: **transactions** `!_synced && !_rejected`; **recordSteps** `!_synced && !_rejected`; **transfers** pending iff any of its record-steps are pending (steps are the sync vehicle) or legacy in-flight status (`draft/submitted` with unsynced ledger rows); **stockTakes/deliveries/thresholds** are DERIVED/legacy metadata whose durable representation is the ledger + steps — droppable once their expectedLedgerKeys/step rows are synced, else pending; sentinels cover a synced legacy delivery/stockTake/transfer (purge proceeds) AND an unsynced recordStep (purge refuses) |
+| **W3-SR-6** | Codex-3 | egress-invalid local rows are excluded from push with only a console log (sync.js:1303-1310) — never durably `_rejected` → the purge guard would block forever on rows the server will never see (livelock, not loss) | the egress filter now durably marks excluded rows `_rejected:'egress-invalid'` (same persistence path as server rejections) so they surface in the existing rejected-rows status AND become purge-droppable; S-W3-3 includes a local egress-invalid row |
+| **W3-SR-7** | Codex-4 | a scalar `bob_topo_ver` misses multi-store era changes (store A at v10, store B bumps 2→3 — a scalar/max stays 10, B never re-bootstraps) | `bob_topo_vers` is a JSON MAP keyed by storeId (`{"boor":3,"karr":10"}`); the reconcile compares PER STORE and wipes exactly the bumped store(s); sentinel: the LOWER-version store changes while the max does not |
+| **W3-SR-8** | Codex-5 | `topologyPending` had no pinned HTTP/envelope contract; the live client returns before JSON on non-ok (sync.js:1642) so a 423-with-body would read as a generic failure; a 200-body mock would pass while the real contract fails | PINNED CONTRACT: the pull LA signals a quiesced store with **HTTP 200** + `{topologyPending:true, items:[], scope:<unchanged echo omitted>}` — deliberately 200 so TODAY'S deployed clients treat it as a harmless empty pull (no rows served = fail-closed, no cursor damage), and W3 clients show the hold. The client ALSO defensively parses a non-2xx JSON body for the flag (belt-and-braces). S-W3-5 pins both the 200-envelope and the non-2xx defensive path; the staging-apply E2E proves the REAL LA emits it (mock-must-match-server rule) |
 
-**W3-2 ERA/TOPOLOGY-VERSION RE-BOOTSTRAP (closes GAP-2).**
-- The pull LA will echo a per-store `topologyVersion` (spec'd; mirrors the existing `policyVersion` echo at
-  sync.js:1661). The client persists it beside `bob_scope_sig` (`bob_topo_ver`).
-- A bump — even with an UNCHANGED StoreIds signature — routes through the SAME reconcile path: flush-first
-  (W3-1) → purge to scope (for a POS this drops nothing in-scope; for narrowed roles it drops old-era
-  out-of-scope rows) → cursor reset → re-pull. The server's era-lens then only serves current-era rows to
-  device-bound roles (OS-SR-6 — server side, already spec'd).
-- Backward compatible: no echo (today's LA) = no-op, exactly like the existing `remote.scope` guard
-  (sync.js:1882).
+## The design (post-R1)
 
-**W3-3 TOPOLOGY-HOLD HANDLING (closes GAP-3).**
-- The (spec'd) fail-closed pull response for a quiesced store carries a distinguishable marker
-  (`topologyPending: true`). Client: show a calm status ("Store update in progress — syncing will resume
-  shortly"), do NOT treat as an error, do NOT advance cursors, retry on the normal poll cadence.
-- During the hold the client still ATTEMPTS pushes (that is the drain window working — OS-SR-5/7 amendment);
-  the ingest LA decides acceptance (one-shot flush authorization, OS-SR-10). A push rejection during the hold
-  follows the normal rejected-row path (quarantined server-side as `stale_era` for Director settlement — never
-  silently applied, never silently dropped).
+**W3-1 FLUSH-BEFORE-PURGE (GAP-1; per W3-SR-1/2/5/6).**
+In `_reconcileScope`, before ANY purge:
+1. `_drainPendingLocked()` — the lock-aware internal drain (ledger then steps, R1 ordering preserved).
+2. `DB.purgeToScope` internally: `await DB.refresh()` → build filtered copy from DISK state → per-table
+   pending predicates (W3-SR-5) walk the EXACT rows to be dropped → any pending row ⇒ return false (no purge).
+3. On refusal: raise `bob_scope_purge_pending` (existing mechanics, sync.js:1894-1898), do NOT record the new
+   signature, retry next cycle. Egress-invalid rows are durably `_rejected` (W3-SR-6) so they can't livelock.
+4. Only a clean walk purges + resets cursors + records the signature.
 
-**Explicitly OUT of W3 (build later / elsewhere):**
-- The topology-change LA itself, quiesce flag, drain-window authorization, `stale_era` quarantine, snapshot
-  finalization — SERVER items, spec'd in LA-CHANGES, applied at the staging-apply phase (single pass, with the
-  deferred AA LAs).
-- The era-aware report lens + buy-back export (OS-W4). Director wizard UI (OS-W5).
+**W3-2 ERA/TOPOLOGY-VERSION RE-BOOTSTRAP (GAP-2; per W3-SR-3/7).**
+- Pull LA echoes per-store `topologyVersion`s (mirrors the `policyVersion` echo, sync.js:1661). Client persists
+  `bob_topo_vers` as a per-store JSON map.
+- A bumped store routes through the same flush-first path with `wipeStores:[thatStore]` — its rows are dropped
+  even though still in scope, then cursors reset and the new era re-pulls clean.
+- Backward compatible: no echo (today's LA) = no-op.
 
-## Change-safety plan (this touches live sync.js)
-- **Discover-before-touch:** this document IS the map; no behaviour change ships without the sentinels below.
-- **New sentinels (join the 240-strong smoke gate):**
-  - S-W3-1: pending offline row for an out-of-scope store SURVIVES a scope change (pushed first, then purged).
-  - S-W3-2: `purgeToScope` refuses to drop an unsynced row (defence-in-depth invariant fires without the flush).
-  - S-W3-3: flush fails (offline) → NO purge, privacy lock raised, signature NOT advanced, retries next cycle.
-  - S-W3-4: `topologyVersion` bump with unchanged StoreIds triggers flush → purge → cursor reset.
-  - S-W3-5: `topologyPending` pull response → calm hold status, cursors untouched, push still attempted.
-  - S-W3-6 (regression): normal scope change with nothing pending behaves exactly as today (purge + reset once).
-- **Full local gate before hand-off:** smoke (240+new), topology-proof 191, saboteur sweep (concurrency 10),
-  static gates. Change-safety sweep on the touched call-graph (`poll`/`pull`/`push`/`_reconcileScope`/
-  `purgeToScope` callers).
-- **Mock-must-match-server:** the sentinel harness mocks the pull echo — the REAL echo contract is proven at
-  the staging-apply E2E (flagged as a staging-ledger item, not silently assumed).
+**W3-3 TOPOLOGY-HOLD HANDLING (GAP-3; per W3-SR-8).**
+- Pinned envelope: HTTP 200 `{topologyPending:true, items:[]}` (+ defensive non-2xx JSON parse).
+- Client: calm status ("Store update in progress — syncing will resume shortly"), cursors untouched, normal
+  poll cadence retries; pushes still attempted during the hold (the drain window); rejections follow the
+  rejected-row path (server quarantines `stale_era` for Director settlement).
 
-## Risk register (honest)
-- R1: flush-loop livelock if a row can never sync (server persistently rejects) → bounded by the existing
-  rejected-row path + privacy lock surfacing; the device is SAFE (nothing lost), just visibly unreconciled.
-- R2: a scope change while ALREADY under `bob_scope_purge_pending` → unchanged from today: the lock holds until
-  a durable, flush-clean purge succeeds.
-- R3: ordering with the AA policy purge (`_reconcilePolicyPurge`, sync.js:1666) — runs AFTER scope reconcile
-  today; W3 keeps that order (scope purge is store-level, policy purge is field-level; no interaction found in
-  the map — auditors: please falsify).
-- R4: multi-tab — reconcile runs in the leader's pull; followers learn via `_notifyFollowers()` (sync.js:1902,
-  unchanged). The flush uses the same `_syncLock` the cycle already holds — W3 must re-use the in-cycle push
-  path, not spawn a parallel one (implementation note).
+**W3-0 ORDERING FIX (per W3-SR-4).** The AA policyVersion check + `_reconcilePolicyPurge` move ABOVE
+`_reconcileScope` on page 1 and run unconditionally — no scope purge, hold, or abort can starve the
+cost-visibility downgrade.
+
+**Explicitly OUT of W3:** the topology LA / quiesce flag / flush authorization / `stale_era` quarantine /
+snapshot (server, staging-apply); the era-aware lens + buy-back export (W4); wizard UI (W5).
+
+## Change-safety plan (touches live sync.js)
+Sentinels (join the smoke gate):
+- **S-W3-1** pending offline row for an out-of-scope store survives a scope change **on the REAL poll path
+  (lock held)** — pushed via the internal drain, then purged.
+- **S-W3-2** `purgeToScope` refuses to drop an unsynced row, **evaluated against DISK state with a concurrent
+  Dexie-direct follower write landing during the flush await** (the W3-SR-2 race).
+- **S-W3-3** flush fails (offline) → NO purge, privacy lock, signature not advanced, retries; **includes a
+  local egress-invalid row that gets durably `_rejected` and stops blocking**.
+- **S-W3-4** `topologyVersion` bump with unchanged StoreIds → flush → wipe → cursor reset, **asserting the
+  old-era rows actually left Dexie**.
+- **S-W3-5** `topologyPending` (pinned 200-envelope AND defensive non-2xx body) → calm hold, cursors
+  untouched, push still attempted.
+- **S-W3-6** (regression) a normal scope change with nothing pending behaves exactly as today.
+- **S-W3-7** a failed/stuck scope flush does NOT prevent a pending AA policy downgrade from executing
+  (`_reconcilePolicyPurge` runs and cost fields drop).
+- **S-W3-8** per-store map: the lower-version store bumps while the aggregate max doesn't → that store still
+  re-bootstraps.
+- **S-W3-9** per-table predicates: a synced legacy delivery/stockTake/transfer purges fine; an unsynced
+  recordStep blocks the purge.
+Full local gate before hand-off: smoke (240+new), topology-proof 191, saboteur sweep (concurrency 10), static
+gates, change-safety sweep on the touched call-graph (`poll`/`pull`/`push`/`pushSteps`/`_reconcileScope`/
+`purgeToScope` callers). Mock-must-match-server: the pinned pull-echo contract is proven against the REAL LA at
+staging-apply E2E (staging-ledger item).
+
+## Risk register (post-R1)
+- R1 flush livelock → closed by W3-SR-6 (durable egress rejection) + rejected-row surfacing; device safe.
+- R2 scope change while already purge-pending → unchanged: lock holds until a flush-clean durable purge.
+- R3 policy-purge ordering → CLOSED by W3-0 (runs first, unconditionally).
+- R4 multi-tab → W3-SR-2 fold (refresh-inside-purge, disk-state diff) + S-W3-2 race sentinel; the flush runs
+  in-cycle under the held lock via `_drainPendingLocked` (W3-SR-1), never a parallel path.
 
 ## Kunal decisions needed
-- None blocking. Default wording for the hold status is proposed in W3-3; change if you want different words.
+- None blocking. Hold-status wording default: "Store update in progress — syncing will resume shortly."
