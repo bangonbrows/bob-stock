@@ -1157,6 +1157,10 @@ const MUTATIONS = [
     find: "    try { localStorage.setItem('bob_last_sp_id', '0'); } catch (e) {}",
     repl: "    /* sabotaged: cursor not reset */",
     note: "OS-W3-6 regression: a scope change stops resetting the durable ledger cursor -> in-scope rows below the old high-water mark never re-pull after a purge (permanent local gaps)" },
+  { id: 'S-260', file: 'sync.js',
+    find: "        if (!_nested) this._scheduleSyncRetry();  // Wave H (GPTa-32) + OS-W3 (W3-SR-1 R1 fix): nested drain never schedules",
+    repl: "        this._scheduleSyncRetry();",
+    note: "OS-W3-1 (build-audit R1, AGY P0): the ambiguous-ack path loses its nested guard -> the drain schedules a retry timer while the reconcile owns the lock (the exact W3-SR-1 deviation both auditors flagged)" },
 ];
 
 function copyRepoTo(dir) {

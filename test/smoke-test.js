@@ -2291,9 +2291,13 @@ async function runSmoke(repo) {
     // S-254 (S-W3-5 + hold lifecycle): the pinned hold envelope leaves EVERY cursor untouched (even a
     // defence-in-depth maxId in the body must not advance it), suppresses pullSteps, keeps pushes flowing —
     // and a later NORMAL pull clears the hold so steps RESUME.
-    { const { ctx, page } = await newPage(b); let holdMode = true; let stepsPullHits = 0;
+    { const { ctx, page } = await newPage(b); let holdMode = 'hold200'; let stepsPullHits = 0;
       await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
-      await page.route('**sw3pull.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: holdMode ? JSON.stringify({ topologyPending: true, items: [], policyVersion: 1, maxId: 9000 }) : JSON.stringify({ items: [], maxId: 7, scope: ['karrinyup'] }) }));
+      await page.route('**sw3pull.test**', r => {
+        if (holdMode === 'hold200') return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ topologyPending: true, items: [], policyVersion: 1, maxId: 9000 }) });
+        if (holdMode === 'hold423') return r.fulfill({ status: 423, contentType: 'application/json', body: JSON.stringify({ topologyPending: true, items: [], policyVersion: 1, maxId: 9001, scope: ['legacy-forbidden'] }) });
+        return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 7, scope: ['karrinyup'] }) });
+      });
       await page.route('**sw3spull.test**', r => { stepsPullHits++; r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 0 }) }); });
       await waitBoot(page, repo); const s = await setup(page);
       const r1 = await page.evaluate(async () => {
@@ -2304,9 +2308,17 @@ async function runSmoke(repo) {
         await Sync.poll();
         return { hold: Sync._topologyHold === true, cursor: Sync._lastSyncId, stepCursor: localStorage.getItem('bob_last_step_sp_id') };
       }, s);
-      const hitsDuringHold = stepsPullHits; holdMode = false;
-      const r2 = await page.evaluate(async () => { await Sync.poll(); return { hold: Sync._topologyHold, cursor: Sync._lastSyncId }; }, s);
-      rec('S-254', 'W3-5: hold envelope freezes cursors (maxId in body ignored) + suppresses steps; normal pull resumes', r1.hold === true && r1.cursor === 7 && r1.stepCursor === '4' && hitsDuringHold === 0 && r2.hold === false && stepsPullHits > 0, `hold=${r1.hold} cursor=${r1.cursor} stepCursor=${r1.stepCursor} stepsHitsDuringHold=${hitsDuringHold} resumedHits=${stepsPullHits} (clean: frozen at 7/4, 0 hits during hold, >0 after)`); await ctx.close(); }
+      const hitsDuringHold = stepsPullHits;
+      // W3-SR-8 belt-and-braces (build-audit R1, BOTH auditors): a NON-2xx body carrying the flag is ALSO a hold
+      holdMode = 'hold423';
+      const r1b = await page.evaluate(async () => { Sync._topologyHold = false; await Sync.poll(); return { hold: Sync._topologyHold === true, cursor: Sync._lastSyncId, stepCursor: localStorage.getItem('bob_last_step_sp_id'), sig: localStorage.getItem('bob_scope_sig') }; }, s);
+      const hitsDuring423 = stepsPullHits;
+      holdMode = 'normal';
+      // TWO polls: the first may legitimately reconcile-abort (the thresholds-aware detector spots the SEED's
+      // other-store thresholds as out-of-scope vs this fixture's sig and re-arms — fail-closed keeps the hold
+      // one extra cycle, per W3-SR-15); the steady-state second poll clears the hold and resumes steps.
+      const r2 = await page.evaluate(async () => { await Sync.poll(); await Sync.poll(); return { hold: Sync._topologyHold, cursor: Sync._lastSyncId }; }, s);
+      rec('S-254', 'W3-5: hold envelope (200 AND non-2xx body) freezes cursors + suppresses steps; normal pull resumes', r1.hold === true && r1.cursor === 7 && r1.stepCursor === '4' && hitsDuringHold === 0 && r1b.hold === true && r1b.cursor === 7 && r1b.stepCursor === '4' && r1b.sig === JSON.stringify(['karrinyup']) && hitsDuring423 === 0 && r2.hold === false && stepsPullHits > 0, `200: hold=${r1.hold} cursor=${r1.cursor} | 423: hold=${r1b.hold} cursor=${r1b.cursor} sig=${r1b.sig} stepsHits=${hitsDuring423} | resumed=${stepsPullHits > 0} (clean: both held at 7/4, sig untouched, 0 hits, resumes)`); await ctx.close(); }
 
     // S-255 (S-W3-10/15): a NON-hold pull that ABORTS on scope-purge failure keeps pullSteps suppressed via
     // the purge-pending arm of the entry guard (the hold flag alone is not the invariant).
@@ -2360,9 +2372,33 @@ async function runSmoke(repo) {
         armed.push(localStorage.getItem('bob_scope_purge_pending') === '1');
         reset(); await DB.addTransferDurable({ id: 'sw3_draft2', fromStoreId: 'karrinyup', toStoreId: 'gonestore', status: 'draft', items: [] });   // either-end IN scope → must NOT arm
         armed.push(localStorage.getItem('bob_scope_purge_pending') !== '1');
+        // build-audit R1 (Codex): thresholds are purged, so the DETECTOR must scan them too — an out-of-scope
+        // threshold row (written via the ref-data commit path, no per-row guard) re-arms via reArmScopeIfOutOfScope
+        reset(); DB.get().thresholds.push({ storeId: 'gonestore', productId: 'BDW_1', minQty: 5 });
+        armed.push(DB.reArmScopeIfOutOfScope() === true && localStorage.getItem('bob_scope_purge_pending') === '1');
+        DB.get().thresholds = DB.get().thresholds.filter(t => t.storeId !== 'gonestore');
         return armed;
       }, s);
-      rec('S-257', 'W3-16: DB-layer guard locks at the write (draft-transfer add/update + txn); in-scope either-end does not arm', r.every(Boolean), `[draftAdd,draftUpdate,txn,inScopeNoArm]=${JSON.stringify(r)} (clean: all true)`); await ctx.close(); }
+      rec('S-257', 'W3-16: DB-layer guard locks at the write (draft add/update + txn); in-scope no-arm; thresholds detected', r.every(Boolean), `[draftAdd,draftUpdate,txn,inScopeNoArm,thresholdDetected]=${JSON.stringify(r)} (clean: all true)`); await ctx.close(); }
+
+    // S-260 (W3-SR-1, build-audit R1 — AGY P0): the NESTED drain never schedules the retry timer, even on the
+    // partial/ambiguous SUCCESS paths (legacy ack without processedCount; v2 failed rows) — and never touches
+    // the caller's lock.
+    { const { ctx, page } = await newPage(b);
+      await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' }));
+      await page.route('**sw3pushamb.test**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{}' }));   // legacy-ambiguous: 200 with NO buckets, NO processedCount
+      await waitBoot(page, repo); const s = await setup(page);
+      const r = await page.evaluate(async () => {
+        await DB.addTransactionDurable({ id: 'sw3_amb_1', date: UI.todayLocal(), storeId: 'karrinyup', productId: DB.get().products[0].id, type: 'out', qty: 1, staffName: 'T', _synced: false });
+        Sync._unauthorized = false; Sync._pushUrl = 'https://sw3pushamb.test/x'; Sync._stepsPushUrl = null;
+        Sync._syncLock = true;                                  // simulate being inside pull's held lock
+        Sync._syncRetryTimer = null; Sync._retryCount = 0;
+        await Sync._drainPendingLocked();                        // ambiguous ack → the guarded branch
+        const out = { timer: Sync._syncRetryTimer === null, lockHeld: Sync._syncLock === true, rowKept: DB.get().transactions.some(t => t.id === 'sw3_amb_1' && !t._synced) };
+        Sync._syncLock = false;
+        return out;
+      }, s);
+      rec('S-260', 'W3-1: nested drain on an AMBIGUOUS ack schedules NO retry timer and leaves the caller lock held', r.timer === true && r.lockHeld === true && r.rowKept === true, `noTimer=${r.timer} lockHeld=${r.lockHeld} rowKept=${r.rowKept} (clean: all true)`); await ctx.close(); }
 
     // S-258 (S-W3-9): per-table pending predicates — synced-only legacy metadata (delivery/stockTake/transfer)
     // purges fine; a single unsynced out-of-scope recordStep REFUSES the purge.

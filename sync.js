@@ -1405,7 +1405,7 @@ const Sync = {
           console.warn('[Sync] (v2) server returned conflicting buckets for a sent row — response untrusted; NO durable changes, retrying the whole batch (fail-closed).');
           this._showStatus('Sync response invalid — will retry', 'warning');
           Sync._setPending(true);
-          this._scheduleSyncRetry();
+          if (!_nested) this._scheduleSyncRetry();   // OS-W3 (W3-SR-1 R1 fix): nested drain never schedules the timer
         } else {
 
           // (1) accepted + duplicates → durable _synced (targeted row update)
@@ -1457,7 +1457,7 @@ const Sync = {
             if (_unaccounted > 0 || !_marked || !_rejMarked) _bits.push('sync incomplete — will retry');
             this._showStatus(_bits.join(', ') || 'Sync incomplete — will retry', 'warning');
             Sync._setPending(true);
-            this._scheduleSyncRetry();
+            if (!_nested) this._scheduleSyncRetry();   // OS-W3 (W3-SR-1 R1 fix)
           }
         }
 
@@ -1511,7 +1511,7 @@ const Sync = {
           console.warn('[Sync] markSynced persist failed — keeping pending + scheduling retry (NOT showing Synced).');
           this._showStatus('Saving sync state… will retry', 'warning');
           Sync._setPending(true);
-          this._scheduleSyncRetry();
+          if (!_nested) this._scheduleSyncRetry();   // OS-W3 (W3-SR-1 R1 fix)
         } else {
           // SA-G-F2: do NOT advance the pull cursor from the device clock on push.
           // _lastSyncAt is the pull "since" and must be driven ONLY by the server watermark in
@@ -1531,7 +1531,7 @@ const Sync = {
         console.warn('[Sync] Push response ambiguous — batch left unsynced for retry.', result);
         this._showStatus('Sync uncertain — will retry', 'warning');
         Sync._setPending(true);
-        this._scheduleSyncRetry();  // Wave H (GPTa-32): the ambiguous branch used to schedule NO retry
+        if (!_nested) this._scheduleSyncRetry();  // Wave H (GPTa-32) + OS-W3 (W3-SR-1 R1 fix): nested drain never schedules
       }
 
       }  // end legacy (else) ack path
@@ -1659,6 +1659,24 @@ const Sync = {
           return;
         }
         if (!resp.ok) {
+          // OS-W3 (W3-SR-8 belt-and-braces + W3-SR-9): a non-2xx body may still carry the topology-hold flag
+          // (e.g. a 423 from a future/differently-configured LA). Parse defensively; on the flag, run the SAME
+          // hold handling as the pinned 200 envelope — policyVersion adopted, _topologyHold set (suppresses
+          // pullSteps), cursors untouched, calm status. Any other non-2xx stays the generic stale warning.
+          const errBody = await resp.json().catch(() => null);
+          if (errBody && errBody.topologyPending === true) {
+            try {
+              const pv = Number(errBody.policyVersion);
+              if (Number.isFinite(pv) && pv > 0 && typeof Auth !== 'undefined' && pv > ((DB.get().accessPolicy && Number(DB.get().accessPolicy.version)) || 0)) {
+                this._fetchRemoteConfig().catch(() => {});
+              }
+            } catch (e) {}
+            this._reconcilePolicyPurge().catch(() => {});
+            this._topologyHold = true;
+            this._showStatus('Store update in progress — syncing will resume shortly', 'info', 0);
+            console.log('[Sync] topology hold (non-2xx body) — ledger pull deferred, cursors untouched.');
+            return;
+          }
           console.warn(`[Sync] Pull page failed (lastId=${cursorId}):`, resp.status);
           this._showStatus('Data may be stale \u2014 last sync failed', 'warning', 0);
           return;  // Abort — don't advance lastSyncAt, retry next cycle
@@ -2033,7 +2051,7 @@ const Sync = {
       const conflict = [...landed].some(id => rejSet.has(id) || failSet.has(id));
       if (conflict) {
         console.warn('[Sync] (steps) contradictory server buckets — no durable change, retrying whole batch.');
-        Sync._setStepPending(true); this._scheduleSyncRetry();
+        Sync._setStepPending(true); if (!_nested) this._scheduleSyncRetry();   // OS-W3 (W3-SR-1 R1 fix)
         return;
       }
       let marked = true, rejMarked = true;
@@ -2048,7 +2066,7 @@ const Sync = {
 
       const clean = marked && rejMarked && failRows.length === 0 && unaccounted === 0 && held.length === 0;
       Sync._setStepPending(!clean);
-      if (!clean) this._scheduleSyncRetry();
+      if (!clean) { if (!_nested) this._scheduleSyncRetry(); }   // OS-W3 (W3-SR-1 R1 fix)
       else { this._notifyFollowers(); }
       console.log('[Sync] Steps push: ' + landed.size + ' synced, ' + rejRows.length + ' rejected, ' + failRows.length + ' failed, ' + unaccounted + ' unaccounted, ' + held.length + ' held.');
     } catch (err) {

@@ -475,6 +475,7 @@ const DB = {
     return (c.transactions || []).some(outOne)
       || (c.stockTakes || []).some(outOne)
       || (c.deliveries || []).some(outOne)
+      || (c.thresholds || []).some(outOne)   // Codex W3-build R1: the purge drops thresholds, so the detector must scan them too (else an out-of-scope threshold write never re-arms)
       || (c.transfers || []).some(t => t && (t.fromStoreId != null || t.toStoreId != null) && !inS(t.fromStoreId) && !inS(t.toStoreId))
       || (c.recordSteps || []).some(s => s && (s.ownerStoreId != null || s.fromStoreId != null || s.toStoreId != null) && !inS(s.ownerStoreId) && !inS(s.fromStoreId) && !inS(s.toStoreId));
   },
