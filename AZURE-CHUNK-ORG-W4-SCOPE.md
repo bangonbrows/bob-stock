@@ -1,9 +1,10 @@
 # OS-W4 SCOPE — Era-aware pricing lens + [from,to) buy-back export
 
-**Status:** SCOPE REVIEW R3 FOLDED (2026-07-13) — R1 → W4-SR-1..8 (+Kunal SR-9); R2 → SR-10..16; **R3: AGY
-BLOCK×3 + Codex BLOCK×12 (3 converged pairs; interaction-level findings) → W4-SR-17..28**. ALL ground-truthed
-REAL (planner per-product writer confirmed ABSENT; archive `_fromArchive` field-drop confirmed; discrepancy
-top-up path confirmed). Awaiting R4 → build.
+**Status:** SCOPE REVIEW R4 FOLDED (2026-07-14) — R1→SR-1..8 (+Kunal SR-9); R2→SR-10..16; R3→SR-17..28;
+**R4: AGY×2 + Codex×14 → SR-29..44 + a MODEL REVISION (pricing re-keyed back to PER-STORE, the franchiseeId
+indirection deleted — Codex R4-4 showed it clashed with the W2 alignment invariant)**. ALL ground-truthed
+REAL (Transfers-list deletion, ID-based archival, and the local-only unitPriceAtTime stamp all verified in
+the repo). Awaiting R5 → build. **R5 must specifically re-review the model revision.**
 
 ## SCOPE REVIEW R1 (2026-07-13): AGY×3 + Codex×5 — all folded
 
@@ -37,6 +38,45 @@ top-up path confirmed). Awaiting R4 → build.
 | **W4-SR-26** | Codex R3-10 | the coverage manifest can't be INFERRED from the rows (an omitted interior row leaves the span unchanged; a legit quiet month looks like a failed query) | `coverage` becomes explicit QUERY-COMPLETION EVIDENCE produced by the gated route: attestations that (a) the ARCHIVE query fully enumerated `[from, min(to, archiveCutoff))`, (b) the LIVE query fully enumerated `[max(from, archiveCutoff), to)`, (c) the `archiveCutoff` is supplied and consistent. The engine validates the attested union == `[from,to)` and refuses otherwise |
 | **W4-SR-27** | Codex R3-11 | the ACTIVATION fact wasn't durable: malformed v2 or an offline restart either silently prices from stale history or re-enables the forbidden scalar fallback | pricing-config adoption mirrors accessPolicy: MONOTONIC version + DURABLE persistence (Dexie + `bob_pricing_ver`). Once any valid config is adopted the fact is permanent: a malformed/older v2 is REJECTED and v1 KEPT (append-only history stays true for every date it covers — surfaced as a staleness warning, never a scalar revert); offline restarts load the durable copy |
 | **W4-SR-28** | Codex R3-12 | the authoritative LA doc carried NO pricing-change route, dual-write, stamp validation, or archive stamp columns — the three post-activation writers had no implementable server contract | `AZURE-CHUNK-ORG-LA-CHANGES.md` gains §4-W4: the authenticated pricing-change route (Director `editPricing` sudo → `appendPricingForKey` server-side → ATOMIC history+scalar dual-write via the catalogue path → version bump + echo), stamp ingest validation, stamp columns on `StockTransactions`/`_Archive`/`Transfers`, and the export route's coverage attestations |
+
+## ⚠ MODEL REVISION (R4) — pricing re-keyed BACK to PER-STORE; the franchiseeId indirection is DROPPED
+Codex R4-4 exposed an architecture clash: the R2 franchiseeId-keyed shared map violates the W2 planner's
+per-store pricing⟺era ALIGNMENT invariant (franchisee owns A since Jan, acquires B in July ⇒ the shared
+Jan-rooted map overlaps B's Jan–July HO era ⇒ `pricingAlignsWithEras` fails, correctly). The fix keeps the
+LAYERS distinct and drops the indirection entirely:
+- **Canonical pricing key = the STORE id — including OFFICE store rows.** The W2 planner stays untouched
+  (per-store maps, per-store alignment). The invoice bills OFFICE-keyed rows, so the OFFICE carries its own
+  `'*'` series (the franchisee's negotiated rate — exactly where `office.franchiseDiscount` lives today).
+- **The resolver map is DELETED.** The three-tier chain becomes
+  `billingStore[productId] → global[productId] → billingStore['*']` where billingStore = the row's own
+  storeId. No indirection = W4-SR-10's map-gap class and AGY R4-2's referential-integrity class VANISH.
+- **Series lifecycle:** ONBOARD seeds the new office's `'*'` series in the same plan that creates the office;
+  CONVERT/ADD under an existing office are rate-inherited (the office already carries the series); existing
+  offices (cockburn_office) get their opening series from the activation seed (runbook). Retail-store series
+  continue to exist for planner/era coherence + any future direct supply.
+- Writers: global product editor → `global[productId]`; office-default editor → `office['*']`;
+  W5 wizard per-product rates → `store/office[productId]` (still writer-less in W4, per W4-SR-23).
+
+## SCOPE REVIEW R4 (2026-07-14): AGY BLOCK×2 + Codex BLOCK×14 — all folded (W4-SR-29..44)
+
+| # | Auditor | Finding | Fold |
+|---|---|---|---|
+| **W4-SR-29** | AGY R4-1 | a malformed FIRST config (v1) is rejected at adoption, storage stays empty, and W4-SR-10 reads that as "never served" → scalar fallback bypasses fail-closed at the worst moment (activation) | a durable `bob_pricing_activated` flag is written the FIRST time the pricing key is ever OBSERVED (before/regardless of validation); activated + no valid adopted config ⇒ FAIL CLOSED (PRICING DATA ERROR), never scalar |
+| **W4-SR-30** | AGY R4-2 | resolverMap referential integrity (a fid pointing nowhere → silent fall-through to global) | MOOT — the resolver map is deleted by the R4 model revision; the class no longer exists |
+| **W4-SR-31** | Codex R4-1 | keeping valid v1 after rejecting v2 is NOT historically safe: v2 may CLOSE v1's open interval (10%→20%); stale v1 prices every post-change row at 10% | once a NEWER version is OBSERVED but not adoptable, a durable `pricing_stale` state fails CLOSED for pricing-sensitive reads + HO→franchise submits BEYOND the last CONFIRMED closed boundary (rows before it stay priceable from v1's closed intervals); cleared only by adopting a valid config |
+| **W4-SR-32** | Codex R4-2 | the history→scalar dual-write isn't atomic TO READERS (crash between = lens shows new, global views show old) | LA §6 amended: the pricing-change route journals `pricing_pending`, writes history + scalar, then PUBLISHES both under ONE version bump (readers adopt version-consistent snapshots only); reconcile resumes a crash — the standard pending/2-phase discipline |
+| **W4-SR-33** | Codex R4-3 | no CAS / idempotency on pricing changes (two tabs from base v7 → lost interval; a lost-response retry double-appends) | the route requires `expectedVersion` (CAS, the AA-03 baseVersion pattern) + a client-minted stable `opId` (idempotent replay returns the prior result); folded into LA §6 |
+| **W4-SR-34** | Codex R4-4 | franchisee-keyed config vs the per-store planner state (the architecture clash) | RESOLVED by the R4 MODEL REVISION above — pricing stays per-store; W2 invariants untouched |
+| **W4-SR-35** | Codex R4-5 | resolverMap had no lifecycle owner (convert commits, map never updated → every read/submit for that store fails closed) | map deleted (model revision); the remaining lifecycle (office-series seeding at onboard + activation seed for existing offices) is pinned there |
+| **W4-SR-36** | Codex R4-6 | coverage partitioned on an event-date archiveCutoff, but Chunk-8 archives by MONOTONIC ID (AZURE-CHUNK8-SCOPE.md:87) — a June offline row uploaded in July has a live ID; date-partitioned attestations truthfully miss it | attestations reworked: the LIVE query enumerates the FULL event window AND the ARCHIVE query enumerates the FULL event window; the engine UNIONS + DEDUPES by TransactionId; attestations assert full-window enumeration of BOTH lists (no partition seam) |
+| **W4-SR-37** | Codex R4-7 | the OS-SR-10 grace window can admit a valid pre-buyback row AFTER an immediately-generated export (settlement silently incomplete) | the export input gains a `graceClosed` attestation (the store's old-era flush authorization consumed/expired); WITHOUT it the engine emits the settlement marked **PROVISIONAL** (regenerable); FINAL requires graceClosed — never silent incompleteness |
+| **W4-SR-38** | Codex R4-8 | the export needs usage/retail-profit but server rows lack `unitPriceAtTime` + `stockFrom/stockTo` (sync.js:1087 drops them; sale vs wastage indistinguishable server-side; catalogue price changes rewrite retail revenue) — the K4 pattern ALREADY stamps unitPriceAtTime locally (index.html:2126) | sync mapping + ingest validation extended to carry `UnitPriceAtTime` + `StockFromStoreId`/`StockToStoreId` (existing local fields, currently client-only); the export engine's retail-profit reads the K4 stamp (frozen), legacy rows fall back per K4's own rule (surfaced) |
+| **W4-SR-39** | Codex R4-9 | stamps validated independently — SellAtSupply without DiscAtSupply accepted → frozen price mixed with a LIVE discount (still mutable) | BOTH-OR-NEITHER invariant at ingest AND in the engine/invoice: one stamp without the other = malformed row (rejected at ingest; fail-closed line client-side). Legacy = neither (lens path) |
+| **W4-SR-40** | Codex R4-10 (P2) | §6 named SharePoint columns on `Transfers` — that list is an EMPTY never-wired scaffold deleted at phase cleanup (AZURE-CHUNK4-SCOPE.md:118); transfer items actually ride `RecordSteps.Payload` JSON | §6 corrected: the server-side stamp transport for transfer items = `Payload.items[].sellAtSupply/discAtSupply` inside the steps ingest validation (both-or-neither per item); no Transfers columns exist or are created |
+| **W4-SR-41** | Codex R4-11 | in-transit transfers submitted PRE-W4 have no stamps and no history to reconstruct them; receiving post-activation can't copy submit-time values | pinned cutover order (runbook): at ACTIVATION — before the pricing-change route is enabled — a one-time migration stamps all in-transit HO→franchise transfer items from the CURRENT values (provably correct: no pricing change can have occurred between their submit and the migration, because the change route doesn't exist yet); only then is the route enabled |
+| **W4-SR-42** | Codex R4-12 | "whole-config validation" validated series VALUES but not the SCHEMA (exact root keys, safe ids, `global['*']` would smuggle an unauthorized global-default tier) | a full config-schema validator is pinned: exact root fields (`version`, `global`, `stores`), reqId-safe keys everywhere, `global` = product keys ONLY (no `'*'` — no global default tier exists), per-store maps = `'*'`/productId, every series `validPricingSeries`. Any deviation ⇒ the config rejected whole (adoption keeps prior per W4-SR-31) |
+| **W4-SR-43** | Codex R4-13 | `_doAddProduct` needs product-create + initial global history ATOMICALLY (orphan history or discount-less product on partial failure) | the add-product-with-discount server op = ONE idempotent journaled operation (pending → catalogue create + `global[productId]` opening interval + scalar dual-write → publish under one version); client sends one opId |
+| **W4-SR-44** | Codex R4-14 (P2) | the `editPricing` sudo purpose isn't in `validateUser.js` SUDO_PURPOSES nor the client sudo prompt map — proof minting would reject the new route | build surface extended: `validateUser.js` gains `editPricing`; the client sudo map gains the prompt key; both in the touch list + LA §6 |
 
 ---
 **Original map + design below, as amended by the folds above.**

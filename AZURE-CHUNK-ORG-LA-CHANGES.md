@@ -72,22 +72,31 @@ convenience default for NEW rows only; the authoritative rate is the dated histo
 Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `topology-change` to
 `validateUser.js` SUDO_PURPOSES so the write LA can demand a purpose-bound sudo proof.
 
-## 6. W4 server contracts (OS-W4 scope review R3, W4-SR-28 — staging-apply items)
-- **Pricing-change route (the three post-activation writers' server contract):** an authenticated,
-  Director-gated route (`editPricing` sudo purpose) that runs `appendPricingForKey` SERVER-side (effective
-  now; append-only per OS-SR-12) and ATOMICALLY dual-writes the resulting current rate into the legacy
-  catalogue scalar (the same pending/2-phase discipline as §1 — history first, scalar second, reconcile on
-  crash), then bumps + echoes the pricing-config version. Serves global-tier appends (`global[productId]`)
-  and franchisee-default appends (`franchisees[fid]['*']`); the per-product franchisee tier's writer is the
-  W5 wizard (W4-SR-23).
-- **Pricing-config echo shape (W4-SR-4/16):** `{ version, global: {productId: series}, franchisees:
-  {fid: {'*': series, productId?: series}}, resolverMap: {storeOrOfficeId: fid} }` — served via config +
-  version-echoed on pull (adoption is monotonic + durable, W4-SR-27).
-- **Stamp columns + ingest validation (W4-SR-13/18/20):** `SellAtSupply`/`DiscAtSupply` columns on
-  `StockTransactions`, `StockTransactions_Archive`, AND `Transfers` (item lines); the push/steps ingest
-  validation accepts them only as finite non-negative numbers (discount 0-100); archive-move and
-  archive-pull preserve them.
-- **Buy-back export route (extends §3 per W4-SR-9/24/25/26):** queries LIVE + ARCHIVE for the window,
-  bound to the bought-back `storeId`, boundary-evaluated on the row's UTC instant (never the calendar-day
-  string), and supplies the engine's `coverage` attestations (archive segment fully enumerated + live
-  segment fully enumerated + the archiveCutoff) — the pure engine refuses without them.
+## 6. W4 server contracts (OS-W4 scope review R3+R4, W4-SR-28/32/33/36/38/39/40/44 — staging-apply items)
+- **Pricing-change route:** authenticated, Director-gated (editPricing sudo — ADDED to validateUser.js
+  SUDO_PURPOSES + the client sudo prompt map, W4-SR-44). Runs appendPricingForKey SERVER-side (effective now,
+  append-only per OS-SR-12). ATOMIC TO READERS (W4-SR-32): journals pricing_pending, writes history + the
+  legacy scalar, then PUBLISHES both under ONE version bump — readers only ever adopt version-consistent
+  snapshots; the reconcile sweep resumes a crash. CONCURRENCY (W4-SR-33): requires expectedVersion (CAS,
+  the AA-03 baseVersion pattern) + a client-minted stable opId (idempotent replay returns the prior result).
+  Serves global-tier appends (global[productId]) and office-default appends (office['*']); the per-product
+  tier writer is the W5 wizard (W4-SR-23).
+- **Add-product-with-discount (W4-SR-43):** ONE idempotent journaled op — catalogue create + the
+  global[productId] opening interval + scalar dual-write, published under one version.
+- **Pricing-config echo shape (R4 model revision — PER-STORE, no resolver map):**
+  { version, global: {productId: series}, stores: {storeOrOfficeId: {'*': series, productId?: series}} } —
+  served via config, version-echoed on pull; adoption durable + monotonic (W4-SR-27/29/31: activation flag on
+  first observation; newer-but-unadoptable ⇒ durable pricing_stale fail-closed past the last confirmed
+  boundary). Schema validated EXACTLY (W4-SR-42: exact root fields, reqId keys, global = product keys only).
+- **Stamp columns + ingest validation (W4-SR-13/18/20/38/39/40):** SellAtSupply/DiscAtSupply columns on
+  StockTransactions + StockTransactions_Archive (BOTH-OR-NEITHER per row, finite, discount 0-100); transfer
+  ITEM stamps ride RecordSteps Payload.items[].sellAtSupply/discAtSupply (validated in the steps ingest —
+  there are NO Transfers columns; that list is a deleted scaffold). ALSO carried: UnitPriceAtTime +
+  StockFromStoreId/StockToStoreId (the K4 fields the export needs, currently client-only). Archive-move and
+  archive-pull preserve all of these.
+- **Buy-back export route (extends §3 per W4-SR-9/24/25/26/36/37):** queries LIVE across the FULL event
+  window AND ARCHIVE across the FULL event window (Chunk-8 archives by monotonic ID, not date — no
+  date-partition seam), unions + dedupes by TransactionId, bound to the bought-back storeId, boundary-
+  evaluated on the row UTC instant (never the calendar-day string), and supplies the engine full-window
+  enumeration attestations for BOTH lists + the graceClosed attestation (absent ⇒ the settlement is marked
+  PROVISIONAL and regenerable; FINAL requires it).
