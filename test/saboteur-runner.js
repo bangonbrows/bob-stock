@@ -1161,6 +1161,10 @@ const MUTATIONS = [
     find: "        if (!_nested) this._scheduleSyncRetry();  // Wave H (GPTa-32) + OS-W3 (W3-SR-1 R1 fix): nested drain never schedules",
     repl: "        this._scheduleSyncRetry();",
     note: "OS-W3-1 (build-audit R1, AGY P0): the ambiguous-ack path loses its nested guard -> the drain schedules a retry timer while the reconcile owns the lock (the exact W3-SR-1 deviation both auditors flagged)" },
+  { id: 'S-254-401', sentinel: 'S-254', file: 'sync.js',
+    find: "    if (this._unauthorized) return;                  // Chunk 5 (D6) + OS-W3 build-audit R2 (Codex): a ledger 401 pauses the WHOLE cycle — the step cursor must not advance while auth is paused",
+    repl: "    /* sabotaged: no auth pause on pullSteps */",
+    note: "OS-W3 build-audit R2 (Codex P2): pullSteps loses its auth-pause guard -> a ledger 401 pauses push/pull but the step cursor keeps advancing with stale keys (the paused device silently drifts its step high-water mark)" },
 ];
 
 function copyRepoTo(dir) {

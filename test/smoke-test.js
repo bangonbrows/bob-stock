@@ -2296,6 +2296,7 @@ async function runSmoke(repo) {
       await page.route('**sw3pull.test**', r => {
         if (holdMode === 'hold200') return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ topologyPending: true, items: [], policyVersion: 1, maxId: 9000 }) });
         if (holdMode === 'hold423') return r.fulfill({ status: 423, contentType: 'application/json', body: JSON.stringify({ topologyPending: true, items: [], policyVersion: 1, maxId: 9001, scope: ['legacy-forbidden'] }) });
+        if (holdMode === 'auth401') return r.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ topologyPending: true, items: [], policyVersion: 12, maxId: 9001, scope: ['forbidden'] }) });
         return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 7, scope: ['karrinyup'] }) });
       });
       await page.route('**sw3spull.test**', r => { stepsPullHits++; r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], maxId: 0 }) }); });
@@ -2313,12 +2314,17 @@ async function runSmoke(repo) {
       holdMode = 'hold423';
       const r1b = await page.evaluate(async () => { Sync._topologyHold = false; await Sync.poll(); return { hold: Sync._topologyHold === true, cursor: Sync._lastSyncId, stepCursor: localStorage.getItem('bob_last_step_sp_id'), sig: localStorage.getItem('bob_scope_sig') }; }, s);
       const hitsDuring423 = stepsPullHits;
+      // build-audit R2 (Codex): a ledger 401 pauses the WHOLE cycle — the hold flag on a 401 body is IGNORED
+      // (auth precedence), and pullSteps must NOT run / advance its cursor while unauthorized.
+      holdMode = 'auth401';
+      const r1c = await page.evaluate(async () => { Sync._topologyHold = false; await Sync.poll(); const out = { unauth: Sync._unauthorized === true, hold: Sync._topologyHold === false, cursor: Sync._lastSyncId, stepCursor: localStorage.getItem('bob_last_step_sp_id') }; Sync._unauthorized = false; return out; }, s);
+      const hitsDuring401 = stepsPullHits;
       holdMode = 'normal';
       // TWO polls: the first may legitimately reconcile-abort (the thresholds-aware detector spots the SEED's
       // other-store thresholds as out-of-scope vs this fixture's sig and re-arms — fail-closed keeps the hold
       // one extra cycle, per W3-SR-15); the steady-state second poll clears the hold and resumes steps.
       const r2 = await page.evaluate(async () => { await Sync.poll(); await Sync.poll(); return { hold: Sync._topologyHold, cursor: Sync._lastSyncId }; }, s);
-      rec('S-254', 'W3-5: hold envelope (200 AND non-2xx body) freezes cursors + suppresses steps; normal pull resumes', r1.hold === true && r1.cursor === 7 && r1.stepCursor === '4' && hitsDuringHold === 0 && r1b.hold === true && r1b.cursor === 7 && r1b.stepCursor === '4' && r1b.sig === JSON.stringify(['karrinyup']) && hitsDuring423 === 0 && r2.hold === false && stepsPullHits > 0, `200: hold=${r1.hold} cursor=${r1.cursor} | 423: hold=${r1b.hold} cursor=${r1b.cursor} sig=${r1b.sig} stepsHits=${hitsDuring423} | resumed=${stepsPullHits > 0} (clean: both held at 7/4, sig untouched, 0 hits, resumes)`); await ctx.close(); }
+      rec('S-254', 'W3-5: hold envelope (200 AND non-2xx body) freezes cursors + suppresses steps; 401 pauses the WHOLE cycle; normal pull resumes', r1.hold === true && r1.cursor === 7 && r1.stepCursor === '4' && hitsDuringHold === 0 && r1b.hold === true && r1b.cursor === 7 && r1b.stepCursor === '4' && r1b.sig === JSON.stringify(['karrinyup']) && hitsDuring423 === 0 && r1c.unauth === true && r1c.hold === true && r1c.stepCursor === '4' && hitsDuring401 === hitsDuring423 && r2.hold === false && stepsPullHits > hitsDuring401, `200: hold=${r1.hold} cursor=${r1.cursor} | 423: hold=${r1b.hold} cursor=${r1b.cursor} sig=${r1b.sig} stepsHits=${hitsDuring423} | 401: unauth=${r1c.unauth} holdIgnored=${r1c.hold} stepCursor=${r1c.stepCursor} stepsHits=${hitsDuring401 - hitsDuring423} | resumed=${stepsPullHits > hitsDuring401} (clean: held at 7/4, sig untouched, 0 hits during hold+401, resumes)`); await ctx.close(); }
 
     // S-255 (S-W3-10/15): a NON-hold pull that ABORTS on scope-purge failure keeps pullSteps suppressed via
     // the purge-pending arm of the entry guard (the hold flag alone is not the invariant).

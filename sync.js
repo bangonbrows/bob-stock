@@ -1997,6 +1997,7 @@ const Sync = {
   // effect (e.g. "received") before the stock itself has landed. The cycle runs ledger push FIRST, then
   // pushSteps (see _runSyncCycle / scheduleSync / poll), which is what makes the ordering hold.
   async pushSteps(_nested) {
+    if (this._unauthorized) return;                  // Chunk 5 (D6) + OS-W3 build-audit R2 (Codex): the auth pause must gate EVERY sync entry point, not just push/pull
     if (!this._stepsPushUrl) return;                 // steps sync disabled (pre-Chunk-4 config) — graceful no-op
     if (typeof Records === 'undefined') return;
     // OS-W3 (W3-SR-1): _nested=true = called from inside an already-locked cycle (the reconcile drain);
@@ -2091,6 +2092,7 @@ const Sync = {
   },
 
   async pullSteps() {
+    if (this._unauthorized) return;                  // Chunk 5 (D6) + OS-W3 build-audit R2 (Codex): a ledger 401 pauses the WHOLE cycle — the step cursor must not advance while auth is paused
     if (!this._stepsPullUrl) return;                 // steps sync disabled — graceful no-op
     // OS-W3 (W3-SR-10/13/15): steps must NEVER advance while the ledger is held or unreconciled. The guard
     // lives HERE (not at call sites) so every caller — poll, _runSyncCycle, init()'s first-run direct path,
