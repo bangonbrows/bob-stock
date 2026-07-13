@@ -71,3 +71,23 @@ convenience default for NEW rows only; the authoritative rate is the dated histo
 ## 5. Function App: add the topology routes + the `topology-change` sudo purpose
 Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `topology-change` to
 `validateUser.js` SUDO_PURPOSES so the write LA can demand a purpose-bound sudo proof.
+
+## 6. W4 server contracts (OS-W4 scope review R3, W4-SR-28 — staging-apply items)
+- **Pricing-change route (the three post-activation writers' server contract):** an authenticated,
+  Director-gated route (`editPricing` sudo purpose) that runs `appendPricingForKey` SERVER-side (effective
+  now; append-only per OS-SR-12) and ATOMICALLY dual-writes the resulting current rate into the legacy
+  catalogue scalar (the same pending/2-phase discipline as §1 — history first, scalar second, reconcile on
+  crash), then bumps + echoes the pricing-config version. Serves global-tier appends (`global[productId]`)
+  and franchisee-default appends (`franchisees[fid]['*']`); the per-product franchisee tier's writer is the
+  W5 wizard (W4-SR-23).
+- **Pricing-config echo shape (W4-SR-4/16):** `{ version, global: {productId: series}, franchisees:
+  {fid: {'*': series, productId?: series}}, resolverMap: {storeOrOfficeId: fid} }` — served via config +
+  version-echoed on pull (adoption is monotonic + durable, W4-SR-27).
+- **Stamp columns + ingest validation (W4-SR-13/18/20):** `SellAtSupply`/`DiscAtSupply` columns on
+  `StockTransactions`, `StockTransactions_Archive`, AND `Transfers` (item lines); the push/steps ingest
+  validation accepts them only as finite non-negative numbers (discount 0-100); archive-move and
+  archive-pull preserve them.
+- **Buy-back export route (extends §3 per W4-SR-9/24/25/26):** queries LIVE + ARCHIVE for the window,
+  bound to the bought-back `storeId`, boundary-evaluated on the row's UTC instant (never the calendar-day
+  string), and supplies the engine's `coverage` attestations (archive segment fully enumerated + live
+  segment fully enumerated + the archiveCutoff) — the pure engine refuses without them.
