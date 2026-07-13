@@ -1,7 +1,10 @@
 # OS-W4 SCOPE — Era-aware pricing lens + [from,to) buy-back export
 
-**Status:** R5 RECEIVED (2026-07-14) — AGY×3 + Codex×16 BANKED, FOLD PENDING (next session; see the R5 section
-at the end). R1→SR-1..8 (+Kunal SR-9); R2→SR-10..16; R3→SR-17..28; R4→SR-29..44 + model revision.
+**Status:** R5 FOLDED (2026-07-14) — W4-SR-45..62 (AGY×3 + Codex×16, one converged pair; EVERY finding
+ground-truthed REAL against the code) + **MODEL REVISION 2** (server-side write FAN-OUT · full seed coverage ·
+planner-side cloning · ONBOARD office-store extension — see the R5 sections below the R4 table).
+R1→SR-1..8 (+Kunal SR-9); R2→SR-10..16; R3→SR-17..28; R4→SR-29..44 + model revision; R5→SR-45..62 +
+revision 2. NEXT: scope review R6 (paper review, BOTH auditors in parallel) via `PASTE-TO-AUDITORS-ORG-W4-SCOPE.md`.
 
 ## SCOPE REVIEW R1 (2026-07-13): AGY×3 + Codex×5 — all folded
 
@@ -74,6 +77,52 @@ LAYERS distinct and drops the indirection entirely:
 | **W4-SR-42** | Codex R4-12 | "whole-config validation" validated series VALUES but not the SCHEMA (exact root keys, safe ids, `global['*']` would smuggle an unauthorized global-default tier) | a full config-schema validator is pinned: exact root fields (`version`, `global`, `stores`), reqId-safe keys everywhere, `global` = product keys ONLY (no `'*'` — no global default tier exists), per-store maps = `'*'`/productId, every series `validPricingSeries`. Any deviation ⇒ the config rejected whole (adoption keeps prior per W4-SR-31) |
 | **W4-SR-43** | Codex R4-13 | `_doAddProduct` needs product-create + initial global history ATOMICALLY (orphan history or discount-less product on partial failure) | the add-product-with-discount server op = ONE idempotent journaled operation (pending → catalogue create + `global[productId]` opening interval + scalar dual-write → publish under one version); client sends one opId |
 | **W4-SR-44** | Codex R4-14 (P2) | the `editPricing` sudo purpose isn't in `validateUser.js` SUDO_PURPOSES nor the client sudo prompt map — proof minting would reject the new route | build surface extended: `validateUser.js` gains `editPricing`; the client sudo map gains the prompt key; both in the touch list + LA §6 |
+
+## ⚠ MODEL REVISION 2 (R5) — the per-store model gains its write/seed/clone lifecycle
+R5 attacked the R4 revision and found its lifecycle half missing: per-store keying is CORRECT for reads, but
+nothing kept a franchisee's several per-store series IN AGREEMENT. The revision (all server/planner-side —
+the client chain from R4 is unchanged):
+- **WRITE FAN-OUT (W4-SR-45):** an office-default edit is ONE logical edit that the SERVER fans out — the
+  same interval appended to the office's `'*'` AND the `'*'` of every retail store currently in an open
+  franchise era owned by that franchisee. Target set derived from server rows (never client-supplied, the
+  OS-SR-2 discipline); published under ONE version bump (the SR-32 journal spans the whole set — a partial
+  fan-out is never published).
+- **SEED COVERAGE (W4-SR-46/50):** the activation seed provisions office `'*'` + every active retail store's
+  `'*'` (from that office's live scalar) + `global[productId]` for every product carrying a discount —
+  BACKDATED per the frozen-legacy baseline policy (SR-50), so no invoice- or export-reachable date is NOT SET.
+- **PLANNER CLONING + OFFICE STORES (W4-SR-47/48):** ADD/CONVERT/CREATE-born-franchise DROP `intent.rate`;
+  the planner clones the office's current open `'*'` interval into the new store's map (fail closed when the
+  office has none). ONBOARD creates the office STORE row + its era + its `'*'` series IN THE SAME PLAN —
+  a real W2 planner extension (`state.office`, new invariants, suite growth) with its own re-audit.
+- **NO ACTIVATION MIGRATION (W4-SR-59/60):** the SR-41 one-shot in-transit stamp migration is DELETED
+  (its premise was false — pricing edits exist today); replaced by STAMP-AT-RECEIVE for any transfer whose
+  submit step carries no stamps. Covers the whole class permanently (in-transit at cutover AND stale-PWA
+  submits after cutover), and needs no step mutation — the receive step is the publication vehicle.
+- Where the older W4-1/W4-4 design text below still mentions franchiseeId keying or a resolver map, the R4
+  revision + this block govern.
+
+## SCOPE REVIEW R5 (2026-07-14): AGY BLOCK×3 + Codex BLOCK×16 — all ground-truthed REAL, folded (W4-SR-45..62)
+
+| # | Auditor | Finding (ground truth) | Fold |
+|---|---|---|---|
+| **W4-SR-45** | AGY R5-1 (P1) | office-default edit writes only `office['*']`; with the resolver map deleted, retail stores never see the new rate — invoice (office-keyed rows, index.html:4764) and buy-back export (retail-keyed rows) price from DIVERGING series. REAL | the pricing-change route's office-default append FANS OUT server-side (Model Revision 2): same interval appended to the office AND every retail store in an open franchise era owned by that franchisee; target set server-derived; ONE version bump publishes all-or-nothing. Sentinel S-W4-14: post-edit, invoice and export resolve the SAME rate; another franchisee's store untouched |
+| **W4-SR-46** | AGY R5-2 (P1) | seeding only offices leaves retail-store series blank → every buy-back export for a pre-existing store silently prices NOT SET. REAL | the activation seed (runbook) provisions `office['*']` + EVERY active retail store's `'*'` (cloned from that office's live `office.franchiseDiscount`) + `global[productId]` for every product with a non-null `franchiseDiscount`; dates per SR-50. Sentinel S-W4-15: post-seed, an export line for a pre-existing store resolves the office rate, never NOT SET |
+| **W4-SR-47** | AGY R5-3 + Codex R5-2 (CONVERGED, P1) | "rate inheritance" is impossible for the pure engine (no map, no DB), and the planner trusts caller `intent.rate` (topology.js:457) — a client could submit 15% vs the office's 25%. REAL | ADD / CONVERT / CREATE-born-franchise DROP `intent.rate` entirely: the planner receives the office's pricing via `state.office` (SR-48) and CLONES its current OPEN `'*'` interval into the new store's `'*'` (from=now); no open office interval ⇒ fail closed `NO_OFFICE_PRICING`. `intent.rate` survives ONLY on ONBOARD (the negotiated rate; no office exists yet). Sentinels: clone == office rate by construction; missing/closed office series fails closed |
+| **W4-SR-48** | Codex R5-1 (P1) | ONBOARD creates only the office CREDENTIAL + retail store (topology.js:483); no office store row, era, or pricing map — "W2 remains untouched" is FALSE. REAL (planner state is single-store) | pinned W2 PLANNER EXTENSION (own re-audit): `planTopologyChange` state gains `state.office` = `{store, eras, pricing}` of the target franchisee's office (null when N/A). ONBOARD's plan creates the office STORE row (id = `intent.officeStoreId`, validated + uniqueness-checked like storeId), an open era owned by the franchiseeId, its `'*'` series from `intent.rate`, AND the retail store's cloned `'*'`; the office account's StoreIds = `[officeStoreId, storeId]`. Invariant extensions flagged for the re-audit: the store-POS-existence check (topology.js:425) must EXEMPT office stores (no POS is minted for an office); alignment/orphan/active-pricing checks extend to office eras; buy-back of a retail store leaves the office era + series OPEN (office deactivation stays MANUAL, D-OS). `test/topology-proof.js` grows; the 191/191 W2 gate re-runs |
+| **W4-SR-49** | Codex R5-3 (P1) | a dormant device that never observed activation has no SR-29 flag → identifies as pre-activation and submits on stale scalars. REAL by construction of SR-29 | pricing-sensitive COMMITS on the W4 build (HO→franchise submit; pricing edits are already server-routed) require a FRESH server pricing-state observation (the pull/config pricing-version echo, bounded age): server says "no pricing config" ⇒ the scalar path is legitimate; pricing served ⇒ adopted config required (stamps from the lens); no fresh observation (dormant/offline) ⇒ the commit is HELD (the W3 hold pattern) — local absence alone never selects the scalar path. Sentinel S-W4-16 |
+| **W4-SR-50** | Codex R5-4 (P1) | the seed has no historical-row contract: `from=activation` orphans earlier invoice rows once fallback is disabled; backdating "invents" history. REAL | PINNED FROZEN-LEGACY BASELINE: every seeded opening interval is BACKDATED — retail `'*'` to that store's current franchise-era start, office `'*'` to the office era start, `global[productId]` to a pinned epoch (the earliest franchise era start, recorded in the runbook) — at the live scalar's value AT SEED TIME. Semantics: this FREEZES today's behaviour (those rows already bill at the live scalar; the seed makes it permanent). Explicitly accepted + documented: scalar edits made BEFORE activation are unrecoverable — pre-activation dates resolve the frozen baseline, never a reconstruction. Sentinel S-W4-17: a pre-activation-dated line resolves the seeded rate; a post-activation edit cannot move it; no NOT-SET inside any era |
+| **W4-SR-51** | Codex R5-5 (P1) | one config-level `pricing_stale` boundary is wrong in both directions; safety is per store/product across every consulted tier. REAL | `pricing_stale` evaluates PER RESOLUTION: valid under stale ONLY if every consulted tier's covering decision comes from CLOSED intervals (append-only ⇒ immutable); a winning OPEN interval, or ANY consultable tier absent/uncovered at that date (the newer config could add or close there) ⇒ fail closed (PRICING DATA STALE, surfaced). The config-level boundary is dropped. Sentinel S-W4-18 |
+| **W4-SR-52** | Codex R5-6 (P1) | the scalar rides master_data under its OWN catalogue version (sync.js:678 `bob_catalogue_version`); nothing proves scalar+history came from one publication. REAL | the config generator stamps the pricing publication version INTO the master_data snapshot (`pricingVersion`); the client records it at merge; S-W4-9 coherence compares lens-vs-scalar ONLY on matching publication (older `pricingVersion` ⇒ the scalar is treated as superseded + a staleness hint surfaces, never a false parity failure). LA §6 amended |
+| **W4-SR-53** | Codex R5-7 (P1) | add-product mutates `global` but sat outside the SR-33 CAS contract — it can race a pricing edit. REAL (LA §6 had opId only) | the add-product-with-discount op carries the SAME `expectedVersion` CAS (pricing version) + the catalogue concurrency check as pricing edits; LA §6 amended |
+| **W4-SR-54** | Codex R5-8 (P2) | unbound opId replay can return an UNRELATED success; idempotency-after-CAS strands lost-response retries once the version advances. REAL | opId replay BINDS to a canonical digest (op-type + target + canonical payload + actor) — a different digest under a reused opId is REJECTED; the idempotency lookup runs BEFORE CAS so a lost-response retry returns the prior result even after the version advanced. LA §6 amended |
+| **W4-SR-55** | Codex R5-9 (P1) | the live+archive union has no cross-list tombstone or conflict semantics (sync.js:1208 strips tombstones WITHIN the archive result only). REAL | the engine's union applies tombstones ACROSS both lists (a live tombstone kills an archived original and vice versa); after TransactionId dedup, same-ID copies whose financial/classification fields DIFFER ⇒ FAIL CLOSED (settlement refused, both copies surfaced); bit-identical copies collapse to one. Sentinel S-W4-19 |
+| **W4-SR-56** | Codex R5-10 (P1) | a row MOVED live→archive between the two queries is lost while both truthfully attest full enumeration. REAL | both reads BIND to one archive run: the archival process maintains a monotonic `archive_run` version; the export route reads it BEFORE the first query and AFTER the second — changed ⇒ bounded retry, never attest; the attestations CARRY the run version and the engine REQUIRES both to match. LA §6 amended |
+| **W4-SR-57** | Codex R5-11 (P1) | `graceClosed` ≠ admitted writes COMMITTED — a grace-admitted push can be in flight at expiry; FINAL emitted on grace alone can be silently short. REAL | FINAL additionally requires a DRAINED-INGEST attestation: the server watermark proves every write admitted under that store's grace COMMITTED before the export queries ran (grace consumed/expired + a completed post-expiry ingest sweep). graceClosed alone ⇒ still PROVISIONAL. LA §6 amended |
+| **W4-SR-58** | Codex R5-12 (P1) | sale-vs-wastage classification rides the TEXT labels `stockFrom`/`stockTo` — the store-ID fields are null for manual movements (index.html:2090-2093; sale detection = `stockFrom==='Customer'`, 2124); SR-38 carried only the ID fields. REAL | sync carries the `StockFrom`/`StockTo` TEXT labels (bounded strings, both directions, StockTransactions + Archive) — they are the actual classification inputs; the export engine classifies via a SHARED fixture-tested classifier (parity with the client `Txn.category`/`_isHOSupply` semantics); a row with absent labels that cannot be classified lands in a SURFACED `unclassified` bucket, never silently mis-bucketed. Extends SR-38; LA §6 amended |
+| **W4-SR-59** | Codex R5-13 (P1) | SR-41's "provably correct" migration premise is FALSE — price/discount editors exist TODAY (index.html:3342 `_setProductFranDisc`, 3400 `_saveEditProduct`), so "current values at activation" ≠ submit-time values. REAL | the SR-41 one-shot activation migration is DELETED. Replaced by STAMP-AT-RECEIVE (Model Revision 2): a W4-build receive of a transfer whose submit step carries NO stamps stamps the created rows at receive — `discAtSupply` = lens as-of the transfer's SUBMIT timestamp (pre-activation dates ⇒ the SR-50 frozen baseline; deterministic), `sellAtSupply` = the current catalogue price at receive (exactly what today's system would bill, then frozen forever); the stamps ride the receive step + row sync (the SR-18 transport). Lens failure ⇒ both-or-neither ⇒ the row stays legacy (lens at read). Covers the whole CLASS permanently — in-transit at cutover AND stampless submits from stale PWA builds after cutover. Sentinel S-W4-20: stampless submit → receive stamps; a later price/discount edit leaves the received line bit-stable |
+| **W4-SR-60** | Codex R5-14 (P1) | migrated stamps have no cross-device publication path — stepIds are deterministic Enforce-Unique dedup keys (records.js:111/150), a mutated replay 409s, local item edits never update RecordSteps. REAL | RESOLVED BY CONSTRUCTION via SR-59: no step is ever mutated or replayed — the receive step (a NEW step, already the synced transport) publishes the receive-time stamps in its payload exactly like any post-W4 receive. The underlying constraint is BANKED as a pin: RecordSteps are immutable; any future stamp repair must be a NEW audited step type, never an edit |
+| **W4-SR-61** | Codex R5-15 (P2) | the engine signature (SR-17) still says `franchiseeMap` — unimplementable post-revision. REAL (doc drift) | PINNED post-revision signature: `buildBuybackExport({ storeId, rows, pricing: { storeMap, globalMap }, window, products, coverage, graceClosed })` — `storeMap` = the bought-back store's OWN validated map (route pre-selects; the engine REFUSES a multi-store `stores` object or franchisee-keyed map as malformed); the engine runs the SAME chain (`storeMap[productId] → globalMap[productId] → storeMap['*']`) with whole-config validation first (SR-22/42). SR-17's older shape is SUPERSEDED |
+| **W4-SR-62** | Codex R5-16 (P2) | "finite non-negative" admits 1e308 → total overflow. REAL — and the shared policy already EXISTS (`azure-functions/src/functions/validateMoney.js`: finite, ≥0, ≤10,000,000, ≤2dp, mirroring client `UI.money`) | `SellAtSupply`/`UnitPriceAtTime` validate via the SHARED validateMoney policy at EVERY surface (row ingest, steps-payload items, archive, the engine); `DiscAtSupply` via `validRate` (0–100). Out-of-policy ⇒ malformed row (rejected at ingest; fail-closed line client-side; both-or-neither still holds). LA §6 amended |
 
 ---
 **Original map + design below, as amended by the folds above.**
@@ -197,8 +246,12 @@ the server read LAs).
     interval via the server route (no orphan scalar) (W4-SR-6).
   - S-W4-9 CACHE COHERENCE: after a post-activation edit, lens(now) == every displayed "current rate"
     (products CSV + editor) (W4-SR-1).
+  - S-W4-10..13 are defined in their fold rows (SR-9/10, SR-13, SR-16); **S-W4-14..20 are defined in the R5
+    fold rows** (fan-out coherence, seed coverage, dormant-device hold, frozen baseline, per-resolution
+    stale, union conflict fail-closed, stamp-at-receive).
 - Each sentinel gets its saboteur mutation (parity rule). Full local gate before hand-off: smoke, topology
-  191, new export-engine proof suite, full saboteur sweep, static gates, dupes grep.
+  191+ (grows with the SR-48 planner extension), new export-engine proof suite, full saboteur sweep, static
+  gates, dupes grep.
 - Mock-must-match-server: the config `pricing_history` echo + the export route are proven against the REAL
   LAs at staging-apply E2E (staging-ledger items).
 
@@ -213,47 +266,11 @@ the server read LAs).
 - **W4-D1: RESOLVED YES — Kunal CONFIRMED 2026-07-13** (plus by convergence: (Kunal asked for the layman explanation; engineer recommended yes;
   AGY "strongly recommend"; Codex "must not be optional"). Commit-time stamping per W4-SR-3.
 
-## ⚠ R5 RECEIVED (2026-07-14): AGY BLOCK×3 + Codex BLOCK×16 — FOLD PENDING (next session)
-R5 attacked the R4 model revision itself and broke parts of it. The 19 findings are banked VERBATIM in
-`audit-artifacts/w4-scope-r5-verdicts.md` (gitignored raw) + summarized here; folding them is the FIRST task
-of the next session (fresh context — several folds reshape W2-planner scope and need careful design, not
-tail-of-session patching).
-
-**The R5 headline findings (all to be ground-truthed + folded as W4-SR-45..63):**
-1. AGY-1: office-default edits must FAN OUT to the office AND all active retail stores of that franchisee
-   (else invoice and buy-back price from diverging series).
-2. AGY-2: the activation seed must provision '*' series for offices AND every active retail store.
-3. AGY-3 + Codex-2: "rate inheritance" is impossible for the pure engine (no map, no DB) — ADD/CONVERT must
-   CLONE the office's current series into the new store's map, planner-side, and the planner must derive or
-   validate the rate against the office (client-supplied intent.rate alone contradicts the model).
-4. Codex-1: ONBOARD does NOT currently create an office store/era/pricing in the plan — "W2 untouched" is
-   FALSE; the planner needs a real extension (office store row + era + '*' series in one plan).
-5. Codex-3: a dormant device that never observed activation bypasses the activation flag — needs a
-   config-handshake/build-marker gate on pricing-sensitive writes post-W4.
-6. Codex-4: the activation seed needs an explicit HISTORICAL BASELINE policy (backdate to era start vs
-   activation-from — either invents or orphans history without a pinned frozen-legacy rule + sentinel).
-7. Codex-5: pricing_stale needs a PER-RESOLUTION safe horizon (per store/product across all consulted tiers),
-   not one config-level boundary.
-8. Codex-6: the scalar's publication version must ride the master_data snapshot so clients can prove
-   scalar+history came from the same publication.
-9. Codex-7/8: add-product needs the SAME CAS contract as pricing edits (it mutates global); opId replay must
-   bind to canonical payload+actor+target and be checked BEFORE CAS.
-10. Codex-9: the live+archive union needs tombstone application across lists + fail-closed on non-identical
-    same-ID duplicates (sync.js:1208 precedent).
-11. Codex-10: an archive MOVE between the two queries loses a row though both attest full enumeration — bind
-    both reads to one archive run/version or hold the archive maintenance lock.
-12. Codex-11: graceClosed ≠ admitted writes COMMITTED — FINAL needs a drained-ingest watermark attestation.
-13. Codex-12: sale-vs-wastage classification rides TEXT labels (stockFrom/stockTo), not the store-ID fields
-    (both null for manual movements, index.html:2090) — persist the labels or a validated movement category.
-14. Codex-13: the migration premise is FALSE — price/discount edits exist TODAY (index.html:3400/3342);
-    unstamped in-transit transfers need manual reconciliation or a genuinely historical source.
-15. Codex-14: migrated stamps need a cross-device publication path (an immutable stamp-migration step/fold
-    rule — the original submit steps are already synced and can't be replayed).
-16. Codex-15: the engine signature (SR-17) must be re-pinned post-revision ({storeMap, globalMap}).
-17. Codex-16: SellAtSupply/UnitPriceAtTime must use the shared money cap/precision policy (finite 1e308
-    passes "finite non-negative" and overflows totals).
-
-**Session hand-off note:** the fold of R1-R4 (44 folds) stands; R5 shows the R4 revision needs one more
-design iteration (write FAN-OUT + planner-side seeding/cloning + activation baseline policy) and suggests
-evaluating DECOMPOSITION of W4 into sub-waves (lens/invoice · stamps/transport · export engine · server
-write contracts) if R6 does not converge.
+## R5 CLOSED (2026-07-14)
+R5 (AGY BLOCK×3 + Codex BLOCK×16) is FULLY FOLDED as W4-SR-45..62 + Model Revision 2 — see the R5 sections
+after the R4 table above. Every finding was ground-truthed against the code before folding; all 19 were REAL
+(one converged pair: AGY R5-3 == Codex R5-2). Raw verdicts remain in
+`audit-artifacts/w4-scope-r5-verdicts.md`. The build itself is planned as FOUR SUB-WAVES with per-sub-wave
+audit loops (W4.1 planner extension → W4.2 lens/invoice/adoption → W4.3 stamps/transport → W4.4 export
+engine); if R6 diverges with further DESIGN findings (not nits), the scope doc itself splits along the same
+seams and each part converges separately.

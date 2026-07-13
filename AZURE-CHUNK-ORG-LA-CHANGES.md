@@ -20,7 +20,8 @@ Trigger `POST {auth, proof, intent}`.
 2. `verifyProof` — sudo proof purpose=`topology-change`. 403 on fail.
 3. Read server-owned state: the store row, ALL StoreCredentials + UserCredentials rows (id/Role/StoreIds/
    Active/franchiseeId/isStorePOS/isFranchiseOffice), the `franchisees` list, the store's `store_eras` +
-   `pricing_history`.
+   `pricing_history`, AND (W4-SR-48) the target franchisee's OFFICE store row + its eras + pricing as
+   `state.office` — the planner clones/creates office series and (on onboard) the office store itself.
 4. `topologyPlan {intent, state, nowMs}` → the plan (era close/open, pricing append, fanout, createAccounts,
    snapshot, export, record). Reject reasons pass through to the client.
 5. **2-PHASE COMMIT:** write a `topology_change` AppConfig record `status:pending` carrying the plan + a
@@ -72,31 +73,48 @@ convenience default for NEW rows only; the authoritative rate is the dated histo
 Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `topology-change` to
 `validateUser.js` SUDO_PURPOSES so the write LA can demand a purpose-bound sudo proof.
 
-## 6. W4 server contracts (OS-W4 scope review R3+R4, W4-SR-28/32/33/36/38/39/40/44 — staging-apply items)
+## 6. W4 server contracts (OS-W4 scope reviews R3-R5, W4-SR-28/32/33/36/38/39/40/44 + R5 SR-45..62 — staging-apply items)
 - **Pricing-change route:** authenticated, Director-gated (editPricing sudo — ADDED to validateUser.js
   SUDO_PURPOSES + the client sudo prompt map, W4-SR-44). Runs appendPricingForKey SERVER-side (effective now,
-  append-only per OS-SR-12). ATOMIC TO READERS (W4-SR-32): journals pricing_pending, writes history + the
-  legacy scalar, then PUBLISHES both under ONE version bump — readers only ever adopt version-consistent
-  snapshots; the reconcile sweep resumes a crash. CONCURRENCY (W4-SR-33): requires expectedVersion (CAS,
-  the AA-03 baseVersion pattern) + a client-minted stable opId (idempotent replay returns the prior result).
-  Serves global-tier appends (global[productId]) and office-default appends (office['*']); the per-product
-  tier writer is the W5 wizard (W4-SR-23).
-- **Add-product-with-discount (W4-SR-43):** ONE idempotent journaled op — catalogue create + the
-  global[productId] opening interval + scalar dual-write, published under one version.
+  append-only per OS-SR-12). **OFFICE-DEFAULT FAN-OUT (W4-SR-45):** an office-default edit appends the SAME
+  interval to the office's '*' AND the '*' of every retail store currently in an open franchise era owned by
+  that franchisee — target set derived from SERVER rows, never client-supplied; the journal spans the WHOLE
+  fan-out set (partial fan-out never published). ATOMIC TO READERS (W4-SR-32): journals pricing_pending,
+  writes history + the legacy scalar, then PUBLISHES all of it under ONE version bump — readers only ever
+  adopt version-consistent snapshots; the reconcile sweep resumes a crash. CONCURRENCY (W4-SR-33/54):
+  requires expectedVersion (CAS, the AA-03 baseVersion pattern) + a client-minted stable opId whose replay
+  BINDS to a canonical digest (op-type + target + canonical payload + actor — different digest under a reused
+  opId is REJECTED); the idempotency lookup runs BEFORE CAS so a lost-response retry returns the prior result
+  after the version advanced. Serves global-tier appends (global[productId]) and office-default appends;
+  the per-product tier writer is the W5 wizard (W4-SR-23).
+- **Add-product-with-discount (W4-SR-43/53/54):** ONE idempotent journaled op — catalogue create + the
+  global[productId] opening interval + scalar dual-write, published under one version — under the SAME
+  expectedVersion CAS + catalogue concurrency check + digest-bound opId as pricing edits.
 - **Pricing-config echo shape (R4 model revision — PER-STORE, no resolver map):**
   { version, global: {productId: series}, stores: {storeOrOfficeId: {'*': series, productId?: series}} } —
   served via config, version-echoed on pull; adoption durable + monotonic (W4-SR-27/29/31: activation flag on
-  first observation; newer-but-unadoptable ⇒ durable pricing_stale fail-closed past the last confirmed
-  boundary). Schema validated EXACTLY (W4-SR-42: exact root fields, reqId keys, global = product keys only).
-- **Stamp columns + ingest validation (W4-SR-13/18/20/38/39/40):** SellAtSupply/DiscAtSupply columns on
-  StockTransactions + StockTransactions_Archive (BOTH-OR-NEITHER per row, finite, discount 0-100); transfer
+  first observation; newer-but-unadoptable ⇒ durable pricing_stale, evaluated PER RESOLUTION per W4-SR-51 —
+  only closed-interval decisions across all consulted tiers stay valid). Schema validated EXACTLY (W4-SR-42:
+  exact root fields, reqId keys, global = product keys only). **PUBLICATION BINDING (W4-SR-52):** the
+  master_data snapshot carries the pricing publication version (`pricingVersion`) it was generated under, so
+  clients can prove scalar + history came from one publication.
+- **Stamp columns + ingest validation (W4-SR-13/18/20/38/39/40/58/62):** SellAtSupply/DiscAtSupply columns on
+  StockTransactions + StockTransactions_Archive (BOTH-OR-NEITHER per row; money fields validated by the
+  SHARED validateMoney policy — finite, ≥0, ≤ MONEY_MAX, ≤2dp; discount via validRate 0-100); transfer
   ITEM stamps ride RecordSteps Payload.items[].sellAtSupply/discAtSupply (validated in the steps ingest —
-  there are NO Transfers columns; that list is a deleted scaffold). ALSO carried: UnitPriceAtTime +
-  StockFromStoreId/StockToStoreId (the K4 fields the export needs, currently client-only). Archive-move and
-  archive-pull preserve all of these.
-- **Buy-back export route (extends §3 per W4-SR-9/24/25/26/36/37):** queries LIVE across the FULL event
-  window AND ARCHIVE across the FULL event window (Chunk-8 archives by monotonic ID, not date — no
-  date-partition seam), unions + dedupes by TransactionId, bound to the bought-back storeId, boundary-
-  evaluated on the row UTC instant (never the calendar-day string), and supplies the engine full-window
-  enumeration attestations for BOTH lists + the graceClosed attestation (absent ⇒ the settlement is marked
-  PROVISIONAL and regenerable; FINAL requires it).
+  there are NO Transfers columns; that list is a deleted scaffold). ALSO carried: UnitPriceAtTime (same
+  validateMoney policy) + StockFromStoreId/StockToStoreId + the StockFrom/StockTo TEXT labels (bounded
+  strings — the actual sale-vs-wastage classification inputs, W4-SR-58). Archive-move and archive-pull
+  preserve all of these. **NO in-transit stamp migration exists** — W4-SR-41 is superseded by
+  stamp-at-receive (W4-SR-59): RecordSteps are immutable; legacy stamps are published by the receive step.
+- **Buy-back export route (extends §3 per W4-SR-9/24/25/26/36/37 + R5 SR-55/56/57):** queries LIVE across the
+  FULL event window AND ARCHIVE across the FULL event window (Chunk-8 archives by monotonic ID, not date — no
+  date-partition seam), unions + dedupes by TransactionId — applying tombstones ACROSS both lists and FAILING
+  CLOSED on same-ID copies whose financial/classification fields differ (W4-SR-55). Both reads BIND to one
+  archive run: read the monotonic `archive_run` version before the first and after the second query, retry
+  (bounded) on change, stamp the run version into the attestations — the engine requires both to match
+  (W4-SR-56). Bound to the bought-back storeId, boundary-evaluated on the row UTC instant (never the
+  calendar-day string); supplies full-window enumeration attestations for BOTH lists + graceClosed + (for
+  FINAL) the DRAINED-INGEST watermark attestation proving every grace-admitted write committed before the
+  queries ran (W4-SR-57). Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and
+  regenerable; FINAL requires both.
