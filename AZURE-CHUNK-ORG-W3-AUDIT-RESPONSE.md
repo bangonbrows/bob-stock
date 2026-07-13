@@ -43,5 +43,22 @@ AGY → **PASS**: traced all six W3-B1 paths, attacked the non-2xx parse (malfor
 smoke **251/251** · topology-proof 191/191 · syntax/static clean · **FULL SABOTEUR SWEEP: 270 CAUGHT / 0 BLIND /
 0 skipped / 0 INFRA-FAIL of 270.** Fix commit `a2e0d6d`.
 
+## ✅ ROUND 3 (2026-07-13): BOTH PASS — WAVE CONVERGED
+**Codex → PASS** ("the device auth pause is now structurally absolute… W3 is done") and **AGY → PASS** (no
+findings; five independent Playwright probes incl. the 401-with-hostile-hold-body, pre-paused poll with zero
+network calls, both step entry points under 401, and the re-auth resume ordering). Both ran the full harness
+on isolated worktrees at `a2e0d6d`: smoke 251/251, topology 191/191, CSP/static PASS.
+
+One reviewer's targeted `S-254-401` saboteur run timed out in their environment (orphaned children cleaned
+up); they correctly did not treat that as product evidence — the invariant was covered by their independent
+probes, and the local definitive sweep has it CAUGHT within **270/270 / 0 BLIND / 0 skipped**.
+
+**FINAL WAVE RECORD:** spec 6 review rounds (16 folds) → build → 3 build-audit rounds (5 findings W3-B1..B4 +
+the S-260 sentinel defect caught by the saboteur layer itself) → both auditors clean. The offline
+flush-before-purge data-loss fix, the era re-bootstrap, and the topology hold are LIVE-CODE-READY on branch
+`azure-phase-5-8-server` (still NOT on main; single end-of-phase cutover). Server-side counterparts (pull-LA
+scope/topologyVersions/hold echo, quiesce flag, `stale_era` quarantine) remain SPEC'D staging-apply items —
+proven against the REAL LA at the staging-apply E2E per the mock-must-match-server rule.
+
 ## Next
-Codex round-3 re-check on `a2e0d6d` (AGY already PASS — one verdict outstanding). Loop until both clean.
+→ OS-W4 (era-aware report lens + [from,to) buy-back export).
