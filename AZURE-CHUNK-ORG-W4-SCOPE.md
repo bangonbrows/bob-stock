@@ -1,10 +1,7 @@
 # OS-W4 SCOPE — Era-aware pricing lens + [from,to) buy-back export
 
-**Status:** SCOPE REVIEW R4 FOLDED (2026-07-14) — R1→SR-1..8 (+Kunal SR-9); R2→SR-10..16; R3→SR-17..28;
-**R4: AGY×2 + Codex×14 → SR-29..44 + a MODEL REVISION (pricing re-keyed back to PER-STORE, the franchiseeId
-indirection deleted — Codex R4-4 showed it clashed with the W2 alignment invariant)**. ALL ground-truthed
-REAL (Transfers-list deletion, ID-based archival, and the local-only unitPriceAtTime stamp all verified in
-the repo). Awaiting R5 → build. **R5 must specifically re-review the model revision.**
+**Status:** R5 RECEIVED (2026-07-14) — AGY×3 + Codex×16 BANKED, FOLD PENDING (next session; see the R5 section
+at the end). R1→SR-1..8 (+Kunal SR-9); R2→SR-10..16; R3→SR-17..28; R4→SR-29..44 + model revision.
 
 ## SCOPE REVIEW R1 (2026-07-13): AGY×3 + Codex×5 — all folded
 
@@ -215,3 +212,48 @@ the server read LAs).
 ## Kunal decisions needed
 - **W4-D1: RESOLVED YES — Kunal CONFIRMED 2026-07-13** (plus by convergence: (Kunal asked for the layman explanation; engineer recommended yes;
   AGY "strongly recommend"; Codex "must not be optional"). Commit-time stamping per W4-SR-3.
+
+## ⚠ R5 RECEIVED (2026-07-14): AGY BLOCK×3 + Codex BLOCK×16 — FOLD PENDING (next session)
+R5 attacked the R4 model revision itself and broke parts of it. The 19 findings are banked VERBATIM in
+`audit-artifacts/w4-scope-r5-verdicts.md` (gitignored raw) + summarized here; folding them is the FIRST task
+of the next session (fresh context — several folds reshape W2-planner scope and need careful design, not
+tail-of-session patching).
+
+**The R5 headline findings (all to be ground-truthed + folded as W4-SR-45..63):**
+1. AGY-1: office-default edits must FAN OUT to the office AND all active retail stores of that franchisee
+   (else invoice and buy-back price from diverging series).
+2. AGY-2: the activation seed must provision '*' series for offices AND every active retail store.
+3. AGY-3 + Codex-2: "rate inheritance" is impossible for the pure engine (no map, no DB) — ADD/CONVERT must
+   CLONE the office's current series into the new store's map, planner-side, and the planner must derive or
+   validate the rate against the office (client-supplied intent.rate alone contradicts the model).
+4. Codex-1: ONBOARD does NOT currently create an office store/era/pricing in the plan — "W2 untouched" is
+   FALSE; the planner needs a real extension (office store row + era + '*' series in one plan).
+5. Codex-3: a dormant device that never observed activation bypasses the activation flag — needs a
+   config-handshake/build-marker gate on pricing-sensitive writes post-W4.
+6. Codex-4: the activation seed needs an explicit HISTORICAL BASELINE policy (backdate to era start vs
+   activation-from — either invents or orphans history without a pinned frozen-legacy rule + sentinel).
+7. Codex-5: pricing_stale needs a PER-RESOLUTION safe horizon (per store/product across all consulted tiers),
+   not one config-level boundary.
+8. Codex-6: the scalar's publication version must ride the master_data snapshot so clients can prove
+   scalar+history came from the same publication.
+9. Codex-7/8: add-product needs the SAME CAS contract as pricing edits (it mutates global); opId replay must
+   bind to canonical payload+actor+target and be checked BEFORE CAS.
+10. Codex-9: the live+archive union needs tombstone application across lists + fail-closed on non-identical
+    same-ID duplicates (sync.js:1208 precedent).
+11. Codex-10: an archive MOVE between the two queries loses a row though both attest full enumeration — bind
+    both reads to one archive run/version or hold the archive maintenance lock.
+12. Codex-11: graceClosed ≠ admitted writes COMMITTED — FINAL needs a drained-ingest watermark attestation.
+13. Codex-12: sale-vs-wastage classification rides TEXT labels (stockFrom/stockTo), not the store-ID fields
+    (both null for manual movements, index.html:2090) — persist the labels or a validated movement category.
+14. Codex-13: the migration premise is FALSE — price/discount edits exist TODAY (index.html:3400/3342);
+    unstamped in-transit transfers need manual reconciliation or a genuinely historical source.
+15. Codex-14: migrated stamps need a cross-device publication path (an immutable stamp-migration step/fold
+    rule — the original submit steps are already synced and can't be replayed).
+16. Codex-15: the engine signature (SR-17) must be re-pinned post-revision ({storeMap, globalMap}).
+17. Codex-16: SellAtSupply/UnitPriceAtTime must use the shared money cap/precision policy (finite 1e308
+    passes "finite non-negative" and overflows totals).
+
+**Session hand-off note:** the fold of R1-R4 (44 folds) stands; R5 shows the R4 revision needs one more
+design iteration (write FAN-OUT + planner-side seeding/cloning + activation baseline policy) and suggests
+evaluating DECOMPOSITION of W4 into sub-waves (lens/invoice · stamps/transport · export engine · server
+write contracts) if R6 does not converge.
