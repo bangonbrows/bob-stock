@@ -31,5 +31,17 @@ S-260 itself (it watched `_syncRetryTimer`, but `_scheduleSyncRetry` sets `_mark
 starts UNDEFINED, so `=== null` was wrong too). The saboteur layer caught the defective sentinel exactly as
 designed; fixed, targeted-verified (S-260 CAUGHT + clean 251/251), then the definitive full sweep above.
 
+## Round 2 (2026-07-13): AGY PASS ("completely verified"); Codex BLOCK×1 (P2) — fixed
+AGY → **PASS**: traced all six W3-B1 paths, attacked the non-2xx parse (malformed JSON, HTML 502 pages,
+401-with-flag precedence), confirmed W3-B3. Codex → 1 P2, ground-truthed REAL:
+
+| # | Auditor | Sev | Finding | Fix |
+|---|---|---|---|---|
+| **W3-B4** | Codex R2 | P2 | a ledger 401 sets `_unauthorized` (sync paused) but `poll()` still ran `pullSteps()` — no auth guard on the step entry points → the step cursor advanced with stale keys while sync was "paused" | the CLASS fixed: `pullSteps` AND `pushSteps` now check `_unauthorized` at entry (matching push/pull/`_runSyncCycle`); **S-254 gains a 401 phase** (hold flag on a 401 body IGNORED — auth precedence; steps not pulled; cursor frozen; resumes after re-auth) + paired saboteur `S-254-401` |
+
+### Round-2 fix gate — FINAL
+smoke **251/251** · topology-proof 191/191 · syntax/static clean · **FULL SABOTEUR SWEEP: 270 CAUGHT / 0 BLIND /
+0 skipped / 0 INFRA-FAIL of 270.** Fix commit `a2e0d6d`.
+
 ## Next
-Codex + AGY round-2 re-check on the fix commit. Per the convergence rule: loop until BOTH clean.
+Codex round-3 re-check on `a2e0d6d` (AGY already PASS — one verdict outstanding). Loop until both clean.
