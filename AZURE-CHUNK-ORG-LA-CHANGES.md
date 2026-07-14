@@ -24,6 +24,11 @@ Trigger `POST {auth, proof, intent}`.
    `state.office` — the planner clones/creates office series and (on onboard) the office store itself.
 4. `topologyPlan {intent, state, nowMs}` → the plan (era close/open, pricing append, fanout, createAccounts,
    snapshot, export, record). Reject reasons pass through to the client.
+   **W4-SR-64 CONCURRENCY FENCE:** the pricing publication VERSION read with the state in step 3 rides the
+   plan; the step-5 pricing writes CAS on it — advanced ⇒ ABORT + RE-PLAN from fresh state (the 2-phase
+   journal makes the re-run idempotent). Symmetrically, the §6 pricing-change route REJECTS (409 retry-after)
+   any write whose fan-out set touches a franchisee/store with a PENDING `topology_change`. Both writers bump
+   the SAME version on publish.
 5. **2-PHASE COMMIT:** write a `topology_change` AppConfig record `status:pending` carrying the plan + a
    change-id. THEN apply each step IDEMPOTENTLY (keyed on the change-id so a re-run is a no-op):
    - QUIESCE (OS-SR-5/7): mark the store's `topology_pending` flag; the pull LA FAILS CLOSED for that store
@@ -76,10 +81,14 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
 ## 6. W4 server contracts (OS-W4 scope reviews R3-R5, W4-SR-28/32/33/36/38/39/40/44 + R5 SR-45..62 — staging-apply items)
 - **Pricing-change route:** authenticated, Director-gated (editPricing sudo — ADDED to validateUser.js
   SUDO_PURPOSES + the client sudo prompt map, W4-SR-44). Runs appendPricingForKey SERVER-side (effective now,
-  append-only per OS-SR-12). **OFFICE-DEFAULT FAN-OUT (W4-SR-45):** an office-default edit appends the SAME
+  append-only per OS-SR-12 — the EFFECTIVE-NOW APPEND INVARIANT is load-bearing for the W4-SR-74 stale
+  horizon; no post-activation writer may backdate). **OFFICE-DEFAULT FAN-OUT (W4-SR-45):** an office-default
+  edit appends the SAME
   interval to the office's '*' AND the '*' of every retail store currently in an open franchise era owned by
   that franchisee — target set derived from SERVER rows, never client-supplied; the journal spans the WHOLE
-  fan-out set (partial fan-out never published). ATOMIC TO READERS (W4-SR-32): journals pricing_pending,
+  fan-out set (partial fan-out never published). **FENCE (W4-SR-64):** REJECTS (409 retry-after) while any
+  targeted franchisee/store has a pending `topology_change`; shares ONE publication version with the topology
+  LA (each trips the other's CAS). ATOMIC TO READERS (W4-SR-32): journals pricing_pending,
   writes history + the legacy scalar, then PUBLISHES all of it under ONE version bump — readers only ever
   adopt version-consistent snapshots; the reconcile sweep resumes a crash. CONCURRENCY (W4-SR-33/54):
   requires expectedVersion (CAS, the AA-03 baseVersion pattern) + a client-minted stable opId whose replay
@@ -107,14 +116,30 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   strings — the actual sale-vs-wastage classification inputs, W4-SR-58). Archive-move and archive-pull
   preserve all of these. **NO in-transit stamp migration exists** — W4-SR-41 is superseded by
   stamp-at-receive (W4-SR-59): RecordSteps are immutable; legacy stamps are published by the receive step.
-- **Buy-back export route (extends §3 per W4-SR-9/24/25/26/36/37 + R5 SR-55/56/57):** queries LIVE across the
-  FULL event window AND ARCHIVE across the FULL event window (Chunk-8 archives by monotonic ID, not date — no
-  date-partition seam), unions + dedupes by TransactionId — applying tombstones ACROSS both lists and FAILING
-  CLOSED on same-ID copies whose financial/classification fields differ (W4-SR-55). Both reads BIND to one
-  archive run: read the monotonic `archive_run` version before the first and after the second query, retry
-  (bounded) on change, stamp the run version into the attestations — the engine requires both to match
-  (W4-SR-56). Bound to the bought-back storeId, boundary-evaluated on the row UTC instant (never the
-  calendar-day string); supplies full-window enumeration attestations for BOTH lists + graceClosed + (for
-  FINAL) the DRAINED-INGEST watermark attestation proving every grace-admitted write committed before the
-  queries ran (W4-SR-57). Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and
-  regenerable; FINAL requires both.
+- **Buy-back export route (extends §3 per W4-SR-9/24/25/26/36/37 + R5 SR-55/56/57 + R6 SR-68/69/70/75):**
+  queries LIVE across the FULL event window AND ARCHIVE across the FULL event window (Chunk-8 archives by
+  monotonic ID, not date — no date-partition seam), unions + dedupes by TransactionId. Same-list tombstones
+  apply; a CROSS-LIST tombstone (either direction) = a FAIL-CLOSED CONFLICT surfaced for the Chunk-8
+  Director-correction path, never silently applied (W4-SR-70, aligning with CHUNK8 item 5); same-ID copies
+  whose financial/classification fields differ also FAIL CLOSED (W4-SR-55). ARCHIVE STABILITY (W4-SR-68/75):
+  the route REFUSES while an archive run is IN PROGRESS and takes a bounded EXPORT LEASE the archiver checks
+  before starting a new run (lease acquisition has priority over new runs; TTL-bounded so archival can't
+  starve); both queries run inside the lease; attestations carry the completed-run version + lease id and
+  the engine requires a consistent pair (the before/after scalar compare is DELETED). Bound to the
+  bought-back storeId, boundary-evaluated on the row UTC instant (never the calendar-day string); supplies
+  full-window enumeration attestations for BOTH lists + graceClosed + (for FINAL) the DRAINED-INGEST proof
+  (W4-SR-57/69): the OS-SR-10 grace record carries pinned terminal states `issued → consumed` (durably set
+  BEFORE any row write in the same run) `→ committed` (after the last row write); DRAINED = every grace
+  record for the store TERMINAL (committed or expired-unconsumed). Absent graceClosed or drain ⇒ the
+  settlement is marked PROVISIONAL and regenerable; FINAL requires both.
+- **Activation seed (runbook contract, W4-SR-46/50/63/65):** per store, one '*' interval PER FRANCHISE ERA
+  (closed [from,to) for closed eras; open for the open era), ALL at the seed-time scalar value — required by
+  `pricingAlignsWithEras`; HO interludes stay uncovered. `global[productId]` seeded ONLY for legacy discounts
+  that are numbers > 0 (legacy 0 = inherit, NEVER seeded as 0%). The seed is the ONLY backdated write ever
+  (inside v1); everything after obeys the effective-now invariant.
+- **Money policy for W4 fields (W4-SR-62/73):** `SellAtSupply`/`UnitPriceAtTime` at EVERY surface (row
+  ingest, steps payload, archive, engine): JSON NUMBER type required (strings rejected — no Number()
+  coercion), finite, ≥ 0, ≤ 1,000,000 (the CLIENT `Validate.MONEY_MAX`), ≤ 2dp (reject). Shared parity
+  fixture matrix proves client/ingest/engine verdict-identical. NOTE (out of W4 scope, flagged): the
+  pre-existing `badMoney` (validateMoney.js) ↔ client `Validate.money` divergence on Chunk-4 delivery costs
+  (cap 10M vs 1M; `Number(v)` string coercion) is an open alignment item.
