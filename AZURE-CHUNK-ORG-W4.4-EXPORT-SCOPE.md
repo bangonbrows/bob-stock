@@ -4,8 +4,8 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R12 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, one converged pair = 2 distinct, both REAL —
-folded as SR-134/135; Codex cleared the SourceId-trust attack). R13 PENDING.
+**Review status:** R13 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, one converged pair = 2 distinct, both REAL —
+folded as SR-137/138). R14 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -55,13 +55,25 @@ tier), runs the canonical P6 precedence server-side (target row stamps → item 
 ORIGINAL event), binds the original-event instant + the pricing publication version, and MINTS the
 immutable stamps itself. Client-supplied stamp values are NEVER authoritative. An unstamped replacement is
 a MALFORMED control ⇒ fail closed.
-**ARCHIVED-TARGET CORRECTIONS ARE SAME-LIST BY CONSTRUCTION (SR-135):** a replacement approved for an
+**ARCHIVED-TARGET CORRECTIONS ARE SAME-LIST BY CONSTRUCTION (SR-135/137):** a replacement approved for an
 ARCHIVED target is WRITTEN INTO THE ARCHIVE LIST by the same server op (the CHUNK8 item-5
-"snapshot/archive correction" arm, which W4 previously named as a remedy but never defined), under the
-archive coordination lease, with the corresponding SNAPSHOT ADJUSTMENT applied atomically in the same
-journaled operation when the correction changes a pre-cutoff balance (Chunk-8 snapshot integrity). Live
-targets → live list. The SR-70 cross-list conflict rule therefore never fires on a legitimate correction —
-it remains what it was always meant to be: a corruption detector. Identity =
+"snapshot/archive correction" arm, which W4 previously named as a remedy but never defined). **PUBLICATION
+PROTOCOL (SR-137 — "atomic" made realizable):** the shared coordination record gains a
+`correction_active(heartbeat, journalId)` state, CAS-acquired and MUTUALLY EXCLUSIVE with `run_active` and
+`export_lease`. The op then follows the Chunk-8 publish-nothing discipline: journal → write the candidate
+correction row + prepare the adjusted snapshot as a CANDIDATE VERSION → VERIFY (replacement validity, the
+balance delta, neutrality, the SourceId/control set, content hashes) → PUBLISH the new snapshot/archive
+version LAST → terminal-complete the journal → release the state. A crash at ANY point leaves the prior
+published version intact; the reconcile sweep drives a non-terminal correction journal to completion or
+rollback BEFORE any archive run or export may acquire the record (no partial state is ever exportable or
+stock-visible). Live targets → live list (no snapshot interplay; same journal discipline).
+**APPROVAL-TIME UNIQUENESS (SR-138):** while holding `correction_active`, the approval op QUERIES BOTH
+control lists by target identity and REJECTS the mint if the target is already covered by ANY control, or
+is itself a control row — one control per original target, enforced server-side and race-safe (the
+exclusive state + conditional write make it atomic). Controls are immutable, so without this guard a single
+mistaken approval would mint a chain/ambiguity the engine permanently fails closed on — the engine's
+ambiguity rule REMAINS, but as a corruption detector, never the primary guard. The SR-70 cross-list
+conflict rule likewise never fires on a legitimate correction. Identity =
 targetTransactionId; dedup by control id. NO delta type exists (Chunk-8 defines none). Ambiguity —
 multiple controls on one target, a replacement whose target is also deleted, a replacement chain — ⇒ FAIL
 CLOSED, surfaced. Cross-list controls remain conflicts (SR-70).
@@ -148,6 +160,12 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R13 fold record (2026-07-14) — 2 distinct (one converged pair), both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-137** | Codex R13-2 (P1): "atomic snapshot adjustment in the same journaled op" named no realizable protocol — two durable writes with no correction state on the coordination record, no publication ordering, no crash lifecycle; four concrete partial-state scenarios incl. a stale published archive-run version | P2: `correction_active(heartbeat, journalId)` CAS state mutually exclusive with runs/exports; candidate → verify → publish-LAST → terminal → release; reconcile drives crashed corrections terminal before runs/exports resume (the Chunk-8 publish-nothing discipline applied to corrections) |
+| **W4-SR-138** | AGY R13-2 + Codex R13-3 (CONVERGED, P1): the approval op never checked EXISTING controls — a mistaken approval on an already-corrected/tombstoned target mints an immutable chain/ambiguity the engine then permanently fails closed on (the fail-closed detector becomes a bricking machine) | P2: approval-time uniqueness — query both lists by target identity under `correction_active`; reject covered targets and control-row targets; one control per original target, server-side + race-safe; the engine rule demotes to corruption detector |
 
 ## R12 fold record (2026-07-14) — 2 distinct (one converged pair), both REAL
 | # | Finding | Fold |

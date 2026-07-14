@@ -4,8 +4,8 @@
 frozen fold ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries:
 W4-SR-8, 23, 47, 48, 64(planner side), 71, 72 + R7 folds SR-76..79. Server-LA counterpart:
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §1.
-**Review status:** R12 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, one converged pair = 2 distinct, both REAL —
-folded as SR-131/132). R13 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R13 FOLDED (AGY BLOCK×1 + Codex BLOCK×1 — CONVERGED on the same defect; REAL, folded as
+SR-136; Codex cleared the lease hot-cell attack). R14 PENDING — needs BOTH auditors PASS to freeze.
 
 ## Why this seam exists
 The R4/R5 model keys pricing PER STORE, with the franchisee's negotiated default living on the OFFICE store
@@ -101,12 +101,15 @@ CREDENTIAL's StoreIds contains that officeStoreId. No clone/seed ever reads an u
   (e.g. INACTIVE_TARGET_OFFICE mid-apply) ⇒ **`blocked_manual`**: claims + `topology_pending` stay HELD
   (the store stays fail-closed — safe), the reject reason is surfaced to the Director. **EXIT (SR-126/132):**
   `blocked_manual` is NOT reconcile-scanned (deliberate — it waits on a human); the pinned exit is a
-  DIRECTOR-AUTHORIZED RESUME that is a first-class INTENT on the topology-change route (SR-132): Director
-  device key + purpose-bound `topology-change` sudo proof (same gate as every topology op — never a
-  separately-implemented endpoint reachable with a bare device key), BOUND to the changeId/journal identity
-  + a request digest (idempotent replay returns the prior result), executing a CONDITIONAL
-  `blocked_manual → needs_replan` transition (a stale/duplicate RESUME against a journal no longer in
-  `blocked_manual` is rejected, never re-mutates). Reconcile then replans → complete → release. The block is escalation-surfaced on a
+  DIRECTOR-AUTHORIZED RESUME that is a first-class INTENT on the topology-change route (SR-132/136):
+  Director device key + purpose-bound `topology-change` sudo proof (same gate as every topology op — never
+  a separately-implemented endpoint reachable with a bare device key). **EPISODE BINDING (SR-136):** the
+  journal carries a monotonic `blockEpisode` counter incremented on EVERY transition into `blocked_manual`;
+  the sudo proof, request digest, conditional transition, and idempotency result are ALL bound to
+  `(changeId, blockEpisode)` — a semantically identical second resume after a SECOND block is a NEW
+  operation (not swallowed as a network-retry replay), while a DELAYED first-episode request can never
+  resume a later episode it was not authorized for. A resume whose episode doesn't match the journal's
+  current state is rejected, never re-mutates. Reconcile then replans → complete → release. The block is escalation-surfaced on a
   cadence while it persists; its held claims affect ONLY that franchisee's devices (see W4.2 SR-127 scoped
   settled — one stuck store can never suppress the fleet). Every state has an owner and an exit; claims
   release on `aborted`/`complete` and via the SR-117 scrub.
@@ -130,6 +133,11 @@ enforce all of this.
 | **W4-SR-77** | Codex R7-1 (P1) | REAL — LA §1 supplied no row at officeStoreId when the franchisee is new; a collision with ANY existing store row was invisible to the planner | folded into P4: the LA always reads the row at `officeStoreId` into `state.office.store`; ONBOARD requires null ⇒ `OFFICE_STORE_ID_TAKEN` |
 | **W4-SR-78** | Codex R7-2 (P1) | REAL — CAS ordered after the pending journal + possibly other side effects; a stale journal stayed eligible for reconcile | folded into P6: CAS AT RESERVATION (conditional pending-creation is the first side effect), re-check at the pricing write, durable `aborted` terminal state excluded by reconcile |
 | **W4-SR-79** | Codex R7-3 (P1) | REAL — no pinned identity proof binding state.office to the franchisee (wrong-office cloning possible) | folded into P5: franchisee entity gains `officeStoreId`; four-way identity proof, fail-closed `OFFICE_STATE_MISMATCH` |
+
+## R13 fold record (2026-07-14) — one CONVERGED finding
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-136** | AGY R13-1 + Codex R13-1 (CONVERGED, P1): RESUME idempotency bound to (changeId, digest) alone cannot distinguish BLOCK EPISODES — a journal legitimately cycling blocked→replan→blocked makes the second resume digest-identical to the first (swallowed as a replay ⇒ stranded journal + false "Resumed" success), while a fresh-id workaround would let a DELAYED first-episode request resume the second episode unauthorized | P6: monotonic `blockEpisode` incremented on every entry into blocked_manual; sudo proof + digest + transition + idempotency all bound to (changeId, blockEpisode). Codex also cleared the lease hot-cell attack (echoes read-only; disjoint reservations merely retry the one CAS) |
 
 ## R12 fold record (2026-07-14) — 2 distinct (one converged pair), both REAL
 | # | Finding | Fold |

@@ -35,9 +35,11 @@ Trigger `POST {auth, proof, intent}`.
    sweep SCRUBS orphans (claim-set with no journal after TTL, or a terminal journal ⇒ removed); journal
    CREATION, boundary finalization, and EVERY mutating step are conditional on "my claim-set present with
    my lease id, unexpired" — a scrubbed worker that resumes cannot create its journal or apply a step.
-   **RESUME (SR-126/132):** the blocked_manual exit is a first-class INTENT on THIS route — Director key +
-   `topology-change` sudo, changeId/digest-bound idempotency, conditional blocked_manual→needs_replan
-   transition (stale/duplicate resumes rejected).
+   **RESUME (SR-126/132/136):** the blocked_manual exit is a first-class INTENT on THIS route — Director
+   key + `topology-change` sudo; the journal carries a monotonic `blockEpisode` (incremented on every entry
+   into blocked_manual) and the sudo proof + digest + conditional transition + idempotency result all bind
+   to `(changeId, blockEpisode)` — a second legitimate resume is a new operation, a delayed first-episode
+   request can never resume a later episode (stale/duplicate/mismatched-episode resumes rejected).
    **BOUNDARY FINALIZATION (SR-112):** effective interval boundaries take the DATA STORE's write timestamp
    of the reservation (two-phase: plan→reserve→re-finalize boundaries with the reservation row's server
    timestamp) — LA execution clocks are never a boundary source. **APPLY-TOP REPLAN (SR-119):** before the
@@ -205,15 +207,21 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   TransactionId + surfaced legacy count). The `drain` evidence is an ENGINE INPUT (the pure engine itself
   refuses a FINAL without it). Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and
   regenerable; FINAL requires all.
-- **Correction-approval route (W4-SR-134/135 — the CHUNK8 item-5 correction arm, now defined):**
+- **Correction-approval route (W4-SR-134/135/137/138 — the CHUNK8 item-5 correction arm, now defined):**
   Director-sudo-gated (editPricing-class privileged op; purpose pinned at build). Given a target
-  TransactionId: fetches the AUTHORITATIVE target row (live or archive), obtains the COMPLETE RecordSteps
-  set for its transfer with enumeration proof, runs the canonical valuation precedence SERVER-side, binds
-  the original-event UTC instant + the pricing publication version, and MINTS the replacement's immutable
-  both-or-neither stamps (client-supplied values never authoritative). ARCHIVED target ⇒ the replacement is
-  written INTO the archive list under the archive coordination lease, with the corresponding SNAPSHOT
-  ADJUSTMENT applied atomically in the same journaled op (Chunk-8 snapshot integrity); live target ⇒ live
-  list. Same-list by construction — the export's cross-list rule stays a pure corruption detector.
+  TransactionId: acquires **`correction_active(heartbeat, journalId)`** on the shared coordination record
+  (CAS; mutually exclusive with `run_active`/`export_lease`); **UNIQUENESS (SR-138):** queries BOTH control
+  lists by target identity and REJECTS if the target is already covered by any control or is itself a
+  control (one control per original target, race-safe under the exclusive state); fetches the AUTHORITATIVE
+  target row (live or archive), obtains the COMPLETE RecordSteps set for its transfer with enumeration
+  proof, runs the canonical valuation precedence SERVER-side, binds the original-event UTC instant + the
+  pricing publication version, and MINTS the replacement's immutable both-or-neither stamps
+  (client-supplied values never authoritative). **PUBLICATION (SR-137):** journal → write the correction
+  row + prepare the adjusted snapshot as a CANDIDATE version (archived targets) → VERIFY (validity, delta,
+  neutrality, SourceId/control set, hashes) → PUBLISH the new version LAST → terminal-complete → release;
+  a crashed correction is reconciled to completion/rollback BEFORE any archive run or export may proceed.
+  Live target ⇒ live list, same journal discipline, no snapshot interplay. Same-list by construction — the
+  export's cross-list rule stays a pure corruption detector.
 - **Activation seed (runbook contract, W4-SR-46/50/63/65):** per store, one '*' interval PER FRANCHISE ERA
   (closed [from,to) for closed eras; open for the open era), ALL at the seed-time scalar value — required by
   `pricingAlignsWithEras`; HO interludes stay uncovered. `global[productId]` seeded ONLY for legacy discounts

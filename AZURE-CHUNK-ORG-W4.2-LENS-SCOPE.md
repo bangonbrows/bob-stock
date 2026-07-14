@@ -4,9 +4,11 @@
 frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-1, 2,
 5, 10, 11, 15, 16(chain), 21, 22, 27, 29, 31→74, 42, 45(client view), 46/50/63/65(seed consumption), 49,
 51→74, 52 + R7 folds SR-80..83.
-**Review status:** R12 FOLDED (Codex PASS — key-set derivability verified against the Chunk-10 credential
-rules; AGY BLOCK×1 → ground-truthed NOT REAL, clarifying pin added as SR-133). R13 PENDING — needs BOTH
-auditors PASS to freeze.
+**Review status:** ✅ **FROZEN 2026-07-14 — BOTH AUDITORS PASS at R13** (AGY: "fully secure under the R4
+model … I pass W4.2 without reservations"; Codex: "this part is done from Codex's perspective", third
+consecutive clean read, key-set/claim relationship verified). The spec is LOCKED; any future change reopens
+the part's review. Fold history: SR-80..83, 102..104, 112, 118, 127, 133 (+ the R1-R6 ledger folds this doc
+consolidates).
 
 ## The bug this kills (GAP-1)
 `Pages._franchiseInvoiceData` (index.html:4758) prices EVERY invoice line — any historical range — from the
