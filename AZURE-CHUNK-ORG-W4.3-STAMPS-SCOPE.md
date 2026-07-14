@@ -3,8 +3,8 @@
 **Authority:** CONSOLIDATED, AUTHORITATIVE spec for the W4 stamps/transport seam (split from the frozen
 ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-3, 7, 12,
 13, 18, 19→67, 20, 38, 39, 40, 58, 59, 60, 62→73, 66, 67 + R7 folds SR-84..89.
-**Review status:** R8 FOLDED (AGY BLOCK×1 + Codex BLOCK×3, one converged pair = 3 distinct, all REAL —
-folded as SR-97/105/106; SR-105 also exposes a LATENT pre-existing Chunk-4 hash bug). R9 PENDING.
+**Review status:** R9 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, both AGY findings converged with Codex's = 2
+distinct, both REAL — folded as SR-113/114). R10 PENDING.
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
@@ -38,10 +38,14 @@ never a silent switch.
   stampless (both pre-W4 ⇒ genuinely legacy, deterministic everywhere). A stale pre-W4 RECEIVER of a
   W4-stamped submit therefore leaves the item submit-stamped; its unstamped `transfer_in` rows are handled
   by VALUATION PRECEDENCE (below) — no silent downgrade, no row mutation.
-- **VALUATION PRECEDENCE (SR-97):** the invoice and the export value a transfer-linked row as: row stamps →
-  the transfer ITEM's canonical stamps (via transferId lookup) → lens. An unstamped row created by a stale
-  receiver of a stamped transfer bills at the SUBMIT stamps on every device, by construction — the
-  one-item-one-basis invariant holds at valuation without repairing synced rows.
+- **VALUATION PRECEDENCE (SR-97/114):** the invoice and the export value a transfer-linked row as: row
+  stamps → the transfer ITEM's canonical stamps (via transferId lookup) → lens. An unstamped row created by
+  a stale receiver of a stamped transfer bills at the SUBMIT stamps on every device, by construction — the
+  one-item-one-basis invariant holds at valuation without repairing synced rows. **CROSS-SEAM CONTRACT
+  (SR-114):** the export engine CANNOT skip the middle tier — W4.4's signature gains a `steps` input
+  (the RecordSteps rows for the window's transferIds, enumeration-attested) and derives the item-stamp
+  projection with the SAME fold precedence as the client (shared fixtures prove client fold == engine
+  projection). Client invoice and server settlement value the same row identically, always.
 - **BACKFILL + FOLD ENUMERATION (SR-87/105):** the backfill snapshot already embeds the whole record; the
   FOLD reconstruct's item enumeration (records.js:321) and `_applyReceive`/`_applyResolve` map stamps + basis
   explicitly (today they drop unlisted fields). **The content hash becomes a CANONICAL DEEP hash (SR-105):**
@@ -52,6 +56,14 @@ never a silent switch.
   silently 409-converges, first-writer-wins, the exact behaviour D4-I was built to prevent; flagged
   Kunal-visible, fixed here with its own sentinel + re-verification). W4.3 replaces it with a recursive
   sorted-key serializer; divergent-stamp (or divergent-item) backfills then surface via hash-in-id.
+  **MIGRATION SEMANTICS (SR-113):** historical backfill steps carry old-algorithm hashes in their stepIds;
+  new steps carry the deep hash (version-prefixed, `payload.hashVersion`). The two algorithms' outputs must
+  NEVER be compared as divergence evidence: the fold decides backfill divergence by RECOMPUTING the
+  canonical deep hash over the step SNAPSHOTS themselves (the payloads are present) — byte-equivalent
+  content from an old-hash device and a new-hash device CONVERGES; genuinely divergent content conflicts.
+  The embedded hash remains only the stepId dedup mechanism. (Nothing re-validates payload against the id
+  hash — AGY's "bricking" mechanism doesn't exist in the code; the REAL failure was Codex's cross-version
+  false divergence, records.js:292 compares embedded hash strings.)
 - **BACKFILL DIVERGENCE RESOLUTION (SR-106):** the resolve payload gains `resolvesBackfillHashes` — a
   resolve that names the divergent hashes SETTLES them: the fold's divergence check (records.js:292-296)
   excludes covered hashes (mirroring `resolvesAttemptIds`), so a Director-resolved backfill divergence
@@ -96,6 +108,12 @@ parity fixture matrix proves client/ingest/engine verdict-identical. (The pre-ex
   must be THIS doc's rules (shared fixtures).
 - Cutover: NO migration exists. The pricing-change route may enable immediately at activation; stampless
   in-transit transfers are handled by P4 at their receive.
+
+## R9 fold record (2026-07-14) — 2 distinct (both converged pairs), both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-113** | AGY R9-2 + Codex R9-2 (CONVERGED, P1): the hash-algorithm change makes an old-hash backfill and a NEW-hash backfill of IDENTICAL content read as divergence (records.js:292 compares embedded hash strings). AGY's specific "re-hash validation bricks the fold" mechanism does NOT exist in the code — Codex's cross-version false-divergence does | P3: hash versioning + divergence decided on RECOMPUTED canonical content over the snapshots; embedded hashes are dedup-only |
+| **W4-SR-114** | AGY R9-3 + Codex R9-1 (CONVERGED, P1): R8's valuation precedence handed the export engine a middle tier it physically cannot compute — no transfer items in its signature; client invoice and server settlement would bill the SAME row differently (my R8 fold created this interface break) | P3 here + W4.4 P1/P6: engine gains attested `steps` input + a shared-precedence item-stamp projection; parity fixtures client fold == engine projection |
 
 ## R8 fold record (2026-07-14) — 3 distinct, all REAL
 | # | Finding | Fold |

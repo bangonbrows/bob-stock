@@ -4,9 +4,8 @@
 frozen fold ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries:
 W4-SR-8, 23, 47, 48, 64(planner side), 71, 72 + R7 folds SR-76..79. Server-LA counterpart:
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §1.
-**Review status:** R8 FOLDED (AGY PASS — but its concurrent-onboard reasoning was REFUTED by Codex R8-1, so
-the pass does not stand on that point; Codex BLOCK×4 → all REAL, folded as SR-98..101). R9 PENDING — needs
-BOTH auditors PASS to freeze.
+**Review status:** R9 FOLDED (AGY PASS ["flawlessly fenced"]; Codex BLOCK×2 → both REAL, folded as
+SR-110..111). R10 PENDING — needs BOTH auditors PASS to freeze.
 
 ## Why this seam exists
 The R4/R5 model keys pricing PER STORE, with the franchisee's negotiated default living on the OFFICE store
@@ -56,12 +55,13 @@ franchisee.officeStoreId`; (e) the office store's OPEN era owner === the target 
 CREDENTIAL's StoreIds contains that officeStoreId. No clone/seed ever reads an unproven office.
 
 **P6 — concurrency fence, planner side (SR-64/78/98/99/100).**
-- **RESERVATION = CLAIMS (SR-98):** the CONDITIONAL creation of the `topology_change: pending` journal is
-  the FIRST side effect and atomically CLAIMS every identifier the plan will create or depend on —
-  storeId, officeStoreId, new usernames, and the SPECIFIC pricing keys it reads/writes (the office map +
-  target store map). The creation fails if any ACTIVE pending journal's claims overlap (two concurrent
-  onboards of the same officeStoreId cannot both reserve — note the pricing-version check alone does NOT
-  catch this, since reservations don't bump the version).
+- **RESERVATION = CLAIMS via ONE REGISTRY (SR-98/110):** claims (storeId, officeStoreId, new usernames, the
+  SPECIFIC pricing keys the plan reads/writes) are serialized through a SINGLE `claims registry` record: a
+  reservation is a CAS/ETag CONDITIONAL UPDATE on that one record that adds the claim set iff no active
+  claim overlaps — losers retry from fresh state. This is the realizable atomicity primitive (SR-110: two
+  conditional CREATES under different change-ids do NOT serialize — each would see "no overlap" pre-write;
+  a single-record CAS does). The pending journal is created only AFTER the claim wins; releasing the claims
+  (on complete/abort) is the matching CAS update.
 - **SCOPED conflict check (SR-99):** the plan's conflict test compares the CLAIMED pricing keys' state
   (content/sub-version), not the global publication counter — an unrelated `global[productId]` publish
   during the drain never aborts a reserved plan. (The global version remains the publication/adoption
@@ -76,7 +76,16 @@ CREDENTIAL's StoreIds contains that officeStoreId. No clone/seed ever reads an u
   the worker's claim token (ETag) — a reconciler that claimed the journal before an abort (or vice versa)
   fails its next conditional step instead of continuing from a stale read. `aborted` exclusion is enforced
   per-step, not only at scan time.
-The planner stays pure; the plan CARRIES the claims + key state so the LA can enforce all of this.
+- **TARGET-ROW PRECONDITIONS + REPLAN TERMINAL (SR-111):** claims fence other TOPOLOGY/PRICING writers, but
+  admin writes (e.g. a Director deactivating a credential) stay free — so every fan-out/createAccounts step
+  carries a PRECONDITION on its target row (the ETag/state captured at the plan's state read) and is never
+  blindly applied. A precondition failure after mutation has begun does NOT strand a forward-only plan:
+  the journal transitions to **`needs_replan`** — reconcile re-runs `planTopologyChange` from FRESH state
+  UNDER THE SAME HELD CLAIMS + change-id (no topology/pricing interleaving can have occurred; the admin
+  change is incorporated or the plan re-rejects, e.g. INACTIVE_TARGET_OFFICE) and applies the fresh plan's
+  remaining steps idempotently. No silent reactivation/overwrite; no forever-failing step.
+The planner stays pure; the plan CARRIES the claims + key state + per-step preconditions so the LA can
+enforce all of this.
 
 **P7 — export additions (SR-8).** `validPricingSeries` + `isIsoUtc` are ADDED to `module.exports`
 (additive; W4.4 imports the real primitives — no re-derivation).
@@ -95,6 +104,12 @@ The planner stays pure; the plan CARRIES the claims + key state so the LA can en
 | **W4-SR-77** | Codex R7-1 (P1) | REAL — LA §1 supplied no row at officeStoreId when the franchisee is new; a collision with ANY existing store row was invisible to the planner | folded into P4: the LA always reads the row at `officeStoreId` into `state.office.store`; ONBOARD requires null ⇒ `OFFICE_STORE_ID_TAKEN` |
 | **W4-SR-78** | Codex R7-2 (P1) | REAL — CAS ordered after the pending journal + possibly other side effects; a stale journal stayed eligible for reconcile | folded into P6: CAS AT RESERVATION (conditional pending-creation is the first side effect), re-check at the pricing write, durable `aborted` terminal state excluded by reconcile |
 | **W4-SR-79** | Codex R7-3 (P1) | REAL — no pinned identity proof binding state.office to the franchisee (wrong-office cloning possible) | folded into P5: franchisee entity gains `officeStoreId`; four-way identity proof, fail-closed `OFFICE_STATE_MISMATCH` |
+
+## R9 fold record (2026-07-14) — AGY PASS · Codex×2 both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-110** | Codex R9-1 (P1): "atomically claims" named no realizable primitive — two conditional CREATES under different change-ids each see "no overlap" pre-write and both land, restoring the R8 onboard race | P6: claims serialize through ONE registry record via CAS/ETag conditional update; journal created only after the claim wins; release = matching CAS |
+| **W4-SR-111** | Codex R9-2 (P1): claimed non-pricing rows aren't fenced against ADMIN writers — a mid-drain credential deactivation is either silently overwritten by stale fan-out, or (with row CAS) strands a forward-only plan forever | P6: per-step target-row PRECONDITIONS + a `needs_replan` terminal — reconcile replans from fresh state under the SAME held claims/change-id and applies the delta; admin writes stay free |
 
 ## R8 fold record (2026-07-14) — Codex×4 all REAL (AGY PASS reasoning on R8-1 refuted)
 | # | Finding | Fold |

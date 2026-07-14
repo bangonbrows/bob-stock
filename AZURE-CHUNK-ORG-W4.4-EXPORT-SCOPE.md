@@ -4,8 +4,8 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R8 FOLDED (AGY BLOCK×1 → premise ground-truthed NOT REAL, semantics folded with Codex
-R8-3; Codex BLOCK×3 → all REAL; folded as SR-107..109). R9 PENDING.
+**Review status:** R9 FOLDED (AGY BLOCK×2 + Codex BLOCK×2+cross-ref, two converged pairs = 3 distinct, all
+REAL — folded as SR-114(shared)/115/116). R10 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -15,21 +15,28 @@ wiring are staging-apply.
 
 ## Pinned design
 
-**P1 — signature (SR-61/90/91, supersedes SR-14/17).**
-`buildBuybackExport({ storeId, rows: { live, archive }, pricing: { storeMap, globalMap }, window, products,
-coverage, graceClosed, drain })`. Row PROVENANCE is explicit (SR-90): two separate arrays matching the two
-attestations — a flat set cannot implement per-list tombstone semantics. `drain` (SR-91) = the grace-record
-terminal evidence + visibility watermark (P5) — the pure engine must be ABLE to refuse a FINAL, so the
-evidence is an input, not a route-side promise. `storeMap` = the bought-back store's OWN validated map
+**P1 — signature (SR-61/90/91/114/115, supersedes SR-14/17).**
+`buildBuybackExport({ storeId, rows: { live, archive }, steps, controls, pricing: { storeMap, globalMap },
+window, products, coverage, graceClosed, drain })`. Row PROVENANCE is explicit (SR-90): two separate arrays
+matching the two attestations — a flat set cannot implement per-list tombstone semantics. `steps` (SR-114) =
+the RecordSteps rows for every transferId appearing in the row set (enumeration-attested in `coverage`) —
+the engine derives the transfer-item stamp projection from them (below). `controls` (SR-115) = tombstone/
+correction rows queried BY TARGET IDENTITY (targets within the supplied row/drain identities), under their
+own provenance attestation and explicitly NOT window-bounded (a post-buyback deletion's own instant sits
+past `to`). `drain` (SR-91) = the grace-record terminal evidence + visibility watermark (P5) — the pure
+engine must be ABLE to refuse a FINAL, so the evidence is an input, not a route-side promise. `storeMap` = the bought-back store's OWN validated map
 (route pre-selects; a multi-store `stores` object or franchisee-keyed map is REFUSED as malformed). The
 engine runs the SAME chain as the client (`storeMap[productId] → globalMap[productId] → storeMap['*']`),
 WHOLE-CONFIG validation first — shared fixtures prove engine == lens. Validators imported from topology.js
 (`validPricingSeries`, `isIsoUtc` — added to its exports; no re-derivation).
 
-**P2 — window + binding (SR-24/25).** `[from,to)` BOTH bounds enforced INSIDE the engine; boundary evaluated
-on the row's UTC INSTANT (createdAt/Timestamp, validated ISO — never the Perth calendar-day string); a
-window-adjacent row lacking a valid instant ⇒ refusal. Every supplied row must belong to `storeId`
-(route pre-filters; engine re-checks).
+**P2 — window + binding (SR-24/25/115).** `[from,to)` BOTH bounds enforced INSIDE the engine for ECONOMIC
+rows; boundary evaluated on the row's UTC INSTANT (createdAt/Timestamp, validated ISO — never the Perth
+calendar-day string); a window-adjacent row lacking a valid instant ⇒ refusal. Every supplied row must
+belong to `storeId` (route pre-filters; engine re-checks). CONTROL rows (`controls`, SR-115) are exempt
+from the window by construction — they are bounded by TARGET IDENTITY instead (every control must target a
+supplied row/drain identity; an untargeted control is refused), so a legitimately-deleted grace row can
+prove "covered" without its post-window tombstone being either excluded or miscounted.
 
 **P3 — union semantics (SR-36/55/70/90/96).** Input rows = LIVE full-window + ARCHIVE full-window (Chunk-8
 archives by monotonic ID — no date-partition seam), supplied as SEPARATE `rows.live`/`rows.archive` arrays
@@ -57,11 +64,12 @@ held continuously (unexpired, no intervening run) — else discard + retry; the 
 post-check. CRASHED-ARCHIVER LIVENESS (SR-95): `run_active` carries a heartbeat; a run whose heartbeat is
 stale is surfaced + driven to a TERMINAL state by the reconcile sweep (complete or roll back per Chunk-8's
 publish-nothing discipline); the export refuses only heartbeat-FRESH runs — no indefinite lock-out in either
-direction. FAIRNESS (SR-108): the coordination record carries a `run_requested` flag the archiver CASes when
-it loses an acquisition; while it is set, a RELEASING export lease may not be immediately re-acquired by
-another export (the archiver gets the next turn), and symmetrically a completing run clears the way for a
-waiting export — bounded consecutive acquisitions in both directions, so neither retry pressure stream can
-starve the other. The engine validates the attested union == `[from,to)` and the run/lease pair is
+direction. FAIRNESS with LIVE REQUESTS ONLY (SR-108/116): the coordination record carries request flags
+(`run_requested` / `export_requested`) a losing acquirer CASes; while a request is LIVE, the other side may
+not immediately re-acquire (the requester gets the next turn) — bounded consecutive acquisitions in both
+directions. EVERY request carries owner + data-store timestamp + a short TTL (SR-116): an EXPIRED request
+is bypassed by acquirers and cleared by the reconcile sweep — a requester that crashed after raising its
+flag can never lock the other side out. Symmetric in both directions, same lifecycle. The engine validates the attested union == `[from,to)` and the run/lease pair is
 consistent — else refusal, never a silently short settlement.
 
 **P5 — PROVISIONAL vs FINAL (SR-37/57/69/94).** Without `graceClosed`, the settlement is marked PROVISIONAL
@@ -76,11 +84,16 @@ grace-admitted row later — literal presence alone would block FINAL forever). 
 neither present nor covered ⇒ refuse FINAL (read-index lag or loss); a CROSS-list tombstone on it stays a
 conflict (P3). `drain` carries (b)+(c) into the engine (P1).
 
-**P6 — line valuation (SR-38 + W4.3).** HO-supply cost lines: stamps preferred (both-or-neither enforced),
-lens for legacy rows, fail-closed on malformed. Retail-profit reads the frozen `UnitPriceAtTime` (K4);
-legacy rows fall back per K4's own rule (surfaced). Sale-vs-wastage classification uses the carried
-`StockFrom`/`StockTo` TEXT labels via a SHARED fixture-tested classifier (parity with client
-`Txn.category`/`_isHOSupply`); unclassifiable rows land in a SURFACED `unclassified` bucket.
+**P6 — line valuation (SR-38/114 + W4.3).** Transfer-linked rows follow the FULL W4.3 valuation precedence:
+row stamps → the transfer ITEM's canonical stamps → lens. The middle tier is computed from the `steps`
+input: the engine derives an item-stamp projection keyed `(transferId, productId)` using the SAME fold
+precedence as the client (submit stamps permanent; receive-minted for stampless submits; resolve overrides)
+— shared fixtures prove client fold == engine projection, so invoice and settlement value the same row
+IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). Retail-profit reads the
+frozen `UnitPriceAtTime` (K4); legacy rows fall back per K4's own rule (surfaced). Sale-vs-wastage
+classification uses the carried `StockFrom`/`StockTo` TEXT labels via a SHARED fixture-tested classifier
+(parity with client `Txn.category`/`_isHOSupply`); unclassifiable rows land in a SURFACED `unclassified`
+bucket.
 
 **P7 — money (SR-62/73).** All money fields validated under the canonical policy (JSON number, finite, ≥0,
 ≤1,000,000, ≤2dp; discount 0–100). Out-of-policy ⇒ malformed row ⇒ fail closed.
@@ -94,6 +107,13 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R9 fold record (2026-07-14) — 3 distinct (two converged pairs), all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-114** | AGY R9-3 + Codex W4.3-R9-1 cross-ref (P1): the engine physically lacked the transfer items that W4.3's valuation precedence requires — client invoice and server settlement would bill the same unstamped row DIFFERENTLY (an R8 fold of mine broke this interface) | P1/P6: `steps` input (enumeration-attested) + engine-side item-stamp projection with shared-precedence parity fixtures |
+| **W4-SR-115** | Codex R9-1 (P1): SR-107's "covered by a later tombstone" is unsatisfiable — the control row's own instant sits past `to`, so the window excludes it (or the window rule rejects it if supplied) | P1/P2: `controls` input queried by TARGET IDENTITY, own provenance attestation, exempt from the window, must target a supplied identity |
+| **W4-SR-116** | AGY R9-4 + Codex R9-2 (CONVERGED, P1): `run_requested` had no owner/TTL — an archiver crashing after raising it locks exports out forever (my R8 fairness fold; both auditors hit the attack target I listed) | P4: requests carry owner + store timestamp + short TTL; expired requests bypassed + reconciled; symmetric `export_requested` with the same lifecycle |
 
 ## R8 fold record (2026-07-14)
 | # | Finding | Ground truth → fold |
@@ -118,6 +138,9 @@ Window boundary rows (at `to`, at `from`, invalid instant) · wrong-store rows r
 refused · gappy/unattested row sets refused · run/lease mismatch + broken lease continuity refused ·
 cross-list tombstone ⇒ conflict · differing same-ID copies ⇒ fail closed · shared-IdempotencyKey distinct-ID
 copies ⇒ fail closed · flat/unmarked row set refused (provenance required) · stamped/legacy/malformed
-valuation lines · classification fixtures incl. unclassifiable · PROVISIONAL vs FINAL (grace record
-non-terminal blocks FINAL; a committed grace whose written ids are ABSENT from the row set blocks FINAL) ·
-money-policy rejects · S-W4-5/10 as pinned in the ledger. Each with saboteur parity.
+valuation lines · the item-stamp projection parity matrix (client fold == engine projection; unstamped
+stale-receiver row values at submit stamps in BOTH) · untargeted control refused; a targeted post-window
+tombstone proves "covered" · expired request flags bypassed (no crashed-requester lockout) · classification
+fixtures incl. unclassifiable · PROVISIONAL vs FINAL (grace record non-terminal blocks FINAL; a committed
+grace whose written ids are neither present nor covered blocks FINAL) · money-policy rejects · S-W4-5/10 as
+pinned in the ledger. Each with saboteur parity.

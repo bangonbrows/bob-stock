@@ -4,8 +4,8 @@
 frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-1, 2,
 5, 10, 11, 15, 16(chain), 21, 22, 27, 29, 31→74, 42, 45(client view), 46/50/63/65(seed consumption), 49,
 51→74, 52 + R7 folds SR-80..83.
-**Review status:** R8 FOLDED (AGY PASS ×2 consecutive; Codex BLOCK×3 → all REAL, folded as SR-102..104).
-R9 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R9 FOLDED (AGY BLOCK×1 + Codex BLOCK×1 — the SAME defect, converged; REAL, folded as
+SR-112; Codex explicitly cleared the new restore path). R10 PENDING — needs BOTH auditors PASS to freeze.
 
 ## The bug this kills (GAP-1)
 `Pages._franchiseInvoiceData` (index.html:4758) prices EVERY invoice line — any historical range — from the
@@ -38,11 +38,17 @@ for row instants STRICTLY BEFORE the device's durable `lastConfirmedCurrentAt` r
 closed. Sound because of the EFFECTIVE-NOW APPEND INVARIANT (LA §6): no post-activation writer backdates;
 the one-time seed lives inside v1. **The horizon advances ONLY on SETTLED echoes (SR-80/102):** the version echo
 carries `settled: true` only when NO pending pricing/topology journal (whose delayed publication could carry
-an earlier effective boundary) exists — an unsettled echo confirms nothing. **RACE-FREE ORDERING (SR-102):**
-the echoed server instant is captured BEFORE the pending-journal check (T := now → read version → check
-journals → settled iff none → echo `{settled, instant: T}`), and a journaled interval's effective `from` is
-pinned to its RESERVATION instant — so any reservation landing after the check carries `from > T` and a
-horizon at T stays sound. No fence needed; ordering alone closes the race.
+an earlier effective boundary) exists — an unsettled echo confirms nothing. **RACE-FREE ORDERING from ONE time authority (SR-102/112):**
+LA execution clocks are NEVER a boundary source (an LA can capture "now", stall, and write late — its
+boundary would predate a settled echo issued in the gap; independent LA clock skew does the same). Pinned
+mechanism: (a) every journaled interval's effective `from` = the RESERVATION's DATA-STORE-assigned write
+timestamp (the claims-registry/journal row's server timestamp), finalized in two phases — plan first to
+derive claims (boundaries provisional), reserve, then FINALIZE boundaries with the reservation row's
+timestamp (re-invoking the pure planner with that instant as nowMs); (b) the settled echo's instant T is
+derived from the SAME store's read — the claims registry's last-modified as observed by the pending-journal
+check. Any reservation landing after the check MODIFIES the registry, so its store-assigned timestamp (and
+therefore every boundary it publishes) is `> T`. One clock (the data store's), one ordering, no LA clocks
+anywhere in the proof.
 **Trusted time (SR-81):** `lastConfirmedCurrentAt` stores the SERVER-issued instant carried in the settled
 echo — never the device clock. (Row instants remain device-minted; a backdated row is the pre-existing
 date-integrity class, unchanged by W4 — a FUTURE-clocked row lands at/after the horizon and fails closed,
@@ -90,6 +96,11 @@ the client NEVER writes history locally. Pre-activation: exactly today's behavio
   requires the REAL `topology.js` in the harness across the fixture matrix.
 - W4.3 consumes P3's submit-reject and stamps from lens values; W4.4 re-implements the SAME chain
   engine-side (shared fixtures prove engine == lens).
+
+## R9 fold record (2026-07-14) — one CONVERGED finding
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-112** | AGY R9-1 + Codex R9-1 (CONVERGED, P1): the R8 "from = reservation instant" pin was anchored to LA execution time — a stalled LA (or the planner's pre-reservation nowMs, or inter-LA clock skew) publishes a boundary EARLIER than a settled echo issued in the gap, breaking the horizon proof | P4: boundaries take the DATA STORE's write timestamp (two-phase: plan→reserve→finalize boundaries with the reservation row's server timestamp); the echo instant T derives from the SAME store's claims-registry read at check time — reservation-after-check necessarily publishes boundaries > T. One time authority end to end |
 
 ## R8 fold record (2026-07-14) — AGY PASS · Codex×3 all REAL
 | # | Finding | Fold |
