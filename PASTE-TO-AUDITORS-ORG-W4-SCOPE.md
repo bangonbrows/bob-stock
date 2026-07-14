@@ -1,52 +1,52 @@
-# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 10 (paper review, PER-PART) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 11 (paper review, PER-PART) — Codex + AGY
 
-**You are reviewing the OS-W4 spec, round 10.** R9's findings converged hard: 7 distinct (4 converged
-pairs), ALL REAL, folded as **W4-SR-110..116**. One mechanism correction: AGY's hash-migration "re-hash
-validation bricks the fold" mechanism doesn't exist in the code (nothing validates payload against the id
-hash) — the REAL failure was Codex's cross-version false divergence; both are closed by the same fold
-(SR-113, divergence decided on RECOMPUTED canonical content).
+**You are reviewing the OS-W4 spec, round 11.** R10: 8 distinct findings (3 converged pairs), ALL REAL,
+folded as **W4-SR-117..124**. Codex PASSED W4.2 (verifying planner time-shift invariance and correcting the
+proof relation to `boundary >= T`, folded); AGY then found the settled-vs-active-claims hole in the same
+part — both were right, W4.2 now requires NO ACTIVE CLAIMS for `settled`. Codex's granularity and
+epoch/ingest analyses were exceptional this round.
 
 Both auditors in parallel; paper review; report-only; verdict PER PART — parts BOTH of you PASS freeze.
-Status: AGY has passed W4.1 (R9) and W4.2 (R7, R8); Codex cleared W4.2's restore path explicitly. The R9
-folds are narrow — this may be the freezing round for W4.1/W4.2. Fresh eyes, not rubber stamps.
+The remaining surface is narrow: R10's folds completed the claims lifecycle, the settled proof, the
+canonicalizer, and the export's steps/controls contracts. If a part looks done, PASS it — the loop only
+converges when clean parts are declared clean.
 
 ## Read (branch `azure-phase-5-8-server`)
 `AZURE-CHUNK-ORG-W4.1-PLANNER-SCOPE.md` · `AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md` ·
 `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` · `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` ·
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §1/§2/§6. History: frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md`.
 
-## What R9 changed
-- **W4.1 (SR-110/111):** claims serialize through ONE registry record via CAS/ETag conditional update (the
-  realizable primitive — separate conditional creates don't serialize); per-step TARGET-ROW preconditions +
-  a `needs_replan` terminal (reconcile replans from fresh state under the SAME held claims — admin writes
-  stay free, never blindly overwritten, no forever-failing forward-only step).
-- **W4.2 (SR-112, converged AGY+Codex):** boundaries take the DATA STORE's reservation-write timestamp
-  (two-phase plan→reserve→finalize); the settled echo's instant derives from the SAME store's registry read
-  — no LA execution clock anywhere in the horizon proof.
-- **W4.3 (SR-113/114, both converged):** hash versioning — backfill divergence is decided on RECOMPUTED
-  canonical content over the snapshots, embedded hashes are dedup-only (old-hash and new-hash steps of
-  identical content converge); the valuation middle tier is now a REAL cross-seam contract (see W4.4).
-- **W4.4 (SR-114/115/116):** signature gains `steps` (attested RecordSteps for the window's transferIds →
-  engine-side item-stamp projection, parity-fixtured against the client fold) and `controls`
-  (tombstones/corrections queried BY TARGET IDENTITY, own attestation, window-exempt — closes the
-  unsatisfiable-"covered" hole); request flags carry owner+TTL, expired requests bypassed (no
-  crashed-requester lockout), symmetric both directions.
+## What R10 changed
+- **W4.1 (SR-117/119/120):** claims carry owner + TTL/heartbeat with reconcile orphan-scrub (both crash
+  windows closed); APPLY-TOP REPLAN from fresh state covers the full planner read-set (adopt a
+  different-but-valid fresh plan under held claims); complete state machine — `pending | needs_replan |
+  blocked_manual | aborted | complete`, reconcile scans pending+needs_replan, post-mutation fresh-reject ⇒
+  blocked_manual (claims held = fail-closed-safe, surfaced), LA §1's "leave pending" contradiction fixed.
+- **W4.2 (SR-118):** `settled` requires NO ACTIVE CLAIMS (a stalled claim's boundary = its claim timestamp,
+  earlier than the registry's last-modified); claim TTLs bound the unsettled window; proof relation
+  corrected to `>= T` (safe: horizon admits strictly-before-T).
+- **W4.3 (SR-121):** the divergence hash runs over a VERSIONED SEMANTIC CANONICAL FORM (legacy absence ↦
+  exact W4 defaults via the same fold rules; meaningful stamp/basis differences preserved).
+- **W4.3+W4.4 (SR-122):** ORIGIN ASSERTION — lens valuation for a transfer-linked row only when PROVABLY
+  legacy (valid submit/backfill origin required; no-steps rows legacy only if pre-Chunk-4-epoch by server
+  id; grace records bind expected stepIds so drain proves STEP ingest).
+- **W4.4 (SR-123/124):** `controls: {live, archive}` + per-list full-target-set completion attestations in
+  the same lease; TYPED controls — deletion removes, replacement substitutes (original-date metadata governs
+  window membership, CHUNK8 item 2), no delta type, ambiguity fails closed.
 
 ## Attack per part (fresh surface only)
-- **W4.1:** the claims registry as a single serialization point (contention/liveness; registry record
-  growth; a crashed holder's claims — released by which reconcile path, and can `needs_replan` loop
-  forever against a persistently changing target row?).
-- **W4.2:** the two-phase finalize (is the pure planner's output truly time-shift-invariant — can any
-  reject/validation verdict differ between the provisional plan and the finalized one? if yes, which
-  verdict governs?); the registry-last-modified echo source under SharePoint timestamp granularity
-  (sub-second collisions at the boundary — is `>` vs `>=` pinned correctly?).
-- **W4.3:** the recomputed-content divergence rule vs snapshot field evolution (a pre-W4 snapshot and a
-  post-W4 snapshot of the same transfer differ by the NEW stamp/basis fields — do they falsely diverge?
-  what is canonical content across schema versions?); projection parity when steps are missing/partial
-  (backfill-only transfers).
-- **W4.4:** `controls` completeness (what attests that ALL controls targeting the supplied identities were
-  found?); steps attestation vs the RecordSteps ingest (can a step the client folded locally be absent
-  server-side, and what does the projection do?); TTL'd requests under repeated crash-restart churn.
+- **W4.1:** the TTL/scrub vs a SLOW-but-alive holder (can a legitimate long drain outlive its claim TTL and
+  get scrubbed mid-flight? what renews the heartbeat and what happens if scrub races a live worker's
+  conditional step?); blocked_manual claims held indefinitely (Director never acts — is the fail-closed
+  store acceptable forever, or does it need escalation surfacing?).
+- **W4.2:** the no-active-claims settled rule vs claim churn (busy periods where claims are almost always
+  live — does the horizon still advance often enough to keep pricing_stale usable?).
+- **W4.3:** the canonicalizer's default-mapping vs FUTURE schema versions (is the canonical form pinned as
+  version-N-materialized, and who owns updating fixtures when W5 adds fields?); canonicalizer parity between
+  client fold and any server-side consumer.
+- **W4.4:** the steps-epoch rule (is the cutover id knowable per-list, incl. archived rows? can an archived
+  pre-epoch row be mistaken for post-epoch?); replacement-correction valuation when the correction row
+  itself is stamped vs unstamped; completion attestations for controls under pagination.
 
 ## Verdict
 Four verdicts (`W4.x: PASS | PASS-with-notes | BLOCK`), numbered findings per part with concrete scenarios.

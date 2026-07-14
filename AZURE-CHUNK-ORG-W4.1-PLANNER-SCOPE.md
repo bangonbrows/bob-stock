@@ -4,8 +4,8 @@
 frozen fold ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries:
 W4-SR-8, 23, 47, 48, 64(planner side), 71, 72 + R7 folds SR-76..79. Server-LA counterpart:
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §1.
-**Review status:** R9 FOLDED (AGY PASS ["flawlessly fenced"]; Codex BLOCK×2 → both REAL, folded as
-SR-110..111). R10 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R10 FOLDED (AGY BLOCK×1 + Codex BLOCK×3, one converged pair = 3 distinct, all REAL —
+folded as SR-117/119/120). R11 PENDING — needs BOTH auditors PASS to freeze.
 
 ## Why this seam exists
 The R4/R5 model keys pricing PER STORE, with the franchisee's negotiated default living on the OFFICE store
@@ -76,14 +76,26 @@ CREDENTIAL's StoreIds contains that officeStoreId. No clone/seed ever reads an u
   the worker's claim token (ETag) — a reconciler that claimed the journal before an abort (or vice versa)
   fails its next conditional step instead of continuing from a stale read. `aborted` exclusion is enforced
   per-step, not only at scan time.
-- **TARGET-ROW PRECONDITIONS + REPLAN TERMINAL (SR-111):** claims fence other TOPOLOGY/PRICING writers, but
-  admin writes (e.g. a Director deactivating a credential) stay free — so every fan-out/createAccounts step
-  carries a PRECONDITION on its target row (the ETag/state captured at the plan's state read) and is never
-  blindly applied. A precondition failure after mutation has begun does NOT strand a forward-only plan:
-  the journal transitions to **`needs_replan`** — reconcile re-runs `planTopologyChange` from FRESH state
-  UNDER THE SAME HELD CLAIMS + change-id (no topology/pricing interleaving can have occurred; the admin
-  change is incorporated or the plan re-rejects, e.g. INACTIVE_TARGET_OFFICE) and applies the fresh plan's
-  remaining steps idempotently. No silent reactivation/overwrite; no forever-failing step.
+- **CLAIM LIFECYCLE (SR-117):** every claim carries owner + data-store timestamp + a HEARTBEAT/TTL, and the
+  reconcile sweep SCRUBS the registry: a claim with no matching journal after its TTL, or whose journal is
+  TERMINAL, is released. Both crash windows are covered (claim-then-crash-before-journal; terminal-journal-
+  then-crash-before-release) — one crashed onboard can never permanently lock its identifiers, and the
+  registry cannot grow stale entries.
+- **APPLY-TOP REPLAN = FULL READ-SET ASSERTION (SR-111/119):** admin writes (credential deactivation, scope
+  edits) stay free, and per-row ETags on planned WRITE targets cannot cover the whole planner READ-SET
+  (consulted office rows, the credential collection the fan-out derives from, absence/membership facts). So
+  at apply-top (pre-mutation) the LA RE-READS the full state bundle and RE-RUNS `planTopologyChange`: a
+  fresh plan IDENTICAL to the reserved one proceeds; a DIFFERENT-but-valid fresh plan is ADOPTED (claims
+  still held — only admin writes can have interleaved, and the replan incorporates them); a fresh REJECT
+  pre-mutation ⇒ abort per SR-99. Post-mutation, every remaining step still carries its target-row
+  PRECONDITION (SR-111) and a failure re-enters the replan path below.
+- **COMPLETE STATE MACHINE (SR-120):** journal statuses = `pending | needs_replan | blocked_manual |
+  aborted | complete`. The reconcile sweep scans `pending` AND `needs_replan` (transient step failures stay
+  `pending` and retry; precondition failures ⇒ `needs_replan`). A fresh-plan REJECT after mutation has begun
+  (e.g. INACTIVE_TARGET_OFFICE mid-apply) ⇒ **`blocked_manual`**: claims + `topology_pending` stay HELD
+  (the store stays fail-closed — safe), the reject reason is surfaced to the Director, and fixing the
+  underlying state (e.g. reactivating the office) lets reconcile replan → complete → release. Every state
+  has an owner and an exit; claims release on `aborted`/`complete` and via the SR-117 scrub.
 The planner stays pure; the plan CARRIES the claims + key state + per-step preconditions so the LA can
 enforce all of this.
 
@@ -104,6 +116,13 @@ enforce all of this.
 | **W4-SR-77** | Codex R7-1 (P1) | REAL — LA §1 supplied no row at officeStoreId when the franchisee is new; a collision with ANY existing store row was invisible to the planner | folded into P4: the LA always reads the row at `officeStoreId` into `state.office.store`; ONBOARD requires null ⇒ `OFFICE_STORE_ID_TAKEN` |
 | **W4-SR-78** | Codex R7-2 (P1) | REAL — CAS ordered after the pending journal + possibly other side effects; a stale journal stayed eligible for reconcile | folded into P6: CAS AT RESERVATION (conditional pending-creation is the first side effect), re-check at the pricing write, durable `aborted` terminal state excluded by reconcile |
 | **W4-SR-79** | Codex R7-3 (P1) | REAL — no pinned identity proof binding state.office to the franchisee (wrong-office cloning possible) | folded into P5: franchisee entity gains `officeStoreId`; four-way identity proof, fail-closed `OFFICE_STATE_MISMATCH` |
+
+## R10 fold record (2026-07-14) — 3 distinct (one converged pair), all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-117** | AGY R10-1 + Codex R10-1 (CONVERGED, P1): claims orphan in two crash windows (claim→crash→no journal; terminal journal→crash→no release) — reconcile scans journals only, so one crashed onboard locks its identifiers FOREVER | P6: claims carry owner + heartbeat/TTL; reconcile scrubs orphaned/terminal-journal claims |
+| **W4-SR-119** | Codex R10-2 (P1): preconditions covered only planned WRITE targets, not the planner READ-SET (a consulted office row, the credential collection the fan-out derives from, membership/absence facts) — an admin write during the drain yields a stale-but-precondition-clean plan | P6: apply-top RE-PLAN from fresh state + compare/adopt (identical ⇒ proceed; different-valid ⇒ adopt under held claims; reject pre-mutation ⇒ abort) — subsumes any per-row read-set assertion |
+| **W4-SR-120** | Codex R10-3 (P1): `needs_replan` wasn't a complete state machine — reconcile scanned `pending` only (LA §1 contradicted it), and a fresh-plan REJECT after mutation had no outcome (can't abort, can't complete, claims never release) | P6: full status set incl. `blocked_manual` (claims + pending HELD = fail-closed-safe, surfaced; Director fixes state → reconcile replans → completes); reconcile scans pending + needs_replan; LA §1 contradiction fixed |
 
 ## R9 fold record (2026-07-14) — AGY PASS · Codex×2 both REAL
 | # | Finding | Fold |

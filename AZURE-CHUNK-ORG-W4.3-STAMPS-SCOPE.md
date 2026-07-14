@@ -3,8 +3,8 @@
 **Authority:** CONSOLIDATED, AUTHORITATIVE spec for the W4 stamps/transport seam (split from the frozen
 ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-3, 7, 12,
 13, 18, 19→67, 20, 38, 39, 40, 58, 59, 60, 62→73, 66, 67 + R7 folds SR-84..89.
-**Review status:** R9 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, both AGY findings converged with Codex's = 2
-distinct, both REAL — folded as SR-113/114). R10 PENDING.
+**Review status:** R10 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, both converged pairs = 2 distinct, both REAL —
+folded as SR-121/122). R11 PENDING.
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
@@ -56,14 +56,19 @@ never a silent switch.
   silently 409-converges, first-writer-wins, the exact behaviour D4-I was built to prevent; flagged
   Kunal-visible, fixed here with its own sentinel + re-verification). W4.3 replaces it with a recursive
   sorted-key serializer; divergent-stamp (or divergent-item) backfills then surface via hash-in-id.
-  **MIGRATION SEMANTICS (SR-113):** historical backfill steps carry old-algorithm hashes in their stepIds;
-  new steps carry the deep hash (version-prefixed, `payload.hashVersion`). The two algorithms' outputs must
-  NEVER be compared as divergence evidence: the fold decides backfill divergence by RECOMPUTING the
-  canonical deep hash over the step SNAPSHOTS themselves (the payloads are present) — byte-equivalent
-  content from an old-hash device and a new-hash device CONVERGES; genuinely divergent content conflicts.
-  The embedded hash remains only the stepId dedup mechanism. (Nothing re-validates payload against the id
-  hash — AGY's "bricking" mechanism doesn't exist in the code; the REAL failure was Codex's cross-version
-  false divergence, records.js:292 compares embedded hash strings.)
+  **MIGRATION SEMANTICS (SR-113/121):** historical backfill steps carry old-algorithm hashes in their
+  stepIds; new steps carry the deep hash (version-prefixed, `payload.hashVersion`). The two algorithms'
+  outputs must NEVER be compared as divergence evidence: the fold decides backfill divergence by RECOMPUTING
+  the deep hash over a **VERSION-NORMALIZED SEMANTIC CANONICAL FORM (SR-121)** of each snapshot — the
+  canonicalizer materializes every snapshot to the pinned W4 shape via the SAME fold/default rules before
+  hashing (legacy field ABSENCE maps to the exact W4 defaults, e.g. a stampless legacy item gains
+  `basis:'legacy-lens'`; explicit-null vs absent collapse to one form) — so a pre-W4 snapshot and a W4
+  snapshot of the SAME economic reality hash IDENTICALLY, while meaningful stamp/basis differences are
+  PRESERVED and still conflict. Shared fixtures include the cross-version same-reality pair and a
+  genuinely-divergent-stamps pair. The embedded hash remains only the stepId dedup mechanism. (Nothing
+  re-validates payload against the id hash — AGY's R9 "bricking" mechanism doesn't exist in the code; the
+  real failures were Codex's cross-version false divergence, records.js:292, and the R10 schema-evolution
+  variant both auditors found.)
 - **BACKFILL DIVERGENCE RESOLUTION (SR-106):** the resolve payload gains `resolvesBackfillHashes` — a
   resolve that names the divergent hashes SETTLES them: the fold's divergence check (records.js:292-296)
   excludes covered hashes (mirroring `resolvesAttemptIds`), so a Director-resolved backfill divergence
@@ -108,6 +113,12 @@ parity fixture matrix proves client/ingest/engine verdict-identical. (The pre-ex
   must be THIS doc's rules (shared fixtures).
 - Cutover: NO migration exists. The pricing-change route may enable immediately at activation; stampless
   in-transit transfers are handled by P4 at their receive.
+
+## R10 fold record (2026-07-14) — 2 distinct (both converged pairs), both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-121** | AGY R10-1 + Codex R10-1 (CONVERGED, P1): recomputing raw snapshot content still falsely diverges ACROSS SCHEMA VERSIONS — a W4 device's snapshot carries the injected basis/stamp fields a pre-W4 snapshot of the same reality lacks | P3: a versioned SEMANTIC CANONICALIZER materializes every snapshot to the pinned W4 shape (same fold/default rules) before hashing; same reality ⇒ same hash; meaningful differences preserved |
+| **W4-SR-122** | AGY R10-2 + Codex R10-2 (CONVERGED, P1; blocks W4.4 too): the export's item-stamp projection can't distinguish a GENUINELY LEGACY transfer from a LOST/UNINGESTED step (ledger and steps push separately, ledger first — a grace flush can commit rows while its steps push fails); silent lens fallback ⇒ invoice/settlement divergence | W4.4 P6: ORIGIN ASSERTION — every transfer-linked economic row must project a valid origin (submit or backfill step); steps-present-but-no-origin ⇒ fail closed; NO steps at all ⇒ legacy ONLY if the row predates the Chunk-4 steps epoch (server-known cutover id), else fail closed; grace records BIND the expected stepIds of the flushing device so drain proves step ingest, not just row ingest. Projection suite gains the backfill-only case |
 
 ## R9 fold record (2026-07-14) — 2 distinct (both converged pairs), both REAL
 | # | Finding | Fold |

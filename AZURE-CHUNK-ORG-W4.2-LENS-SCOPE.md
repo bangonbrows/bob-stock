@@ -4,8 +4,8 @@
 frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-1, 2,
 5, 10, 11, 15, 16(chain), 21, 22, 27, 29, 31→74, 42, 45(client view), 46/50/63/65(seed consumption), 49,
 51→74, 52 + R7 folds SR-80..83.
-**Review status:** R9 FOLDED (AGY BLOCK×1 + Codex BLOCK×1 — the SAME defect, converged; REAL, folded as
-SR-112; Codex explicitly cleared the new restore path). R10 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R10 FOLDED (Codex PASS — incl. verifying time-shift invariance and the ≥T granularity
+relation; AGY BLOCK×1 → REAL, folded as SR-118). R11 PENDING — needs BOTH auditors PASS to freeze.
 
 ## The bug this kills (GAP-1)
 `Pages._franchiseInvoiceData` (index.html:4758) prices EVERY invoice line — any historical range — from the
@@ -45,10 +45,16 @@ mechanism: (a) every journaled interval's effective `from` = the RESERVATION's D
 timestamp (the claims-registry/journal row's server timestamp), finalized in two phases — plan first to
 derive claims (boundaries provisional), reserve, then FINALIZE boundaries with the reservation row's
 timestamp (re-invoking the pure planner with that instant as nowMs); (b) the settled echo's instant T is
-derived from the SAME store's read — the claims registry's last-modified as observed by the pending-journal
-check. Any reservation landing after the check MODIFIES the registry, so its store-assigned timestamp (and
-therefore every boundary it publishes) is `> T`. One clock (the data store's), one ordering, no LA clocks
-anywhere in the proof.
+derived from the SAME store's read — the claims registry's last-modified as observed by the check; and
+(c) **`settled` requires NO ACTIVE CLAIMS in the registry (SR-118)** — a claim IS a reservation whose
+boundary equals its own claim timestamp, which can be EARLIER than the registry's current last-modified (a
+later non-overlapping claim advances it); pending-journal absence alone therefore proves nothing while any
+claim is live. With claim TTLs (W4.1 SR-117), a crashed claim cannot hold `settled` false forever; brief
+unsettled windows during topology/pricing operations are harmless (the echo still serves data — the horizon
+simply doesn't advance). Any reservation landing after the check modifies the registry, so every boundary
+it publishes is `>= T` — and equality is SAFE because the horizon admits only row instants STRICTLY before
+T (Codex R10 note: the necessary relation is `>= T`, not `> T`). One clock (the data store's), one
+ordering, no LA clocks anywhere in the proof.
 **Trusted time (SR-81):** `lastConfirmedCurrentAt` stores the SERVER-issued instant carried in the settled
 echo — never the device clock. (Row instants remain device-minted; a backdated row is the pre-existing
 date-integrity class, unchanged by W4 — a FUTURE-clocked row lands at/after the horizon and fails closed,
@@ -96,6 +102,11 @@ the client NEVER writes history locally. Pre-activation: exactly today's behavio
   requires the REAL `topology.js` in the harness across the fixture matrix.
 - W4.3 consumes P3's submit-reject and stamps from lens values; W4.4 re-implements the SAME chain
   engine-side (shared fixtures prove engine == lens).
+
+## R10 fold record (2026-07-14) — Codex PASS · AGY×1 REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-118** | AGY R10-1 (P1): a STALLED claim (reservation made, journal not yet written) is invisible to the pending-journal check, while a later non-overlapping claim advances the registry's last-modified — the echo emits settled with T PAST the stalled claim's boundary, breaking the horizon | P4: `settled` additionally requires NO ACTIVE CLAIMS in the registry; claim TTLs (SR-117) bound the unsettled window. Also folded: Codex's R10 granularity note — the proof relation is boundary `>= T`, safe because the horizon admits strictly-before-T only |
 
 ## R9 fold record (2026-07-14) — one CONVERGED finding
 | # | Finding | Fold |

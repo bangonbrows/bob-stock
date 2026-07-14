@@ -4,8 +4,8 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R9 FOLDED (AGY BLOCK×2 + Codex BLOCK×2+cross-ref, two converged pairs = 3 distinct, all
-REAL — folded as SR-114(shared)/115/116). R10 PENDING.
+**Review status:** R10 FOLDED (AGY BLOCK×1 + Codex BLOCK×2 + the converged SR-122 cross-block = 3 distinct,
+all REAL — folded as SR-122(shared)/123/124). R11 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -20,10 +20,13 @@ wiring are staging-apply.
 window, products, coverage, graceClosed, drain })`. Row PROVENANCE is explicit (SR-90): two separate arrays
 matching the two attestations — a flat set cannot implement per-list tombstone semantics. `steps` (SR-114) =
 the RecordSteps rows for every transferId appearing in the row set (enumeration-attested in `coverage`) —
-the engine derives the transfer-item stamp projection from them (below). `controls` (SR-115) = tombstone/
-correction rows queried BY TARGET IDENTITY (targets within the supplied row/drain identities), under their
-own provenance attestation and explicitly NOT window-bounded (a post-buyback deletion's own instant sits
-past `to`). `drain` (SR-91) = the grace-record terminal evidence + visibility watermark (P5) — the pure
+the engine derives the transfer-item stamp projection from them (below). `controls` (SR-115/123) = tombstone/
+correction rows queried BY TARGET IDENTITY (targets within the supplied row/drain identities), explicitly
+NOT window-bounded (a post-buyback deletion's own instant sits past `to`) — supplied as
+`controls: { live, archive }` (SR-123: same-list vs cross-list is undecidable from a flat set) with
+PER-LIST FULL-TARGET-SET completion attestations: for EVERY supplied economic/drain identity, BOTH lists
+were queried for controls targeting it, inside the SAME continuous lease (an omitted tombstone would
+otherwise silently count a deleted row). `drain` (SR-91) = the grace-record terminal evidence + visibility watermark (P5) — the pure
 engine must be ABLE to refuse a FINAL, so the evidence is an input, not a route-side promise. `storeMap` = the bought-back store's OWN validated map
 (route pre-selects; a multi-store `stores` object or franchisee-keyed map is REFUSED as malformed). The
 engine runs the SAME chain as the client (`storeMap[productId] → globalMap[productId] → storeMap['*']`),
@@ -33,10 +36,18 @@ WHOLE-CONFIG validation first — shared fixtures prove engine == lens. Validato
 **P2 — window + binding (SR-24/25/115).** `[from,to)` BOTH bounds enforced INSIDE the engine for ECONOMIC
 rows; boundary evaluated on the row's UTC INSTANT (createdAt/Timestamp, validated ISO — never the Perth
 calendar-day string); a window-adjacent row lacking a valid instant ⇒ refusal. Every supplied row must
-belong to `storeId` (route pre-filters; engine re-checks). CONTROL rows (`controls`, SR-115) are exempt
+belong to `storeId` (route pre-filters; engine re-checks). CONTROL rows (`controls`, SR-115/123/124) are exempt
 from the window by construction — they are bounded by TARGET IDENTITY instead (every control must target a
 supplied row/drain identity; an untargeted control is refused), so a legitimately-deleted grace row can
 prove "covered" without its post-window tombstone being either excluded or miscounted.
+**TYPED CONTROL SEMANTICS (SR-124):** exactly TWO control types exist, each with pinned transformation
+semantics — `deletion` (a tombstone: the target is REMOVED from the settlement) and `replacement` (the
+Chunk-8 Director-approved current-dated correction carrying the original date as metadata, CHUNK8 item 2:
+the target is EXCLUDED and the correction row is SUBSTITUTED, with window membership judged on its
+ORIGINAL-DATE metadata and valuation on the correction row's own stamps/lens-as-of-original-date; identity
+= targetTransactionId; dedup by control id). NO delta type exists (Chunk-8 defines none). Ambiguity —
+multiple controls on one target, a replacement whose target is also deleted, a replacement chain — ⇒ FAIL
+CLOSED, surfaced. Cross-list controls remain conflicts (SR-70).
 
 **P3 — union semantics (SR-36/55/70/90/96).** Input rows = LIVE full-window + ARCHIVE full-window (Chunk-8
 archives by monotonic ID — no date-partition seam), supplied as SEPARATE `rows.live`/`rows.archive` arrays
@@ -84,12 +95,18 @@ grace-admitted row later — literal presence alone would block FINAL forever). 
 neither present nor covered ⇒ refuse FINAL (read-index lag or loss); a CROSS-list tombstone on it stays a
 conflict (P3). `drain` carries (b)+(c) into the engine (P1).
 
-**P6 — line valuation (SR-38/114 + W4.3).** Transfer-linked rows follow the FULL W4.3 valuation precedence:
-row stamps → the transfer ITEM's canonical stamps → lens. The middle tier is computed from the `steps`
-input: the engine derives an item-stamp projection keyed `(transferId, productId)` using the SAME fold
-precedence as the client (submit stamps permanent; receive-minted for stampless submits; resolve overrides)
-— shared fixtures prove client fold == engine projection, so invoice and settlement value the same row
-IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). Retail-profit reads the
+**P6 — line valuation (SR-38/114/122 + W4.3).** Transfer-linked rows follow the FULL W4.3 valuation
+precedence: row stamps → the transfer ITEM's canonical stamps → lens. The middle tier is computed from the
+`steps` input: the engine derives an item-stamp projection keyed `(transferId, productId)` using the SAME
+fold precedence as the client (submit stamps permanent; receive-minted for stampless submits; resolve
+overrides) — shared fixtures prove client fold == engine projection, so invoice and settlement value the
+same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). **ORIGIN ASSERTION
+(SR-122):** the lens tier is reachable for a transfer-linked row ONLY when the row is PROVABLY legacy —
+every transferId in the economic rows must project a valid ORIGIN (a submit or backfill step) from `steps`;
+steps present but no origin ⇒ fail closed; NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4
+steps epoch (the server-known cutover id), else fail closed (a lost/unignested step is indistinguishable
+from legacy — and ledger + steps push through SEPARATE endpoints, ledger first, so the gap is real). Grace
+records BIND the flushing device's expected stepIds so drain proves STEP ingest, not just row ingest. Retail-profit reads the
 frozen `UnitPriceAtTime` (K4); legacy rows fall back per K4's own rule (surfaced). Sale-vs-wastage
 classification uses the carried `StockFrom`/`StockTo` TEXT labels via a SHARED fixture-tested classifier
 (parity with client `Txn.category`/`_isHOSupply`); unclassifiable rows land in a SURFACED `unclassified`
@@ -107,6 +124,13 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R10 fold record (2026-07-14) — 3 distinct, all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-122** | AGY R10-4 + Codex W4.3-R10-2 (CONVERGED, P1, shared with W4.3): a missing origin step silently drops valuation to the lens while the client (holding the step locally) bills submit stamps — and step ingest is NOT proven by row ingest (separate endpoints) | P6: origin assertion + Chunk-4 steps-epoch rule + grace records bind expected stepIds |
+| **W4-SR-123** | Codex R10-1 (P1): `controls` was FLAT (same/cross-list undecidable — my R9 fold was inconsistent with the very provenance rationale that split `rows`) and had no completeness proof (an omitted tombstone counts a deleted row) | P1/P2: `controls: {live, archive}` + per-list full-target-set completion attestations inside the same lease |
+| **W4-SR-124** | Codex R10-2 (P1): "tombstone/correction" conflated two operations with different arithmetic — a replacement-for-8 covering a row-of-10 could count 0, 18, or a delta depending on reading | P2: TYPED controls — `deletion` removes; `replacement` substitutes (window membership by original-date metadata per CHUNK8 item 2, valuation on the correction row); no delta type exists; ambiguity fails closed |
 
 ## R9 fold record (2026-07-14) — 3 distinct (two converged pairs), all REAL
 | # | Finding | Fold |
