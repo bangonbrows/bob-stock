@@ -9,17 +9,26 @@ validation). The spec is LOCKED; any future change reopens the part's review. Fo
 106, 113, 114, 121, 128 (+ the R1-R6 ledger folds this doc consolidates).
 **⚠ TWO FLAGGED POST-FREEZE AMENDMENTS (2026-07-15 — scoped re-review required; R19 status: AGY OK'd the
 step-level form, Codex OBJECTED with the per-line correction, which is ADOPTED):**
-1. **Per-LINE version tuple (W4-SR-153→159):** every stamped LINE (in submit/receive/resolve payloads, on
-   rows, in the fold/canonical form) carries `{sellAtSupply, discAtSupply, basis, pricingVersion,
+1. **Per-LINE version tuple (W4-SR-153→159→162):** every stamped LINE (in submit/receive/resolve payloads,
+   on rows, in the fold/canonical form) carries `{sellAtSupply, discAtSupply, basis, pricingVersion,
    catalogueVersion}` — ALL FIVE or none (per-line, NOT per-step: a multi-line resolve can pin lines from
    attempts under different catalogue versions). Enables the server's semantic stamp attestation at ingest
    (W4.4 P6 / LA §6). The strict canonical projection includes the fields at exactly that per-line
    location; legacy absence normalizes consistently; SAME canonical-form version (nothing has shipped).
-2. **Backfill-only item stamps are UNTRUSTED (W4-SR-158):** the client fold marks item stamps whose ONLY
-   source is a backfill snapshot as untrusted (not tier-2 valuation evidence); the invoice consumes the
-   server-resolved values (discount from pricing history + price from the SR-156 catalogue publication
-   archive, as-of the row's date) — keeping invoice == settlement for restored transfers.
-NOTHING ELSE in this spec changes; the R20 review includes a scoped check of exactly these two amendments.
+   **FIXTURE COVERAGE (SR-162, R20 revision):** the stamp sentinels/fixtures move from the two-field
+   both-or-neither to the FIVE-field invariant — all-five-present; all-absent-legacy; EVERY partial-tuple
+   class (incl. versions-only and stripped-catalogueVersion-only); two snapshots differing ONLY in a
+   version field remain a MEANINGFUL canonical difference (never normalized away); covered across submit,
+   receive, resolve, row, backfill/fold, archive, and reconstruction paths — each with its saboteur.
+2. **Backfill-only item stamps are UNTRUSTED (W4-SR-158→163):** the client fold marks item stamps whose
+   ONLY source is a backfill snapshot as untrusted (not tier-2 valuation evidence); the invoice consumes
+   the server-resolved values (discount from pricing history + price from the SR-156 catalogue publication
+   archive, as-of the row's date) **via the SR-163 transport (R20 revision): the gated RESOLVE-VALUATION
+   route → durable server-owned mapped fields on the row (the SR-157 allowlist-merge pattern) → the
+   invoice renders ONLY those, or a surfaced "valuation pending sync" state — never local live pricing,
+   never the untrusted stamps** — keeping invoice == settlement for restored transfers.
+NOTHING ELSE in this spec changes; the R21 review includes a scoped re-check of exactly these two
+(REVISED) amendments — AGY approved both pre-revision at R20; Codex's objections drove the revisions.
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit

@@ -247,12 +247,15 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   AUTHORITY = SERVER SEMANTIC ATTESTATION (SR-152→153..159): every stamped LINE carries the five-tuple
   {sellAtSupply, discAtSupply, basis, pricingVersion, catalogueVersion}, all-or-none (SR-159, per-LINE);
   the steps-ingest validator (the D4-K validateMoney pattern extended) RECOMPUTES expected stamps from
-  server-owned pricing history + the **IMMUTABLE CATALOGUE PUBLICATION ARCHIVE (SR-156 — NEW SERVER
-  DELIVERABLE: append-only publications keyed by version w/ prices + publication intervals; claimed
-  version must exist and be valid for the minting instant; unknown/forged/expired ⇒ distinct fail-closed
-  outcome, never current-price fallback; retention ≥ the max offline/grace horizon + a pinned recovery
-  path — master_data.version alone counts one mutable blob and resolves nothing historical)** and REJECTS
-  mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
+  server-owned pricing history + the **IMMUTABLE CATALOGUE PUBLICATION ARCHIVE (SR-156/160/161 — NEW
+  SERVER DELIVERABLE: append-only publications keyed by version w/ prices + publication intervals, written
+  by ONE server-only journaled PUBLISHER — candidate [snapshot + archive record + interval] → verify →
+  pointer-switch LAST → terminal, roll-forward iff switched; non-client-writable, version-CAS'd; ALL
+  catalogue writers incl. the Chunk-6 publish flow + the pricing route's scalar dual-writes route THROUGH
+  it; RETENTION INDEFINITE — never pruned, so no expiry state exists; claimed version must exist and be
+  valid for the minting instant; unknown/forged ⇒ BAD_VERSION fail-closed → Director re-attestation queue
+  → settlement PROVISIONAL until cleared, never current-price fallback — master_data.version alone counts
+  one mutable blob and resolves nothing historical)** and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
   values stripped). Stamped TRANSFERLESS rows (direct HO-supply) carry the five-tuple as ROW columns
   mapped on EVERY transport surface and get the SAME validation at push-v2 ROW ingest with a server-set
   attestation column (SR-155/157). ACCEPTANCE ECHO (SR-157): the pull's known-row merge INSTALLS
@@ -260,9 +263,13 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   own attestation; a locally-minted marker never renders as attested). The engine's tier-1 = attested
   evidence only (control rows bind via the per-target head check); BACKFILL snapshots are never tier-1
   provenance — backfill-only rows value from server-resolved history BOTH halves (discount + archived
-  price) as-of the row date, w/ an optional Director re-attestation route (SR-154/158). Client-vs-client
-  equality is DEAD as an authority proof. ⚠ TWO flagged scoped amendments to frozen W4.3 (per-line tuple;
-  backfill stamps untrusted). Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
+  price) as-of the row date, delivered to clients via the gated RESOLVE-VALUATION route (SR-163: request
+  {rowId/(productId,storeId,asOfInstant)} → digest-bound {resolvedSell, resolvedDisc, pricingVersion,
+  catalogueVersion} → cached as durable server-owned mapped fields per the SR-157 allowlist merge; invoice
+  renders only those or a surfaced pending state), w/ an optional Director re-attestation route
+  (SR-154/158). Client-vs-client equality is DEAD as an authority proof. ⚠ TWO flagged scoped amendments
+  to frozen W4.3 (per-line tuple w/ five-field fixtures; backfill stamps untrusted w/ the SR-163
+  transport) — REVISED at R20, re-OK pending. Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
   withdraw restores the target's effect (the append-only original evaluates PRESENT again for drain).
   CROSS-IDENTITY VALUATION (SR-145): target/item stamps mint a replacement's stamps only when product
   (and store/classification) identity matches; a product-changing replacement derives from the REPLACEMENT
