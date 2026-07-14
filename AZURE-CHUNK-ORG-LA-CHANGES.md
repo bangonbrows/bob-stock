@@ -29,8 +29,11 @@ Trigger `POST {auth, proof, intent}`.
    registry` record: reservation = a CAS/ETag CONDITIONAL UPDATE on that single record, succeeding iff no
    active claim overlaps (SR-110 — separate conditional CREATES do not serialize; the version check alone
    cannot catch two onboards of one officeStoreId). The pending journal is created AFTER the claim wins;
-   claims carry owner + TTL/heartbeat and the reconcile sweep SCRUBS orphans (SR-117: claim with no journal
-   after TTL, or a terminal journal ⇒ released — neither crash window locks identifiers forever).
+   claims carry owner + TTL/heartbeat + a FENCING GENERATION (SR-117/125): the live holder renews; the
+   reconcile sweep SCRUBS orphans (claim with no journal after TTL, or a terminal journal ⇒ released) and
+   every release ADVANCES the generation; journal CREATION, boundary finalization, and EVERY mutating step
+   are conditional on the unexpired claim + matching generation — a scrubbed worker that resumes cannot
+   create its journal or apply a step.
    **BOUNDARY FINALIZATION (SR-112):** effective interval boundaries take the DATA STORE's write timestamp
    of the reservation (two-phase: plan→reserve→re-finalize boundaries with the reservation row's server
    timestamp) — LA execution clocks are never a boundary source. **APPLY-TOP REPLAN (SR-119):** before the
@@ -73,9 +76,11 @@ Trigger `POST {auth, proof, intent}`.
    (claims carry owner + TTL/heartbeat; a claim with no journal after TTL, or a terminal journal, is
    scrubbed).
 
-**RECONCILE sweep** (a timer LA or the next topology call): find `status:pending` records older than the
-drain window; re-apply missing steps idempotently; if the drain never completes, the store stays
-fail-closed (safe) and is surfaced to the Director.
+**RECONCILE sweep** (a timer LA or the next topology call): scan `status: pending` AND `needs_replan`
+records (W4-SR-120/126 — NOT `blocked_manual`, which waits on the Director's RESUME action transitioning it
+to `needs_replan`); re-apply missing steps idempotently UNDER the claim/fencing-generation conditions
+(W4-SR-125); scrub orphaned claims (W4-SR-117). If the drain never completes, the store stays fail-closed
+(safe) and is surfaced to the Director.
 
 **Late old-era rows (OS-SR-5/7 amend + OS-SR-10):** after the boundary is FINALIZED, a pre-boundary row
 arriving from an ex-scope device is QUARANTINED with `stale_era` (surfaced to the Director for manual
@@ -87,11 +92,12 @@ never authorizes an old-era write.
 - Serve `store_eras`, `franchisees`, `pricing_history` to authenticated devices; echo their `version`
   (and the per-credential `scopeVersion`) on every pull page so the client re-bootstraps on an era/ownership
   change even when StoreIds are unchanged (D-OS-F6 / OS-W3).
-- **W4-SR-80/81/102/112/118 SETTLED echo:** the pricing version echo carries `settled: true` ONLY when no
-  pending pricing/topology journal exists AND the claims registry holds NO ACTIVE CLAIMS (SR-118 — a claim
-  IS a reservation whose boundary equals its own claim timestamp, possibly earlier than the registry's
-  current last-modified; journal absence alone proves nothing while a claim is live; claim TTLs bound the
-  unsettled window). T = the registry's last-modified as observed by the check (never an LA execution
+- **W4-SR-80/81/102/112/118/127 SETTLED echo:** the pricing version echo carries `settled: true` ONLY when
+  no pending pricing/topology journal exists AND no active claim INTERSECTS the requesting device's
+  resolvable pricing keys (SR-127 — its stores/offices + the global tier; a claim IS a reservation whose
+  boundary equals its own claim timestamp, so journal absence alone proves nothing while a relevant claim is
+  live; scoping keeps one stuck franchisee from freezing the fleet's horizons; claim TTLs bound ordinary
+  unsettled windows). T = the registry's last-modified as observed by the check (never an LA execution
   clock). Because every journaled boundary's `from` = its reservation's store-assigned write timestamp
   (§1 SR-112), a reservation landing after the check publishes boundaries >= T — equality is safe (the
   horizon admits strictly-before-T only). The client advances `lastConfirmedCurrentAt` only on settled
@@ -174,12 +180,15 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   carries owner + store timestamp + a short TTL; EXPIRED requests are bypassed and reconciled (a crashed
   requester never locks the other side out). ALSO SUPPLIED to the engine (W4-SR-114/115/122/123/124): `steps` — the
   RecordSteps rows for every transferId in the row set (enumeration-attested; the engine derives the
-  transfer-item stamp projection and enforces the ORIGIN ASSERTION per SR-122: no valid submit/backfill
-  origin ⇒ fail closed unless the row predates the Chunk-4 steps epoch; grace records BIND the flushing
-  device's expected stepIds so drain proves STEP ingest too) — and `controls: { live, archive }` (SR-123) —
-  TYPED tombstone/`replacement`-correction rows (SR-124: deletion removes; replacement substitutes with
-  window membership on its original-date metadata; no delta type; ambiguity fails closed) queried BY TARGET
-  IDENTITY against the supplied row/drain identities, per-list full-target-set completion attestations
+  transfer-item stamp projection and enforces the ORIGIN ASSERTION per SR-122/129: no valid submit/backfill
+  origin ⇒ fail closed unless the row's ORIGINAL live-list id predates the Chunk-4 steps epoch — live rows
+  compare their item ID, ARCHIVED rows their preserved SourceId, absent provenance ⇒ refuse; grace records
+  BIND the flushing device's expected stepIds so drain proves STEP ingest too) — and
+  `controls: { live, archive }` (SR-123) — TYPED tombstone/`replacement`-correction rows (SR-124/130:
+  deletion removes; replacement substitutes with window membership on its ORIGINAL-EVENT UTC INSTANT and
+  MUST carry both-or-neither stamps captured at approval via the full valuation precedence — an unstamped
+  replacement is malformed, fail closed; no delta type; ambiguity fails closed) queried BY TARGET IDENTITY
+  against the supplied row/drain identities, per-list full-target-set completion attestations
   inside the same lease, NOT window-bounded (a post-buyback deletion can prove "covered"). Bound to the bought-back storeId,
   boundary-evaluated on the row UTC instant (never the calendar-day string) for ECONOMIC rows; supplies
   full-window enumeration attestations for BOTH lists + graceClosed + (for FINAL) the DRAIN evidence

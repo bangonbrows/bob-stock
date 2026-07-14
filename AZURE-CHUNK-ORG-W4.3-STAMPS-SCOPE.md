@@ -3,8 +3,9 @@
 **Authority:** CONSOLIDATED, AUTHORITATIVE spec for the W4 stamps/transport seam (split from the frozen
 ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-3, 7, 12,
 13, 18, 19→67, 20, 38, 39, 40, 58, 59, 60, 62→73, 66, 67 + R7 folds SR-84..89.
-**Review status:** R10 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, both converged pairs = 2 distinct, both REAL —
-folded as SR-121/122). R11 PENDING.
+**Review status:** R11 FOLDED (Codex PASS — "closes both migration and schema evolution"; AGY BLOCK×1 →
+REAL forward-compat pin, ALIGNED with Codex's own PASS-note; folded as SR-128). R12 PENDING — strong freeze
+candidate.
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
@@ -65,7 +66,12 @@ never a silent switch.
   `basis:'legacy-lens'`; explicit-null vs absent collapse to one form) — so a pre-W4 snapshot and a W4
   snapshot of the SAME economic reality hash IDENTICALLY, while meaningful stamp/basis differences are
   PRESERVED and still conflict. Shared fixtures include the cross-version same-reality pair and a
-  genuinely-divergent-stamps pair. The embedded hash remains only the stepId dedup mechanism. (Nothing
+  genuinely-divergent-stamps pair. **STRICT PROJECTION + VERSION OBLIGATION (SR-128):** the v4 canonicalizer
+  additionally performs strict SCHEMA PROJECTION — keys unknown to the pinned W4 schema are STRIPPED before
+  hashing — so a down-level device folding a FUTURE-version snapshot of the same economic reality still
+  converges (a W5 `taxRate` field cannot falsely diverge a W4 fold). Pinned obligation for every future
+  schema change (per Codex's R11 note): introduce a NEW immutable canonical-form version + extend the shared
+  fixtures — never mutate the W4 form. The embedded hash remains only the stepId dedup mechanism. (Nothing
   re-validates payload against the id hash — AGY's R9 "bricking" mechanism doesn't exist in the code; the
   real failures were Codex's cross-version false divergence, records.js:292, and the R10 schema-evolution
   variant both auditors found.)
@@ -113,6 +119,11 @@ parity fixture matrix proves client/ingest/engine verdict-identical. (The pre-ex
   must be THIS doc's rules (shared fixtures).
 - Cutover: NO migration exists. The pricing-change route may enable immediately at activation; stampless
   in-transit transfers are handled by P4 at their receive.
+
+## R11 fold record (2026-07-14) — Codex PASS · AGY×1 folded
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-128** | AGY R11-1 (P1): a W4 device folding a W5 snapshot (new field, e.g. taxRate) falsely diverges — the canonicalizer default-maps legacy ABSENCE but doesn't strip UNKNOWN future fields. Codex PASSed W4.3 with the aligned note that future fields are a new-canonical-version obligation | P3: strict schema projection (unknown keys stripped for divergence hashing) + the pinned version obligation (new immutable canonical-form version + fixture extension per schema change; never mutate the W4 form) |
 
 ## R10 fold record (2026-07-14) — 2 distinct (both converged pairs), both REAL
 | # | Finding | Fold |

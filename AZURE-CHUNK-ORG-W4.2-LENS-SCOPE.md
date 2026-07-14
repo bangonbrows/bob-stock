@@ -4,8 +4,8 @@
 frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-1, 2,
 5, 10, 11, 15, 16(chain), 21, 22, 27, 29, 31→74, 42, 45(client view), 46/50/63/65(seed consumption), 49,
 51→74, 52 + R7 folds SR-80..83.
-**Review status:** R10 FOLDED (Codex PASS — incl. verifying time-shift invariance and the ≥T granularity
-relation; AGY BLOCK×1 → REAL, folded as SR-118). R11 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R11 FOLDED (AGY BLOCK×1 + Codex BLOCK×1 — CONVERGED on the same defect; REAL, folded as
+SR-127). R12 PENDING — needs BOTH auditors PASS to freeze.
 
 ## The bug this kills (GAP-1)
 `Pages._franchiseInvoiceData` (index.html:4758) prices EVERY invoice line — any historical range — from the
@@ -46,11 +46,17 @@ timestamp (the claims-registry/journal row's server timestamp), finalized in two
 derive claims (boundaries provisional), reserve, then FINALIZE boundaries with the reservation row's
 timestamp (re-invoking the pure planner with that instant as nowMs); (b) the settled echo's instant T is
 derived from the SAME store's read — the claims registry's last-modified as observed by the check; and
-(c) **`settled` requires NO ACTIVE CLAIMS in the registry (SR-118)** — a claim IS a reservation whose
-boundary equals its own claim timestamp, which can be EARLIER than the registry's current last-modified (a
-later non-overlapping claim advances it); pending-journal absence alone therefore proves nothing while any
-claim is live. With claim TTLs (W4.1 SR-117), a crashed claim cannot hold `settled` false forever; brief
-unsettled windows during topology/pricing operations are harmless (the echo still serves data — the horizon
+(c) **`settled` requires no active claims INTERSECTING THE DEVICE'S RESOLVABLE KEY SET (SR-118→127)** — a
+claim IS a reservation whose boundary equals its own claim timestamp, which can be EARLIER than the
+registry's current last-modified (a later claim advances it); pending-journal absence alone proves nothing
+while a RELEVANT claim is live. SCOPING (SR-127, corrects the R10 global rule): the check evaluates only
+claims whose claimed PRICING KEYS intersect the keys this device can resolve (its stores/offices + the
+global tier) — a claim that cannot affect the device's resolutions cannot move any boundary the device's
+horizon protects, so the safety proof is unchanged, while an unrelated franchisee's stuck `blocked_manual`
+claim can no longer freeze the FLEET's horizons (the R10 global rule turned one safely-isolated topology
+failure into a network-wide pricing-commit outage: frozen horizons + a later pricing_stale = every recent
+row fails closed everywhere). Global-tier claims (pricing edits, add-product) are transient journal-backed
+operations bounded by TTL; brief unsettled windows are harmless (the echo still serves data — the horizon
 simply doesn't advance). Any reservation landing after the check modifies the registry, so every boundary
 it publishes is `>= T` — and equality is SAFE because the horizon admits only row instants STRICTLY before
 T (Codex R10 note: the necessary relation is `>= T`, not `> T`). One clock (the data store's), one
@@ -102,6 +108,11 @@ the client NEVER writes history locally. Pre-activation: exactly today's behavio
   requires the REAL `topology.js` in the harness across the fixture matrix.
 - W4.3 consumes P3's submit-reject and stamps from lens values; W4.4 re-implements the SAME chain
   engine-side (shared fixtures prove engine == lens).
+
+## R11 fold record (2026-07-14) — one CONVERGED finding
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-127** | AGY R11-1 + Codex R11-1 (CONVERGED, P1): my R10 SR-118 fold was GLOBAL-scoped — under normal claim churn the horizon rarely advances, and ONE indefinitely-held `blocked_manual` claim suppresses settled echoes fleet-wide (frozen horizons + a later pricing_stale ⇒ network-wide billing halt) | P4: settled scoped to claims INTERSECTING the device's resolvable key set — safety proof unchanged (irrelevant claims can't move relevant boundaries); a stuck franchisee affects only its own devices |
 
 ## R10 fold record (2026-07-14) — Codex PASS · AGY×1 REAL
 | # | Finding | Fold |

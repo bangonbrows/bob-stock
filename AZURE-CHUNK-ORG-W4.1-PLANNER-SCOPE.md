@@ -4,8 +4,8 @@
 frozen fold ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries:
 W4-SR-8, 23, 47, 48, 64(planner side), 71, 72 + R7 folds SR-76..79. Server-LA counterpart:
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §1.
-**Review status:** R10 FOLDED (AGY BLOCK×1 + Codex BLOCK×3, one converged pair = 3 distinct, all REAL —
-folded as SR-117/119/120). R11 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R11 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, one converged pair = 2 distinct, both REAL —
+folded as SR-125/126). R12 PENDING — needs BOTH auditors PASS to freeze.
 
 ## Why this seam exists
 The R4/R5 model keys pricing PER STORE, with the franchisee's negotiated default living on the OFFICE store
@@ -76,11 +76,14 @@ CREDENTIAL's StoreIds contains that officeStoreId. No clone/seed ever reads an u
   the worker's claim token (ETag) — a reconciler that claimed the journal before an abort (or vice versa)
   fails its next conditional step instead of continuing from a stale read. `aborted` exclusion is enforced
   per-step, not only at scan time.
-- **CLAIM LIFECYCLE (SR-117):** every claim carries owner + data-store timestamp + a HEARTBEAT/TTL, and the
-  reconcile sweep SCRUBS the registry: a claim with no matching journal after its TTL, or whose journal is
-  TERMINAL, is released. Both crash windows are covered (claim-then-crash-before-journal; terminal-journal-
-  then-crash-before-release) — one crashed onboard can never permanently lock its identifiers, and the
-  registry cannot grow stale entries.
+- **CLAIM LIFECYCLE with FENCING (SR-117/125):** every claim carries owner + data-store timestamp + a
+  HEARTBEAT/TTL + a **FENCING GENERATION**. The live holder RENEWS the heartbeat; the reconcile sweep SCRUBS
+  the registry (a claim with no matching journal after its TTL, or whose journal is TERMINAL, is released)
+  and every release/scrub ADVANCES the generation. **Journal CREATION, boundary finalization, and EVERY
+  mutating step are CONDITIONAL on the unexpired claim + matching generation (SR-125)** — a worker that
+  stalls past its TTL, is scrubbed, and resumes CANNOT create its journal or apply a step (its generation is
+  stale), even though the identifiers were legitimately re-claimed by another plan. Reconcile re-validates
+  the claim/generation at apply-top like any worker. Both crash windows covered; no zombie authority.
 - **APPLY-TOP REPLAN = FULL READ-SET ASSERTION (SR-111/119):** admin writes (credential deactivation, scope
   edits) stay free, and per-row ETags on planned WRITE targets cannot cover the whole planner READ-SET
   (consulted office rows, the credential collection the fan-out derives from, absence/membership facts). So
@@ -89,13 +92,17 @@ CREDENTIAL's StoreIds contains that officeStoreId. No clone/seed ever reads an u
   still held — only admin writes can have interleaved, and the replan incorporates them); a fresh REJECT
   pre-mutation ⇒ abort per SR-99. Post-mutation, every remaining step still carries its target-row
   PRECONDITION (SR-111) and a failure re-enters the replan path below.
-- **COMPLETE STATE MACHINE (SR-120):** journal statuses = `pending | needs_replan | blocked_manual |
+- **COMPLETE STATE MACHINE (SR-120/126):** journal statuses = `pending | needs_replan | blocked_manual |
   aborted | complete`. The reconcile sweep scans `pending` AND `needs_replan` (transient step failures stay
   `pending` and retry; precondition failures ⇒ `needs_replan`). A fresh-plan REJECT after mutation has begun
   (e.g. INACTIVE_TARGET_OFFICE mid-apply) ⇒ **`blocked_manual`**: claims + `topology_pending` stay HELD
-  (the store stays fail-closed — safe), the reject reason is surfaced to the Director, and fixing the
-  underlying state (e.g. reactivating the office) lets reconcile replan → complete → release. Every state
-  has an owner and an exit; claims release on `aborted`/`complete` and via the SR-117 scrub.
+  (the store stays fail-closed — safe), the reject reason is surfaced to the Director. **EXIT (SR-126):**
+  `blocked_manual` is NOT reconcile-scanned (deliberate — it waits on a human); the pinned exit is a
+  DIRECTOR-AUTHORIZED RESUME action (surfaced wherever the block is shown) that transitions the journal to
+  `needs_replan`, which reconcile then replans → complete → release. The block is escalation-surfaced on a
+  cadence while it persists; its held claims affect ONLY that franchisee's devices (see W4.2 SR-127 scoped
+  settled — one stuck store can never suppress the fleet). Every state has an owner and an exit; claims
+  release on `aborted`/`complete` and via the SR-117 scrub.
 The planner stays pure; the plan CARRIES the claims + key state + per-step preconditions so the LA can
 enforce all of this.
 
@@ -116,6 +123,12 @@ enforce all of this.
 | **W4-SR-77** | Codex R7-1 (P1) | REAL — LA §1 supplied no row at officeStoreId when the franchisee is new; a collision with ANY existing store row was invisible to the planner | folded into P4: the LA always reads the row at `officeStoreId` into `state.office.store`; ONBOARD requires null ⇒ `OFFICE_STORE_ID_TAKEN` |
 | **W4-SR-78** | Codex R7-2 (P1) | REAL — CAS ordered after the pending journal + possibly other side effects; a stale journal stayed eligible for reconcile | folded into P6: CAS AT RESERVATION (conditional pending-creation is the first side effect), re-check at the pricing write, durable `aborted` terminal state excluded by reconcile |
 | **W4-SR-79** | Codex R7-3 (P1) | REAL — no pinned identity proof binding state.office to the franchisee (wrong-office cloning possible) | folded into P5: franchisee entity gains `officeStoreId`; four-way identity proof, fail-closed `OFFICE_STATE_MISMATCH` |
+
+## R11 fold record (2026-07-14) — 2 distinct (one converged pair), both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-125** | AGY R11-1 + Codex R11-1 (CONVERGED, P1): a worker stalling past its claim TTL can RESUME after the scrub — journal creation and steps were conditioned on journal status/worker token, not registry claim liveness — two plans proceed under overlapping authority | P6: fencing generations — heartbeat renewal; journal creation + finalization + every mutating step conditional on unexpired claim + matching generation; scrub/release advances the generation (zombie workers fail their next conditional write) |
+| **W4-SR-126** | Codex R11-2 (P1): `blocked_manual` had no reachable exit — reconcile scans pending/needs_replan only, and stray LA text still said "pending only"; a repaired office never resumes, claims held forever | P6: pinned Director-authorized RESUME → `needs_replan`; escalation surfacing while blocked; LA text fully aligned (the old W2 reconcile paragraph fixed) |
 
 ## R10 fold record (2026-07-14) — 3 distinct (one converged pair), all REAL
 | # | Finding | Fold |

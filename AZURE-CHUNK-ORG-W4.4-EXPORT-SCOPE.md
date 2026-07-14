@@ -4,8 +4,9 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R10 FOLDED (AGY BLOCK×1 + Codex BLOCK×2 + the converged SR-122 cross-block = 3 distinct,
-all REAL — folded as SR-122(shared)/123/124). R11 PENDING.
+**Review status:** R11 FOLDED (AGY BLOCK×2 + Codex BLOCK×2, both converged pairs = 2 distinct folds
+SR-129/130; AGY's late-legacy-DEVICE premise ground-truthed impossible post-Chunk-5, its residual corner
+folded). R12 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -40,12 +41,18 @@ belong to `storeId` (route pre-filters; engine re-checks). CONTROL rows (`contro
 from the window by construction — they are bounded by TARGET IDENTITY instead (every control must target a
 supplied row/drain identity; an untargeted control is refused), so a legitimately-deleted grace row can
 prove "covered" without its post-window tombstone being either excluded or miscounted.
-**TYPED CONTROL SEMANTICS (SR-124):** exactly TWO control types exist, each with pinned transformation
+**TYPED CONTROL SEMANTICS (SR-124/130):** exactly TWO control types exist, each with pinned transformation
 semantics — `deletion` (a tombstone: the target is REMOVED from the settlement) and `replacement` (the
-Chunk-8 Director-approved current-dated correction carrying the original date as metadata, CHUNK8 item 2:
-the target is EXCLUDED and the correction row is SUBSTITUTED, with window membership judged on its
-ORIGINAL-DATE metadata and valuation on the correction row's own stamps/lens-as-of-original-date; identity
-= targetTransactionId; dedup by control id). NO delta type exists (Chunk-8 defines none). Ambiguity —
+Chunk-8 Director-approved current-dated correction, CHUNK8 item 2: the target is EXCLUDED and the
+correction row is SUBSTITUTED, with window membership judged on its ORIGINAL-EVENT metadata — which is a
+validated UTC INSTANT per SR-25, never a bare calendar date, else a boundary-adjacent replacement cannot be
+assigned to `[from,to)`). **REPLACEMENT VALUATION (SR-130, corrects the R10 text):** a replacement is a
+POST-W4 row minted through the correction path — it has NO legacy origin by construction, so lens-at-read
+is NEVER its valuation. It MUST carry both-or-neither stamps CAPTURED AT APPROVAL: transfer-linked targets
+derive them through the FULL P6 precedence (target row stamps → item stamps → lens-as-of the ORIGINAL
+event, frozen at approval); non-transfer targets inherit the target's stamps or freeze the
+lens-at-approval value. An unstamped replacement is a MALFORMED control ⇒ fail closed. Identity =
+targetTransactionId; dedup by control id. NO delta type exists (Chunk-8 defines none). Ambiguity —
 multiple controls on one target, a replacement whose target is also deleted, a replacement chain — ⇒ FAIL
 CLOSED, surfaced. Cross-list controls remain conflicts (SR-70).
 
@@ -104,9 +111,16 @@ same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on mal
 (SR-122):** the lens tier is reachable for a transfer-linked row ONLY when the row is PROVABLY legacy —
 every transferId in the economic rows must project a valid ORIGIN (a submit or backfill step) from `steps`;
 steps present but no origin ⇒ fail closed; NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4
-steps epoch (the server-known cutover id), else fail closed (a lost/unignested step is indistinguishable
-from legacy — and ledger + steps push through SEPARATE endpoints, ledger first, so the gap is real). Grace
-records BIND the flushing device's expected stepIds so drain proves STEP ingest, not just row ingest. Retail-profit reads the
+steps epoch, else fail closed (a lost/uningested step is indistinguishable from legacy — and ledger + steps
+push through SEPARATE endpoints, ledger first, so the gap is real). **EPOCH PROVENANCE (SR-129):** the
+epoch comparison uses the row's ORIGINAL live-list id — live rows: their item ID; ARCHIVED rows: the
+preserved `SourceId` (CHUNK8: the archive item's own ID is newly minted and NEVER epoch-comparable);
+absent/invalid provenance id ⇒ refuse. Residual corner, pinned FAIL-CLOSED + surfaced: an ancient row
+resurrected via backup restore and pushed by a modern device gets a post-epoch id with no steps — remedies
+are the restoring device's backfill (if the record exists locally) or a Director `replacement` correction;
+the settlement stays PROVISIONAL meanwhile. (A pre-Chunk-4 BUILD pushing directly is impossible post-Chunk-5
+device auth — AGY's R11 scenario as stated cannot occur.) Grace records BIND the flushing device's expected
+stepIds so drain proves STEP ingest, not just row ingest. Retail-profit reads the
 frozen `UnitPriceAtTime` (K4); legacy rows fall back per K4's own rule (surfaced). Sale-vs-wastage
 classification uses the carried `StockFrom`/`StockTo` TEXT labels via a SHARED fixture-tested classifier
 (parity with client `Txn.category`/`_isHOSupply`); unclassifiable rows land in a SURFACED `unclassified`
@@ -124,6 +138,12 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R11 fold record (2026-07-14) — 2 distinct (both converged pairs), both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-129** | AGY R11-4 + Codex R11-1 (CONVERGED, P1): the epoch rule compared the WRONG id for archived rows (the archive item's own ID is newly minted; CHUNK8 preserves the original as `SourceId`) — a genuine pre-Chunk-4 archived row reads post-epoch and blocks FINAL. AGY's late-syncing legacy-DEVICE variant is IMPOSSIBLE post-Chunk-5 (device auth rejects pre-Chunk-4 builds), but the backup-resurrection corner is real | P6: epoch provenance = live item ID / archived `SourceId`; absent ⇒ refuse; the resurrection corner stays fail-closed + surfaced with pinned remedies (backfill / Director replacement / PROVISIONAL meanwhile) |
+| **W4-SR-130** | AGY R11-5 + Codex R11-2 (CONVERGED, P1): my R10 replacement-valuation text ("own stamps/lens-as-of-original-date") let an UNSTAMPED replacement of a stamped transfer drop to the lens — wrong dollars vs the original; and `originalDate` as a calendar day can't be window-assigned at the boundary | P2: replacements MUST carry both-or-neither stamps captured AT APPROVAL via the full P6 precedence (unstamped = malformed, fail closed); original-event metadata = validated UTC INSTANT |
 
 ## R10 fold record (2026-07-14) — 3 distinct, all REAL
 | # | Finding | Fold |
