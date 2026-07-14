@@ -212,9 +212,12 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
 - **Correction-approval route (W4-SR-134/135/137/138 — the CHUNK8 item-5 correction arm, now defined):**
   Director-sudo-gated (editPricing-class privileged op; purpose pinned at build). Given a target
   TransactionId: acquires **`correction_active(heartbeat, journalId)`** on the shared coordination record
-  (CAS; mutually exclusive with `run_active`/`export_lease`); **UNIQUENESS (SR-138):** queries BOTH control
-  lists by target identity and REJECTS if the target is already covered by any control or is itself a
-  control (one control per original target, race-safe under the exclusive state); fetches the AUTHORITATIVE
+  (CAS; mutually exclusive with `run_active`/`export_lease`); **ROUTE CONTRACT — SPLIT BY MODE
+  (SR-138/149):** INITIAL-CREATE requires the target to have NO committed reservation/control (and never a
+  control-row target); SUPERSEDE/WITHDRAW requires a COMMITTED reservation whose active revision EXACTLY
+  matches the intent's observed `{activeControlId, revision, publicationVersion}` — re-read after acquiring
+  the state, reject on mismatch (a stale Director intent can never silently discard a newer revision);
+  fetches the AUTHORITATIVE
   target row (live or archive), obtains the COMPLETE RecordSteps set for its transfer with enumeration
   proof, runs the canonical valuation precedence SERVER-side, binds the original-event UTC instant + the
   pricing publication version, and MINTS the replacement's immutable both-or-neither stamps
@@ -231,11 +234,15 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   lists that EVERY control writer claims — the approval op AND the push ingest's tombstone path (a device
   tombstone racing an approval is quarantined for Director review, never a second control). Reservation
   states `pending(owner, opId, journalId, ttl) → committed(controlId, publicationVersion)` — only a
-  PUBLISHED control commits; rollback releases the pending; orphans TTL+journal-reconciled (SR-143). The
-  invariant is one ACTIVE effective control per target (SR-144): a Director-sudo SUPERSEDE/WITHDRAW runs
-  through this same route under the same reservation, atomically swapping the active control pointer
-  (immutable versioned revision history; supersede delta = −previousEffective + newEffective; withdraw
-  restores the target's effect); the export serves only the published-effective control.
+  PUBLISHED control commits; an INITIAL-CREATE rollback releases the pending; a SUPERSEDE claims via
+  `pending_supersede(priorCommitted)` and its rollback RESTORES the prior committed lock (SR-147 — never
+  strips a published predecessor's protection); orphans TTL+journal-reconciled (SR-143). The invariant is
+  one ACTIVE effective control per target (SR-144): a Director-sudo SUPERSEDE/WITHDRAW runs through this
+  same route under the same reservation; the effective revision RIDES the publication manifest — the
+  publication pointer is the SOLE visibility switch, so roll-forward/rollback selects the exact matching
+  revision and the export verifies effectiveControl.publicationVersion == active version before FINAL
+  (SR-148). Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
+  withdraw restores the target's effect (the append-only original evaluates PRESENT again for drain).
   CROSS-IDENTITY VALUATION (SR-145): target/item stamps mint a replacement's stamps only when product
   (and store/classification) identity matches; a product-changing replacement derives from the REPLACEMENT
   product's own sources (its genuinely-linked item stamps, else the original-event lens for that product).

@@ -4,9 +4,9 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R15 FOLDED (AGY BLOCK×1 + Codex BLOCK×4, one converged pair = 4 distinct, all REAL —
-folded as SR-143..146; both auditors explicitly CLEARED the publication-pointer mechanics, three-way
-fairness, and cross-product stock arithmetic). R16 PENDING — the LAST open part.
+**Review status:** R16 FOLDED (AGY BLOCK×2 + Codex BLOCK×2, all supersede-composition edges, all REAL —
+folded as SR-147..150; CLEARED this round: withdraw/drain composition, cross-product valuation selection,
+pending-reservation recovery). R17 PENDING — the LAST open part.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -90,17 +90,36 @@ silently drops it). **RESERVATION LIFECYCLE (SR-143):** `pending(owner, opId, jo
 a pre-publication rollback RELEASES/VOIDS the pending entry, and orphaned pendings (crash between reserve
 and publish, on either writer path) are reconciled idempotently via TTL + journal cross-check (the SR-117
 claims pattern) — a failed approval can never permanently lock a target that has NO control.
-**ONE *ACTIVE* CONTROL PER TARGET — SUPERSEDE, NOT FOREVER (SR-144):** the invariant is one ACTIVE
-EFFECTIVE control per original target, not one immutable decision for all time (a Director typo in a
+**ONE *ACTIVE* CONTROL PER TARGET — SUPERSEDE, NOT FOREVER (SR-144/147/148/149):** the invariant is one
+ACTIVE EFFECTIVE control per original target, not one immutable decision for all time (a Director typo in a
 replacement was otherwise permanently uncorrectable — no chain, no second claim, no path). A
 Director-sudo-gated **SUPERSEDE / WITHDRAW** operation runs through the SAME correction-approval route
-(correction_active state, journal, verify, publish-LAST) UNDER THE SAME original-target reservation,
-atomically replacing the ACTIVE control pointer: history is preserved as immutable, append-only VERSIONED
-REVISIONS, but exactly ONE published-effective control exists per target at any time — the export receives
-only that one, so the engine's chain-ambiguity rule never fires on legitimate operations (it remains a
-corruption detector). Delta exactness for a supersede: `newSnapshot = old − effect(previousEffective) +
-effect(newEffective)`; WITHDRAW = supersede-to-nothing (restores the original target's effect). The SR-70
-cross-list conflict rule likewise never fires on a legitimate correction.
+(correction_active state, journal, verify, publish-LAST) UNDER THE SAME original-target reservation, with
+history preserved as immutable, append-only VERSIONED REVISIONS and exactly ONE published-effective control
+per target at any time. Three composition pins:
+- **SUPERSEDE RESERVATION STATE (SR-147):** a supersede claims via `pending_supersede(priorCommitted)` —
+  a pre-publication rollback RESTORES the prior `committed` lock, never voids it (blindly applying SR-143's
+  release would strip the published predecessor's protection and let a racing device tombstone claim the
+  empty reservation, minting the exact ambiguity the engine bricks on). Only an INITIAL create's rollback
+  releases to empty.
+- **THE REVISION RIDES THE PUBLICATION MANIFEST (SR-148):** there is NO separate mutable active-control
+  pointer — the effective-control revision is PART of the candidate snapshot/archive version, and the
+  active PUBLICATION pointer (SR-139) is the SOLE visibility switch. Roll-forward/rollback therefore
+  automatically selects the exact revision matching the published version (all three crash splits close:
+  pointer-vs-snapshot can never disagree because they are one publication). The EXPORT verifies the
+  effective control's `publicationVersion` equals the active version before FINAL.
+- **EXPECTED-REVISION CAS (SR-149):** every SUPERSEDE/WITHDRAW intent carries the observed
+  `{activeControlId, revision, publicationVersion}`; after acquiring `correction_active` the server
+  re-reads the committed reservation and REJECTS on mismatch before preparing any candidate (the AA-03
+  pattern — serialization alone cannot detect an intent prepared against a stale revision; without this,
+  a queued withdraw silently discards a newer supersede: immutable history, lost financial update). The
+  route contract is SPLIT: initial-create requires NO committed reservation/control on the target;
+  supersede/withdraw requires a committed reservation whose active revision EXACTLY matches the intent's.
+Delta exactness for a supersede: `newSnapshot = old − effect(previousEffective) + effect(newEffective)`;
+WITHDRAW = supersede-to-nothing (restores the original target's effect — and the append-only original row
+simply evaluates PRESENT again for drain purposes, so SR-94/107 close without needing COVERED). The
+engine's chain-ambiguity and SR-70 cross-list rules never fire on legitimate operations (corruption
+detectors only).
 **CROSS-IDENTITY VALUATION RULE (SR-145):** target-row/item stamps are usable for a replacement's minted
 stamps ONLY when the identity they belong to matches the replacement's (same productId — and the same rule
 for store/classification): a replacement that changes the PRODUCT must derive its stamps from the
@@ -166,11 +185,17 @@ precedence: row stamps → the transfer ITEM's canonical stamps → lens. The mi
 fold precedence as the client (submit stamps permanent; receive-minted for stampless submits; resolve
 overrides) — shared fixtures prove client fold == engine projection, so invoice and settlement value the
 same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). **ORIGIN ASSERTION
-(SR-122):** the lens tier is reachable for a transfer-linked row ONLY when the row is PROVABLY legacy —
-every transferId in the economic rows must project a valid ORIGIN (a submit or backfill step) from `steps`;
-steps present but no origin ⇒ fail closed; NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4
-steps epoch, else fail closed (a lost/uningested step is indistinguishable from legacy — and ledger + steps
-push through SEPARATE endpoints, ledger first, so the gap is real). **EPOCH PROVENANCE (SR-129):** the
+(SR-122/150):** the origin assertion GATES THE FALLBACK TIERS, not stamped rows (SR-150): a ROW-STAMPED
+row — which includes EVERY control row, since replacements are server-minted-stamped and an unstamped
+replacement is malformed — values at tier 1 and needs NO origin proof; the assertion applies only to
+UNSTAMPED transfer-linked rows, whose valuation would reach the item/lens tiers. (The R14 wording "every
+transferId must project an origin" was over-broad — a validated cross-product replacement carries the
+transferId but legitimately has no origin step for its NEW product; as a stamped row it never touches the
+lens, so demanding origin proof from it bricked a legal correction.) For UNSTAMPED rows the rule is
+unchanged: a valid ORIGIN (submit or backfill step) must project from `steps`; steps present but no origin
+⇒ fail closed; NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4 steps epoch, else fail closed
+(a lost/uningested step is indistinguishable from legacy — and ledger + steps push through SEPARATE
+endpoints, ledger first, so the gap is real). **EPOCH PROVENANCE (SR-129):** the
 epoch comparison uses the row's ORIGINAL live-list id — live rows: their item ID; ARCHIVED rows: the
 preserved `SourceId` (CHUNK8: the archive item's own ID is newly minted and NEVER epoch-comparable);
 absent/invalid provenance id ⇒ refuse. Residual corner, pinned FAIL-CLOSED + surfaced: an ancient row
@@ -196,6 +221,14 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R16 fold record (2026-07-15) — 4 distinct, all REAL (all supersede-composition edges)
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-147** | AGY R16-1 (P1): SR-143's release-on-rollback, blindly applied to a SUPERSEDE, voids the PUBLISHED predecessor's reservation — a racing device tombstone then claims the empty slot and mints the ambiguity the engine bricks on | P2: `pending_supersede(priorCommitted)` state; supersede rollback RESTORES the prior committed lock; only initial-create rollback releases to empty |
+| **W4-SR-148** | Codex R16-1 (P1): the active-control pointer wasn't bound to the SR-139 publication commit — three crash splits (pointer-then-rollback without restore; publish-then-crash without the pointer step; withdraw's same split) desync snapshot and served control | P2: the effective revision RIDES the publication manifest; the publication pointer is the SOLE visibility switch (they cannot disagree); export verifies effectiveControl.publicationVersion == active version before FINAL |
+| **W4-SR-149** | Codex R16-2 (P1): serialization ≠ staleness detection — a queued withdraw prepared against R1 silently discards a newer R2 (lost financial update); AND LA §6's "reject any covered target" guard contradicted supersede entirely | P2: expected-revision CAS on every supersede/withdraw (observed {controlId, revision, publicationVersion}, re-read + reject on mismatch); the route contract SPLIT (initial-create: no reservation; supersede/withdraw: exact revision match). LA §6 fixed |
+| **W4-SR-150** | AGY R16-2 (P1): a validated cross-product replacement bricked on the SR-122 origin assertion (transferId present, no origin step for the NEW product ⇒ fail closed at read — a legal correction permanently jamming the settlement) | P6: the origin assertion is NARROWED to its purpose — it gates the item/lens FALLBACK for UNSTAMPED rows only; row-stamped rows (incl. every server-minted control) value at tier 1 and need no origin proof |
 
 ## R15 fold record (2026-07-14) — 4 distinct (one converged pair), all REAL
 | # | Finding | Fold |
