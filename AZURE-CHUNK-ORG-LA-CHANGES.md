@@ -244,8 +244,16 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   activeManifest.controlHeads[targetId] must name exactly the supplied {controlId, revision,
   bornPublicationVersion}, born ≤ active; withdrawn = explicit null head; delta-manifests walked — NEVER a
   global-version equality, which would block FINAL forever after any unrelated correction). TIER-1 STAMP
-  AUTHORITY (SR-152): ordinary rows' stamps must be corroborated against the validated minting step in the
-  attested steps input (uncorroborated ⇒ fail closed); control rows bind via the per-target head check. Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
+  AUTHORITY = SERVER SEMANTIC ATTESTATION (SR-152→153/154/155): stamp-bearing steps carry
+  {pricingVersion, catalogueVersion}; the steps-ingest validator (the D4-K validateMoney pattern extended)
+  RECOMPUTES expected stamps from server-owned pricing history + versioned master_data as-of the event
+  instant and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation
+  marker (client values stripped). Stamped TRANSFERLESS rows (direct HO-supply) get the SAME validation at
+  push-v2 ROW ingest with a server-set attestation column (SR-155). The engine's tier-1 = attested
+  evidence only (control rows bind via the per-target head check); BACKFILL snapshots are never tier-1
+  provenance — backfill-only rows value via the lens as-of the row date, with an optional Director
+  re-attestation route (SR-154). Client-vs-client equality is DEAD as an authority proof (the R17 rule was
+  circular). ⚠ The payload version fields are a flagged scoped amendment to frozen W4.3. Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
   withdraw restores the target's effect (the append-only original evaluates PRESENT again for drain).
   CROSS-IDENTITY VALUATION (SR-145): target/item stamps mint a replacement's stamps only when product
   (and store/classification) identity matches; a product-changing replacement derives from the REPLACEMENT

@@ -4,10 +4,12 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R17 FOLDED (AGY BLOCK×2 + Codex BLOCK×2 — BOTH pairs fully CONVERGED = 2 distinct, both
-REAL, both defects in MY R16 fold wording — folded as SR-151/152; CLEARED: supersede restore-on-rollback,
-expected-revision CAS, manifest-riding revision, cross-product lens selection). R18 PENDING — the LAST open
-part, surface ≈ these two folds.
+**Review status:** R18 FOLDED (AGY BLOCK×1 + Codex BLOCK×2; Codex R18-1 exposed the R17 corroboration rule
+as CIRCULAR — the deepest catch of the review; AGY's legacy-stamped-row scenario ground-truthed NOT REAL
+[no pre-W4 stamp writer exists — grep: sellAtSupply appears in spec docs only], its backfill half REAL +
+converged — folded as SR-153..155; CLEARED: null-head/drain reading, the normal transfer-chain
+corroboration path). ⚠ SR-153 narrowly REOPENS frozen W4.3 (step payloads gain version fields — flagged
+amendment, re-review scoped to it). R19 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -199,19 +201,41 @@ range/both-or-neither, not AUTHORITY: an authenticated-but-hostile device could 
 and be paid on them). Pinned tier-1 rule:
 - **Server-minted CONTROL rows** bypass origin proof — bound to their published control revision + the
   sudo-gated correction journal (SR-151's per-target head check IS the provenance).
-- **Ordinary transfer-linked rows'** stamps must be CORROBORATED against the attested `steps` input the
-  engine already holds (SR-114): the row's stamps must equal the stamps of the VALIDATED step that created
-  that row per the item's basis chain (submit-propagated / receive-minted / resolve-pinned / top-up- or
-  cancel-inherited) — binding to the step that minted THOSE stamps, not merely today's folded projection
-  (legitimate conflict history can differ from the current head). Uncorroborated stamps ⇒ FAIL CLOSED for
-  FINAL (forged or corrupt — never silently paid). The client invoice applies the same corroboration from
-  its local fold.
+- **Ordinary transfer-linked rows: SERVER SEMANTIC ATTESTATION, not client equality (SR-152→153).** The
+  R17 rule ("row stamps equal the minting step's stamps") was CIRCULAR — a hostile receiver authors BOTH
+  the step and the row, so matching them proves nothing; ingest validated shape, never VALUE-authority.
+  Pinned instead: every stamp-bearing step (submit/receive/resolve) carries the `{pricingVersion,
+  catalogueVersion}` it stamped under; the STEPS-INGEST validator (the existing D4-K validateMoney pattern
+  extended) RECOMPUTES the expected stamps from SERVER-OWNED history — the pricing history under that
+  pricingVersion + the versioned master_data catalogue price — as-of the step's event instant, and REJECTS
+  mismatches (`BAD_STAMPS`, quarantined). Accepted steps gain a SERVER-SET attestation marker (never
+  client-writable; client-supplied values for it stripped at ingest). The engine's tier-1 for transfer
+  rows = row stamps that match a SERVER-ATTESTED minting step per the item's basis chain
+  (submit-propagated / receive-minted / resolve-pinned / top-up-, remainder- or cancel-inherited).
+  Unattested/uncorroborated ⇒ FAIL CLOSED for FINAL. The client invoice applies the same rule from its
+  fold + the attestation markers it pulls. (⚠ payload version fields = a NARROW AMENDMENT to frozen W4.3
+  P3, flagged for scoped re-review.)
+- **BACKFILL steps are NEVER tier-1 provenance (SR-154):** a backfill is a CLIENT snapshot — its deep hash
+  proves content consistency, not truth (records.js: no expectedLedgerKeys; it never created its rows).
+  Rows whose only minting evidence is a backfill are valued via the LENS as-of the row's own date
+  (server-authoritative history — correct-by-construction for restored historical rows; row stamps
+  IGNORED). A Director-triggered SERVER RE-ATTESTATION route may recompute + attest such stamps from
+  server history (same validator), restoring stamp preference; without it, lens valuation stands and FINAL
+  is not blocked. Rejecting was wrong (bricks legitimate restores); trusting was wrong (admits forged
+  snapshot + row); lens-with-optional-re-attestation is the honest third path.
+- **DIRECT HO-SUPPLY rows (no transferId) get ROW-LEVEL attestation (SR-155):** W4.3 stamps them at their
+  own commit but NO step exists (index.html direct-logging path) — so trust-by-presence would reopen the
+  forgery hole and fail-closed would brick legitimate billable lines. Pinned: the ROW ingest (push-v2)
+  runs the SAME semantic validator on stamped transferless rows (recompute under the carried versions;
+  reject `BAD_STAMPS`); accepted rows gain the server-set attestation column. The engine requires it for
+  tier-1 on transferless rows; the invoice mirrors.
 - **UNSTAMPED transfer-linked rows** (the fallback tiers) keep the origin assertion unchanged: a valid
   ORIGIN (submit or backfill step) must project from `steps`; steps present but no origin ⇒ fail closed;
-  NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4 steps epoch, else fail closed (a
-  lost/uningested step is indistinguishable from legacy — ledger + steps push through SEPARATE endpoints,
-  ledger first, so the gap is real). A validated cross-product replacement still never faces the origin
-  assertion (it is a control row — first bullet). **EPOCH PROVENANCE (SR-129):** the
+  NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4 steps epoch, else fail closed. NOTE
+  (SR-153 ground truth): a STAMPED pre-epoch row cannot legitimately exist — the stamp fields have no
+  pre-W4 writer (spec-docs-only today) — so such a row is anomalous by construction and fail-closed is
+  CORRECT, not a gap. A validated cross-product replacement still never faces the origin assertion (it is
+  a control row — first bullet). **EPOCH PROVENANCE (SR-129):** the
 epoch comparison uses the row's ORIGINAL live-list id — live rows: their item ID; ARCHIVED rows: the
 preserved `SourceId` (CHUNK8: the archive item's own ID is newly minted and NEVER epoch-comparable);
 absent/invalid provenance id ⇒ refuse. Residual corner, pinned FAIL-CLOSED + surfaced: an ancient row
@@ -237,6 +261,13 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R18 fold record (2026-07-15) — 3 distinct, the circularity round
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-153** | Codex R18-1 (P1, the deepest catch of the review): the R17 corroboration was CIRCULAR — a hostile receiver authors BOTH the receive step ($1/99%) and its row; equality passes; ingest validates shape, never VALUE-authority. AGY R18-1's legacy half ground-truthed NOT REAL (no pre-W4 stamp writer exists — a stamped pre-epoch row is anomalous, fail-closed correct) | P6: SERVER SEMANTIC ATTESTATION at ingest — steps carry {pricingVersion, catalogueVersion}; the D4-K validator recomputes expected stamps from server-owned history and rejects BAD_STAMPS; attestation server-set, never client-writable; tier-1 = attested evidence only. ⚠ narrowly reopens frozen W4.3 (payload version fields — flagged scoped amendment) |
+| **W4-SR-154** | AGY R18-1 (backfill half) + Codex R18-1 (backfill half) (CONVERGED, P1): backfill snapshots are client content — trusting their stamps admits forgery; rejecting bricks legitimate restored transfers | P6: backfill is never tier-1 provenance; backfill-only rows value via the LENS as-of the row's date (stamps ignored); optional Director-triggered server RE-ATTESTATION restores stamp preference; FINAL not blocked either way |
+| **W4-SR-155** | Codex R18-2 (P1): direct HO-supply rows (stamped at commit per W4.3, NO transferId, NO step — the direct-logging path) had no corroboration path: trust-by-presence reopens R17's hole; fail-closed bricks legitimate billable lines | P6: ROW-LEVEL attestation — push-v2 runs the same semantic validator on stamped transferless rows; server-set attestation column; engine + invoice require it for tier-1 on transferless rows |
 
 ## R17 fold record (2026-07-15) — 2 distinct (BOTH fully converged), both defects in my R16 folds
 | # | Finding | Fold |

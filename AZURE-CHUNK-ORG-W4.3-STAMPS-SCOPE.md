@@ -7,6 +7,13 @@ ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). C
 remains viable"; Codex: "freeze candidate", strict projection verified against both-or-neither + money
 validation). The spec is LOCKED; any future change reopens the part's review. Fold history: SR-97, 105,
 106, 113, 114, 121, 128 (+ the R1-R6 ledger folds this doc consolidates).
+**⚠ ONE FLAGGED POST-FREEZE AMENDMENT (2026-07-15, W4-SR-153 — scoped re-review required):** stamp-bearing
+step payloads (submit/receive/resolve) additionally carry the `{pricingVersion, catalogueVersion}` they
+stamped under, enabling the server's semantic stamp attestation at ingest (defined in W4.4 P6 / LA §6);
+these version fields join the both-or-neither group (stamps without versions = malformed). NOTHING ELSE in
+this spec changes; the R19 review of W4.4 includes a scoped check of exactly this amendment. The
+canonical-form obligation (SR-128) applies: the fields join the pinned W4 schema, no new canonical version
+needed (they are part of the same W4 form, born before any build).
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
