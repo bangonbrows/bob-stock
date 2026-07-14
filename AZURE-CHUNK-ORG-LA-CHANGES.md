@@ -29,11 +29,15 @@ Trigger `POST {auth, proof, intent}`.
    registry` record: reservation = a CAS/ETag CONDITIONAL UPDATE on that single record, succeeding iff no
    active claim overlaps (SR-110 — separate conditional CREATES do not serialize; the version check alone
    cannot catch two onboards of one officeStoreId). The pending journal is created AFTER the claim wins;
-   claims carry owner + TTL/heartbeat + a FENCING GENERATION (SR-117/125): the live holder renews; the
-   reconcile sweep SCRUBS orphans (claim with no journal after TTL, or a terminal journal ⇒ released) and
-   every release ADVANCES the generation; journal CREATION, boundary finalization, and EVERY mutating step
-   are conditional on the unexpired claim + matching generation — a scrubbed worker that resumes cannot
-   create its journal or apply a step.
+   claims carry owner + TTL/heartbeat + an immutable PER-CLAIM-SET LEASE ID from a durable monotonic
+   counter on the registry (SR-117/125/131 — the counter survives deletion, ids never reused; unrelated
+   releases touch only their own entries, so no cross-plan fencing): the live holder renews; the reconcile
+   sweep SCRUBS orphans (claim-set with no journal after TTL, or a terminal journal ⇒ removed); journal
+   CREATION, boundary finalization, and EVERY mutating step are conditional on "my claim-set present with
+   my lease id, unexpired" — a scrubbed worker that resumes cannot create its journal or apply a step.
+   **RESUME (SR-126/132):** the blocked_manual exit is a first-class INTENT on THIS route — Director key +
+   `topology-change` sudo, changeId/digest-bound idempotency, conditional blocked_manual→needs_replan
+   transition (stale/duplicate resumes rejected).
    **BOUNDARY FINALIZATION (SR-112):** effective interval boundaries take the DATA STORE's write timestamp
    of the reservation (two-phase: plan→reserve→re-finalize boundaries with the reservation row's server
    timestamp) — LA execution clocks are never a boundary source. **APPLY-TOP REPLAN (SR-119):** before the
@@ -201,6 +205,15 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   TransactionId + surfaced legacy count). The `drain` evidence is an ENGINE INPUT (the pure engine itself
   refuses a FINAL without it). Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and
   regenerable; FINAL requires all.
+- **Correction-approval route (W4-SR-134/135 — the CHUNK8 item-5 correction arm, now defined):**
+  Director-sudo-gated (editPricing-class privileged op; purpose pinned at build). Given a target
+  TransactionId: fetches the AUTHORITATIVE target row (live or archive), obtains the COMPLETE RecordSteps
+  set for its transfer with enumeration proof, runs the canonical valuation precedence SERVER-side, binds
+  the original-event UTC instant + the pricing publication version, and MINTS the replacement's immutable
+  both-or-neither stamps (client-supplied values never authoritative). ARCHIVED target ⇒ the replacement is
+  written INTO the archive list under the archive coordination lease, with the corresponding SNAPSHOT
+  ADJUSTMENT applied atomically in the same journaled op (Chunk-8 snapshot integrity); live target ⇒ live
+  list. Same-list by construction — the export's cross-list rule stays a pure corruption detector.
 - **Activation seed (runbook contract, W4-SR-46/50/63/65):** per store, one '*' interval PER FRANCHISE ERA
   (closed [from,to) for closed eras; open for the open era), ALL at the seed-time scalar value — required by
   `pricingAlignsWithEras`; HO interludes stay uncovered. `global[productId]` seeded ONLY for legacy discounts

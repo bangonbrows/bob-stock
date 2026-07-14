@@ -4,8 +4,9 @@
 frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-1, 2,
 5, 10, 11, 15, 16(chain), 21, 22, 27, 29, 31→74, 42, 45(client view), 46/50/63/65(seed consumption), 49,
 51→74, 52 + R7 folds SR-80..83.
-**Review status:** R11 FOLDED (AGY BLOCK×1 + Codex BLOCK×1 — CONVERGED on the same defect; REAL, folded as
-SR-127). R12 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** R12 FOLDED (Codex PASS — key-set derivability verified against the Chunk-10 credential
+rules; AGY BLOCK×1 → ground-truthed NOT REAL, clarifying pin added as SR-133). R13 PENDING — needs BOTH
+auditors PASS to freeze.
 
 ## The bug this kills (GAP-1)
 `Pages._franchiseInvoiceData` (index.html:4758) prices EVERY invoice line — any historical range — from the
@@ -57,7 +58,13 @@ claim can no longer freeze the FLEET's horizons (the R10 global rule turned one 
 failure into a network-wide pricing-commit outage: frozen horizons + a later pricing_stale = every recent
 row fails closed everywhere). Global-tier claims (pricing edits, add-product) are transient journal-backed
 operations bounded by TTL; brief unsettled windows are harmless (the echo still serves data — the horizon
-simply doesn't advance). Any reservation landing after the check modifies the registry, so every boundary
+simply doesn't advance). **KEY-SET DEFINITION, pinned (SR-133):** a device's resolvable key set = the store
+keys of its credential's server-owned StoreIds (per the Chunk-10 scoping rules: franchisee credentials
+carry their stores + office; HO/Director resolve all) + the global tier. A retail POS device's set is
+`[its storeId, global]` — and that is CORRECT, not a gap: under the R4 per-store model its rows resolve
+through its OWN map only (office keys are not in its chain), and any write that touches its map — including
+an office-default FAN-OUT — CLAIMS the retail key too (SR-45/98), so the intersection check catches it.
+Office keys matter only to credentials that bill office-keyed rows, which carry the office in StoreIds. Any reservation landing after the check modifies the registry, so every boundary
 it publishes is `>= T` — and equality is SAFE because the horizon admits only row instants STRICTLY before
 T (Codex R10 note: the necessary relation is `>= T`, not `> T`). One clock (the data store's), one
 ordering, no LA clocks anywhere in the proof.
@@ -108,6 +115,11 @@ the client NEVER writes history locally. Pre-activation: exactly today's behavio
   requires the REAL `topology.js` in the harness across the fixture matrix.
 - W4.3 consumes P3's submit-reject and stamps from lens values; W4.4 re-implements the SAME chain
   engine-side (shared fixtures prove engine == lens).
+
+## R12 fold record (2026-07-14) — Codex PASS · AGY×1 NOT REAL
+| # | Finding | Ground truth |
+|---|---|---|
+| **W4-SR-133** | AGY R12-1 (P1): claimed a retail device's key set omits the office key while "the office default sits directly in the retail store's resolution chain" — **NOT REAL: that is the PRE-R4 model.** Since the R4 revision, resolution is strictly per-store (`billingStore = the row's own storeId`; the resolver map is deleted); office edits reach retail stores via the SR-45 FAN-OUT, whose SR-98 claim set INCLUDES every target retail key — the intersection check catches exactly the case AGY described. Codex independently PASSed with the Chunk-10 credential derivation | no behaviour change; the key-set definition is PINNED in P4 so this cannot be re-litigated |
 
 ## R11 fold record (2026-07-14) — one CONVERGED finding
 | # | Finding | Fold |

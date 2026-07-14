@@ -4,9 +4,8 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R11 FOLDED (AGY BLOCK×2 + Codex BLOCK×2, both converged pairs = 2 distinct folds
-SR-129/130; AGY's late-legacy-DEVICE premise ground-truthed impossible post-Chunk-5, its residual corner
-folded). R12 PENDING.
+**Review status:** R12 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, one converged pair = 2 distinct, both REAL —
+folded as SR-134/135; Codex cleared the SourceId-trust attack). R13 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -46,12 +45,23 @@ semantics — `deletion` (a tombstone: the target is REMOVED from the settlement
 Chunk-8 Director-approved current-dated correction, CHUNK8 item 2: the target is EXCLUDED and the
 correction row is SUBSTITUTED, with window membership judged on its ORIGINAL-EVENT metadata — which is a
 validated UTC INSTANT per SR-25, never a bare calendar date, else a boundary-adjacent replacement cannot be
-assigned to `[from,to)`). **REPLACEMENT VALUATION (SR-130, corrects the R10 text):** a replacement is a
-POST-W4 row minted through the correction path — it has NO legacy origin by construction, so lens-at-read
-is NEVER its valuation. It MUST carry both-or-neither stamps CAPTURED AT APPROVAL: transfer-linked targets
-derive them through the FULL P6 precedence (target row stamps → item stamps → lens-as-of the ORIGINAL
-event, frozen at approval); non-transfer targets inherit the target's stamps or freeze the
-lens-at-approval value. An unstamped replacement is a MALFORMED control ⇒ fail closed. Identity =
+assigned to `[from,to)`). **REPLACEMENT VALUATION — SERVER-MINTED (SR-130/134, corrects the R10 text):** a replacement is a POST-W4
+row minted through the correction path — it has NO legacy origin by construction, so lens-at-read is NEVER
+its valuation. It MUST carry both-or-neither stamps CAPTURED AT APPROVAL — and **approval is a
+Director-sudo-gated SERVER operation (SR-134):** the route fetches the AUTHORITATIVE target (live or
+archive), obtains the COMPLETE RecordSteps set for its transfer (with enumeration proof — a client device
+cannot be trusted to hold archived steps; an approving device mid-sync would silently freeze the WRONG
+tier), runs the canonical P6 precedence server-side (target row stamps → item stamps → lens-as-of the
+ORIGINAL event), binds the original-event instant + the pricing publication version, and MINTS the
+immutable stamps itself. Client-supplied stamp values are NEVER authoritative. An unstamped replacement is
+a MALFORMED control ⇒ fail closed.
+**ARCHIVED-TARGET CORRECTIONS ARE SAME-LIST BY CONSTRUCTION (SR-135):** a replacement approved for an
+ARCHIVED target is WRITTEN INTO THE ARCHIVE LIST by the same server op (the CHUNK8 item-5
+"snapshot/archive correction" arm, which W4 previously named as a remedy but never defined), under the
+archive coordination lease, with the corresponding SNAPSHOT ADJUSTMENT applied atomically in the same
+journaled operation when the correction changes a pre-cutoff balance (Chunk-8 snapshot integrity). Live
+targets → live list. The SR-70 cross-list conflict rule therefore never fires on a legitimate correction —
+it remains what it was always meant to be: a corruption detector. Identity =
 targetTransactionId; dedup by control id. NO delta type exists (Chunk-8 defines none). Ambiguity —
 multiple controls on one target, a replacement whose target is also deleted, a replacement chain — ⇒ FAIL
 CLOSED, surfaced. Cross-list controls remain conflicts (SR-70).
@@ -138,6 +148,12 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R12 fold record (2026-07-14) — 2 distinct (one converged pair), both REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-134** | AGY R12-3 + Codex R12-4 (CONVERGED, P1): approval-time stamp capture had no data-acquisition contract — a Director device approving an ARCHIVED target (or one mid-sync) lacks the transfer steps, silently freezes the WRONG tier, and the syntactically-valid stamp pair defeats later validation | P2: replacement approval = a Director-sudo-gated SERVER op — fetches the authoritative target + complete steps (enumeration-proved), runs the canonical precedence server-side, binds instant + pricing version, MINTS the stamps; client values never authoritative |
+| **W4-SR-135** | Codex R12-3 (P1): an archived target had NO legal replacement path — a live current-dated replacement targeting an archived row trips MY OWN SR-70 cross-list rule, so the SR-129 "Director replacement" remedy could never produce a FINAL (self-contradiction between my folds) | P2: the server op writes an archived-target replacement INTO THE ARCHIVE list (the CHUNK8 item-5 correction arm, now actually defined), under the archive lease, with the atomic snapshot adjustment; SR-70 stays a pure corruption detector |
 
 ## R11 fold record (2026-07-14) — 2 distinct (both converged pairs), both REAL
 | # | Finding | Fold |

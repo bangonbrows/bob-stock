@@ -1,52 +1,47 @@
-# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 12 (paper review, PER-PART) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 13 (paper review, PER-PART) — Codex + AGY
 
-**You are reviewing the OS-W4 spec, round 12.** R11: 6 distinct findings (3 converged pairs), folded as
-**W4-SR-125..130**. Codex PASSED W4.3; AGY's single W4.3 finding (future-field projection) aligned with
-Codex's own PASS-note and is folded — **W4.3 is the prime freeze candidate this round.** One ground-truth
-note: AGY's "late-syncing pre-Chunk-4 device" scenario is impossible as stated (Chunk-5 device auth rejects
-pre-Chunk-4 builds outright), but the underlying epoch-provenance gap was real (Codex's archived-SourceId
-variant) and the backup-resurrection corner is folded fail-closed.
+**You are reviewing the OS-W4 spec, round 13 — THREE parts only.** ✅ **W4.3 STAMPS is FROZEN** (both of you
+passed it at R12); its spec is locked and out of this round. R12's remaining findings folded as
+**W4-SR-131..135**. One ground-truth correction: AGY's W4.2 finding (retail devices miss office claims)
+was NOT REAL — it rests on the pre-R4 model; since R4, resolution is strictly per-store and the office
+fan-out's claim set INCLUDES every retail key, so the intersection check catches exactly that case (Codex
+independently passed W4.2 on the Chunk-10 credential derivation). The key-set definition is now pinned in
+W4.2 P4 so it cannot be re-litigated.
 
 Both auditors in parallel; paper review; report-only; verdict PER PART — parts BOTH of you PASS freeze.
-The finding stream is now: R6=13, R7=21, R8=15, R9=7, R10=8, R11=6, with every R11 item a refinement of an
-R9/R10 mechanism. If a part is done, PASS it.
+Scoreboard: W4.3 frozen · W4.2 = Codex PASS twice running, AGY's last finding refuted · W4.1/W4.4 down to
+narrow mechanics. If a part is done, PASS it.
 
 ## Read (branch `azure-phase-5-8-server`)
 `AZURE-CHUNK-ORG-W4.1-PLANNER-SCOPE.md` · `AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md` ·
-`AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` · `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` ·
-`AZURE-CHUNK-ORG-LA-CHANGES.md` §1/§2/§6. History: frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md`.
+`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` · `AZURE-CHUNK-ORG-LA-CHANGES.md` §1/§2/§6.
+(Frozen: `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` — reference only. History: the frozen ledger.)
 
-## What R11 changed
-- **W4.1 (SR-125/126):** FENCING GENERATIONS — journal creation, finalization, and every mutating step are
-  conditional on the unexpired claim + matching generation; scrub/release advances the generation (a
-  stalled-then-resumed worker fails its next conditional write, including creating its own journal).
-  `blocked_manual` gains its pinned exit: a Director-authorized RESUME → `needs_replan`; the stray
-  "reconcile finds pending only" W2 paragraph is fixed.
-- **W4.2 (SR-127):** the R10 global settled rule is SCOPED — settled = no active claims intersecting the
-  DEVICE'S resolvable key set (its stores/offices + global). Safety proof unchanged (irrelevant claims
-  can't move relevant boundaries); one stuck franchisee can no longer freeze the fleet's horizons.
-- **W4.3 (SR-128):** the v4 canonicalizer performs STRICT SCHEMA PROJECTION (unknown future keys stripped
-  for divergence hashing) + the pinned obligation: every future schema change = a NEW immutable
-  canonical-form version + fixture extension, never a mutation of the W4 form.
-- **W4.4 (SR-129/130):** epoch provenance = live item ID / archived `SourceId` (never the archive item's
-  own id); absent ⇒ refuse; backup-resurrection corner fail-closed + surfaced with pinned remedies.
-  Replacements MUST carry both-or-neither stamps captured AT APPROVAL via the full valuation precedence
-  (unstamped replacement = malformed); original-event metadata = validated UTC INSTANT.
+## What R12 changed
+- **W4.1 (SR-131/132):** fencing reworked to immutable PER-CLAIM-SET LEASE IDs from a durable monotonic
+  registry counter (survives deletion, never reused; unrelated releases can't fence a healthy plan — the
+  R11 "advance the generation" wording is superseded). RESUME is a first-class intent on the
+  topology-change route: Director key + topology-change sudo + changeId/digest-bound idempotency +
+  conditional blocked_manual→needs_replan.
+- **W4.2 (SR-133):** no behaviour change — the resolvable-key-set definition is PINNED (credential StoreIds
+  per Chunk-10 + global; office keys only for credentials that bill office rows; fan-out claims cover the
+  retail keys).
+- **W4.4 (SR-134/135):** replacement approval = a Director-sudo-gated SERVER operation (fetches the
+  authoritative target + complete steps with enumeration proof, runs the canonical precedence server-side,
+  mints the stamps — client values never authoritative). Archived-target replacements are written INTO the
+  archive list under the archive lease with the atomic snapshot adjustment (the CHUNK8 item-5 correction
+  arm, now actually defined) — the cross-list rule stays a pure corruption detector.
 
 ## Attack per part (fresh surface only)
-- **W4.1:** the fencing-generation lifecycle (generation advanced per-release — is the granularity per
-  claim-set or per registry? can a replan under held claims accidentally straddle a generation bump?);
-  RESUME authorization (who can invoke it, and is it sudo-bound like other Director privileged ops?).
-- **W4.2:** the scoped-settled key intersection (is "the device's resolvable key set" derivable
-  server-side from its credential at echo time — offices included? does a multi-store franchisee device
-  compute the same set the server does?).
-- **W4.3:** the strict projection vs the both-or-neither invariant (can stripping a future field ever break
-  a validation the W4 device still runs?). If nothing bites, PASS it.
-- **W4.4:** replacement stamps captured at approval — the approval happens AFTER buy-back on live data
-  (does the approving device have the target's transfer steps to run the precedence? what if the target is
-  archived?); SourceId trust (is the preserved SourceId validated at archive-write so a forged control
-  can't smuggle an epoch downgrade?).
+- **W4.1:** the lease-id counter as a hot cell (every reservation CASes one record — contention with the
+  settled-echo reads?); RESUME idempotency digest vs a LEGITIMATE second resume after a second block on the
+  same journal (same changeId, different block episode — does the digest distinguish?).
+- **W4.2:** anything the SR-133 pin still leaves open — otherwise PASS it.
+- **W4.4:** the correction-approval op's snapshot adjustment vs a CONCURRENT archive run (lease covers the
+  write, but does the snapshot adjustment compose with Chunk-8's publish-nothing verification?); the
+  approval op targeting a row that is itself already covered by an earlier control (chain prevention at
+  approval time vs engine-side ambiguity fail-close).
 
 ## Verdict
-Four verdicts (`W4.x: PASS | PASS-with-notes | BLOCK`), numbered findings per part with concrete scenarios.
-Claude ground-truths and folds; parts BOTH auditors PASS freeze.
+Three verdicts (`W4.x: PASS | PASS-with-notes | BLOCK`), numbered findings per part with concrete
+scenarios. Claude ground-truths and folds; parts BOTH auditors PASS freeze.

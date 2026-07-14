@@ -3,9 +3,10 @@
 **Authority:** CONSOLIDATED, AUTHORITATIVE spec for the W4 stamps/transport seam (split from the frozen
 ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-3, 7, 12,
 13, 18, 19→67, 20, 38, 39, 40, 58, 59, 60, 62→73, 66, 67 + R7 folds SR-84..89.
-**Review status:** R11 FOLDED (Codex PASS — "closes both migration and schema evolution"; AGY BLOCK×1 →
-REAL forward-compat pin, ALIGNED with Codex's own PASS-note; folded as SR-128). R12 PENDING — strong freeze
-candidate.
+**Review status:** ✅ **FROZEN 2026-07-14 — BOTH AUDITORS PASS at R12** (AGY: "no fresh attack surface
+remains viable"; Codex: "freeze candidate", strict projection verified against both-or-neither + money
+validation). The spec is LOCKED; any future change reopens the part's review. Fold history: SR-97, 105,
+106, 113, 114, 121, 128 (+ the R1-R6 ledger folds this doc consolidates).
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
