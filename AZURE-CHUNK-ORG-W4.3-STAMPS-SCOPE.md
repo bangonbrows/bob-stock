@@ -3,8 +3,8 @@
 **Authority:** CONSOLIDATED, AUTHORITATIVE spec for the W4 stamps/transport seam (split from the frozen
 ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-3, 7, 12,
 13, 18, 19→67, 20, 38, 39, 40, 58, 59, 60, 62→73, 66, 67 + R7 folds SR-84..89.
-**Review status:** R7 FOLDED (AGY BLOCK×1 → already covered, clarified; Codex BLOCK×5 → all REAL, folded).
-R8 PENDING.
+**Review status:** R8 FOLDED (AGY BLOCK×1 + Codex BLOCK×3, one converged pair = 3 distinct, all REAL —
+folded as SR-97/105/106; SR-105 also exposes a LATENT pre-existing Chunk-4 hash bug). R9 PENDING.
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
@@ -32,14 +32,31 @@ never a silent switch.
 **P3 — transport: stamps + basis ride EVERY channel (SR-13/18/20/38/40/58/86/87).**
 - Step payloads: `Payload.items[].sellAtSupply/discAtSupply` **+ per-line `basis` (SR-86)** in submit +
   receive + resolve steps (phase2.js `_submitPayload`, records.js fold reconstruct). There are NO Transfers
-  columns (deleted scaffold). **A receive step LACKING the basis field = written by a pre-W4 build ⇒ the
-  item's basis is `legacy-lens`, durably and deterministically on every device** — stamp-at-receive applies
-  only when the receiving device writes the field (kills the "awaiting stamps vs legacy already chosen"
-  ambiguity).
-- **BACKFILL + FOLD ENUMERATION (SR-87):** the backfill snapshot already embeds the whole record; the FOLD
-  reconstruct's item enumeration (records.js:321) and `_applyReceive`/`_applyResolve` map stamps + basis
-  explicitly (today they drop unlisted fields); the backfill content hash covers them, so divergent-stamp
-  backfills surface via the existing hash-in-id divergence conflict.
+  columns (deleted scaffold). **BASIS PRECEDENCE (SR-97, corrects the R7 absence rule):** a valid
+  `submit-stamped` basis (stamps present on the submit step) is PERMANENT — nothing a later step omits can
+  downgrade it. A receive step LACKING the basis field sets `legacy-lens` ONLY when the submit is ALSO
+  stampless (both pre-W4 ⇒ genuinely legacy, deterministic everywhere). A stale pre-W4 RECEIVER of a
+  W4-stamped submit therefore leaves the item submit-stamped; its unstamped `transfer_in` rows are handled
+  by VALUATION PRECEDENCE (below) — no silent downgrade, no row mutation.
+- **VALUATION PRECEDENCE (SR-97):** the invoice and the export value a transfer-linked row as: row stamps →
+  the transfer ITEM's canonical stamps (via transferId lookup) → lens. An unstamped row created by a stale
+  receiver of a stamped transfer bills at the SUBMIT stamps on every device, by construction — the
+  one-item-one-basis invariant holds at valuation without repairing synced rows.
+- **BACKFILL + FOLD ENUMERATION (SR-87/105):** the backfill snapshot already embeds the whole record; the
+  FOLD reconstruct's item enumeration (records.js:321) and `_applyReceive`/`_applyResolve` map stamps + basis
+  explicitly (today they drop unlisted fields). **The content hash becomes a CANONICAL DEEP hash (SR-105):**
+  the current `_stableHash` passes `Object.keys(obj).sort()` as a stringify REPLACER, which drops
+  nested-object fields at EVERY level — item stamps, and TODAY even item content, are invisible to it
+  (⚠ LATENT PRE-EXISTING CHUNK-4 BUG: backfill divergence detection has been blind to item-level
+  differences since D4-I — two transfers differing only inside `items[]` hash identically and the second
+  silently 409-converges, first-writer-wins, the exact behaviour D4-I was built to prevent; flagged
+  Kunal-visible, fixed here with its own sentinel + re-verification). W4.3 replaces it with a recursive
+  sorted-key serializer; divergent-stamp (or divergent-item) backfills then surface via hash-in-id.
+- **BACKFILL DIVERGENCE RESOLUTION (SR-106):** the resolve payload gains `resolvesBackfillHashes` — a
+  resolve that names the divergent hashes SETTLES them: the fold's divergence check (records.js:292-296)
+  excludes covered hashes (mirroring `resolvesAttemptIds`), so a Director-resolved backfill divergence
+  actually CONVERGES instead of re-flagging forever (also a pre-existing gap for qty divergences —
+  same fix covers both).
 - Row sync both directions: `SellAtSupply`/`DiscAtSupply` in `_toSharePoint`/`_fromSharePoint` + ingest
   validation; SharePoint columns on StockTransactions AND StockTransactions_Archive; `_fromArchive` maps
   them (archived rows round-trip stamps bit-exact).
@@ -80,6 +97,13 @@ parity fixture matrix proves client/ingest/engine verdict-identical. (The pre-ex
 - Cutover: NO migration exists. The pricing-change route may enable immediately at activation; stampless
   in-transit transfers are handled by P4 at their receive.
 
+## R8 fold record (2026-07-14) — 3 distinct, all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-97** | AGY R8-1 + Codex R8-1 (CONVERGED, P1): the R7 basis-absence rule let a PRE-W4 receiver silently DOWNGRADE a valid W4 submit-stamped item to legacy-lens — my fold error, both auditors caught it | P3: basis PRECEDENCE (submit-stamped is permanent; absence sets legacy-lens only when the submit is also stampless) + VALUATION PRECEDENCE (row stamps → item stamps → lens) so the stale receiver's unstamped rows still bill at submit stamps with no row mutation |
+| **W4-SR-105** | Codex R8-2 (P1): `_stableHash` (records.js:611) passes top-level keys as a stringify replacer — nested item fields are dropped at every level; $100 vs $150 item stamps hash identically (Codex ran the probe). REAL — and a LATENT PRE-EXISTING Chunk-4 bug: backfill divergence has been blind to item-level diffs since D4-I | canonical recursive sorted-key serializer replaces the replacer trick; own sentinel + re-verification of the D4-I divergence behaviour; flagged Kunal-visible as a pre-existing-surface fix |
+| **W4-SR-106** | Codex R8-3 (P1): a detected backfill divergence can never converge — the divergence check re-flags on every fold and the resolve payload cannot name backfill hashes. REAL (records.js:292-296 unconditional; pre-existing for qty divergences too) | resolve payload gains `resolvesBackfillHashes`; the divergence check excludes covered hashes (the `resolvesAttemptIds` pattern) |
+
 ## R7 fold record (2026-07-14)
 | # | Finding | Ground truth → fold |
 |---|---|---|
@@ -97,6 +121,9 @@ row carries submit-day stamps) · S-W4-12 sync round-trip bit-exact · S-W4-10(p
 receive stamps; error-basis receive→top-up stays legacy on both; AGY's partial-receive-then-price-change
 repro, SR-84) · S-W4-20 stamp-at-receive (later price/discount edit leaves the received line bit-stable) ·
 equal-qty different-stamp receives ⇒ conflict AND the resolve publishes the pinned stamps cross-device
-(SR-85) · basis-less receive step folds as legacy-lens on every device (SR-86) · backfill round-trip
-preserves stamps+basis (SR-87) · both-or-neither + money-policy rejects (1e308, string '1e3', 3dp incl.
-DiscAtSupply 12.345, >1M). Each with its saboteur mutation.
+(SR-85) · basis-less receive step folds as legacy-lens ONLY on a stampless submit; a stamped submit
+survives a pre-W4 receive and its unstamped rows VALUE at the submit stamps (SR-97) · backfill round-trip
+preserves stamps+basis (SR-87) · the deep hash distinguishes item-level divergence ($100 vs $150 stamps ⇒
+distinct hashes ⇒ surfaced conflict) and a resolve naming the hashes CONVERGES the record (SR-105/106) ·
+both-or-neither + money-policy rejects (1e308, string '1e3', 3dp incl. DiscAtSupply 12.345, >1M). Each with
+its saboteur mutation.

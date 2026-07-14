@@ -4,7 +4,8 @@
 frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-1, 2,
 5, 10, 11, 15, 16(chain), 21, 22, 27, 29, 31→74, 42, 45(client view), 46/50/63/65(seed consumption), 49,
 51→74, 52 + R7 folds SR-80..83.
-**Review status:** R7 FOLDED (AGY PASS; Codex BLOCK×4 → all REAL, folded). R8 PENDING (needs BOTH clean).
+**Review status:** R8 FOLDED (AGY PASS ×2 consecutive; Codex BLOCK×3 → all REAL, folded as SR-102..104).
+R9 PENDING — needs BOTH auditors PASS to freeze.
 
 ## The bug this kills (GAP-1)
 `Pages._franchiseInvoiceData` (index.html:4758) prices EVERY invoice line — any historical range — from the
@@ -35,19 +36,33 @@ pricing key (before/regardless of validation); activated + nothing adoptable ⇒
 newer-but-unadoptable version ⇒ durable `pricing_stale`, judged by the **HORIZON RULE (SR-74)**: resolutions
 for row instants STRICTLY BEFORE the device's durable `lastConfirmedCurrentAt` remain valid; at/after ⇒ fail
 closed. Sound because of the EFFECTIVE-NOW APPEND INVARIANT (LA §6): no post-activation writer backdates;
-the one-time seed lives inside v1. **The horizon advances ONLY on SETTLED echoes (SR-80):** the version echo
+the one-time seed lives inside v1. **The horizon advances ONLY on SETTLED echoes (SR-80/102):** the version echo
 carries `settled: true` only when NO pending pricing/topology journal (whose delayed publication could carry
-an earlier effective boundary) exists at serve time — an unsettled echo confirms nothing.
+an earlier effective boundary) exists — an unsettled echo confirms nothing. **RACE-FREE ORDERING (SR-102):**
+the echoed server instant is captured BEFORE the pending-journal check (T := now → read version → check
+journals → settled iff none → echo `{settled, instant: T}`), and a journaled interval's effective `from` is
+pinned to its RESERVATION instant — so any reservation landing after the check carries `from > T` and a
+horizon at T stays sound. No fence needed; ordering alone closes the race.
 **Trusted time (SR-81):** `lastConfirmedCurrentAt` stores the SERVER-issued instant carried in the settled
 echo — never the device clock. (Row instants remain device-minted; a backdated row is the pre-existing
 date-integrity class, unchanged by W4 — a FUTURE-clocked row lands at/after the horizon and fails closed,
 the safe direction.)
 
-**P5 — dormant-device gate (SR-49/81).** Pricing-sensitive COMMITS (HO→franchise submit) require a FRESH
+**P5 — dormant-device gate (SR-49/81/103).** Pricing-sensitive COMMITS (HO→franchise submit) require a FRESH
 server pricing-state observation: server says "no pricing config" ⇒ scalar path legitimate; pricing served ⇒
 adopted config required; no fresh observation ⇒ the commit HOLDS (W3 hold pattern). Local absence alone
-never selects the scalar path. **Freshness is SESSION-SCOPED (SR-81):** "fresh" = a settled echo observed
-during the CURRENT session — an event fact, no device-clock age arithmetic anywhere.
+never selects the scalar path. **Freshness is EVENT-BOUNDED (SR-81/103), still no clock arithmetic:**
+"fresh" = a settled echo observed SINCE the most recent invalidating event — page load/reload, tab
+visibility RESUME (a sleeping tab wakes stale), network RECONNECT, and leader-tab handoff all INVALIDATE the
+freshness fact; the commit path additionally requires the sync layer's connection state to be currently
+healthy. A tab that slept from Monday to Friday must re-observe before it can commit.
+
+**P5b — backup/restore (SR-104).** Pricing adoption state (adopted config, versions, activation flag, stale
+state, held leading-scalar overlays) is EXCLUDED from backup exports (the accessPolicy scrub pattern — it is
+server truth, re-fetched). RESTORE writes a durable `pricing_unresolved` marker: until the first successful
+config fetch resolves the true state, pricing-sensitive commits are HELD (the P5 gate) and pricing-derived
+report surfaces show a "sync required" state — a restored device can never treat an exported scalar as
+pre-activation truth or resurrect a stale hold overlay.
 
 **P6 — the invoice + every display (SR-1/2/15).** Invoice report + CSV resolve per-line rates via the lens
 as-of each line's date; ALL text/% columns print the lens-resolved rate + source (live `p`/`office` objects
@@ -75,6 +90,13 @@ the client NEVER writes history locally. Pre-activation: exactly today's behavio
   requires the REAL `topology.js` in the harness across the fixture matrix.
 - W4.3 consumes P3's submit-reject and stamps from lens values; W4.4 re-implements the SAME chain
   engine-side (shared fixtures prove engine == lens).
+
+## R8 fold record (2026-07-14) — AGY PASS · Codex×3 all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-102** | Codex R8-1 (P1): a reservation landing between the pending-journal check and the echo emission lets `settled:true` advance the horizon past a boundary v-next will publish | P4: instant captured BEFORE the journal check + a journaled interval's `from` = its reservation instant ⇒ post-check reservations only affect times > the echoed instant. Ordering, not locking |
+| **W4-SR-103** | Codex R8-2 (P1): "observed this session" is unbounded — a tab sleeping Monday→Friday keeps a stale freshness fact | P5: freshness invalidated by reload, visibility resume, reconnect, and tab handoff + healthy-connection requirement at commit. Event-based, still no device-clock arithmetic |
+| **W4-SR-104** | Codex R8-3 (P1): the held leading-scalar overlay has no backup/restore representation — a restored device could treat an exported scalar as pre-activation truth | P5b: adoption state excluded from backup (AA scrub pattern); restore ⇒ durable `pricing_unresolved` ⇒ commits held + surfaces gated until the first config fetch |
 
 ## R7 fold record (2026-07-14) — AGY PASS · Codex×4 all REAL
 | # | Finding | Fold |

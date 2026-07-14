@@ -4,8 +4,8 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R7 FOLDED (AGY BLOCK×2 + Codex BLOCK×7, two converged pairs = 7 distinct, ALL REAL).
-R8 PENDING.
+**Review status:** R8 FOLDED (AGY BLOCK×1 → premise ground-truthed NOT REAL, semantics folded with Codex
+R8-3; Codex BLOCK×3 → all REAL; folded as SR-107..109). R9 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -35,10 +35,16 @@ window-adjacent row lacking a valid instant ⇒ refusal. Every supplied row must
 archives by monotonic ID — no date-partition seam), supplied as SEPARATE `rows.live`/`rows.archive` arrays
 (SR-90). Tombstones apply WITHIN a list; a tombstone whose target sits in the OTHER list ⇒ FAIL-CLOSED
 CONFLICT surfaced for the Chunk-8 Director-correction path (aligns with CHUNK8 item 5 — never silently
-applied, keeping settlement and the stock snapshot in agreement). Dedup runs on BOTH identities (SR-96,
-per CHUNK8 item 5): same TransactionId ⇒ bit-identical collapse / differing fields FAIL CLOSED; DIFFERENT
-TransactionIds sharing an IdempotencyKey ⇒ FAIL CLOSED (one economic operation duplicated — corrupt state
-the server's Enforce-Unique should have prevented).
+applied, keeping settlement and the stock snapshot in agreement). Dedup runs on BOTH identities (SR-96/109,
+per CHUNK8 item 5): same TransactionId ⇒ bit-identical collapse / differing fields FAIL CLOSED. The
+IdempotencyKey identity applies to VALIDATED NON-EMPTY keys only (SR-109): distinct TransactionIds sharing a
+non-empty key ⇒ FAIL CLOSED (one economic operation duplicated — corrupt state the server's Enforce-Unique
+should have prevented); a BLANK/absent key ⇒ that row's identity falls back to TransactionId alone and the
+settlement metadata surfaces a legacy-keyed row count (pre-Chunk-4 rows predate the column) — blanks are
+NEVER grouped as a shared key. NOTE (ground truth, kills the false-positive class): legitimate partial
+fulfilment can never share a key — the receive key rides ONLY the initial receive rows (phase2.js:319/332;
+receive is once-per-transfer, F2-CRIT02); top-up/return/resolution rows fall back to their unique
+TransactionId (phase2.js:62, pinned NORMATIVE).
 
 **P4 — coverage = explicit evidence, under ATOMIC coordination (SR-26/36/56/68/75/92/93/95).** `coverage` is
 QUERY-COMPLETION EVIDENCE from the route, never inferred from rows: full-window enumeration attestations for
@@ -51,17 +57,24 @@ held continuously (unexpired, no intervening run) — else discard + retry; the 
 post-check. CRASHED-ARCHIVER LIVENESS (SR-95): `run_active` carries a heartbeat; a run whose heartbeat is
 stale is surfaced + driven to a TERMINAL state by the reconcile sweep (complete or roll back per Chunk-8's
 publish-nothing discipline); the export refuses only heartbeat-FRESH runs — no indefinite lock-out in either
-direction. The engine validates the attested union == `[from,to)` and the run/lease pair is consistent —
-else refusal, never a silently short settlement.
+direction. FAIRNESS (SR-108): the coordination record carries a `run_requested` flag the archiver CASes when
+it loses an acquisition; while it is set, a RELEASING export lease may not be immediately re-acquired by
+another export (the archiver gets the next turn), and symmetrically a completing run clears the way for a
+waiting export — bounded consecutive acquisitions in both directions, so neither retry pressure stream can
+starve the other. The engine validates the attested union == `[from,to)` and the run/lease pair is
+consistent — else refusal, never a silently short settlement.
 
 **P5 — PROVISIONAL vs FINAL (SR-37/57/69/94).** Without `graceClosed`, the settlement is marked PROVISIONAL
 (regenerable). FINAL requires ALL of: (a) graceClosed — the store's old-era flush grace consumed/expired;
 (b) DRAINED ingest — every OS-SR-10 grace record for the store TERMINAL under the pinned lifecycle
 `issued → consumed (durably set BEFORE any row write in the same run) → committed (after the last row
-write)`; `consumed`-but-not-`committed` ⇒ NOT drained (surfaced to reconcile); and (c) VISIBILITY (SR-94):
+write)`; `consumed`-but-not-`committed` ⇒ NOT drained (surfaced to reconcile); and (c) VISIBILITY with TERMINAL OUTCOMES (SR-94/107):
 `committed` durably records the WRITTEN ROW IDENTITIES (TransactionIds/item ids) of the grace-admitted
-rows, and the engine asserts every one is PRESENT in the supplied row set — terminal state alone does not
-prove the query saw the rows (read-index lag). `drain` carries (b)+(c) into the engine (P1).
+rows, and the engine asserts every one reached a TERMINAL, ACCOUNTED state in the supplied row set: PRESENT,
+or COVERED by a validated SAME-LIST tombstone/correction (a Director may legitimately delete a
+grace-admitted row later — literal presence alone would block FINAL forever). A recorded identity that is
+neither present nor covered ⇒ refuse FINAL (read-index lag or loss); a CROSS-list tombstone on it stays a
+conflict (P3). `drain` carries (b)+(c) into the engine (P1).
 
 **P6 — line valuation (SR-38 + W4.3).** HO-supply cost lines: stamps preferred (both-or-neither enforced),
 lens for legacy rows, fail-closed on malformed. Retail-profit reads the frozen `UnitPriceAtTime` (K4);
@@ -81,6 +94,13 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R8 fold record (2026-07-14)
+| # | Finding | Ground truth → fold |
+|---|---|---|
+| **W4-SR-107** | Codex R8-1 (P1): drain demanded LITERAL presence of every committed-recorded row — a legitimately tombstoned grace row blocks FINAL forever. REAL | P5: terminal outcomes — present OR covered by a validated same-list tombstone/correction; neither ⇒ refuse; cross-list ⇒ conflict |
+| **W4-SR-108** | Codex R8-2 (P2): CAS gives safety, not progress — an export-retry stream can starve the archiver (or vice versa). REAL | P4: `run_requested` turn-taking on the coordination record — bounded consecutive acquisitions in both directions |
+| **W4-SR-109** | Codex R8-3 (P1): blank legacy IdempotencyKeys had no pinned semantics (grouping blanks = false duplicates; ignoring blanks unvalidated = bypass). REAL. **AGY R8-2's partial-receive collision premise: NOT REAL** — the receive key rides ONLY initial receive rows (phase2.js:319/332, receive once-per-transfer F2-CRIT02); top-ups/returns use unique TransactionId fallback (phase2.js:62). Legitimate rows can never share a key | P3: non-empty validated keys participate in the second identity; blanks fall back to TransactionId + surfaced legacy count, never grouped; phase2.js:62 pinned normative |
 
 ## R7 fold record (2026-07-14) — 7 distinct, all REAL
 | # | Finding | Fold |

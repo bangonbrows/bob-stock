@@ -24,15 +24,22 @@ Trigger `POST {auth, proof, intent}`.
    `state.office` — the planner clones/creates office series and (on onboard) the office store itself.
 4. `topologyPlan {intent, state, nowMs}` → the plan (era close/open, pricing append, fanout, createAccounts,
    snapshot, export, record). Reject reasons pass through to the client.
-   **W4-SR-64/78 CONCURRENCY FENCE — CAS AT RESERVATION:** the pricing publication VERSION read with the
-   state in step 3 rides the plan; the CONDITIONAL creation of the `topology_change: pending` record is the
-   FIRST side effect and fails atomically if the version advanced (nothing quiesces/snapshots before it);
-   the version is RE-checked at the pricing write. ANY CAS failure ⇒ the journal transitions to a durable
-   **`aborted`** terminal state that the reconcile sweep EXCLUDES (reconcile resumes `pending` only) →
-   re-plan from fresh state. Symmetrically, the §6 pricing-change route REJECTS (409 retry-after) any write
-   whose fan-out set touches a franchisee/store with a PENDING `topology_change`. Both writers bump the SAME
-   version on publish. **W4-SR-77:** the state read ALWAYS includes the store row at `intent.officeStoreId`
-   (if any) so the planner can reject `OFFICE_STORE_ID_TAKEN`.
+   **W4-SR-64/78/98/99/100 CONCURRENCY FENCE — RESERVATION = CLAIMS:** the CONDITIONAL creation of the
+   `topology_change: pending` record is the FIRST side effect and atomically CLAIMS every identifier the
+   plan creates or depends on (storeId, officeStoreId, new usernames, the SPECIFIC pricing keys it
+   reads/writes); creation FAILS if any active pending journal's claims overlap (SR-98 — the version check
+   alone cannot catch two concurrent onboards of one officeStoreId, since reservations don't bump it). The
+   plan's conflict test compares the CLAIMED pricing keys' state, NOT the global counter (SR-99 — an
+   unrelated global publish never aborts a reserved plan); the claimed-keys assertion re-runs at the TOP of
+   the apply phase, BEFORE any mutating step. Abort (⇒ durable **`aborted`**, excluded by reconcile) is
+   possible ONLY pre-mutation and also CLEARS `topology_pending` + VOIDS the provisional snapshot; after the
+   first mutating step the plan is FORWARD-ONLY (reconcile completes it). EVERY step application is a
+   CONDITIONAL update requiring `status: pending` + the worker's claim token/ETag (SR-100 — a reconciler
+   holding a stale read fails its next step instead of resurrecting work). Symmetrically, the §6
+   pricing-change route REJECTS (409 retry-after) any write touching a franchisee/store with a PENDING
+   `topology_change`. Both writers bump the SAME version on publish. **W4-SR-77:** the state read ALWAYS
+   includes the store row at `intent.officeStoreId` (if any) so the planner can reject
+   `OFFICE_STORE_ID_TAKEN`.
 5. **2-PHASE COMMIT:** write a `topology_change` AppConfig record `status:pending` carrying the plan + a
    change-id. THEN apply each step IDEMPOTENTLY (keyed on the change-id so a re-run is a no-op):
    - QUIESCE (OS-SR-5/7): mark the store's `topology_pending` flag; the pull LA FAILS CLOSED for that store
@@ -63,10 +70,12 @@ never authorizes an old-era write.
 - Serve `store_eras`, `franchisees`, `pricing_history` to authenticated devices; echo their `version`
   (and the per-credential `scopeVersion`) on every pull page so the client re-bootstraps on an era/ownership
   change even when StoreIds are unchanged (D-OS-F6 / OS-W3).
-- **W4-SR-80/81 SETTLED echo:** the pricing version echo carries `settled: true` ONLY when no pending
-  pricing/topology journal (whose delayed publication could carry an earlier effective boundary) exists at
-  serve time, plus a SERVER-issued instant. The client advances its stale-horizon `lastConfirmedCurrentAt`
-  only on settled echoes, storing the server instant (never the device clock).
+- **W4-SR-80/81/102 SETTLED echo:** the pricing version echo carries `settled: true` ONLY when no pending
+  pricing/topology journal exists, plus a SERVER-issued instant. RACE-FREE ORDERING (SR-102): the instant is
+  captured BEFORE the pending-journal check (T := now → read version → check journals → settled iff none →
+  echo {settled, instant: T}); a journaled pricing interval's effective `from` = its RESERVATION instant —
+  so a reservation landing after the check only affects times > T. The client advances its stale-horizon
+  `lastConfirmedCurrentAt` only on settled echoes, storing the server instant (never the device clock).
 - pull-v2 read scoping ADDS the era-window filter (OS-SR-6): a franchisee/HO account gets rows only within
   its owner's era window(s); a device-bound role (store POS / store_manager) gets the CURRENT era only. Fail
   closed with no era record (extends the AA `store_eras` SR-6 floor).
@@ -140,15 +149,20 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   second query (same lease id, unexpired, no intervening run — else discard + retry); a run whose heartbeat
   is STALE is surfaced + driven terminal by the reconcile sweep (complete or roll back per Chunk-8
   publish-nothing), so a crashed archiver never locks settlements out; attestations carry the completed-run
-  version + lease id + the continuity post-check. Bound to the bought-back storeId, boundary-evaluated on
-  the row UTC instant (never the calendar-day string); supplies full-window enumeration attestations for
-  BOTH lists + graceClosed + (for FINAL) the DRAIN evidence (W4-SR-57/69/91/94): the OS-SR-10 grace record
-  carries pinned terminal states `issued → consumed` (durably set BEFORE any row write in the same run)
-  `→ committed` (after the last row write, RECORDING the written row identities); DRAINED = every grace
-  record for the store TERMINAL, and the route/engine assert every committed-recorded row identity is
-  PRESENT in the supplied row set (visibility proof — terminal state alone doesn't prove the query saw the
-  rows). The `drain` evidence is an ENGINE INPUT (the pure engine itself refuses a FINAL without it).
-  Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and regenerable; FINAL requires all.
+  version + lease id + the continuity post-check. FAIRNESS (W4-SR-108): a `run_requested` flag on the
+  coordination record gives the archiver the next turn after a releasing export lease (and vice versa) —
+  bounded consecutive acquisitions, neither side starves. Bound to the bought-back storeId,
+  boundary-evaluated on the row UTC instant (never the calendar-day string); supplies full-window
+  enumeration attestations for BOTH lists + graceClosed + (for FINAL) the DRAIN evidence
+  (W4-SR-57/69/91/94/107): the OS-SR-10 grace record carries pinned terminal states `issued → consumed`
+  (durably set BEFORE any row write in the same run) `→ committed` (after the last row write, RECORDING the
+  written row identities); DRAINED = every grace record for the store TERMINAL, and the route/engine assert
+  every committed-recorded row identity reached a TERMINAL ACCOUNTED state in the supplied rows — PRESENT,
+  or covered by a validated SAME-LIST tombstone/correction (W4-SR-107); neither ⇒ refuse FINAL; cross-list ⇒
+  conflict. IdempotencyKey identity applies to validated NON-EMPTY keys only (W4-SR-109; blanks fall back to
+  TransactionId + surfaced legacy count). The `drain` evidence is an ENGINE INPUT (the pure engine itself
+  refuses a FINAL without it). Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and
+  regenerable; FINAL requires all.
 - **Activation seed (runbook contract, W4-SR-46/50/63/65):** per store, one '*' interval PER FRANCHISE ERA
   (closed [from,to) for closed eras; open for the open era), ALL at the seed-time scalar value — required by
   `pricingAlignsWithEras`; HO interludes stay uncovered. `global[productId]` seeded ONLY for legacy discounts
