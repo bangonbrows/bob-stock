@@ -1,59 +1,50 @@
-# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 7 (paper review, PER-PART) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 8 (paper review, PER-PART) — Codex + AGY
 
-**You are reviewing the OS-W4 spec, round 7 — now SPLIT.** Your R6 verdicts (AGY BLOCK×3 + Codex BLOCK×13,
-three converged pairs) were all ground-truthed REAL and folded as **W4-SR-63..75**; per the R5 pin, R6's
-design-level divergence split the spec into FOUR CONSOLIDATED sub-wave docs. The old scope doc is now a
-frozen fold ledger (history only). Both auditors in parallel; paper review; report-only.
-
-## Ground rules for R7
-- **Verdict PER PART** (four verdicts, not one): a part that PASSES is FROZEN and leaves the loop; only
-  diverging parts iterate in R8.
-- Each sub-doc is self-contained CURRENT truth (no fold archaeology needed) and carries its SR numbers for
-  traceability back to the ledger.
-- On any contradiction between a sub-doc, the ledger, or LA-CHANGES: the SUB-DOC governs — but the
-  contradiction itself is a FINDING (that's how the last two rounds caught real bugs).
+**You are reviewing the OS-W4 spec, round 8.** R7's 21 findings were all ground-truthed: 19 REAL and folded
+as **W4-SR-76..96** (fold records live INSIDE each sub-doc now), 1 already-covered (AGY W4.3 partial-receive
+— receive is once-per-transfer; the remainder path is the top-up, which inherits the item basis; the repro
+is banked as a sentinel anyway), and 1 NOT REAL (AGY W4.1 `pricingAlignsWithEras` — the validator is a
+contiguous-coverage cursor walk, topology.js:311-322, not a 1:1 era-interval mapping; a permanent probe now
+pins that). Both auditors in parallel; paper review; report-only; verdict PER PART — parts that BOTH of you
+PASS are FROZEN.
 
 ## Read (branch `azure-phase-5-8-server`)
-| Part | Doc | Also read |
-|---|---|---|
-| **W4.1 planner** | `AZURE-CHUNK-ORG-W4.1-PLANNER-SCOPE.md` | `topology.js` (the real engine), LA-CHANGES §1 |
-| **W4.2 lens/invoice/adoption** | `AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md` | LA-CHANGES §6 (route/echo/seed) |
-| **W4.3 stamps/transport** | `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` | phase2.js/records.js/sync.js cited lines |
-| **W4.4 export engine** | `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` | LA-CHANGES §3+§6, AZURE-CHUNK8-SCOPE.md items 3/5/7/8 |
-| (shared) | `AZURE-CHUNK-ORG-LA-CHANGES.md` §1 + §6 | fold ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` for history |
+The four sub-docs (each now carries its own R7 fold record + amended pins) + the shared contracts:
+`AZURE-CHUNK-ORG-W4.1-PLANNER-SCOPE.md` · `AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md` ·
+`AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` · `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` ·
+`AZURE-CHUNK-ORG-LA-CHANGES.md` §1/§2/§6. History: the frozen ledger `AZURE-CHUNK-ORG-W4-SCOPE.md`.
 
-## What R6 changed (headline)
-- **SR-64 fence:** topology and pricing writes share ONE publication version — topology CASes it (abort +
-  re-plan on advance); pricing writes 409 while a targeted franchisee has a pending topology change.
-- **SR-65 seed:** one '*' interval PER FRANCHISE ERA per store (required by `pricingAlignsWithEras`), all at
-  the frozen-legacy value; **SR-63:** legacy 0-discount = inherit, never seeded as 0%.
-- **SR-67 basis:** one transfer item = ONE durable pricing basis (submit-stamped | receive-stamped |
-  legacy-lens); all top-ups/returns/corrections inherit it (SR-19 amended). **SR-66:** receive-conflict
-  identity now includes the money stamps.
-- **SR-68/75 archive stability:** scalar version-compare deleted → export refuses during a run + takes a
-  bounded priority lease. **SR-69:** drain = grace-record terminal states (issued→consumed→committed).
-  **SR-70:** cross-list tombstones = fail-closed conflict (aligns with Chunk-8 item 5).
-- **SR-71/72 planner guards:** OFFICE_STORE_OP_FORBIDDEN; officeStoreId ≠ storeId + full cross-namespace
-  uniqueness.
-- **SR-73 money:** one canonical policy (number-typed, ≤1,000,000, ≤2dp) — the badMoney divergence is
-  flagged out-of-scope. **SR-74 stale:** per-tier rule replaced by the `lastConfirmedCurrentAt` horizon
-  (grounded on the pinned effective-now append invariant).
+## What R7 changed (headline per part)
+- **W4.1:** office-store-row read at officeStoreId (OFFICE_STORE_ID_TAKEN); CAS-AT-RESERVATION with a
+  durable `aborted` terminal state excluded by reconcile; four-leg office identity proof
+  (OFFICE_STATE_MISMATCH); franchisee entity gains `officeStoreId`.
+- **W4.2:** the stale horizon advances ONLY on SETTLED echoes (no pending journal at serve time) and stores
+  the SERVER-issued instant; dormant-gate freshness is session-scoped (no device-clock arithmetic);
+  master_data/config coherence is exact-equality BOTH directions (leading scalar fields held + config fetch).
+- **W4.3:** per-line `basis` field pinned in submit/receive/resolve payloads (absence ⇒ legacy-lens,
+  durably); the resolve payload carries the pinned stamps; backfill/fold enumeration maps stamps+basis;
+  cancel-return rows join the every-path inheritance list; DiscAtSupply ≤2dp everywhere.
+- **W4.4:** signature re-pinned `{storeId, rows:{live,archive}, pricing, window, products, coverage,
+  graceClosed, drain}`; dual-identity dedup (TransactionId + IdempotencyKey); ONE CAS coordination record
+  (idle | run_active(heartbeat) | export_lease(ttl)) with lease renewal + post-query continuity check +
+  stale-run reconcile recovery; `committed` records written row identities and the engine asserts their
+  PRESENCE in the row set before FINAL.
 
-## Attack per part
-- **W4.1:** break an existing W2 invariant with `state.office` present; find an op/state combination where
-  the office guards or the POS exemption misfire; attack the CAS-carry (can a plan apply against pricing
-  state newer than it read?).
-- **W4.2:** attack the SR-74 horizon (find a resolution it wrongly admits — e.g. can any legitimate writer
-  violate effective-now? what advances `lastConfirmedCurrentAt` and can it advance falsely?); the dormant
-  gate's bounded age; pricingVersion coherence across master_data vs config pulls.
-- **W4.3:** find a `transfer_in`-creating or stamp-carrying path outside the basis/conflict rules
-  (cancellations, backfills, cross-generation resolves); attack stamp-at-receive determinism and its
-  interaction with receive conflicts; the money-policy fixture gaps.
-- **W4.4:** attack the lease/run protocol (crashed archiver mid-run, lease expiry mid-query, reconcile
-  interplay); the grace-record lifecycle (can `committed` be set without the rows being visible to the
-  query?); classification parity; any Chunk-8 contradiction we still missed.
+## Attack per part (fresh surface only — the folds above)
+- **W4.1:** the `aborted` journal lifecycle (can an abort race its own reconcile? can a re-plan reuse a
+  changeId?); the four identity legs (a state bundle that passes all four yet still binds the wrong office);
+  OFFICE_STORE_ID_TAKEN vs concurrent onboard of the same officeStoreId.
+- **W4.2:** the settled flag (a serve-time race where pending is created between the check and the echo);
+  session-scoped freshness across tab handoffs/reloads; held leading-scalar fields interacting with backup
+  export/restore.
+- **W4.3:** the basis field's absence rule vs a MIXED fold (W4 submit + pre-W4 receive and vice versa);
+  resolve-carried stamps vs the backfill hash (does a resolve after backfill converge?); cancel-return
+  inheritance when the cancel races the receive (the existing cancel_vs_receive conflict).
+- **W4.4:** the coordination record as a single point of contention (CAS starvation under retry storms);
+  drain visibility proof vs tombstoned grace-admitted rows (written id recorded, row legitimately absent);
+  dual-identity dedup vs the per-product receive IdempotencyKey pattern (phase2.js `_receiveKey` — can two
+  LEGITIMATE rows share a key?).
 
 ## Verdict
-Four verdicts: `W4.1: PASS|PASS-with-notes|BLOCK` (etc.), numbered findings per part with concrete
-scenarios (state + sequence → wrong money, wrong coverage, or a spec contradiction). Claude ground-truths
-and folds; parts that PASS freeze.
+Four verdicts (`W4.x: PASS | PASS-with-notes | BLOCK`), numbered findings per part with concrete scenarios.
+Claude ground-truths and folds; parts that BOTH auditors PASS freeze.

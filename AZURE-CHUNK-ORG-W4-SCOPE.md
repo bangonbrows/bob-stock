@@ -8,7 +8,8 @@ AUTHORITATIVE spec now lives in FOUR consolidated sub-wave docs, each converging
 `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` · `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` (+ the shared server
 contracts in `AZURE-CHUNK-ORG-LA-CHANGES.md`). On any conflict between this ledger and a sub-doc, the
 SUB-DOC governs. Fold history: R1→SR-1..8 (+Kunal SR-9); R2→SR-10..16; R3→SR-17..28; R4→SR-29..44 + model
-revision; R5→SR-45..62 + revision 2; R6→SR-63..75.
+revision; R5→SR-45..62 + revision 2; R6→SR-63..75. **R7 onward: folds live in the sub-docs' own fold
+records** (R7→SR-76..96, global numbering continues across them).
 
 ## SCOPE REVIEW R1 (2026-07-13): AGY×3 + Codex×5 — all folded
 
