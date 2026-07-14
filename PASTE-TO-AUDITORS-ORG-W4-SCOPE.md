@@ -1,43 +1,45 @@
-# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 19 (paper review) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 20 (paper review) — Codex + AGY
 
-**You are reviewing W4.4 EXPORT + one scoped W4.3 amendment.** R18's findings folded as **W4-SR-153..155**.
-Codex R18-1 was the deepest catch of this review: the R17 corroboration rule was CIRCULAR (attacker authors
-both sides of the proof) — the fix moves stamp authority to SERVER SEMANTIC ATTESTATION at ingest. One
-ground-truth correction: AGY's "legacy rows carried legitimate item stamps" is impossible — the stamp
-fields have NO pre-W4 writer (they exist only in spec docs today), so a stamped pre-epoch row is anomalous
-by construction and fail-closed is correct; the backfill half of that finding was real and folded.
+**You are reviewing W4.4 EXPORT + two scoped W4.3 amendments.** R19's four findings folded as
+**W4-SR-156..159** — the architecture round: your converged catch that historical catalogue prices were
+UNRESOLVABLE (the exact gap stamps were invented for) is fixed by a NEW server deliverable, the immutable
+catalogue publication archive. Codex's per-line amendment objection is ADOPTED over the step-level form AGY
+had OK'd — the W4.3 amendment is revised accordingly (five-tuple per stamped line).
 
 ## Read (branch `azure-phase-5-8-server`)
-`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` (P6 tier-1 authority rewrite + the R18 fold record) ·
-`AZURE-CHUNK-ORG-LA-CHANGES.md` §6 · `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` **status block only** (the
-flagged post-freeze amendment — scoped re-review: payload version fields joining both-or-neither; nothing
-else in W4.3 changed). (Frozen otherwise: W4.1/W4.2/W4.3.)
+`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` (P6 tier-1 authority + SR-154/158 backfill block + the R19 fold
+record) · `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 · `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md` **status block
+only** (the TWO scoped amendments). (Frozen otherwise: W4.1/W4.2/W4.3.)
 
-## What R18 changed
-- **SR-153:** stamp-bearing steps carry `{pricingVersion, catalogueVersion}`; the steps-ingest validator
-  (the existing D4-K validateMoney pattern extended) RECOMPUTES expected stamps from server-owned pricing
-  history + versioned master_data as-of the event instant, REJECTS mismatches (`BAD_STAMPS`), and sets a
-  server-only attestation marker. Tier-1 = attested evidence only; client-vs-client equality is dead.
-- **SR-154:** backfill snapshots are never tier-1 provenance — backfill-only rows value via the LENS as-of
-  the row's date (correct-by-construction for restored historical rows); an optional Director-triggered
-  server re-attestation route can restore stamp preference; FINAL is not blocked either way.
-- **SR-155:** stamped TRANSFERLESS rows (direct HO-supply — real billable lines with no step) get the same
-  semantic validation at push-v2 ROW ingest with a server-set attestation column; engine + invoice require
-  it for their tier-1.
+## What R19 changed
+- **SR-156 (your converged catch):** the immutable catalogue publication archive — append-only, keyed by
+  version, prices + publication intervals; claimed versions must exist AND be valid for the minting
+  instant; unknown/forged/expired ⇒ a distinct fail-closed outcome, never current-price fallback;
+  retention ≥ the max offline/grace horizon with a pinned recovery path. (This also closes the original
+  W4-5 "price has no history" limitation at the root.)
+- **SR-157:** row-level five-tuple columns on every transport surface + the ACCEPTANCE ECHO — the pull's
+  known-row merge installs server-owned attestation/version fields on rows the device already holds
+  (sync.js:1802 previously skipped them), so the originator's own invoice sees the real marker; local
+  markers never render as attested.
+- **SR-158:** backfill-only rows value from server-resolved history BOTH halves (discount + archived
+  price) as-of date; W4.3 amendment 2: backfill-only item stamps are UNTRUSTED client-side — invoice ==
+  settlement for restored transfers.
+- **SR-159:** the version tuple is PER-LINE (`{sellAtSupply, discAtSupply, basis, pricingVersion,
+  catalogueVersion}`, all-or-none), per your objection; canonical projection updated; same canonical-form
+  version (nothing shipped).
 
 ## Attack surface (final checks)
-- SR-153's recompute inputs: is `catalogueVersion` → historical sell price genuinely resolvable
-  server-side (versioned master_data items), including for offline devices pushing days late? What happens
-  to a step whose carried versions the server no longer holds / never held (forged version id)?
-- The attestation marker's trust chain: pull/echo must deliver it to CLIENT invoices unforgeably — pinned
-  enough? Can a device fabricate the marker locally for its own invoice rendering (display-only risk vs
-  settlement risk)?
-- SR-154's lens valuation for backfill-only rows vs the invoice: do settlement and invoice agree on those
-  rows by construction (both lens-as-of-date)? Confirm no split.
-- The W4.3 amendment (scoped): version fields joining both-or-neither — any interaction with the frozen
-  canonicalizer/strict-projection rules (SR-121/128)?
+- SR-156 retention: what is the pinned max offline/grace horizon, and is the post-expiry recovery path
+  concrete enough to build (Director re-attestation? PROVISIONAL-only)? Can the archive itself be
+  poisoned (who writes it — is publication the ONLY writer, journaled like every other publication)?
+- SR-157's acceptance echo vs the strict-ingest posture: installing server fields on known rows is a
+  MERGE into existing local rows — confirm it cannot be abused to overwrite client-authoritative fields
+  (scope it to the server-owned column set only).
+- SR-159 five-tuple vs frozen W4.3's both-or-neither sentinels and the canonicalizer fixtures — confirm
+  the amendment text covers the fold/reconstruct/backfill surfaces consistently.
 - Anything else — if it's done, PASS it and the scope review closes.
 
 ## Verdict
-One verdict for W4.4 (`PASS | PASS-with-notes | BLOCK`) + an explicit OK/objection on the scoped W4.3
-amendment. Claude ground-truths and folds; when BOTH of you PASS both items, the W4 scope review CLOSES.
+One W4.4 verdict (`PASS | PASS-with-notes | BLOCK`) + explicit OK/objection on EACH of the two scoped
+W4.3 amendments. Claude ground-truths and folds; when BOTH of you PASS all items, the W4 scope review
+CLOSES.

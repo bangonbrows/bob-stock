@@ -4,12 +4,13 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R18 FOLDED (AGY BLOCK×1 + Codex BLOCK×2; Codex R18-1 exposed the R17 corroboration rule
-as CIRCULAR — the deepest catch of the review; AGY's legacy-stamped-row scenario ground-truthed NOT REAL
-[no pre-W4 stamp writer exists — grep: sellAtSupply appears in spec docs only], its backfill half REAL +
-converged — folded as SR-153..155; CLEARED: null-head/drain reading, the normal transfer-chain
-corroboration path). ⚠ SR-153 narrowly REOPENS frozen W4.3 (step payloads gain version fields — flagged
-amendment, re-review scoped to it). R19 PENDING.
+**Review status:** R19 FOLDED (AGY BLOCK×1 + Codex BLOCK×4, one converged pair = 4 distinct, all REAL —
+folded as SR-156..159; the headline: SR-153's recompute was UNIMPLEMENTABLE — no versioned catalogue price
+history exists, the exact architectural gap stamps were invented to paper over — fixed by a NEW server
+deliverable, the immutable catalogue publication archive; CLEARED: attestation-marker trust chain,
+backfill invoice/settlement lens agreement in principle). ⚠ W4.3 now carries TWO scoped amendments
+(per-LINE version tuple per Codex's amendment objection, SR-159; backfill-sourced item stamps untrusted,
+SR-158). R20 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -204,25 +205,45 @@ and be paid on them). Pinned tier-1 rule:
 - **Ordinary transfer-linked rows: SERVER SEMANTIC ATTESTATION, not client equality (SR-152→153).** The
   R17 rule ("row stamps equal the minting step's stamps") was CIRCULAR — a hostile receiver authors BOTH
   the step and the row, so matching them proves nothing; ingest validated shape, never VALUE-authority.
-  Pinned instead: every stamp-bearing step (submit/receive/resolve) carries the `{pricingVersion,
-  catalogueVersion}` it stamped under; the STEPS-INGEST validator (the existing D4-K validateMoney pattern
-  extended) RECOMPUTES the expected stamps from SERVER-OWNED history — the pricing history under that
-  pricingVersion + the versioned master_data catalogue price — as-of the step's event instant, and REJECTS
-  mismatches (`BAD_STAMPS`, quarantined). Accepted steps gain a SERVER-SET attestation marker (never
-  client-writable; client-supplied values for it stripped at ingest). The engine's tier-1 for transfer
-  rows = row stamps that match a SERVER-ATTESTED minting step per the item's basis chain
+  Pinned instead: every stamped LINE carries the five-tuple `{sellAtSupply, discAtSupply, basis,
+  pricingVersion, catalogueVersion}` — ALL FIVE or none (SR-159, per-LINE not per-step: a multi-line
+  resolve can legitimately pin lines from attempts under DIFFERENT catalogue versions; one step-level pair
+  would reject a valid line or check it against the wrong catalogue). The STEPS-INGEST validator (the
+  existing D4-K validateMoney pattern extended) RECOMPUTES the expected stamps from SERVER-OWNED history —
+  the pricing history under that pricingVersion + **the IMMUTABLE CATALOGUE PUBLICATION ARCHIVE under that
+  catalogueVersion (SR-156** — a NEW server deliverable: master_data.version was a counter on ONE MUTABLE
+  blob (catalogueMerge.js:144), so historical prices were UNRESOLVABLE and the R18 recompute was
+  physically unimplementable — an honest offline device pushing yesterday's $10 stamps after today's $12
+  publish would be falsely quarantined. Publications are now archived append-only, keyed by version, with
+  product prices + server publication intervals; the claimed version must EXIST and be VALID for the
+  minting instant; unknown/forged/expired versions ⇒ a DISTINCT fail-closed outcome, NEVER a fallback to
+  the current price; retention covers the maximum offline/grace horizon with a pinned recovery path after
+  expiry. This also closes the ORIGINAL W4-5 honest limitation — price finally gets the same append-only
+  treatment as discount**) — and REJECTS mismatches (`BAD_STAMPS`, quarantined). Accepted steps gain a
+  SERVER-SET attestation marker (never client-writable; stripped at ingest). The engine's tier-1 for
+  transfer rows = row stamps that match a SERVER-ATTESTED minting step per the item's basis chain
   (submit-propagated / receive-minted / resolve-pinned / top-up-, remainder- or cancel-inherited).
-  Unattested/uncorroborated ⇒ FAIL CLOSED for FINAL. The client invoice applies the same rule from its
-  fold + the attestation markers it pulls. (⚠ payload version fields = a NARROW AMENDMENT to frozen W4.3
-  P3, flagged for scoped re-review.)
-- **BACKFILL steps are NEVER tier-1 provenance (SR-154):** a backfill is a CLIENT snapshot — its deep hash
-  proves content consistency, not truth (records.js: no expectedLedgerKeys; it never created its rows).
-  Rows whose only minting evidence is a backfill are valued via the LENS as-of the row's own date
-  (server-authoritative history — correct-by-construction for restored historical rows; row stamps
-  IGNORED). A Director-triggered SERVER RE-ATTESTATION route may recompute + attest such stamps from
-  server history (same validator), restoring stamp preference; without it, lens valuation stands and FINAL
-  is not blocked. Rejecting was wrong (bricks legitimate restores); trusting was wrong (admits forged
-  snapshot + row); lens-with-optional-re-attestation is the honest third path.
+  Unattested/uncorroborated ⇒ FAIL CLOSED for FINAL.
+  **ATTESTATION ECHO (SR-157):** the client invoice consumes the SERVER-OWNED marker, which must actually
+  REACH every device — including the ORIGINATOR, whose pull currently skips known TransactionIds without
+  rehydrating server-owned fields (sync.js:1802 adds only `_spId`): the known-row merge is extended to
+  INSTALL server-owned attestation/version columns on rows the device already holds (a durable acceptance
+  echo). A locally-minted marker NEVER renders as attested (it would be forgeable — display parity, not
+  just settlement, must hold); transferless rows carry the same five-tuple as ROW columns with mappings on
+  EVERY transport surface (push/pull/archive — SR-155 was transport-incomplete without them).
+- **BACKFILL steps are NEVER tier-1 provenance (SR-154/158):** a backfill is a CLIENT snapshot — its deep
+  hash proves content consistency, not truth (records.js: no expectedLedgerKeys; it never created its
+  rows). Rows whose only minting evidence is a backfill are valued from SERVER-RESOLVED history as-of the
+  row's own date — **BOTH halves (SR-158): the discount from the pricing history AND the price from the
+  SR-156 catalogue publication archive** (the R18 "lens" wording resolved only discounts — the lens cannot
+  reproduce historical DOLLARS, the very gap stamps exist for; a January $100 row would have been valued
+  at today's $150 or not at all). Row/snapshot stamps are IGNORED unless a Director-triggered SERVER
+  RE-ATTESTATION route recomputes + attests them (same validator). **The CLIENT must agree (⚠ second
+  scoped W4.3 amendment):** the client fold marks backfill-only item stamps UNTRUSTED (not tier-2
+  evidence) and the invoice consumes the same server-resolved values — else the frozen W4.3 precedence
+  would bill the snapshot's $100 while the settlement resolved differently. FINAL is not blocked either
+  way. Rejecting was wrong (bricks legitimate restores); trusting was wrong (admits forged snapshot +
+  row); server-resolved-with-optional-re-attestation is the honest third path.
 - **DIRECT HO-SUPPLY rows (no transferId) get ROW-LEVEL attestation (SR-155):** W4.3 stamps them at their
   own commit but NO step exists (index.html direct-logging path) — so trust-by-presence would reopen the
   forgery hole and fail-closed would brick legitimate billable lines. Pinned: the ROW ingest (push-v2)
@@ -261,6 +282,14 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R19 fold record (2026-07-15) — 4 distinct (one converged pair), all REAL — the architecture round
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-156** | AGY R19-1 + Codex R19-1 (CONVERGED, P1): SR-153's recompute was UNIMPLEMENTABLE — master_data.version counts ONE mutable blob (catalogueMerge.js:144); no historical price is resolvable, so an honest offline device's yesterday-priced stamps would be falsely quarantined after any price change (and accepting claimed versions blind admits forgery). The irony: live `p.price` is the exact reason stamps exist | P6: NEW SERVER DELIVERABLE — the immutable catalogue publication archive (append-only, keyed by version, prices + publication intervals; claimed version must exist + be valid for the minting instant; unknown/forged/expired ⇒ distinct fail-closed outcome, never current-price fallback; retention ≥ max offline/grace horizon + recovery path). Closes the ORIGINAL W4-5 price-history limitation at the root |
+| **W4-SR-157** | Codex R19-2 (P1): SR-155 was transport-incomplete (no row-level version columns/mappings) AND the originating device never receives its own row's server attestation (pull skips known TransactionIds, sync.js:1802) — a local boolean is forgeable; requiring the real marker rejects the device's own legitimate invoice line | P6: row-level five-tuple columns on every transport surface + the ACCEPTANCE ECHO (known-row merge installs server-owned attestation/version fields); locally-minted markers never render as attested |
+| **W4-SR-158** | Codex R19-3 (P1): SR-154's "lens" fallback resolves DISCOUNTS only — historical dollars are unrecoverable without SR-156, and frozen W4.3's client precedence would still bill the snapshot's stamps: invoice ≠ settlement | P6: backfill-only rows value from server-resolved history BOTH halves (discount + archived price) as-of date; ⚠ scoped W4.3 amendment: backfill-only item stamps marked UNTRUSTED client-side; both sides consume the same resolved evidence |
+| **W4-SR-159** | Codex R19-4 (P1, the amendment OBJECTION — AGY had OK'd step-level): the version pair must be PER-LINE — a multi-line resolve legitimately pins lines from attempts under DIFFERENT catalogue versions; one step-level pair rejects a valid line or checks it against the wrong catalogue | W4.3 amendment REVISED: per-line five-tuple `{sellAtSupply, discAtSupply, basis, pricingVersion, catalogueVersion}`, all-or-none; canonical projection includes them at that exact location; same canonical-form version (nothing shipped) |
 
 ## R18 fold record (2026-07-15) — 3 distinct, the circularity round
 | # | Finding | Fold |

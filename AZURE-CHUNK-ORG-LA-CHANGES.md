@@ -244,16 +244,25 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   activeManifest.controlHeads[targetId] must name exactly the supplied {controlId, revision,
   bornPublicationVersion}, born ≤ active; withdrawn = explicit null head; delta-manifests walked — NEVER a
   global-version equality, which would block FINAL forever after any unrelated correction). TIER-1 STAMP
-  AUTHORITY = SERVER SEMANTIC ATTESTATION (SR-152→153/154/155): stamp-bearing steps carry
-  {pricingVersion, catalogueVersion}; the steps-ingest validator (the D4-K validateMoney pattern extended)
-  RECOMPUTES expected stamps from server-owned pricing history + versioned master_data as-of the event
-  instant and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation
-  marker (client values stripped). Stamped TRANSFERLESS rows (direct HO-supply) get the SAME validation at
-  push-v2 ROW ingest with a server-set attestation column (SR-155). The engine's tier-1 = attested
+  AUTHORITY = SERVER SEMANTIC ATTESTATION (SR-152→153..159): every stamped LINE carries the five-tuple
+  {sellAtSupply, discAtSupply, basis, pricingVersion, catalogueVersion}, all-or-none (SR-159, per-LINE);
+  the steps-ingest validator (the D4-K validateMoney pattern extended) RECOMPUTES expected stamps from
+  server-owned pricing history + the **IMMUTABLE CATALOGUE PUBLICATION ARCHIVE (SR-156 — NEW SERVER
+  DELIVERABLE: append-only publications keyed by version w/ prices + publication intervals; claimed
+  version must exist and be valid for the minting instant; unknown/forged/expired ⇒ distinct fail-closed
+  outcome, never current-price fallback; retention ≥ the max offline/grace horizon + a pinned recovery
+  path — master_data.version alone counts one mutable blob and resolves nothing historical)** and REJECTS
+  mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
+  values stripped). Stamped TRANSFERLESS rows (direct HO-supply) carry the five-tuple as ROW columns
+  mapped on EVERY transport surface and get the SAME validation at push-v2 ROW ingest with a server-set
+  attestation column (SR-155/157). ACCEPTANCE ECHO (SR-157): the pull's known-row merge INSTALLS
+  server-owned attestation/version fields on rows the device already holds (the originator must see its
+  own attestation; a locally-minted marker never renders as attested). The engine's tier-1 = attested
   evidence only (control rows bind via the per-target head check); BACKFILL snapshots are never tier-1
-  provenance — backfill-only rows value via the lens as-of the row date, with an optional Director
-  re-attestation route (SR-154). Client-vs-client equality is DEAD as an authority proof (the R17 rule was
-  circular). ⚠ The payload version fields are a flagged scoped amendment to frozen W4.3. Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
+  provenance — backfill-only rows value from server-resolved history BOTH halves (discount + archived
+  price) as-of the row date, w/ an optional Director re-attestation route (SR-154/158). Client-vs-client
+  equality is DEAD as an authority proof. ⚠ TWO flagged scoped amendments to frozen W4.3 (per-line tuple;
+  backfill stamps untrusted). Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
   withdraw restores the target's effect (the append-only original evaluates PRESENT again for drain).
   CROSS-IDENTITY VALUATION (SR-145): target/item stamps mint a replacement's stamps only when product
   (and store/classification) identity matches; a product-changing replacement derives from the REPLACEMENT

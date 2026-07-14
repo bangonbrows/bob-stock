@@ -7,13 +7,19 @@ ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). C
 remains viable"; Codex: "freeze candidate", strict projection verified against both-or-neither + money
 validation). The spec is LOCKED; any future change reopens the part's review. Fold history: SR-97, 105,
 106, 113, 114, 121, 128 (+ the R1-R6 ledger folds this doc consolidates).
-**⚠ ONE FLAGGED POST-FREEZE AMENDMENT (2026-07-15, W4-SR-153 — scoped re-review required):** stamp-bearing
-step payloads (submit/receive/resolve) additionally carry the `{pricingVersion, catalogueVersion}` they
-stamped under, enabling the server's semantic stamp attestation at ingest (defined in W4.4 P6 / LA §6);
-these version fields join the both-or-neither group (stamps without versions = malformed). NOTHING ELSE in
-this spec changes; the R19 review of W4.4 includes a scoped check of exactly this amendment. The
-canonical-form obligation (SR-128) applies: the fields join the pinned W4 schema, no new canonical version
-needed (they are part of the same W4 form, born before any build).
+**⚠ TWO FLAGGED POST-FREEZE AMENDMENTS (2026-07-15 — scoped re-review required; R19 status: AGY OK'd the
+step-level form, Codex OBJECTED with the per-line correction, which is ADOPTED):**
+1. **Per-LINE version tuple (W4-SR-153→159):** every stamped LINE (in submit/receive/resolve payloads, on
+   rows, in the fold/canonical form) carries `{sellAtSupply, discAtSupply, basis, pricingVersion,
+   catalogueVersion}` — ALL FIVE or none (per-line, NOT per-step: a multi-line resolve can pin lines from
+   attempts under different catalogue versions). Enables the server's semantic stamp attestation at ingest
+   (W4.4 P6 / LA §6). The strict canonical projection includes the fields at exactly that per-line
+   location; legacy absence normalizes consistently; SAME canonical-form version (nothing has shipped).
+2. **Backfill-only item stamps are UNTRUSTED (W4-SR-158):** the client fold marks item stamps whose ONLY
+   source is a backfill snapshot as untrusted (not tier-2 valuation evidence); the invoice consumes the
+   server-resolved values (discount from pricing history + price from the SR-156 catalogue publication
+   archive, as-of the row's date) — keeping invoice == settlement for restored transfers.
+NOTHING ELSE in this spec changes; the R20 review includes a scoped check of exactly these two amendments.
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
