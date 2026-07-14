@@ -174,17 +174,19 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   direction) = a FAIL-CLOSED CONFLICT surfaced for the Chunk-8 Director-correction path, never silently
   applied (W4-SR-70, aligning with CHUNK8 item 5). Dedup on BOTH identities (W4-SR-96, per CHUNK8 item 5):
   same-TransactionId copies with differing financial/classification fields FAIL CLOSED (W4-SR-55); distinct
-  TransactionIds sharing an IdempotencyKey FAIL CLOSED. ARCHIVE COORDINATION (W4-SR-68/75/92/93/95): ONE
-  shared coordination record with CAS/ETag transitions (`idle | run_active(heartbeat) | export_lease(ttl)`)
-  — the archiver's run acquisition and the export's lease acquisition are BOTH atomic CAS transitions on it
+  TransactionIds sharing an IdempotencyKey FAIL CLOSED. ARCHIVE COORDINATION (W4-SR-68/75/92/93/95/140): ONE
+  shared coordination record with CAS/ETag transitions — the FULL FOUR-STATE machine
+  (`idle | run_active(heartbeat) | export_lease(ttl) | correction_active(heartbeat, journalId)`); every
+  acquisition (archiver run, export lease, correction approval) is an atomic CAS transition on it
   (no check-then-act); the route renews the lease during queries and asserts CONTINUOUS tenure after the
   second query (same lease id, unexpired, no intervening run — else discard + retry); a run whose heartbeat
   is STALE is surfaced + driven terminal by the reconcile sweep (complete or roll back per Chunk-8
   publish-nothing), so a crashed archiver never locks settlements out; attestations carry the completed-run
-  version + lease id + the continuity post-check. FAIRNESS (W4-SR-108/116): `run_requested`/
-  `export_requested` flags on the coordination record give a losing acquirer the next turn — each request
-  carries owner + store timestamp + a short TTL; EXPIRED requests are bypassed and reconciled (a crashed
-  requester never locks the other side out). ALSO SUPPLIED to the engine (W4-SR-114/115/122/123/124): `steps` — the
+  version + lease id + the continuity post-check. FAIRNESS, THREE-WAY (W4-SR-108/116/140):
+  `run_requested`/`export_requested`/`correction_requested` flags on the coordination record give a losing
+  acquirer the next turn — each request carries owner + store timestamp + a short TTL; EVERY acquirer
+  honors ALL live competing requests; EXPIRED requests are bypassed and reconciled (a crashed requester
+  never locks the others out). ALSO SUPPLIED to the engine (W4-SR-114/115/122/123/124): `steps` — the
   RecordSteps rows for every transferId in the row set (enumeration-attested; the engine derives the
   transfer-item stamp projection and enforces the ORIGIN ASSERTION per SR-122/129: no valid submit/backfill
   origin ⇒ fail closed unless the row's ORIGINAL live-list id predates the Chunk-4 steps epoch — live rows
@@ -225,9 +227,18 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   PUBLICATION IS THE IRREVOCABLE COMMIT POINT (SR-139): reconcile reads the active publication pointer
   first — matching the journal's candidate ⇒ ROLL FORWARD only (never delete published rows); pre-publish ⇒
   complete or roll back; either way BEFORE any archive run or export may proceed. UNIQUENESS is a DURABLE
-  RESERVATION (SR-138/141): a unique control-target index/registry spanning BOTH lists that EVERY control
-  writer claims — the approval op AND the push ingest's tombstone path (a device tombstone racing an
-  approval is quarantined for Director review, never a second control; reservations terminal).
+  RESERVATION with a LIFECYCLE (SR-138/141/143/144): a unique control-target index/registry spanning BOTH
+  lists that EVERY control writer claims — the approval op AND the push ingest's tombstone path (a device
+  tombstone racing an approval is quarantined for Director review, never a second control). Reservation
+  states `pending(owner, opId, journalId, ttl) → committed(controlId, publicationVersion)` — only a
+  PUBLISHED control commits; rollback releases the pending; orphans TTL+journal-reconciled (SR-143). The
+  invariant is one ACTIVE effective control per target (SR-144): a Director-sudo SUPERSEDE/WITHDRAW runs
+  through this same route under the same reservation, atomically swapping the active control pointer
+  (immutable versioned revision history; supersede delta = −previousEffective + newEffective; withdraw
+  restores the target's effect); the export serves only the published-effective control.
+  CROSS-IDENTITY VALUATION (SR-145): target/item stamps mint a replacement's stamps only when product
+  (and store/classification) identity matches; a product-changing replacement derives from the REPLACEMENT
+  product's own sources (its genuinely-linked item stamps, else the original-event lens for that product).
   COORDINATION (SR-140): the shared record's machine is FOUR-state (idle | run_active | export_lease |
   correction_active) with THREE request flags (run/export/correction_requested, each {owner,
   storeTimestamp, ttl}); every acquirer honors all live competing requests. Live target ⇒ live list, same

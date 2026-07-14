@@ -4,8 +4,9 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R14 FOLDED (AGY BLOCK×2 + Codex BLOCK×4, two converged pairs = 4 distinct, all REAL —
-folded as SR-139..142). R15 PENDING — the LAST open part.
+**Review status:** R15 FOLDED (AGY BLOCK×1 + Codex BLOCK×4, one converged pair = 4 distinct, all REAL —
+folded as SR-143..146; both auditors explicitly CLEARED the publication-pointer mechanics, three-way
+fairness, and cross-product stock arithmetic). R16 PENDING — the LAST open part.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -77,16 +78,35 @@ and the published snapshot + live rows must equal the corrected archive/control 
 rejects both a Chunk-8-style old==new test that would refuse the legitimate 10→8 correction AND a sign
 error that would drift the snapshot to 12). Content hashes prove integrity, never economics.
 Live targets → live list (no snapshot interplay; same journal discipline).
-**CONTROL-TARGET RESERVATION (SR-138/141):** one control per original target is enforced by a DURABLE
-UNIQUE RESERVATION on the target identity (a server-enforced unique control-target index / CAS registry
-spanning BOTH lists) that EVERY control writer must claim before its control lands — the correction-approval
-op AND the ordinary push ingest's tombstone path (SR-141: `correction_active` excludes runs/exports/other
+**CONTROL-TARGET RESERVATION with LIFECYCLE (SR-138/141/143):** control uniqueness is enforced by a DURABLE
+RESERVATION on the target identity (a server-enforced unique control-target index / CAS registry spanning
+BOTH lists) that EVERY control writer must claim before its control lands — the correction-approval op AND
+the ordinary push ingest's tombstone path (SR-141: `correction_active` excludes runs/exports/other
 corrections but NOT a store device's deletion tombstone riding the normal ledger push — an absence QUERY
-cannot be made atomic against an independent writer; only a shared reservation can). A second claim on a
-reserved target is REJECTED (the push path quarantines the tombstone for Director review, never silently
-drops it). Reservations are terminal (controls are immutable). The engine's ambiguity rule REMAINS, but as
-a corruption detector, never the primary guard. The SR-70 cross-list conflict rule likewise never fires on
-a legitimate correction. Identity =
+cannot be made atomic against an independent writer; only a shared reservation can). A second claim on an
+actively-reserved target is REJECTED (the push path quarantines the tombstone for Director review, never
+silently drops it). **RESERVATION LIFECYCLE (SR-143):** `pending(owner, opId, journalId, ttl)` →
+`committed(controlId, publicationVersion)` — ONLY a successfully PUBLISHED control commits the reservation;
+a pre-publication rollback RELEASES/VOIDS the pending entry, and orphaned pendings (crash between reserve
+and publish, on either writer path) are reconciled idempotently via TTL + journal cross-check (the SR-117
+claims pattern) — a failed approval can never permanently lock a target that has NO control.
+**ONE *ACTIVE* CONTROL PER TARGET — SUPERSEDE, NOT FOREVER (SR-144):** the invariant is one ACTIVE
+EFFECTIVE control per original target, not one immutable decision for all time (a Director typo in a
+replacement was otherwise permanently uncorrectable — no chain, no second claim, no path). A
+Director-sudo-gated **SUPERSEDE / WITHDRAW** operation runs through the SAME correction-approval route
+(correction_active state, journal, verify, publish-LAST) UNDER THE SAME original-target reservation,
+atomically replacing the ACTIVE control pointer: history is preserved as immutable, append-only VERSIONED
+REVISIONS, but exactly ONE published-effective control exists per target at any time — the export receives
+only that one, so the engine's chain-ambiguity rule never fires on legitimate operations (it remains a
+corruption detector). Delta exactness for a supersede: `newSnapshot = old − effect(previousEffective) +
+effect(newEffective)`; WITHDRAW = supersede-to-nothing (restores the original target's effect). The SR-70
+cross-list conflict rule likewise never fires on a legitimate correction.
+**CROSS-IDENTITY VALUATION RULE (SR-145):** target-row/item stamps are usable for a replacement's minted
+stamps ONLY when the identity they belong to matches the replacement's (same productId — and the same rule
+for store/classification): a replacement that changes the PRODUCT must derive its stamps from the
+REPLACEMENT product's own authoritative sources (its item stamps where genuinely transfer-linked to that
+product, else the original-event lens FOR THAT PRODUCT) — copying the original product's stamps onto a
+different product mis-values the line even though the stock delta is correct. Identity =
 targetTransactionId; dedup by control id. NO delta type exists (Chunk-8 defines none). Ambiguity —
 multiple controls on one target, a replacement whose target is also deleted, a replacement chain — ⇒ FAIL
 CLOSED, surfaced. Cross-list controls remain conflicts (SR-70).
@@ -176,6 +196,14 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R15 fold record (2026-07-14) — 4 distinct (one converged pair), all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-143** | Codex R15-1 (P1): "reservations are terminal" with no lifecycle — an approval that reserves then FAILS verification leaves a dead terminal reservation on a target with NO control; every future control for it rejected forever (same crash window on the tombstone path) | P2: `pending → committed` lifecycle; only a PUBLISHED control commits; rollback releases; orphaned pendings TTL+journal-reconciled |
+| **W4-SR-144** | AGY R15-1 + Codex R15-2 (CONVERGED, P1): one-control-FOREVER has no path to fix a Director typo or delete a corrected movement — no chain (engine rejects), no second claim (reservation terminal): a single human error permanently corrupts the settlement | P2: one ACTIVE effective control per target; Director-sudo SUPERSEDE/WITHDRAW through the same route under the same reservation; immutable versioned revision history; export sees exactly the published-effective control; supersede delta = −previousEffective +newEffective |
+| **W4-SR-145** | Codex R15-3 (P1): cross-product replacements had correct STOCK arithmetic but copied the ORIGINAL product's stamps onto the NEW product (Shampoo's $20 minted onto Conditioner worth $35) | P2: identity rule — target/item stamps usable only when product (and store/classification) identity matches; else derive from the replacement product's own sources |
+| **W4-SR-146** | Codex R15-4 (P2): LA §6's EXPORT paragraph still carried the superseded three-state/two-flag machine while the correction paragraph had four/three — two operative contracts, a literal implementer starves corrections | LA §6 stale paragraph replaced (doc bug) |
 
 ## R14 fold record (2026-07-14) — 4 distinct (two converged pairs), all REAL
 | # | Finding | Fold |

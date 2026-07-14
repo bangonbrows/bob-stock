@@ -1,45 +1,41 @@
-# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 15 (paper review) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 16 (paper review) — Codex + AGY
 
-**You are reviewing ONE part: W4.4 EXPORT — the last open seam.** ✅ W4.1 PLANNER, W4.2 LENS, and W4.3
-STAMPS are all FROZEN (both of you passed each; specs locked, out of scope). R14's four findings (two
-converged pairs) folded as **W4-SR-139..142**. When W4.4 freezes, the W4 scope review CLOSES and the build
-begins against locked specs.
-
-Both auditors in parallel; paper review; report-only. The open surface is exactly the R14 folds below plus
-anything they newly touch. If it's done, PASS it.
+**You are reviewing ONE part: W4.4 EXPORT — the last open seam.** R15's four findings (one converged pair)
+folded as **W4-SR-143..146**. You both explicitly cleared the publication-pointer mechanics, three-way
+fairness, delta-exactness arithmetic, and (Codex) the crashed-request lifecycle — those are settled. The
+open surface is the R15 folds below. When W4.4 freezes, the W4 scope review CLOSES.
 
 ## Read (branch `azure-phase-5-8-server`)
-`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` · `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction-approval route +
-export route). (Frozen, reference only: W4.1/W4.2/W4.3 docs. History: the frozen ledger.)
+`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` (P2 + the R15 fold record) · `AZURE-CHUNK-ORG-LA-CHANGES.md` §6.
+(Frozen, reference only: W4.1/W4.2/W4.3. History: the frozen ledger.)
 
-## What R14 changed (all in W4.4)
-- **SR-139 (converged):** publication = the IRREVOCABLE commit point. The correction journal persists its
-  candidate version; reconcile reads the ACTIVE publication pointer FIRST — a match means the publish
-  landed pre-crash and recovery MUST roll forward (terminal-complete + release), never roll back; only
-  pre-publish journals may roll back. No recovery path can delete rows a published version references.
-- **SR-140 (converged, the finding you re-flagged):** the coordination machine is now the full FOUR states
-  (`idle | run_active | export_lease | correction_active`) with THREE request flags
-  (`run_requested`/`export_requested`/`correction_requested`, each `{owner, storeTimestamp, ttl}`); every
-  acquirer honors ALL live competing requests — three-way bounded scheduling, no starvable actor; P4 and
-  LA §6 now agree.
-- **SR-141:** control-target uniqueness is a DURABLE RESERVATION (unique index/registry spanning both
-  lists) claimed by EVERY control writer — including the ordinary push ingest's tombstone path, which
-  `correction_active` cannot exclude; a device tombstone racing an approval is quarantined for Director
-  review, never minted as a second control. Reservations are terminal.
-- **SR-142:** the verify invariant is DELTA EXACTNESS per `(storeId, productId)`:
-  `newSnapshot = oldSnapshot − effect(target) + effect(replacement)`, unaffected pairs bit-unchanged,
-  published snapshot + live rows == the corrected fold. "Neutrality" is explicitly retired for corrections.
+## What R15 changed
+- **SR-143:** reservations gain a LIFECYCLE — `pending(owner, opId, journalId, ttl) →
+  committed(controlId, publicationVersion)`; only a PUBLISHED control commits; pre-publication rollback
+  releases; orphaned pendings TTL+journal-reconciled (the SR-117 claims pattern). A failed approval can no
+  longer permanently lock an uncontrolled target.
+- **SR-144 (your converged catch):** ONE *ACTIVE* control per target, not one forever — a
+  Director-sudo-gated SUPERSEDE/WITHDRAW runs through the same correction route under the SAME reservation,
+  atomically swapping the active pointer; immutable versioned revision history; the export sees exactly the
+  published-effective control (chain-ambiguity stays a corruption detector); supersede delta =
+  −previousEffective + newEffective; withdraw restores the target's effect. A typo is now a supersede away
+  from fixed.
+- **SR-145:** cross-identity valuation — target/item stamps mint replacement stamps only when product (and
+  store/classification) identity matches; product-changing replacements derive from the replacement
+  product's own sources.
+- **SR-146:** the stale three-state LA §6 export paragraph replaced (the doc now carries ONE coordination
+  contract).
 
-## Attack surface
-- The publication-pointer read in recovery: can the pointer and the journal disagree in a way that makes
-  BOTH branches (forward/back) wrong? Multiple corrections' candidates interleaving with one pointer?
-- The reservation vs quarantine flow: a quarantined device tombstone whose target's replacement is LATER
-  itself the subject of a legitimate deletion — does the reservation model allow the Director any path, or
-  is one control per target forever too strict for real operations?
-- The three-way fairness under a crashed `correction_requested` holder mid-queue.
-- Delta exactness for a replacement that changes the PRODUCT (target productId ≠ replacement productId) —
-  two affected pairs; does the invariant as written cover it?
+## Attack surface (narrow)
+- The supersede chain under crash/interleave: a supersede that reaches publication while its predecessor's
+  revision is the one devices adopted mid-crash — does the SR-139 roll-forward rule compose with revision
+  swaps? Can two superseding Directors race on one target (the reservation should serialize — verify)?
+- Withdraw semantics vs the drain evidence: a grace-committed row whose control is WITHDRAWN — present
+  again, covered no longer — does the SR-94/107 terminal-outcome set still close?
+- SR-145's "genuinely transfer-linked to that product" — is there any real path where a replacement's new
+  product has item stamps at all (the original transfer shipped the OLD product)? If not, is
+  original-event-lens-for-that-product the only honest tier, and is THAT pinned clearly enough to build?
 
 ## Verdict
 One verdict (`W4.4: PASS | PASS-with-notes | BLOCK`), numbered findings with concrete scenarios. Claude
-ground-truths and folds; when BOTH of you PASS, W4.4 freezes and the scope review closes.
+ground-truths and folds; when BOTH of you PASS, W4.4 freezes and the W4 scope review closes.
