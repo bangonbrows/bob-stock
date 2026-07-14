@@ -240,8 +240,12 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   one ACTIVE effective control per target (SR-144): a Director-sudo SUPERSEDE/WITHDRAW runs through this
   same route under the same reservation; the effective revision RIDES the publication manifest — the
   publication pointer is the SOLE visibility switch, so roll-forward/rollback selects the exact matching
-  revision and the export verifies effectiveControl.publicationVersion == active version before FINAL
-  (SR-148). Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
+  revision; the export's FINAL check is the PER-TARGET HEAD comparison (SR-148/151:
+  activeManifest.controlHeads[targetId] must name exactly the supplied {controlId, revision,
+  bornPublicationVersion}, born ≤ active; withdrawn = explicit null head; delta-manifests walked — NEVER a
+  global-version equality, which would block FINAL forever after any unrelated correction). TIER-1 STAMP
+  AUTHORITY (SR-152): ordinary rows' stamps must be corroborated against the validated minting step in the
+  attested steps input (uncorroborated ⇒ fail closed); control rows bind via the per-target head check. Immutable versioned revision history; supersede delta = −previousEffective + newEffective;
   withdraw restores the target's effect (the append-only original evaluates PRESENT again for drain).
   CROSS-IDENTITY VALUATION (SR-145): target/item stamps mint a replacement's stamps only when product
   (and store/classification) identity matches; a product-changing replacement derives from the REPLACEMENT

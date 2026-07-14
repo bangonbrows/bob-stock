@@ -4,9 +4,10 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R16 FOLDED (AGY BLOCK×2 + Codex BLOCK×2, all supersede-composition edges, all REAL —
-folded as SR-147..150; CLEARED this round: withdraw/drain composition, cross-product valuation selection,
-pending-reservation recovery). R17 PENDING — the LAST open part.
+**Review status:** R17 FOLDED (AGY BLOCK×2 + Codex BLOCK×2 — BOTH pairs fully CONVERGED = 2 distinct, both
+REAL, both defects in MY R16 fold wording — folded as SR-151/152; CLEARED: supersede restore-on-rollback,
+expected-revision CAS, manifest-riding revision, cross-product lens selection). R18 PENDING — the LAST open
+part, surface ≈ these two folds.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -102,12 +103,19 @@ per target at any time. Three composition pins:
   release would strip the published predecessor's protection and let a racing device tombstone claim the
   empty reservation, minting the exact ambiguity the engine bricks on). Only an INITIAL create's rollback
   releases to empty.
-- **THE REVISION RIDES THE PUBLICATION MANIFEST (SR-148):** there is NO separate mutable active-control
+- **THE REVISION RIDES THE PUBLICATION MANIFEST (SR-148/151):** there is NO separate mutable active-control
   pointer — the effective-control revision is PART of the candidate snapshot/archive version, and the
   active PUBLICATION pointer (SR-139) is the SOLE visibility switch. Roll-forward/rollback therefore
   automatically selects the exact revision matching the published version (all three crash splits close:
-  pointer-vs-snapshot can never disagree because they are one publication). The EXPORT verifies the
-  effective control's `publicationVersion` equals the active version before FINAL.
+  pointer-vs-snapshot can never disagree because they are one publication). **THE FINAL COMPARISON IS
+  PER-TARGET-HEAD, NOT GLOBAL EQUALITY (SR-151** — the R16 `publicationVersion == activeVersion` test was
+  wrong: the version is GLOBAL, so any unrelated later correction advances it and an unchanged control
+  fails forever; `<=` alone re-admits an obsolete superseded revision**):** the export verifies that
+  `activeManifest.controlHeads[targetId]` names EXACTLY the supplied effective control —
+  `{controlId, revision, bornPublicationVersion}` all match, with `bornPublicationVersion <=
+  activeManifest.version`; a WITHDRAWN target carries an explicit null/withdraw head (never mere absence);
+  if manifests are deltas rather than complete maps, the route walks the chain to the latest per-target
+  revision before FINAL.
 - **EXPECTED-REVISION CAS (SR-149):** every SUPERSEDE/WITHDRAW intent carries the observed
   `{activeControlId, revision, publicationVersion}`; after acquiring `correction_active` the server
   re-reads the committed reservation and REJECTS on mismatch before preparing any candidate (the AA-03
@@ -184,18 +192,26 @@ precedence: row stamps → the transfer ITEM's canonical stamps → lens. The mi
 `steps` input: the engine derives an item-stamp projection keyed `(transferId, productId)` using the SAME
 fold precedence as the client (submit stamps permanent; receive-minted for stampless submits; resolve
 overrides) — shared fixtures prove client fold == engine projection, so invoice and settlement value the
-same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). **ORIGIN ASSERTION
-(SR-122/150):** the origin assertion GATES THE FALLBACK TIERS, not stamped rows (SR-150): a ROW-STAMPED
-row — which includes EVERY control row, since replacements are server-minted-stamped and an unstamped
-replacement is malformed — values at tier 1 and needs NO origin proof; the assertion applies only to
-UNSTAMPED transfer-linked rows, whose valuation would reach the item/lens tiers. (The R14 wording "every
-transferId must project an origin" was over-broad — a validated cross-product replacement carries the
-transferId but legitimately has no origin step for its NEW product; as a stamped row it never touches the
-lens, so demanding origin proof from it bricked a legal correction.) For UNSTAMPED rows the rule is
-unchanged: a valid ORIGIN (submit or backfill step) must project from `steps`; steps present but no origin
-⇒ fail closed; NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4 steps epoch, else fail closed
-(a lost/uningested step is indistinguishable from legacy — and ledger + steps push through SEPARATE
-endpoints, ledger first, so the gap is real). **EPOCH PROVENANCE (SR-129):** the
+same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). **ORIGIN + TIER-1 AUTHORITY
+(SR-122/150/152):** tier-1 (row stamps) is trusted BY PROVENANCE, never by mere presence (SR-152 — the R16
+narrowing exempted ALL row-stamped rows from origin proof, but ordinary ledger ingest validates only shape/
+range/both-or-neither, not AUTHORITY: an authenticated-but-hostile device could push forged in-range stamps
+and be paid on them). Pinned tier-1 rule:
+- **Server-minted CONTROL rows** bypass origin proof — bound to their published control revision + the
+  sudo-gated correction journal (SR-151's per-target head check IS the provenance).
+- **Ordinary transfer-linked rows'** stamps must be CORROBORATED against the attested `steps` input the
+  engine already holds (SR-114): the row's stamps must equal the stamps of the VALIDATED step that created
+  that row per the item's basis chain (submit-propagated / receive-minted / resolve-pinned / top-up- or
+  cancel-inherited) — binding to the step that minted THOSE stamps, not merely today's folded projection
+  (legitimate conflict history can differ from the current head). Uncorroborated stamps ⇒ FAIL CLOSED for
+  FINAL (forged or corrupt — never silently paid). The client invoice applies the same corroboration from
+  its local fold.
+- **UNSTAMPED transfer-linked rows** (the fallback tiers) keep the origin assertion unchanged: a valid
+  ORIGIN (submit or backfill step) must project from `steps`; steps present but no origin ⇒ fail closed;
+  NO steps at all ⇒ legacy only if the row PREDATES the Chunk-4 steps epoch, else fail closed (a
+  lost/uningested step is indistinguishable from legacy — ledger + steps push through SEPARATE endpoints,
+  ledger first, so the gap is real). A validated cross-product replacement still never faces the origin
+  assertion (it is a control row — first bullet). **EPOCH PROVENANCE (SR-129):** the
 epoch comparison uses the row's ORIGINAL live-list id — live rows: their item ID; ARCHIVED rows: the
 preserved `SourceId` (CHUNK8: the archive item's own ID is newly minted and NEVER epoch-comparable);
 absent/invalid provenance id ⇒ refuse. Residual corner, pinned FAIL-CLOSED + surfaced: an ancient row
@@ -221,6 +237,12 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R17 fold record (2026-07-15) — 2 distinct (BOTH fully converged), both defects in my R16 folds
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-151** | AGY R17-1 + Codex R17-1 (CONVERGED, P1): my R16 `publicationVersion == activeVersion` FINAL check compared a PER-CONTROL birth version against a GLOBAL counter — any unrelated later correction advances it, so a store with more than one correction EVER can never reach FINAL (`<=` alone re-admits obsolete superseded revisions) | P2: per-target-head comparison — `activeManifest.controlHeads[targetId]` must name exactly the supplied `{controlId, revision, bornPublicationVersion}`, born ≤ active; withdrawn targets carry explicit null heads; delta-manifests walked to the per-target latest |
+| **W4-SR-152** | AGY R17-2 + Codex R17-2 (CONVERGED, P1): my R16 origin narrowing exempted ALL row-stamped rows — but ingest validates shape, not AUTHORITY: a hostile authenticated device pushes forged in-range stamps ($1/99% vs the attested $100/25%) and the settlement pays them at tier 1 | P6: tier-1 authority BY PROVENANCE — control rows bind to their published revision (SR-151 check); ordinary rows' stamps must be CORROBORATED against the validated minting step in the attested `steps` input (already an engine input — no new machinery); uncorroborated ⇒ fail closed, never paid |
 
 ## R16 fold record (2026-07-15) — 4 distinct, all REAL (all supersede-composition edges)
 | # | Finding | Fold |
