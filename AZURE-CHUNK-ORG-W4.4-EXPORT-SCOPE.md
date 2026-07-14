@@ -4,8 +4,8 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R13 FOLDED (AGY BLOCK×1 + Codex BLOCK×2, one converged pair = 2 distinct, both REAL —
-folded as SR-137/138). R14 PENDING.
+**Review status:** R14 FOLDED (AGY BLOCK×2 + Codex BLOCK×4, two converged pairs = 4 distinct, all REAL —
+folded as SR-139..142). R15 PENDING — the LAST open part.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -58,22 +58,35 @@ a MALFORMED control ⇒ fail closed.
 **ARCHIVED-TARGET CORRECTIONS ARE SAME-LIST BY CONSTRUCTION (SR-135/137):** a replacement approved for an
 ARCHIVED target is WRITTEN INTO THE ARCHIVE LIST by the same server op (the CHUNK8 item-5
 "snapshot/archive correction" arm, which W4 previously named as a remedy but never defined). **PUBLICATION
-PROTOCOL (SR-137 — "atomic" made realizable):** the shared coordination record gains a
+PROTOCOL (SR-137/139/142 — "atomic" made realizable):** the shared coordination record gains a
 `correction_active(heartbeat, journalId)` state, CAS-acquired and MUTUALLY EXCLUSIVE with `run_active` and
-`export_lease`. The op then follows the Chunk-8 publish-nothing discipline: journal → write the candidate
-correction row + prepare the adjusted snapshot as a CANDIDATE VERSION → VERIFY (replacement validity, the
-balance delta, neutrality, the SourceId/control set, content hashes) → PUBLISH the new snapshot/archive
-version LAST → terminal-complete the journal → release the state. A crash at ANY point leaves the prior
-published version intact; the reconcile sweep drives a non-terminal correction journal to completion or
-rollback BEFORE any archive run or export may acquire the record (no partial state is ever exportable or
-stock-visible). Live targets → live list (no snapshot interplay; same journal discipline).
-**APPROVAL-TIME UNIQUENESS (SR-138):** while holding `correction_active`, the approval op QUERIES BOTH
-control lists by target identity and REJECTS the mint if the target is already covered by ANY control, or
-is itself a control row — one control per original target, enforced server-side and race-safe (the
-exclusive state + conditional write make it atomic). Controls are immutable, so without this guard a single
-mistaken approval would mint a chain/ambiguity the engine permanently fails closed on — the engine's
-ambiguity rule REMAINS, but as a corruption detector, never the primary guard. The SR-70 cross-list
-conflict rule likewise never fires on a legitimate correction. Identity =
+`export_lease`. The op follows the Chunk-8 publish-nothing discipline: journal (persisting the CANDIDATE
+VERSION id) → write the candidate correction row + prepare the adjusted snapshot → VERIFY → PUBLISH the new
+snapshot/archive version LAST → terminal-complete the journal → release the state.
+**PUBLICATION IS THE IRREVOCABLE COMMIT POINT (SR-139):** the reconcile sweep, on finding a non-terminal
+correction journal, READS THE ACTIVE PUBLICATION POINTER first — if it matches the journal's persisted
+candidate version, the publish succeeded pre-crash and the sweep MUST ROLL FORWARD (terminal-complete +
+release), NEVER roll back (a rollback would delete rows/adjustments an already-published version points at,
+corrupting Chunk-8 archive integrity and splitting devices across versions); only a PRE-publish journal may
+complete or roll back. The prior version is intact after a crash at any point BEFORE publication; after it,
+forward is the only direction. Recovery runs BEFORE any archive run or export may acquire the record.
+**THE VERIFY INVARIANT (SR-142 — replaces "neutrality", which is the wrong test for a
+balance-CHANGING-by-design correction):** per affected `(storeId, productId)`:
+`newSnapshot = oldSnapshot − effect(target) + effect(replacement)`, EVERY unaffected pair bit-unchanged,
+and the published snapshot + live rows must equal the corrected archive/control fold (delta EXACTNESS —
+rejects both a Chunk-8-style old==new test that would refuse the legitimate 10→8 correction AND a sign
+error that would drift the snapshot to 12). Content hashes prove integrity, never economics.
+Live targets → live list (no snapshot interplay; same journal discipline).
+**CONTROL-TARGET RESERVATION (SR-138/141):** one control per original target is enforced by a DURABLE
+UNIQUE RESERVATION on the target identity (a server-enforced unique control-target index / CAS registry
+spanning BOTH lists) that EVERY control writer must claim before its control lands — the correction-approval
+op AND the ordinary push ingest's tombstone path (SR-141: `correction_active` excludes runs/exports/other
+corrections but NOT a store device's deletion tombstone riding the normal ledger push — an absence QUERY
+cannot be made atomic against an independent writer; only a shared reservation can). A second claim on a
+reserved target is REJECTED (the push path quarantines the tombstone for Director review, never silently
+drops it). Reservations are terminal (controls are immutable). The engine's ambiguity rule REMAINS, but as
+a corruption detector, never the primary guard. The SR-70 cross-list conflict rule likewise never fires on
+a legitimate correction. Identity =
 targetTransactionId; dedup by control id. NO delta type exists (Chunk-8 defines none). Ambiguity —
 multiple controls on one target, a replacement whose target is also deleted, a replacement chain — ⇒ FAIL
 CLOSED, surfaced. Cross-list controls remain conflicts (SR-70).
@@ -96,20 +109,23 @@ TransactionId (phase2.js:62, pinned NORMATIVE).
 **P4 — coverage = explicit evidence, under ATOMIC coordination (SR-26/36/56/68/75/92/93/95).** `coverage` is
 QUERY-COMPLETION EVIDENCE from the route, never inferred from rows: full-window enumeration attestations for
 BOTH lists, each carrying the COMPLETED archive-run version + the EXPORT LEASE id. Coordination is ONE
-SHARED STATE RECORD (SR-92) with CAS/ETag conditional transitions — states `idle | run_active(heartbeat) |
-export_lease(ttl)`; BOTH the archiver's run acquisition AND the export's lease acquisition are CAS
-transitions on it (no check-then-act window; losers retry). LEASE CONTINUITY (SR-93): the route renews the
+SHARED STATE RECORD (SR-92/140) with CAS/ETag conditional transitions — the FULL FOUR-STATE machine:
+`idle | run_active(heartbeat) | export_lease(ttl) | correction_active(heartbeat, journalId)`; every
+acquisition (archiver run, export lease, correction approval) is a CAS transition on it (no check-then-act
+window; losers retry). LEASE CONTINUITY (SR-93): the route renews the
 lease during long queries and, AFTER the second query, re-reads the record and asserts the SAME lease id was
 held continuously (unexpired, no intervening run) — else discard + retry; the attestation carries this
 post-check. CRASHED-ARCHIVER LIVENESS (SR-95): `run_active` carries a heartbeat; a run whose heartbeat is
 stale is surfaced + driven to a TERMINAL state by the reconcile sweep (complete or roll back per Chunk-8's
 publish-nothing discipline); the export refuses only heartbeat-FRESH runs — no indefinite lock-out in either
-direction. FAIRNESS with LIVE REQUESTS ONLY (SR-108/116): the coordination record carries request flags
-(`run_requested` / `export_requested`) a losing acquirer CASes; while a request is LIVE, the other side may
-not immediately re-acquire (the requester gets the next turn) — bounded consecutive acquisitions in both
-directions. EVERY request carries owner + data-store timestamp + a short TTL (SR-116): an EXPIRED request
+direction. FAIRNESS with LIVE REQUESTS ONLY, THREE-WAY (SR-108/116/140): the coordination record carries request
+flags for ALL THREE actors (`run_requested` / `export_requested` / `correction_requested`), each
+`{owner, storeTimestamp, ttl}`, CASed by a losing acquirer; while ANY competing request is LIVE, a
+releasing holder's side may not immediately re-acquire — EVERY acquirer honors ALL live competing requests
+(bounded consecutive acquisitions in every direction; a steady export stream can starve neither the
+archiver NOR a Director's correction, and repeated corrections cannot starve an export). An EXPIRED request
 is bypassed by acquirers and cleared by the reconcile sweep — a requester that crashed after raising its
-flag can never lock the other side out. Symmetric in both directions, same lifecycle. The engine validates the attested union == `[from,to)` and the run/lease pair is
+flag can never lock the others out. Same lifecycle for all three. The engine validates the attested union == `[from,to)` and the run/lease pair is
 consistent — else refusal, never a silently short settlement.
 
 **P5 — PROVISIONAL vs FINAL (SR-37/57/69/94).** Without `graceClosed`, the settlement is marked PROVISIONAL
@@ -160,6 +176,14 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R14 fold record (2026-07-14) — 4 distinct (two converged pairs), all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-139** | AGY R14-1 + Codex R14-4 (CONVERGED, P1): a crash BETWEEN publish and terminal-complete left a non-terminal journal whose "completion or rollback" recovery could ROLL BACK an already-published version — deleting rows the live publication pointer references (archive corruption, devices split across versions) | P2: publication = the IRREVOCABLE commit point; the journal persists its candidate version; reconcile reads the ACTIVE publication pointer first — match ⇒ ROLL FORWARD only; pre-publish ⇒ complete or roll back |
+| **W4-SR-140** | AGY R14-2 + Codex R14-2 (CONVERGED, P2): `correction_active` was bolted on without joining the state machine — P4/LA still said three states + two request flags (doc self-contradiction), and a correction had no way to wait in line (starvable by cooperating runs/exports; symmetrically, corrections could ignore an export request) | P4: full FOUR-state machine + THREE request flags `{owner, storeTimestamp, ttl}`; every acquirer honors ALL live competing requests; same expiry/scrub lifecycle |
+| **W4-SR-141** | Codex R14-1 (P1): the SR-138 uniqueness guard excluded runs/exports/corrections but NOT an ordinary store device's deletion tombstone riding the normal ledger push (db.js:1135) — D and R could both land, minting the exact deletion+replacement ambiguity the engine permanently rejects | P2: a DURABLE UNIQUE control-target reservation spanning both lists that EVERY control writer claims (approval op AND the push ingest's tombstone path); second claim rejected + quarantined for Director review; reservations terminal |
+| **W4-SR-142** | Codex R14-3 (P1): "neutrality" is undefined — and wrong — for a correction whose PURPOSE is to change a balance (Chunk-8's old==new test rejects the legitimate 10→8 fix; omitting it admits a sign error to 12; hashes prove content, not economics) | P2: the verify invariant is DELTA EXACTNESS per (storeId, productId): `newSnapshot = oldSnapshot − effect(target) + effect(replacement)`, unaffected pairs bit-unchanged, published snapshot + live rows == the corrected fold |
 
 ## R13 fold record (2026-07-14) — 2 distinct (one converged pair), both REAL
 | # | Finding | Fold |

@@ -216,12 +216,23 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   target row (live or archive), obtains the COMPLETE RecordSteps set for its transfer with enumeration
   proof, runs the canonical valuation precedence SERVER-side, binds the original-event UTC instant + the
   pricing publication version, and MINTS the replacement's immutable both-or-neither stamps
-  (client-supplied values never authoritative). **PUBLICATION (SR-137):** journal → write the correction
-  row + prepare the adjusted snapshot as a CANDIDATE version (archived targets) → VERIFY (validity, delta,
-  neutrality, SourceId/control set, hashes) → PUBLISH the new version LAST → terminal-complete → release;
-  a crashed correction is reconciled to completion/rollback BEFORE any archive run or export may proceed.
-  Live target ⇒ live list, same journal discipline, no snapshot interplay. Same-list by construction — the
-  export's cross-list rule stays a pure corruption detector.
+  (client-supplied values never authoritative). **PUBLICATION (SR-137/139/142):** journal (persisting the
+  candidate version id) → write the correction row + prepare the adjusted snapshot as a CANDIDATE version
+  (archived targets) → VERIFY (validity, SourceId/control set, hashes + the SR-142 DELTA-EXACTNESS
+  invariant per (storeId, productId): newSnapshot = oldSnapshot − effect(target) + effect(replacement),
+  unaffected pairs unchanged, published snapshot + live rows == the corrected fold — "neutrality" does not
+  apply to a balance-changing correction) → PUBLISH the new version LAST → terminal-complete → release.
+  PUBLICATION IS THE IRREVOCABLE COMMIT POINT (SR-139): reconcile reads the active publication pointer
+  first — matching the journal's candidate ⇒ ROLL FORWARD only (never delete published rows); pre-publish ⇒
+  complete or roll back; either way BEFORE any archive run or export may proceed. UNIQUENESS is a DURABLE
+  RESERVATION (SR-138/141): a unique control-target index/registry spanning BOTH lists that EVERY control
+  writer claims — the approval op AND the push ingest's tombstone path (a device tombstone racing an
+  approval is quarantined for Director review, never a second control; reservations terminal).
+  COORDINATION (SR-140): the shared record's machine is FOUR-state (idle | run_active | export_lease |
+  correction_active) with THREE request flags (run/export/correction_requested, each {owner,
+  storeTimestamp, ttl}); every acquirer honors all live competing requests. Live target ⇒ live list, same
+  journal discipline, no snapshot interplay. Same-list by construction — the export's cross-list rule stays
+  a pure corruption detector.
 - **Activation seed (runbook contract, W4-SR-46/50/63/65):** per store, one '*' interval PER FRANCHISE ERA
   (closed [from,to) for closed eras; open for the open era), ALL at the seed-time scalar value — required by
   `pricingAlignsWithEras`; HO interludes stay uncovered. `global[productId]` seeded ONLY for legacy discounts

@@ -4,8 +4,11 @@
 frozen fold ledger `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries:
 W4-SR-8, 23, 47, 48, 64(planner side), 71, 72 + R7 folds SR-76..79. Server-LA counterpart:
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §1.
-**Review status:** R13 FOLDED (AGY BLOCK×1 + Codex BLOCK×1 — CONVERGED on the same defect; REAL, folded as
-SR-136; Codex cleared the lease hot-cell attack). R14 PENDING — needs BOTH auditors PASS to freeze.
+**Review status:** ✅ **FROZEN 2026-07-14 — BOTH AUDITORS PASS at R14** (AGY: "the idempotency binding is
+airtight … I pass W4.1 without reservations"; Codex: "PASS — freeze candidate", with a concrete
+two-worker race walkthrough proving the episode binding + ETag fence compose). The spec is LOCKED; any
+future change reopens the part's review. Fold history: SR-76..79, 98..101, 110/111, 117/119/120, 125/126,
+131/132, 136 (+ the R1-R6 ledger folds this doc consolidates).
 
 ## Why this seam exists
 The R4/R5 model keys pricing PER STORE, with the franchisee's negotiated default living on the OFFICE store
