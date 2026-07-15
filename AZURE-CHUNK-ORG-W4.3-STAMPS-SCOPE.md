@@ -9,26 +9,34 @@ validation). The spec is LOCKED; any future change reopens the part's review. Fo
 106, 113, 114, 121, 128 (+ the R1-R6 ledger folds this doc consolidates).
 **⚠ TWO FLAGGED POST-FREEZE AMENDMENTS (2026-07-15 — scoped re-review required; R19 status: AGY OK'd the
 step-level form, Codex OBJECTED with the per-line correction, which is ADOPTED):**
-1. **Per-LINE version tuple (W4-SR-153→159→162):** every stamped LINE (in submit/receive/resolve payloads,
-   on rows, in the fold/canonical form) carries `{sellAtSupply, discAtSupply, basis, pricingVersion,
-   catalogueVersion}` — ALL FIVE or none (per-line, NOT per-step: a multi-line resolve can pin lines from
-   attempts under different catalogue versions). Enables the server's semantic stamp attestation at ingest
-   (W4.4 P6 / LA §6). The strict canonical projection includes the fields at exactly that per-line
-   location; legacy absence normalizes consistently; SAME canonical-form version (nothing has shipped).
-   **FIXTURE COVERAGE (SR-162, R20 revision):** the stamp sentinels/fixtures move from the two-field
-   both-or-neither to the FIVE-field invariant — all-five-present; all-absent-legacy; EVERY partial-tuple
-   class (incl. versions-only and stripped-catalogueVersion-only); two snapshots differing ONLY in a
-   version field remain a MEANINGFUL canonical difference (never normalized away); covered across submit,
-   receive, resolve, row, backfill/fold, archive, and reconstruction paths — each with its saboteur.
+1. **Per-LINE version tuple (W4-SR-153→159→162→167, rev-3):** every stamped LINE (in submit/receive/
+   resolve payloads, on rows, in the fold/canonical form) carries the FOUR AUTHORITY FIELDS
+   `{sellAtSupply, discAtSupply, pricingVersion, catalogueVersion}` — ALL FOUR or none, per-line —
+   plus `basis`, which is a DECISION field validated SEPARATELY (SR-167: forcing basis into the atomic
+   tuple contradicted this spec's own P2/P4 — a `legacy-lens` item durably persists its basis with NO
+   stamps by design): `submit-stamped`/`receive-stamped` ⇒ all four authority fields REQUIRED;
+   `legacy-lens` ⇒ NONE; genuine pre-W4 absence normalizes to `legacy-lens` only under the already-pinned
+   legacy conditions. Enables the server's semantic stamp attestation (W4.4 P6 / LA §6). The strict
+   canonical projection includes all five fields at exactly that per-line location; SAME canonical-form
+   version (nothing has shipped). **FIXTURE COVERAGE (SR-162):** all-four-present per stamped basis;
+   authority-fields-absent legacy-lens; EVERY partial-authority-tuple class (incl. versions-only and
+   stripped-catalogueVersion-only); basis×authority cross-classes (stamped basis w/o authority fields =
+   malformed; legacy-lens WITH authority fields = malformed); two snapshots differing ONLY in a version
+   field remain a MEANINGFUL canonical difference; covered across submit, receive, resolve, row,
+   backfill/fold, archive, and reconstruction paths — each with its saboteur.
 2. **Backfill-only item stamps are UNTRUSTED (W4-SR-158→163):** the client fold marks item stamps whose
    ONLY source is a backfill snapshot as untrusted (not tier-2 valuation evidence); the invoice consumes
    the server-resolved values (discount from pricing history + price from the SR-156 catalogue publication
-   archive, as-of the row's date) **via the SR-163 transport (R20 revision): the gated RESOLVE-VALUATION
-   route → durable server-owned mapped fields on the row (the SR-157 allowlist-merge pattern) → the
-   invoice renders ONLY those, or a surfaced "valuation pending sync" state — never local live pricing,
-   never the untrusted stamps** — keeping invoice == settlement for restored transfers.
-NOTHING ELSE in this spec changes; the R21 review includes a scoped re-check of exactly these two
-(REVISED) amendments — AGY approved both pre-revision at R20; Codex's objections drove the revisions.
+   archive, as-of the row's date) **via the SR-163/166 transport (R21 revision): the gated
+   RESOLVE-VALUATION route — `rowId` MANDATORY, the response bound to the immutable row/line identity +
+   a canonical digest of the valuation-relevant inputs, install-time digest compare, control ops
+   invalidate cached responses — → durable server-owned mapped fields on the row (the SR-157
+   allowlist-merge pattern) → the invoice renders ONLY those, or a surfaced "valuation pending sync"
+   state — never local live pricing, never the untrusted stamps** — keeping invoice == settlement for
+   restored transfers.
+NOTHING ELSE in this spec changes; the R22 review includes a scoped re-check of exactly these two
+(rev-3 / rev-2) amendments — AGY approved both at R21 pre-revision; Codex's objections drove the
+revisions (SR-167 basis split; SR-166 rowId binding).
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit

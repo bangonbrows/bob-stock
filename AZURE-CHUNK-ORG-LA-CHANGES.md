@@ -244,18 +244,26 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   activeManifest.controlHeads[targetId] must name exactly the supplied {controlId, revision,
   bornPublicationVersion}, born ≤ active; withdrawn = explicit null head; delta-manifests walked — NEVER a
   global-version equality, which would block FINAL forever after any unrelated correction). TIER-1 STAMP
-  AUTHORITY = SERVER SEMANTIC ATTESTATION (SR-152→153..159): every stamped LINE carries the five-tuple
-  {sellAtSupply, discAtSupply, basis, pricingVersion, catalogueVersion}, all-or-none (SR-159, per-LINE);
+  AUTHORITY = SERVER SEMANTIC ATTESTATION (SR-152→153..167): every stamped LINE carries the FOUR authority
+  fields {sellAtSupply, discAtSupply, pricingVersion, catalogueVersion}, all-or-none per-line, plus
+  `basis` validated SEPARATELY (SR-159/167: stamped bases require all four; legacy-lens requires none);
   the steps-ingest validator (the D4-K validateMoney pattern extended) RECOMPUTES expected stamps from
   server-owned pricing history + the **IMMUTABLE CATALOGUE PUBLICATION ARCHIVE (SR-156/160/161 — NEW
   SERVER DELIVERABLE: append-only publications keyed by version w/ prices + publication intervals, written
   by ONE server-only journaled PUBLISHER — candidate [snapshot + archive record + interval] → verify →
-  pointer-switch LAST → terminal, roll-forward iff switched; non-client-writable, version-CAS'd; ALL
-  catalogue writers incl. the Chunk-6 publish flow + the pricing route's scalar dual-writes route THROUGH
-  it; RETENTION INDEFINITE — never pruned, so no expiry state exists; claimed version must exist and be
-  valid for the minting instant; unknown/forged ⇒ BAD_VERSION fail-closed → Director re-attestation queue
-  → settlement PROVISIONAL until cleared, never current-price fallback — master_data.version alone counts
-  one mutable blob and resolves nothing historical)** and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
+  pointer-switch LAST → terminal, roll-forward iff switched; non-client-writable, version-CAS'd.
+  CROSS-DOMAIN COMPOSITION (SR-164): pricing dual-writes + add-product use ONE COMPOSITE PARENT JOURNAL
+  (the child catalogue publication PREPARES, cannot commit; the parent's single fenced commit = the sole
+  visibility switch for BOTH domains — no split-brain in either crash order); Chunk-6 catalogue-only
+  publishes invoke the publisher directly; the correction op only READS the archive. RETENTION INDEFINITE
+  — never pruned, so no expiry state exists; claimed version must exist and be valid for the minting
+  instant; unknown/forged ⇒ BAD_VERSION fail-closed into a DURABLE idempotent queue (SR-165: keyed by
+  row/line identity + offending digest; terminal states corrected-and-reattested |
+  covered-by-active-control | rejected | withdrawn; control ops AUTO-clear their targets' entries;
+  re-attestation MINTS a server-owned tuple from the histories active at the minting instant — never
+  retries the invalid claim); settlement PROVISIONAL while non-terminal entries exist; never
+  current-price fallback — master_data.version alone counts one mutable blob and resolves nothing
+  historical)** and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
   values stripped). Stamped TRANSFERLESS rows (direct HO-supply) carry the five-tuple as ROW columns
   mapped on EVERY transport surface and get the SAME validation at push-v2 ROW ingest with a server-set
   attestation column (SR-155/157). ACCEPTANCE ECHO (SR-157): the pull's known-row merge INSTALLS
@@ -263,10 +271,11 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   own attestation; a locally-minted marker never renders as attested). The engine's tier-1 = attested
   evidence only (control rows bind via the per-target head check); BACKFILL snapshots are never tier-1
   provenance — backfill-only rows value from server-resolved history BOTH halves (discount + archived
-  price) as-of the row date, delivered to clients via the gated RESOLVE-VALUATION route (SR-163: request
-  {rowId/(productId,storeId,asOfInstant)} → digest-bound {resolvedSell, resolvedDisc, pricingVersion,
-  catalogueVersion} → cached as durable server-owned mapped fields per the SR-157 allowlist merge; invoice
-  renders only those or a surfaced pending state), w/ an optional Director re-attestation route
+  price) as-of the row date, delivered to clients via the gated RESOLVE-VALUATION route (SR-163/166: `rowId` MANDATORY — a tuple-only
+  form permits row-existence laundering; response bound to the immutable row/line identity + a canonical
+  digest of the valuation-relevant inputs → {resolvedSell, resolvedDisc, pricingVersion, catalogueVersion}
+  → install-time digest compare, control ops invalidate cached responses → cached as durable server-owned
+  mapped fields per the SR-157 allowlist merge; invoice renders only those or a surfaced pending state), w/ an optional Director re-attestation route
   (SR-154/158). Client-vs-client equality is DEAD as an authority proof. ⚠ TWO flagged scoped amendments
   to frozen W4.3 (per-line tuple w/ five-field fixtures; backfill stamps untrusted w/ the SR-163
   transport) — REVISED at R20, re-OK pending. Immutable versioned revision history; supersede delta = −previousEffective + newEffective;

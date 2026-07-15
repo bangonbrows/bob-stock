@@ -4,12 +4,11 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R20 FOLDED (AGY BLOCK×1 [amendments BOTH approved] + Codex BLOCK×2 + amendment
-OBJECTIONS×2 = 4 distinct, all REAL — folded as SR-160..163: the R19 archive made BUILDABLE — journaled
-sole-writer publication, INDEFINITE retention (no pruning ⇒ no expiry state machine exists), five-field
-fixture coverage, the resolve-valuation transport; CLEARED: the SR-157 echo (allowlist-merge
-implementation note banked)). W4.3's two amendments REVISED per Codex's objections — re-OK needed. R21
-PENDING.
+**Review status:** R21 FOLDED (AGY BLOCK×2 [amendments approved] + Codex BLOCK×2 + objections×2; both
+W4.4 blockers fully CONVERGED = 4 distinct, all REAL — folded as SR-164..167; ADJUDICATED: AGY's
+"replay harmless" superseded by Codex's row-existence-laundering argument; CLEARED: indefinite retention
+["now clean"], the SR-162 fixture surface [modulo the basis split]). W4.3 amendment 1 revised AGAIN
+(rev-3: four authority fields + basis separate, SR-167); amendment 2 revised via SR-166. R22 PENDING.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -215,16 +214,31 @@ and be paid on them). Pinned tier-1 rule:
   physically unimplementable — an honest offline device pushing yesterday's $10 stamps after today's $12
   publish would be falsely quarantined. Publications are archived append-only, keyed by version, with
   product prices + server publication intervals; the claimed version must EXIST and be VALID for the
-  minting instant; unknown/forged versions ⇒ a DISTINCT fail-closed outcome (`BAD_VERSION`, routed to the
-  Director re-attestation queue; settlement PROVISIONAL until cleared), NEVER a fallback to the current
-  price. **PUBLICATION PROTOCOL (SR-160):** ONE server-only catalogue publisher, following the same
+  minting instant; unknown/forged versions ⇒ a DISTINCT fail-closed outcome (`BAD_VERSION`), NEVER a
+  fallback to the current price. **THE BAD_VERSION QUEUE IS A DURABLE STATE MACHINE (SR-165, not a
+  rhetorical "until cleared"):** a durable, surfaced, IDEMPOTENT queue record keyed by row/line identity +
+  the offending canonical digest (written by the ingest path itself — a crash cannot lose the work item);
+  terminal states = `corrected-and-reattested | covered-by-active-control | rejected | withdrawn`.
+  LEDGER CONTROL OPERATIONS AUTO-CLEAR: a tombstone/withdraw/supersede covering the target row identity
+  transitions its queue entries to `covered-by-active-control`/`withdrawn` automatically — a deleted row's
+  ghost entry can never block FINAL. RE-ATTESTATION MINTS, never retries: the Director route derives a
+  corrected SERVER-OWNED tuple from the authoritative histories ACTIVE AT THE MINTING INSTANT (retrying
+  the invalid claimed version would just return BAD_VERSION forever). Settlement PROVISIONAL while any
+  NON-TERMINAL entry exists for its rows; FINAL unblocked by terminal states. **PUBLICATION PROTOCOL (SR-160/164):** ONE server-only catalogue publisher, following the same
   journaled discipline as every other publication (SR-137 / Chunk-8): journal → persist the CANDIDATE
   (new mutable snapshot + archive record + publication interval) → verify → SWITCH THE ACTIVE POINTER LAST
   → terminal-complete; recovery rolls FORWARD if the pointer switched, else completes/discards the
-  candidate (neither crash order can strand devices stamping against an unarchived version, nor leave a
-  never-active version looking historically valid); the archive is non-client-writable, append-only under
-  version CAS; NO other writer touches catalogue state — the Chunk-6 publish flow and the pricing route's
-  scalar dual-writes all route THROUGH this publisher. **RETENTION IS INDEFINITE (SR-161):** the archive
+  candidate; the archive is non-client-writable, append-only under version CAS; NO other writer touches
+  catalogue state. **CROSS-DOMAIN COMPOSITION (SR-164 — composing independent single-pointer journals is
+  fundamentally unsafe, split-brain in either crash order):** an operation spanning BOTH domains (the
+  pricing route's history+scalar dual-write; add-product) uses ONE COMPOSITE PARENT JOURNAL whose candidate
+  spans the pricing history AND the catalogue snapshot + archive record under a SHARED publication
+  identity — the child catalogue publication PREPARES but CANNOT independently commit; the parent's single
+  fenced commit is the sole visibility switch for both domains (readers can never see catalogue vN with
+  pre-vN pricing or vice versa; the `{pricingVersion, catalogueVersion}` pairs the ingest validator checks
+  stay coherent by construction). Catalogue-ONLY publishes (the Chunk-6 flow) invoke the publisher
+  directly. The correction-approval op is NOT a catalogue writer — it publishes the separate
+  archive/control manifest and only READS the immutable catalogue archive. **RETENTION IS INDEFINITE (SR-161):** the archive
   is NEVER pruned — publications are tiny and rare (dozens of rows a year) while settlements legitimately
   value rows years back, so pruning semantics can never be correct; with no pruning there IS no expiry
   state machine — the only failure class is unknown/invalid version, handled above. This also closes the
@@ -250,14 +264,18 @@ and be paid on them). Pinned tier-1 rule:
   RE-ATTESTATION route recomputes + attests them (same validator). **The CLIENT must agree (⚠ second
   scoped W4.3 amendment):** the client fold marks backfill-only item stamps UNTRUSTED (not tier-2
   evidence) and the invoice consumes the same server-resolved values — else the frozen W4.3 precedence
-  would bill the snapshot's $100 while the settlement resolved differently. **THE TRANSPORT (SR-163 —
-  "consumes server-resolved values" needs a mechanism):** a gated RESOLVE-VALUATION route — given
-  `{rowId / (productId, storeId, asOfInstant)}`, returns `{resolvedSell, resolvedDisc, pricingVersion,
-  catalogueVersion}` from the two server archives, digest-bound to the request; the client caches the
-  response as DURABLE SERVER-OWNED mapped fields on the row (the SR-157 allowlist-merge pattern — never
-  client-writable); the invoice renders ONLY those fields for backfill-only rows, or a surfaced "valuation
-  pending sync" state — NEVER local live pricing, NEVER the untrusted snapshot stamps.
-  Unavailable/unknown ⇒ the pending state persists (surfaced, not silent). FINAL is not blocked either
+  would bill the snapshot's $100 while the settlement resolved differently. **THE TRANSPORT (SR-163/166 —
+  "consumes server-resolved values" needs a mechanism):** a gated RESOLVE-VALUATION route — **`rowId` is
+  MANDATORY (SR-166: a tuple-only request form lets a response be replayed onto a FORGED row sharing
+  (productId, storeId, asOfInstant) — identical unit values don't make that safe; the replay launders ROW
+  EXISTENCE and a different quantity changes the invoice total)** — returning `{resolvedSell,
+  resolvedDisc, pricingVersion, catalogueVersion}` from the two server archives, bound to the IMMUTABLE
+  row + line identity + a canonical digest of ALL valuation-relevant inputs; cache installation COMPARES
+  that digest against the current row (mismatch ⇒ discard); correction/replacement/tombstoning of the row
+  INVALIDATES cached responses. The client caches the response as DURABLE SERVER-OWNED mapped fields (the
+  SR-157 allowlist-merge pattern — never client-writable); the invoice renders ONLY those fields for
+  backfill-only rows, or a surfaced "valuation pending sync" state — NEVER local live pricing, NEVER the
+  untrusted snapshot stamps. Unavailable/unknown ⇒ the pending state persists (surfaced, not silent). FINAL is not blocked either
   way. Rejecting was wrong (bricks legitimate restores); trusting was wrong (admits forged snapshot +
   row); server-resolved-with-a-real-transport is the honest third path.
 - **DIRECT HO-SUPPLY rows (no transferId) get ROW-LEVEL attestation (SR-155):** W4.3 stamps them at their
@@ -298,6 +316,14 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R21 fold record (2026-07-15) — 4 distinct (two converged pairs), all REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-164** | AGY R21-1 + Codex R21-1 (CONVERGED, P1): composing independent single-pointer journals split-brains in EITHER crash order (pricing commits→crash→catalogue never starts; or the child catalogue commits→parent pricing rolls back while C42 is irrevocably active) — corrupting the exact {pricingVersion, catalogueVersion} coherence the validator depends on | P6: cross-domain ops use ONE COMPOSITE PARENT JOURNAL (child prepares, cannot commit; the parent's single fenced commit = the sole visibility switch for both domains); catalogue-only publishes invoke the publisher directly; the correction op is a READER, not a catalogue writer |
+| **W4-SR-165** | AGY R21-2 + Codex R21-2 (CONVERGED, P1): the BAD_VERSION queue was rhetorical — no durable record (a crash loses the work item), no terminal states, no auto-clearing (a tombstoned row's GHOST entry blocks FINAL forever), and re-attestation via "the same validator" would just re-emit BAD_VERSION | P6: durable idempotent queue (row/line identity + offending digest) with terminal states; control ops AUTO-clear their targets' entries; re-attestation MINTS a server-owned tuple from the histories active at the minting instant |
+| **W4-SR-166** | Codex R21-3 (P1; supersedes AGY's "replay harmless" — identical unit values still launder ROW EXISTENCE, and a forged row's different quantity changes the invoice total) | P6: `rowId` mandatory; response bound to immutable row/line identity + canonical input digest; install-time digest compare; control ops invalidate cached responses. Amendment 2 revised accordingly |
+| **W4-SR-167** | Codex R21-4 (P1, amendment-1 objection rev-3): "all five or none" CONTRADICTS frozen W4.3 — a legacy-lens item durably persists `basis` with NO stamps by design; forcing all-absent would strip the durable decision | W4.3 amendment 1 rev-3: FOUR authority fields `{sellAtSupply, discAtSupply, pricingVersion, catalogueVersion}` all-or-none; `basis` validated SEPARATELY (submit/receive-stamped ⇒ all four required; legacy-lens ⇒ none; pre-W4 absence normalizes to legacy-lens only under the pinned legacy conditions) |
 
 ## R20 fold record (2026-07-15) — 4 distinct, all REAL — making the archive buildable
 | # | Finding | Fold |
