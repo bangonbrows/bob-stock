@@ -4,11 +4,12 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R24 FOLDED (SPLIT verdict on the planted residual — one PASS ["no window economics"],
-one BLOCK; **ADJUDICATED FOR THE BLOCK:** rejected-now ≠ irrelevant-forever — FINAL is permanent, and a
-later re-attestation legitimizes the quarantined row INTO the closed window, irrevocably losing its value;
-folded as SR-171, the presented-identities completion of the SR-122 grace binding). R25 PENDING —
-re-verdict the SR-171 delta only.
+**Review status:** ✅ **FROZEN 2026-07-15 — BOTH AUDITORS PASS at R25** ("the ledger is mathematically
+sealed"; the omission-direction check confirmed: the manifest guards omission FROM the settlement — a
+hiding device can only deprive itself). The spec is LOCKED; any future change reopens the part's review.
+**WITH THIS FREEZE, ALL FOUR W4 PARTS ARE LOCKED AND THE W4 SCOPE REVIEW (R1–R25, W4-SR-1..171) IS
+CLOSED.** Fold history in this doc: SR-90..96, 107..109, 114/115/116, 122..124, 129/130, 134/135,
+137..146, 147..152, 153..163, 164..171 (+ the R1-R6 ledger folds it consolidates).
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
