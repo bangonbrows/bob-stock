@@ -463,6 +463,92 @@ const Sync = {
     console.log('[Sync] access_policy v' + newV + ' adopted' + (lostCost || lostArchive ? ' (narrowing purge ran)' : ''));
     this._rerender();
   },
+  // ── OS-W4.2: pricing_config adoption (AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md P4/P5b, LOCKED spec) ─────
+  // Mirrors _applyAccessPolicy: version-monotonic, durable (Dexie via commitDurable), fail-closed. The
+  // pinned lifecycle: ACTIVATION is set the FIRST time the pricing key is ever OBSERVED — before/regardless
+  // of validation (SR-29, monotonic, never cleared); a NEWER-but-unadoptable publish sets a durable
+  // pricing_stale judged by the SR-74 HORIZON (the settled-echo server instant in bob_pricing_conf_at);
+  // a valid newer version adopts + clears stale; equal/older is a no-op (never a rollback). raw == null
+  // (the item ABSENT from a successful config fetch) = the server's own "not yet activated" statement —
+  // it resolves a restore's pricing_unresolved marker and counts as a FRESH observation (P5).
+  async _applyPricingConfig(raw) {
+    const fresh = () => { this._pricingFresh = true; };
+    if (raw == null) {
+      try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+      fresh();
+      return;
+    }
+    try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}   // SR-29: first OBSERVATION, pre-validation
+    let cfg;
+    try { cfg = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { cfg = null; }
+    const d = DB.get(); if (!d) return;
+    const curV = (d.pricingConfig && Number(d.pricingConfig.version)) || 0;
+    if (!cfg || typeof Pricing === 'undefined' || !Pricing.validConfig(cfg)) {
+      // SR-31: newer-but-unadoptable (or unreadable) ⇒ durable stale; the prior valid config is KEPT and
+      // the horizon rule governs which resolutions still stand. Never a scalar revert.
+      try { localStorage.setItem('bob_pricing_stale', '1'); } catch (e) {}
+      console.warn('[Sync] pricing_config unadoptable — prior config retained, pricing_stale set');
+      return;
+    }
+    const newV = Number(cfg.version);
+    if (newV <= curV) {
+      try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}  // a successful fetch RESOLVES the restore state
+      fresh();
+      return;                                                                   // monotonic: never adopt a rollback
+    }
+    d.pricingConfig = cfg;
+    let okc = false;
+    try { okc = await DB.commitDurable(); } catch (e) {}
+    if (!okc) { console.warn('[Sync] pricing_config v' + newV + ' persist FAILED — in-memory copy governs this session; the next fetch retries.'); }
+    try { localStorage.removeItem('bob_pricing_stale'); } catch (e) {}          // the served latest is now adopted
+    try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+    fresh();
+    console.log('[Sync] pricing_config v' + newV + ' adopted');
+    this._rerender();
+  },
+  // OS-W4.2 P4 (SR-80/81/102/118): the SETTLED pricing echo. The horizon (bob_pricing_conf_at) advances
+  // ONLY on settled === true, storing the SERVER-issued instant (never the device clock), and only
+  // FORWARD. Any processed pricing echo — settled, or the item-absent statement — marks this tab FRESH
+  // for the P5 commit gate; an UNSETTLED echo advances nothing.
+  _notePricingEcho(body) {
+    try {
+      if (!body || typeof body !== 'object') return;
+      if (body.pricingSettled !== true) return;
+      const inst = body.pricingInstant;
+      if (typeof inst !== 'string' || !Number.isFinite(Date.parse(inst))) return;
+      const pv = Number(body.pricingVersion);
+      const adopted = (DB.get() && DB.get().pricingConfig && Number(DB.get().pricingConfig.version)) || 0;
+      if (Number.isFinite(pv) && pv > 0 && pv !== adopted) {
+        // the server's latest isn't what we hold — re-fetch config; the horizon must NOT advance
+        if (pv > adopted) this._fetchRemoteConfig().catch(() => {});
+        return;
+      }
+      let cur = null; try { cur = localStorage.getItem('bob_pricing_conf_at'); } catch (e) {}
+      if (!cur || Date.parse(inst) > Date.parse(cur)) { try { localStorage.setItem('bob_pricing_conf_at', inst); } catch (e) {} }
+      try { localStorage.removeItem('bob_pricing_stale'); } catch (e) {}
+      this._pricingFresh = true;
+    } catch (e) {}
+  },
+  // OS-W4.2 P8 (SR-1/6/16/33/44/54, LA-CHANGES §6): the Director pricing-change route. The client sends
+  // ONE intent {kind, productId?, rate} + expectedVersion (CAS, the AA-03 pattern) + a stable opId
+  // (digest-bound idempotent replay server-side); the server runs appendPricingForKey, dual-writes the
+  // scalar, publishes under one version bump, and ECHOES the new config, which we adopt immediately.
+  // Absent endpoint ⇒ fail closed (the caller blocks the edit) — never a silent local mutation.
+  async publishPricingChange(payload) {
+    if (!this._pricingChangeUrl) return { ok: false, reason: 'no-endpoint' };
+    const d = DB.get();
+    const opId = 'pop_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2, '0')).join('');
+    const body = this._withPerson(Object.assign({}, payload, { opId, expectedVersion: (d && d.pricingConfig && Number(d.pricingConfig.version)) || 0 }));
+    let resp;
+    try { resp = await fetch(this._pricingChangeUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+    catch (e) { return { ok: false, reason: 'network' }; }
+    if (resp.status === 401) { this._handleUnauthorized('pricing-change'); return { ok: false, reason: 'unauthorized' }; }
+    if (!resp.ok) { let j = null; try { j = await resp.json(); } catch (e) {} return { ok: false, reason: (j && j.reason) || ('http-' + resp.status) }; }
+    let j = null; try { j = await resp.json(); } catch (e) {}
+    if (!j || j.ok !== true) return { ok: false, reason: (j && j.reason) || 'rejected' };
+    if (j.config != null) { try { await this._applyPricingConfig(j.config); } catch (e) {} }
+    return { ok: true };
+  },
   // AA-04/AA-05: device-level cost-payload scrub with a version-independent pending flag (mirrors the
   // Chunk-10 scope purge). Removes the server-granted _costRv payload durably; a failed commit keeps
   // 'bob_policy_purge_pending' set (blocks backup export) so the next boot/pull reconcile retries.
@@ -518,6 +604,7 @@ const Sync = {
       this._userVerifyUrl = config.userVerifyUrl || null;  // Chunk 9
       this._userAdminUrl = config.userAdminUrl || null;  // Chunk 9
       this._accessPolicyWriteUrl = config.accessPolicyWriteUrl || null;  // AA-W4
+      this._pricingChangeUrl = config.pricingChangeUrl || null;  // OS-W4.2 P8 (absent = pricing edits stay pre-activation/local)
       this._configUrl = this.CONFIG_URL;
       this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
       this._lastSyncAt = parseInt(localStorage.getItem('bob_last_sync') || '0', 10);
@@ -557,6 +644,18 @@ const Sync = {
       }
       const data = await resp.json();
       if (!data.items || !Array.isArray(data.items)) return false;
+
+      // OS-W4.2: adopt the published pricing_config BEFORE the master_data merge — within one response the
+      // adopted version is then CURRENT when master_data's pricingVersion coherence check runs (SR-52/82),
+      // so a same-publication scalar applies and only a genuinely LEADING master_data is held. The item
+      // ABSENT from a successful fetch = the server's "not yet activated" statement (resolves a restore).
+      try {
+        const pcItem = data.items.find(i => i.ConfigType === 'pricing_config');
+        await this._applyPricingConfig(pcItem ? pcItem.ConfigData : null);
+        this._notePricingEcho(data);
+      } catch (e) {
+        console.warn('[Sync] pricing_config adopt failed (previous config retained):', e);
+      }
 
       // F3-CRIT01 (Gemini FINAL CRIT-01): master-data distribution. Before this,
       // products/stores/categories NEVER synced — a Director price change or new
@@ -616,6 +715,7 @@ const Sync = {
         this._userVerifyUrl = urls.userVerifyUrl || null;  // Chunk 9 (absent = person-auth off; falls back to local-only login)
         this._userAdminUrl = urls.userAdminUrl || null;  // Chunk 9
         this._accessPolicyWriteUrl = urls.accessPolicyWriteUrl || null;  // AA-W4 (absent = access-policy editing off)
+        this._pricingChangeUrl = urls.pricingChangeUrl || null;  // OS-W4.2 P8
         // Chunk 5 (D6 phase 1): the server advertises which endpoints will require keys.
         // If auth is coming and this device has no keys yet, tell the Director BEFORE the flag day.
         this._authRequired = urls.authRequired || null;
@@ -636,6 +736,7 @@ const Sync = {
           userVerifyUrl: urls.userVerifyUrl || null,  // Chunk 9
           userAdminUrl: urls.userAdminUrl || null,  // Chunk 9
           accessPolicyWriteUrl: urls.accessPolicyWriteUrl || null,  // AA-W4
+          pricingChangeUrl: urls.pricingChangeUrl || null,  // OS-W4.2 P8
           configUrl: this.CONFIG_URL
         }));
         this._deviceId = localStorage.getItem('bob_device_id') || this._generateDeviceId();
@@ -680,6 +781,14 @@ const Sync = {
 
     const d = DB.get();
     if (!d) return;
+    // OS-W4.2 P6 (SR-52/82): coherence is EXACT-EQUALITY, both directions. A master_data snapshot carries
+    // the pricing publication version it was generated under; when it LEADS the adopted config the
+    // franchise-discount scalar fields are HELD (the rest of the catalogue applies) — the config re-fetch
+    // ordering above closes the gap next cycle. Trailing/equal (or no pricingVersion, pre-W4 servers)
+    // applies normally.
+    const _mdPv = Number(md.pricingVersion);
+    const _holdPricingScalars = Number.isFinite(_mdPv) && _mdPv > 0 && _mdPv > ((d.pricingConfig && Number(d.pricingConfig.version)) || 0);
+    if (_holdPricingScalars) console.warn('[Sync] master_data pricingVersion ' + _mdPv + ' LEADS the adopted config — franchise-discount scalars held this merge');
     const badId = v => typeof v !== 'string' || v === '' || !/^[A-Za-z0-9_-]+$/.test(v) ||
       (typeof Stock !== 'undefined' && Stock._isSafeKey && !Stock._isSafeKey(v));  // Wave J (Tier 3): allowlist not denylist — catalogue hygiene + defence-in-depth, consistent with the UI add + backup gates. All real catalogue ids are [A-Za-z0-9_-] (pt_/cat_/MKU_1...), so this false-rejects nothing. NOTE: the original driver (a master_data product id embedded into cost-history ledger ids) was removed when those ids became opaque (ch_<ms>_<hex>, GPT FINAL deep audit); the allowlist is retained to keep catalogue ids clean.
     // F-followup (GPT-WF-03): money through the SHARED policy (rejects >MONEY_MAX
@@ -698,7 +807,8 @@ const Sync = {
     const copyFields = (target, row, moneyFields, keepLocalCost) => {
       Object.keys(row).forEach(k => {
         if (RESERVED[k]) return;
-        if (k === 'costPrice') return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data — corporate cost arrives ONLY via the gated corporate_costs path (_fetchCorporateCosts); franchise devices keep their own local cost untouched
+        if (k === 'costPrice') return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data
+        if (k === 'franchiseDiscount' && _holdPricingScalars) return;  // OS-W4.2 (SR-82): a LEADING publication's pricing scalars are held until the config catches up — corporate cost arrives ONLY via the gated corporate_costs path (_fetchCorporateCosts); franchise devices keep their own local cost untouched
         target[k] = normMoney(k, row[k], moneyFields);
       });
     };
@@ -1031,6 +1141,7 @@ const Sync = {
    * Promotes this tab to leader — starts heartbeat and sync polling.
    */
   _becomeLeader() {
+    this._pricingFresh = false;   // OS-W4.2 (SR-103): a leadership handoff invalidates pricing freshness — the new leader must observe for itself
     this._isLeader = true;
     console.log(`[Sync] This tab (${this._tabId}) is now the sync leader.`);
 
@@ -1698,6 +1809,7 @@ const Sync = {
             }
           } catch (e) {}
           this._reconcilePolicyPurge().catch(() => {});   // AA-05: retry a stuck cost purge every pull, version-independent
+          this._notePricingEcho(remote);                  // OS-W4.2 (SR-80): a SETTLED pricing echo on the pull advances the stale horizon + marks freshness
           // 2) Topology hold (OS-SR-1 / W3-SR-8/12/13): a quiesced store's pull is HTTP 200
           //    {topologyPending:true, items:[], policyVersion} — no maxId, no scope. Show a calm hold, leave
           //    EVERY cursor untouched, and set _topologyHold (suppresses pullSteps; pushes still drain).
@@ -2323,6 +2435,16 @@ const Sync = {
    * All tabs load config, but only the leader starts push/pull/polling.
    */
   async init() {
+    // OS-W4.2 P5 (SR-81/103): pricing freshness is an EVENT-scoped fact, never clock arithmetic. It starts
+    // false every load (in-memory), and is INVALIDATED whenever the world may have moved without us:
+    // a sleeping tab waking (visibilitychange→visible), a network reconnect, and a leadership handoff
+    // (_becomeLeader below). It is set ONLY by a processed pricing observation (_applyPricingConfig /
+    // a settled _notePricingEcho).
+    this._pricingFresh = false;
+    try {
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { try { if (document.visibilityState === 'visible') Sync._pricingFresh = false; } catch (e) {} });
+      if (typeof window !== 'undefined') window.addEventListener('online', () => { try { Sync._pricingFresh = false; } catch (e) {} });
+    } catch (e) {}
     // Chunk 8 (AGY P1 / migration): rows synced BEFORE this build carry no _spId, and the ID-cursor never
     // re-pulls rows below the high-water mark — so they'd stay _spId==null and DOUBLE-COUNT at the first
     // archival (null != covered -> applied on top of the snapshot seed). One-time: if any synced row lacks an

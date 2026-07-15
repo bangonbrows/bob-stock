@@ -19,6 +19,9 @@ const DEFAULT_REPO = path.resolve(__dirname, '..');
 // "mirrored verbatim" claim that had no test). Loaded against DEFAULT_REPO's module — mutation runs copy
 // accessPolicy.js into the temp repo, so a one-sided edit to EITHER resolver diverges and flips S-247.
 let AP_PARITY = null; try { AP_PARITY = require(path.join(DEFAULT_REPO, 'azure-functions', 'src', 'functions', 'accessPolicy.js')); } catch (e) {}
+// OS-W4.2 (S-W4-1): the REAL topology.js primitives, so S-261 asserts client-lens/server parity in-gate
+// (the same drift-closure mechanism as AP_PARITY/S-247 — a one-sided edit to either side diverges).
+let TOPO = null; try { TOPO = require(path.join(DEFAULT_REPO, 'azure-functions', 'src', 'functions', 'topology.js')); } catch (e) {}
 
 async function newPage(b) { const ctx = await b.newContext({ timezoneId: 'Australia/Perth' }); const page = await ctx.newPage(); return { ctx, page }; }
 async function waitBoot(page, repo) {
@@ -2443,6 +2446,215 @@ async function runSmoke(repo) {
         return { gone: !DB.get().transactions.some(t => t.id === 'sw3_synced1'), sig: localStorage.getItem('bob_scope_sig'), cursor: localStorage.getItem('bob_last_sp_id'), lock: localStorage.getItem('bob_scope_purge_pending') };
       }, s);
       rec('S-259', 'W3-6 regression: normal scope change (nothing pending) purges + resets exactly as before', r.gone === true && r.sig === JSON.stringify(['karrinyup']) && r.cursor === '0' && r.lock !== '1', `gone=${r.gone} sig=${r.sig} cursor=${r.cursor} lock=${r.lock} (clean: purged, sig recorded, cursor 0, no lock)`); await ctx.close(); }
+
+    // ═══ OS-W4.2 sentinels (S-261..S-270 = S-W4-1/2/3/4/6/9/11/16/17/18): the era-aware pricing lens ═══
+    // Spec: AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md (LOCKED). Common fixture idiom: the lens state is
+    // localStorage flags + DB.get().pricingConfig (in-memory; each sentinel runs in a FRESH context).
+
+    // S-261 (S-W4-1): CLIENT/SERVER PARITY — the lens chain resolved by the booted app must agree with a
+    // composition of the REAL server primitives (validPricingSeries + resolvePricingRate per tier) across
+    // override/global/default/gap/malformed/boundary fixtures. Closes the client-drift class by construction.
+    { const IV = (rate, from, to) => ({ rate, from: from + 'T00:00:00Z', to: to ? to + 'T00:00:00Z' : null });
+      const PFX = [
+        { n: 'override-wins', sm: { '*': [IV(25, '2024-01-01', null)], PX: [IV(10, '2024-01-01', null)] }, g: { PX: [IV(40, '2024-01-01', null)] }, pid: 'PX', d: '2025-01-01' },
+        { n: 'global-mid', sm: { '*': [IV(25, '2024-01-01', null)] }, g: { PX: [IV(40, '2024-01-01', null)] }, pid: 'PX', d: '2025-01-01' },
+        { n: 'store-default', sm: { '*': [IV(25, '2024-01-01', null)] }, g: {}, pid: 'QX', d: '2025-01-01' },
+        { n: 'valid-gap-falls-through', sm: { '*': [IV(25, '2024-01-01', null)], PX: [IV(10, '2024-01-01', '2024-06-01')] }, g: {}, pid: 'PX', d: '2025-01-01' },
+        { n: 'malformed-override', sm: { '*': [IV(25, '2024-01-01', null)], PX: [IV(999, '2024-01-01', null)] }, g: {}, pid: 'PX', d: '2025-01-01' },
+        { n: 'malformed-unrelated-sibling', sm: { '*': [IV(25, '2024-01-01', null)], XX: [IV(-1, '2024-01-01', null)] }, g: {}, pid: 'PX', d: '2025-01-01' },
+        { n: 'boundary-at-from', sm: { '*': [IV(25, '2024-01-01', '2024-06-01'), IV(30, '2024-06-01', null)] }, g: {}, pid: null, d: '2024-06-01' },
+        { n: 'boundary-to-exclusive-not-set', sm: { '*': [IV(25, '2024-01-01', '2024-06-01')] }, g: {}, pid: null, d: '2024-06-01' },
+      ];
+      const server = TOPO ? PFX.map(fx => {
+        const all = [].concat(Object.keys(fx.sm).map(k => fx.sm[k]), Object.keys(fx.g).map(k => fx.g[k]));
+        if (!all.every(x => TOPO.validPricingSeries(x))) return 'ERR';
+        const dMs = Date.parse(fx.d + 'T00:00:00Z');
+        let r = null;
+        if (fx.pid && Object.prototype.hasOwnProperty.call(fx.sm, fx.pid)) r = TOPO.resolvePricingRate(fx.sm[fx.pid], dMs);
+        if (r == null && fx.pid && Object.prototype.hasOwnProperty.call(fx.g, fx.pid)) r = TOPO.resolvePricingRate(fx.g[fx.pid], dMs);
+        if (r == null && Object.prototype.hasOwnProperty.call(fx.sm, '*')) r = TOPO.resolvePricingRate(fx.sm['*'], dMs);
+        return r == null ? 'NOTSET' : r;
+      }) : [];
+      const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const client = await page.evaluate((PFX) => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        const out = PFX.map(fx => {
+          DB.get().pricingConfig = { version: 1, global: fx.g, stores: { sfix: fx.sm } };
+          const r = Pricing.rateAsOf('sfix', fx.pid, Date.parse(fx.d + 'T00:00:00Z'));
+          return r.error ? 'ERR' : (r.notSet ? 'NOTSET' : r.rate);
+        });
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return out;
+      }, PFX);
+      const agree = TOPO && server.length === client.length && server.every((v, i) => String(v) === String(client[i]));
+      rec('S-261', 'W4-1: client Pricing lens == the REAL server primitives across the fixture matrix', !!agree, `server=[${server}] client=[${client}]`); await ctx.close(); }
+
+    // S-262 (S-W4-2, discount half — the dollar half lands with the W4.3 stamps): RETRO-IMMUNITY — a
+    // discount change today opens a NEW interval; a rebuilt PAST invoice keeps its own dates' rates.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        const dFix = { stores: DB.get().stores, deletedTransactions: [], products: [{ id: 'PS1', name: 'Serum', price: 100, franchiseDiscount: null, catId: 'c', active: true }],
+          transactions: [
+            { id: 'tA', storeId: 'cockburn_office', productId: 'PS1', type: 'transfer_in', qty: 2, date: '2024-06-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' },
+            { id: 'tB', storeId: 'cockburn_office', productId: 'PS1', type: 'transfer_in', qty: 1, date: '2025-08-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' },
+          ] };
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const before = Pages._franchiseInvoiceData(dFix, '2024-01-01', '2024-12-31')[0].lines[0].prodDisc;
+        // the Director changes the default TODAY (v2 appends: close 25 at 2025-06-01, open 30)
+        DB.get().pricingConfig = { version: 2, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: '2025-06-01T00:00:00Z' }, { rate: 30, from: '2025-06-01T00:00:00Z', to: null }] } } };
+        const pastAfter = Pages._franchiseInvoiceData(dFix, '2024-01-01', '2024-12-31')[0].lines[0].prodDisc;
+        const newLine = Pages._franchiseInvoiceData(dFix, '2025-07-01', '2025-12-31')[0].lines[0].prodDisc;
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return { before, pastAfter, newLine };
+      });
+      rec('S-262', 'W4-2: past invoice lines are IMMUNE to a rate change (own-date resolution); new lines use the new rate', r.before === 25 && r.pastAfter === 25 && r.newLine === 30, `before=${r.before} pastAfter=${r.pastAfter} newLine=${r.newLine} (clean: 25/25/30)`); await ctx.close(); }
+
+    // S-263 (S-W4-3): FALLBACK REGRESSION — with NO config ever served the invoice numbers are EXACTLY
+    // today's computation (office default + product override + zero-means-inherit + discMissing surfacing).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+        delete DB.get().pricingConfig;
+        const mkT = (id, pid) => ({ id, storeId: 'cockburn_office', productId: pid, type: 'transfer_in', qty: 1, date: '2025-03-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' });
+        const dFix = { stores: DB.get().stores, deletedTransactions: [], products: [
+            { id: 'PA', name: 'A', price: 100, franchiseDiscount: 10, catId: 'c', active: true },
+            { id: 'PB', name: 'B', price: 100, franchiseDiscount: 0, catId: 'c', active: true },     // legacy 0 = inherit
+            { id: 'PC', name: 'C', price: 100, franchiseDiscount: null, catId: 'c', active: true },
+          ], transactions: [mkT('t1', 'PA'), mkT('t2', 'PB'), mkT('t3', 'PC')] };
+        const sd = Pages._franchiseInvoiceData(dFix, '2025-01-01', '2025-12-31')[0];
+        const by = {}; sd.lines.forEach(l => by[l.product.id] = l.prodDisc);
+        return { lensOn: sd.lensOn, a: by.PA, b: by.PB, c: by.PC, owedA: sd.lines.find(l => l.product.id === 'PA').owed };
+      });
+      rec('S-263', 'W4-3: no config ⇒ the LEGACY computation exactly (override 10 / zero-inherit 25 / default 25; lens off)', r.lensOn === false && r.a === 10 && r.b === 25 && r.c === 25 && r.owedA === 90, `lensOn=${r.lensOn} a=${r.a} b=${r.b} c=${r.c} owedA=${r.owedA} (clean: false/10/25/25/90)`); await ctx.close(); }
+
+    // S-264 (S-W4-4): BOUNDARY — [from,to) exclusive; an uncovered date is NOT-SET, never a neighbour's rate.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { sfix: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: '2024-06-01T00:00:00Z' }, { rate: 30, from: '2024-06-01T00:00:00Z', to: null }] }, closedOnly: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: '2024-06-01T00:00:00Z' }] } } };
+        const atBoundary = Pricing.rateAsOf('sfix', null, Date.parse('2024-06-01T00:00:00Z'));
+        const beforeBoundary = Pricing.rateAsOf('sfix', null, Date.parse('2024-05-31T23:59:59Z'));
+        const pastClosed = Pricing.rateAsOf('closedOnly', null, Date.parse('2024-06-01T00:00:00Z'));
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return { atB: atBoundary.rate, befB: beforeBoundary.rate, past: pastClosed.notSet === true };
+      });
+      rec('S-264', 'W4-4: [from,to) exclusive at the boundary; an uncovered date is honestly NOT-SET', r.atB === 30 && r.befB === 25 && r.past === true, `atBoundary=${r.atB} before=${r.befB} pastClosedNotSet=${r.past} (clean: 30/25/true)`); await ctx.close(); }
+
+    // S-265 (S-W4-6): MALFORMED-SERVED-CONFIG — fails CLOSED (0% + surfaced error), NEVER the scalar (the
+    // office scalar in the seed is 25 — a fallback would print 25).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }], BADP: [{ rate: 999, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const dFix = { stores: DB.get().stores, deletedTransactions: [], products: [{ id: 'PS1', name: 'S', price: 100, franchiseDiscount: null, catId: 'c', active: true }],
+          transactions: [{ id: 't1', storeId: 'cockburn_office', productId: 'PS1', type: 'transfer_in', qty: 1, date: '2025-03-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' }] };
+        const sd = Pages._franchiseInvoiceData(dFix, '2025-01-01', '2025-12-31')[0];
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return { disc: sd.lines[0].prodDisc, err: sd.lines[0].lineErr, anyErr: sd.anyLineErr };
+      });
+      rec('S-265', 'W4-6: a malformed series ANYWHERE in the config fails the line CLOSED (0% + PRICING_DATA_ERROR), never the 25% scalar', r.disc === 0 && r.err === 'PRICING_DATA_ERROR' && r.anyErr === true, `disc=${r.disc} err=${r.err} anyErr=${r.anyErr} (clean: 0/PRICING_DATA_ERROR/true)`); await ctx.close(); }
+
+    // S-266 (S-W4-9, SR-82): COHERENCE — a master_data whose pricingVersion LEADS the adopted config has
+    // its franchise-discount scalars HELD; an equal-publication master_data applies them.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        const d = DB.get();
+        d.products.push({ id: 'PMD1', name: 'MD Probe', price: 10, franchiseDiscount: 5, catId: 'c', active: true });
+        d.pricingConfig = { version: 3, global: {}, stores: {} };
+        let v0 = 0; try { v0 = parseInt(localStorage.getItem('bob_catalogue_version') || '0', 10) || 0; } catch (e) {}
+        await Sync._applyMasterData({ version: v0 + 1, pricingVersion: 4, products: [{ id: 'PMD1', name: 'MD Probe', franchiseDiscount: 99 }] });
+        const held = d.products.find(p => p.id === 'PMD1').franchiseDiscount;
+        await Sync._applyMasterData({ version: v0 + 2, pricingVersion: 3, products: [{ id: 'PMD1', name: 'MD Probe', franchiseDiscount: 50 }] });
+        const applied = d.products.find(p => p.id === 'PMD1').franchiseDiscount;
+        d.products = d.products.filter(p => p.id !== 'PMD1'); delete d.pricingConfig;
+        try { localStorage.removeItem('bob_pricing_activated'); localStorage.setItem('bob_catalogue_version', String(v0)); } catch (e) {}
+        return { held, applied };
+      });
+      rec('S-266', 'W4-9: a LEADING master_data pricingVersion holds the franchise-discount scalars; same-publication applies', r.held === 5 && r.applied === 50, `held=${r.held} applied=${r.applied} (clean: 5/50)`); await ctx.close(); }
+
+    // S-267 (S-W4-11, SR-10): once ANY config exists, an UNCOVERED FRANCHISE key fails CLOSED; an
+    // uncovered non-franchise key is an honest NOT-SET.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { somewhere: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const fr = Pricing.rateAsOf('cockburn', null, Date.now());     // franchise store in the seed, NOT covered
+        const nf = Pricing.rateAsOf('karrinyup', null, Date.now());    // non-franchise store, NOT covered
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return { fr: fr.error, nf: nf.notSet === true };
+      });
+      rec('S-267', 'W4-11: an uncovered FRANCHISE billing key with a served config fails closed; non-franchise = NOT-SET', r.fr === 'PRICING_DATA_ERROR' && r.nf === true, `franchise=${r.fr} nonFranchise=${r.nf} (clean: PRICING_DATA_ERROR/true)`); await ctx.close(); }
+
+    // S-268 (S-W4-16, SR-49/81/103): the DORMANT-DEVICE gate — no fresh settled observation ⇒ an
+    // HO→franchise submit HOLDS (end-to-end through the REAL submitDraft); a fresh pre-activation
+    // observation legitimises the scalar path; stale holds; non-franchise destinations untouched.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+        delete DB.get().pricingConfig;
+        Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
+        Sync._pricingFresh = false;
+        const c1 = await Transfer.create('head_office', 'cockburn', [{ productId: DB.get().products[0].id, qty: 1 }], { isDraft: true });
+        const heldSubmit = await Transfer.submitDraft(c1.transferId);                      // dormant ⇒ HOLD (e2e)
+        const g1 = Transfer._pricingSubmitGate('head_office', 'cockburn');                 // direct verdicts
+        Sync._pricingFresh = true;
+        const g2 = Transfer._pricingSubmitGate('head_office', 'cockburn');                 // fresh + pre-activation ⇒ ok (scalar)
+        try { localStorage.setItem('bob_pricing_activated', '1'); localStorage.setItem('bob_pricing_stale', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const g3 = Transfer._pricingSubmitGate('head_office', 'cockburn');                 // stale ⇒ hold
+        const g4 = Transfer._pricingSubmitGate('head_office', 'karrinyup');                // non-franchise ⇒ untouched
+        try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); } catch (e) {}
+        delete DB.get().pricingConfig; Sync._pricingFresh = false;
+        DB.get().transfers = (DB.get().transfers || []).filter(t => t.id !== c1.transferId);
+        return { heldOk: heldSubmit.ok, heldMsg: String(heldSubmit.error || ''), g1: g1.hold, g2: g2.ok, g3: g3.hold, g4: g4.ok };
+      });
+      rec('S-268', 'W4-16: dormant ⇒ HO→franchise submit HOLDS (e2e); fresh pre-activation ⇒ scalar ok; stale ⇒ hold; non-franchise untouched', r.heldOk === false && r.heldMsg.indexOf('fresh sync') >= 0 && r.g1 === 'NO_FRESH_OBSERVATION' && r.g2 === true && r.g3 === 'PRICING_STALE' && r.g4 === true, `heldOk=${r.heldOk} g1=${r.g1} g2=${r.g2} g3=${r.g3} g4=${r.g4}`); await ctx.close(); }
+
+    // S-269 (S-W4-17, SR-50/63): the FROZEN-LEGACY baseline — a backdated seed resolves pre-activation
+    // dates; a legacy franchiseDiscount:0 product was NOT seeded into global (0 = inherit) and bills the
+    // store default, identically pre/post activation.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const dFix = { stores: DB.get().stores, deletedTransactions: [], products: [{ id: 'PZ', name: 'Zero', price: 100, franchiseDiscount: 0, catId: 'c', active: true }],
+          transactions: [{ id: 't1', storeId: 'cockburn_office', productId: 'PZ', type: 'transfer_in', qty: 1, date: '2023-05-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' }] };
+        try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {} delete DB.get().pricingConfig;
+        const preAct = Pages._franchiseInvoiceData(dFix, '2023-01-01', '2023-12-31')[0].lines[0].prodDisc;
+        // the runbook seed: backdated to the era start, at the activation-time scalar; PZ (legacy 0) NOT in global
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2020-01-01T00:00:00Z', to: null }] } } };
+        const postAct = Pages._franchiseInvoiceData(dFix, '2023-01-01', '2023-12-31')[0].lines[0].prodDisc;
+        // SR-29's other half: ACTIVATED + config lost ⇒ FAIL CLOSED (never a silent scalar revert) — the
+        // activation flag alone must keep the lens governing (saboteur R1: the first mutation was BLIND
+        // because no assertion exercised activated-without-config).
+        delete DB.get().pricingConfig;
+        const lostCfg = Pricing.rateAsOf('cockburn_office', null, Date.parse('2023-05-10T00:00:00Z'));
+        const lostLine = Pages._franchiseInvoiceData(dFix, '2023-01-01', '2023-12-31')[0].lines[0];
+        try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return { preAct, postAct, lostErr: lostCfg.error, lostDisc: lostLine.prodDisc, lostLineErr: lostLine.lineErr };
+      });
+      rec('S-269', 'W4-17: the backdated seed resolves pre-activation dates; legacy-0 bills the default pre/post; activated+config-LOST fails CLOSED (no scalar revert)', r.preAct === 25 && r.postAct === 25 && r.lostErr === 'PRICING_DATA_ERROR' && r.lostDisc === 0 && r.lostLineErr === 'PRICING_DATA_ERROR', `preAct=${r.preAct} postAct=${r.postAct} lostErr=${r.lostErr} lostDisc=${r.lostDisc} (clean: 25/25/PRICING_DATA_ERROR/0)`); await ctx.close(); }
+
+    // S-270 (S-W4-18, SR-74/80/81): the STALE HORIZON — under pricing_stale only row instants STRICTLY
+    // before the settled-echo server instant resolve; an unsettled echo advances nothing; a settled echo
+    // for the adopted version advances the horizon (server instant, never the device clock) + clears stale.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); localStorage.setItem('bob_pricing_stale', '1'); localStorage.setItem('bob_pricing_conf_at', '2025-06-01T00:00:00Z'); } catch (e) {}
+        DB.get().pricingConfig = { version: 7, global: {}, stores: { sfix: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const before = Pricing.rateAsOf('sfix', null, Date.parse('2025-05-31T00:00:00Z'));
+        const atH = Pricing.rateAsOf('sfix', null, Date.parse('2025-06-01T00:00:00Z'));
+        Sync._notePricingEcho({ pricingSettled: false, pricingInstant: '2025-07-01T00:00:00Z', pricingVersion: 7 });
+        let confAfterUnsettled = null; try { confAfterUnsettled = localStorage.getItem('bob_pricing_conf_at'); } catch (e) {}
+        Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-01T00:00:00Z', pricingVersion: 7 });
+        let confAfterSettled = null, staleAfter = null; try { confAfterSettled = localStorage.getItem('bob_pricing_conf_at'); staleAfter = localStorage.getItem('bob_pricing_stale'); } catch (e) {}
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_conf_at'); } catch (e) {}
+        Sync._pricingFresh = false;
+        return { before: before.rate, atH: atH.error, u: confAfterUnsettled, s: confAfterSettled, staleAfter };
+      });
+      rec('S-270', 'W4-18: stale horizon = strictly-before the settled server instant; unsettled echoes advance NOTHING; a settled echo advances + clears stale', r.before === 25 && r.atH === 'PRICING_STALE' && r.u === '2025-06-01T00:00:00Z' && r.s === '2025-07-01T00:00:00Z' && r.staleAfter === null, `before=${r.before} atHorizon=${r.atH} afterUnsettled=${r.u} afterSettled=${r.s} stale=${r.staleAfter}`); await ctx.close(); }
+
 
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }

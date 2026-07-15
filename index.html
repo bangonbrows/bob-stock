@@ -1181,6 +1181,110 @@ const Txn = {
 };
 
 // ── Stock Calculations ───────────────────────────
+// ═══ OS-W4.2: the ERA-AWARE PRICING LENS (AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md, LOCKED spec) ═══════════
+// Kills GAP-1: _franchiseInvoiceData priced every historical line from the LIVE scalars, so a Director
+// edit TODAY silently rewrote every PAST invoice. The lens resolves each line's rate AS-OF ITS OWN DATE
+// from the server-published, append-only pricing config { version, global:{pid:series}, stores:{sid:
+// {'*':series, pid?:series}} } (LA-CHANGES §6). Chain (R4 model, P1): stores[sid][pid] → global[pid] →
+// stores[sid]['*'], [from,to) exclusive, WHOLE-config validation FIRST (P2/SR-22/42). The validation
+// primitives MIRROR azure-functions/src/functions/topology.js exactly — the S-W4-1 parity sentinel runs
+// the REAL server module against the same fixture matrix, so a one-sided edit to either side flips it.
+// Fail-closed pins (P3): scalar fallback ONLY pre-activation (never served); present-but-malformed or an
+// uncovered FRANCHISE key once any config exists ⇒ PRICING_DATA_ERROR, never the scalar. Adoption state
+// (P4/P5b): bob_pricing_activated (first observation, SR-29) · bob_pricing_stale + bob_pricing_conf_at
+// (the SR-74 horizon — row instants STRICTLY before the SERVER-issued settled-echo instant stay valid) ·
+// bob_pricing_unresolved (backup restore ⇒ held until the next config fetch resolves the true state).
+const Pricing = {
+  _ISO_RE: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/,
+  _ID_RE: /^[A-Za-z0-9_.-]{1,64}$/,
+  _RESERVED: ['__proto__', 'constructor', 'prototype'],
+  _isIsoUtc(v){ if(typeof v!=='string'||!this._ISO_RE.test(v))return false; const t=Date.parse(v); if(!Number.isFinite(t))return false; const parts=v.slice(0,-1).split('.'); const base=parts[0], frac=parts[1]||''; return new Date(t).toISOString()===base+'.'+(frac+'000').slice(0,3)+'Z'; },
+  _reqId(v){ return typeof v==='string'&&this._ID_RE.test(v)&&this._RESERVED.indexOf(v)<0; },
+  _validRate(r){ return typeof r==='number'&&isFinite(r)&&r>=0&&r<=100; },
+  // mirror of topology.js validIntervals + validPricingSeries (strict ISO-UTC, sorted-non-overlap, ≤1 open, rates 0-100)
+  _validSeries(arr){
+    if(!Array.isArray(arr))return false; if(arr.length===0)return true;
+    const norm=[];
+    for(const q of arr){
+      if(!q||typeof q!=='object')return false;
+      if(!this._isIsoUtc(q.from))return false;
+      if(q.to!=null&&!this._isIsoUtc(q.to))return false;
+      const f=Date.parse(q.from); const t=q.to==null?null:Date.parse(q.to);
+      if(t!=null&&t<f)return false;
+      if(!this._validRate(q.rate))return false;
+      norm.push({f,t});
+    }
+    norm.sort((a,b)=>a.f-b.f);
+    let opens=0;
+    for(let i=0;i<norm.length;i++){ if(norm[i].t===null)opens++; if(i>0){ const prevEnd=norm[i-1].t===null?Infinity:norm[i-1].t; if(norm[i].f<prevEnd)return false; } }
+    return opens<=1;
+  },
+  // SR-42 EXACT schema: root = {version, global, stores} only; global = product keys ONLY (no '*');
+  // per-store maps = '*'/productId; every series valid. Any deviation ⇒ the whole config is invalid.
+  validConfig(cfg){
+    if(!cfg||typeof cfg!=='object'||Array.isArray(cfg))return false;
+    const roots=Object.keys(cfg);
+    if(roots.length!==3||!Object.prototype.hasOwnProperty.call(cfg,'version')||!Object.prototype.hasOwnProperty.call(cfg,'global')||!Object.prototype.hasOwnProperty.call(cfg,'stores'))return false;
+    const v=Number(cfg.version); if(!Number.isFinite(v)||v<=0)return false;
+    if(!cfg.global||typeof cfg.global!=='object'||Array.isArray(cfg.global))return false;
+    if(!cfg.stores||typeof cfg.stores!=='object'||Array.isArray(cfg.stores))return false;
+    for(const k of Object.keys(cfg.global)){ if(k==='*'||!this._reqId(k))return false; if(!this._validSeries(cfg.global[k]))return false; }
+    for(const sid of Object.keys(cfg.stores)){
+      if(!this._reqId(sid))return false;
+      const m=cfg.stores[sid]; if(!m||typeof m!=='object'||Array.isArray(m))return false;
+      for(const pk of Object.keys(m)){ if(pk!=='*'&&!this._reqId(pk))return false; if(!this._validSeries(m[pk]))return false; }
+    }
+    return true;
+  },
+  _resolveSeries(series,dateMs){ // post-validation as-of resolution ([from,to) exclusive)
+    for(const q of series){ const f=Date.parse(q.from); if(dateMs<f)continue; const t=q.to==null?Infinity:Date.parse(q.to); if(dateMs<t)return q.rate; }
+    return null;
+  },
+  _flags(){ let a=false,st=false,u=false,c=null; try{ a=localStorage.getItem('bob_pricing_activated')==='1'; st=localStorage.getItem('bob_pricing_stale')==='1'; u=localStorage.getItem('bob_pricing_unresolved')==='1'; c=localStorage.getItem('bob_pricing_conf_at'); }catch(e){} return {activated:a,stale:st,unresolved:u,confAt:c}; },
+  // The lens governs once the pricing key has EVER been observed (SR-29 — the flag is monotonic) or the
+  // device is a fresh RESTORE awaiting resolution (P5b — never treat a backup's scalar as pre-activation truth).
+  lensActive(){ const f=this._flags(); return f.activated||f.unresolved; },
+  // THE chain. Returns {rate, source} | {notSet:true} | {inactive:true} | {error:'PRICING_DATA_ERROR'|'PRICING_STALE'|'PRICING_UNRESOLVED'}
+  rateAsOf(storeId,productId,dateMs){
+    const f=this._flags();
+    if(f.unresolved)return {error:'PRICING_UNRESOLVED'};
+    const d=DB.get(); const cfg=d&&d.pricingConfig;
+    if(!f.activated&&!cfg)return {inactive:true};                    // P3: fallback ONLY when never served
+    if(!cfg)return {error:'PRICING_DATA_ERROR'};                     // SR-29: activated + nothing adoptable ⇒ fail closed
+    if(!this.validConfig(cfg))return {error:'PRICING_DATA_ERROR'};   // P2: whole-config validation FIRST
+    if(f.stale){                                                     // P4 (SR-74 horizon): strictly-before the settled server instant only
+      const h=f.confAt?Date.parse(f.confAt):NaN;
+      if(!Number.isFinite(h)||!(dateMs<h))return {error:'PRICING_STALE'};
+    }
+    if(!Number.isFinite(dateMs))return {error:'PRICING_DATA_ERROR'};
+    if(productId!=null&&!this._reqId(productId))return {error:'PRICING_DATA_ERROR'};
+    const hasStore=Object.prototype.hasOwnProperty.call(cfg.stores,storeId);
+    if(!hasStore){
+      // SR-10: once ANY config exists, an uncovered FRANCHISE billing key = present-but-bad ⇒ fail closed.
+      const stRow=(d.stores||[]).find(x=>x&&x.id===storeId);
+      if(stRow&&stRow.isFranchise)return {error:'PRICING_DATA_ERROR'};
+      return {notSet:true};
+    }
+    const sm=cfg.stores[storeId];
+    if(productId!=null&&Object.prototype.hasOwnProperty.call(sm,productId)){ const r=this._resolveSeries(sm[productId],dateMs); if(r!=null)return {rate:r,source:'store-override'}; }
+    if(productId!=null&&Object.prototype.hasOwnProperty.call(cfg.global,productId)){ const r=this._resolveSeries(cfg.global[productId],dateMs); if(r!=null)return {rate:r,source:'global'}; }
+    if(Object.prototype.hasOwnProperty.call(sm,'*')){ const r=this._resolveSeries(sm['*'],dateMs); if(r!=null)return {rate:r,source:'store-default'}; }
+    return {notSet:true};                                            // valid config, date genuinely uncovered ⇒ honest NOT SET
+  },
+  // P5 (SR-49/81/103): the dormant-device commit gate — freshness is an EVENT fact (a settled server
+  // pricing-state observation since the last invalidating event), never device-clock arithmetic.
+  commitGate(storeId){
+    const f=this._flags();
+    if(f.unresolved)return {hold:'PRICING_UNRESOLVED'};
+    if(typeof Sync==='undefined'||Sync._pricingFresh!==true)return {hold:'NO_FRESH_OBSERVATION'};
+    if(!f.activated)return {ok:true,scalar:true};                    // the fresh observation SAID "no pricing config" ⇒ scalar path legitimate
+    if(f.stale)return {hold:'PRICING_STALE'};
+    const r=this.rateAsOf(storeId,null,Date.now());
+    if(r.error)return {hold:r.error};
+    return {ok:true};
+  },
+};
+
 const Stock = {
   // Fix #9: Materialised view cache — O(1) qty lookups
   _qtyCache: Object.create(null),  // { storeId: { productId: qty } } — SA-E-F1: null-proto (no Object.prototype pollution)
@@ -3343,6 +3447,17 @@ const Pages = {
     if(!Auth.can('editPricing')){UI.toast('Only a Director can change pricing','error');return;}
     const d=DB.get(); const p=d.products.find(pr=>pr.id===productId);
     if(!p)return;
+    // OS-W4.2 P8 (SR-1/16): post-activation a pricing edit is a SERVER append to global[productId]
+    // (effective NOW, append-only — past invoices keep their own dates' rates). The client NEVER writes
+    // history locally; the dual-written scalar comes back via master_data. Fail closed if the route is
+    // unreachable — a scalar-only edit post-activation would silently diverge from the history.
+    if(typeof Pricing!=='undefined' && Pricing.lensActive()){
+      const _raw=String(val==null?'':val).trim();
+      const _rate=_raw===''?null:(function(){const n=Math.max(0,Math.min(100,parseFloat(_raw)));return (Number.isFinite(n)&&n>0)?n:null;})();
+      const r=(typeof Sync!=='undefined'&&Sync.publishPricingChange)?await Sync.publishPricingChange({kind:'global-product',productId,rate:_rate}):{ok:false,reason:'no-endpoint'};
+      if(!r||!r.ok){ UI.toast('Pricing change could not reach the server — nothing was changed.'+(r&&r.reason==='no-endpoint'?' (pricing service not configured)':''),'error'); this._renderProductsTable(); return; }
+      UI.toast('Discount updated — effective from today; past invoices are unaffected','success'); this._renderProductsTable(); return;
+    }
     const raw=String(val==null?'':val).trim();  // Wave M2 / GPTa-41: blank = clear → inherit store default (was stored as 0, which blocked the ?? fallback → full price)
     if(raw===''){ p.franchiseDiscount=null; }
     else { const n=Math.max(0,Math.min(100,parseFloat(raw))); p.franchiseDiscount=(Number.isFinite(n)&&n>0)?n:null; }  // no UI 0% option → 0 means inherit, stored as null
@@ -3385,6 +3500,13 @@ const Pages = {
     // wrote it under editRefData only — so Head Office could set franchise pricing on new products.
     // Strip the discount unless the user can actually edit pricing (it can be set later by a Director).
     const _franDisc = Auth.can('editPricing') ? franDisc : null;
+    // OS-W4.2 P8 (SR-6/S-W4-8): post-activation, add-product-with-discount is ONE server op (catalogue
+    // create + the initial global[productId] interval) — the server call runs FIRST so a failure leaves no
+    // orphan scalar; the local add proceeds only on success. Pre-activation: exactly today's behaviour.
+    if(_franDisc!=null && typeof Pricing!=='undefined' && Pricing.lensActive()){
+      const r=(typeof Sync!=='undefined'&&Sync.publishPricingChange)?await Sync.publishPricingChange({kind:'add-product',productId:id,rate:_franDisc}):{ok:false,reason:'no-endpoint'};
+      if(!r||!r.ok){ UI.toast('This product'+String.fromCharCode(39)+'s franchise discount needs the pricing service '+String.fromCharCode(8212)+' the product was NOT added. Sync and try again.'+(r&&r.reason==='no-endpoint'?' (pricing service not configured)':''),'error'); return; }
+    }
     const d=DB.get();
     const _stockType=stockType==='consumable'?'consumable':'retail';  // K4: explicit type is authoritative; internalUse stays false (legacy flag retired)
     d.products.push({id,name,catId,price,stockType:_stockType,internalUse:false,weightGrams:null,franchiseDiscount:_franDisc,costPrice:null,active:true,freight:null,customs:null,tax:null,supplierName:'',supplierContact:'',leadDays:null});
@@ -3792,6 +3914,10 @@ const Pages = {
     // an unpublished policy (a granting overrides map) or version-pin it (a high version blocking future
     // server policies). Same under-inclusive-scrub root cause as the session/SAS strip.
     if(o&&typeof o==='object') delete o.accessPolicy;
+    // OS-W4.2 P5b (SR-104): the adopted pricing config is SERVER-owned and re-delivered on the next config
+    // fetch — like the access_policy it must never travel in a backup (export can't leak it; import can't
+    // version-pin or inject an unpublished history).
+    if(o&&typeof o==='object') delete o.pricingConfig;
     return o;
   },
   async _exportBackup() {
@@ -3875,6 +4001,10 @@ const Pages = {
       if(h&&h.costPrice!=null){ const _m=Validate.money(h.costPrice,{optional:true}); if(!_m.ok) return {ok:false,error:'Backup contains an invalid cost-history costPrice ('+(h.id||'unknown')+'): '+_m.error+' — file rejected.'}; h.costPrice=_m.value; }
     }
     this._scrubBackupSecrets(data);  // C1: import cannot inject a live session token / config material -> import cannot restore an active login
+    // OS-W4.2 P5b (SR-104): a RESTORE marks pricing state UNRESOLVED until the next successful config fetch
+    // resolves the true state — a restored device must never treat an exported scalar as pre-activation
+    // truth or resurrect a stale hold. Pricing-sensitive commits hold; the invoice surfaces the state.
+    try{ localStorage.setItem('bob_pricing_unresolved','1'); }catch(e){}
     this._scrubBackupScope(data);    // Chunk 10: import cannot reintroduce another store's rows outside this device's scope
     delete data._meta;
     return {ok:true,data};
@@ -4761,6 +4891,12 @@ const Pages = {
       const officeDisc = office.franchiseDiscount;
       const discMissing = officeDisc == null;
       const baseDisc = officeDisc || 0;
+      // OS-W4.2 P6: post-activation, EVERY line resolves via the lens AS-OF ITS OWN DATE (a discount change
+      // today opens a new interval; past lines keep their own dates' rates — retroactive rewriting is dead).
+      // Pre-activation the ORIGINAL computation runs byte-identically (S-W4-3). The invoice keeps
+      // calendar-day granularity (SR-25): the as-of instant is the line's date at UTC midnight — the same
+      // date string always maps to the same instant on every device.
+      const lensOn = (typeof Pricing !== 'undefined') && Pricing.lensActive();
       const lines = d.transactions.filter(t =>
         t.storeId === office.id && Txn.isIn(t)
         && (Txn.category(t) === 'delivery' || Txn.category(t) === 'transfer')
@@ -4770,14 +4906,22 @@ const Pages = {
       ).map(t=>{
         const p = d.products.find(pr=>pr.id===t.productId);
         const sell = p?.price || 0;
-        const prodDisc = (p && p.franchiseDiscount) ? p.franchiseDiscount : baseDisc;  // Wave M2 / GPTa-41: a stored 0 (no UI 0% option) = inherit the office default, not full price
+        let prodDisc, lineErr = null, rateSource = null;
+        if (lensOn) {
+          const r = Pricing.rateAsOf(office.id, t.productId, Date.parse(t.date + 'T00:00:00.000Z'));
+          if (r.error) { prodDisc = 0; lineErr = r.error; }            // P3: 0% LOUDLY (surfaced), never the scalar
+          else if (r.notSet) { prodDisc = 0; lineErr = 'NOT_SET'; }    // per-line-date discMissing (P6)
+          else { prodDisc = r.rate; rateSource = r.source; }
+        } else {
+          prodDisc = (p && p.franchiseDiscount) ? p.franchiseDiscount : baseDisc;  // Wave M2 / GPTa-41: a stored 0 (no UI 0% option) = inherit the office default, not full price
+        }
         const full = sell * t.qty, discAmt = full * (prodDisc/100);
-        return { product:p, date:t.date, qty:t.qty, sell, prodDisc, full, discAmt, owed: full - discAmt };
+        return { product:p, date:t.date, qty:t.qty, sell, prodDisc, full, discAmt, owed: full - discAmt, lineErr, rateSource };
       });
       const totalFull = lines.reduce((s,l)=>s+l.full,0);
       const totalDisc = lines.reduce((s,l)=>s+l.discAmt,0);
       const totalOwed = lines.reduce((s,l)=>s+l.owed,0);
-      return { office, lines, totalFull, totalDisc, totalOwed, baseDisc, discMissing };
+      return { office, lines, totalFull, totalDisc, totalOwed, baseDisc, discMissing, lensOn, anyLineErr: lines.some(l=>l.lineErr) };
     }).filter(sd => sd.lines.length > 0);
   },
   _exportFICSV(){  // Wave D: real Pages method (not a stringified closure) so the button works on click
@@ -4787,7 +4931,11 @@ const Pages = {
     const rows=[];
     Pages._franchiseInvoiceData(d, fromDate, toDate).forEach(sd=>{
       sd.lines.forEach(l=>{
-        rows.push([sd.office.name, l.product?.name||'—', l.date, l.qty, l.sell.toFixed(2), (sd.discMissing?'0% (NOT SET)':sd.baseDisc+'%'), (l.product&&l.product.franchiseDiscount)?l.product.franchiseDiscount+'%':'(office default)', l.prodDisc+'%', l.full.toFixed(2), l.discAmt.toFixed(2), l.owed.toFixed(2)]);
+        // OS-W4.2 (SR-2): post-activation the printed %/source columns are the LENS-resolved per-line
+        // values — the live p/office scalars are fully bypassed (they contradicted the lens-computed dollars).
+        rows.push(sd.lensOn
+          ? [sd.office.name, l.product?.name||'—', l.date, l.qty, l.sell.toFixed(2), (l.lineErr?('0% ('+String(l.lineErr).replace(/_/g,' ')+')'):(l.prodDisc+'%')), l.rateSource||'', l.prodDisc+'%', l.full.toFixed(2), l.discAmt.toFixed(2), l.owed.toFixed(2)]
+          : [sd.office.name, l.product?.name||'—', l.date, l.qty, l.sell.toFixed(2), (sd.discMissing?'0% (NOT SET)':sd.baseDisc+'%'), (l.product&&l.product.franchiseDiscount)?l.product.franchiseDiscount+'%':'(office default)', l.prodDisc+'%', l.full.toFixed(2), l.discAmt.toFixed(2), l.owed.toFixed(2)]);
       });
     });
     this._downloadCSV(`bob-franchise-invoice-${fromDate}-to-${toDate}.csv`,headers,rows);
@@ -4823,7 +4971,7 @@ const Pages = {
       storeData.map(sd=>`
         <div class="card" style="margin-bottom:16px">
           <div style="padding:12px 16px;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-            <div style="font-weight:700;font-size:1rem">${sd.office.name} <span style="font-size:.75rem;color:#6b7280;font-weight:400">— Franchise discount: ${sd.baseDisc}%${sd.discMissing?' ⚠ NOT SET — billed at 0%':''}</span></div>
+            <div style="font-weight:700;font-size:1rem">${sd.office.name} <span style="font-size:.75rem;color:#6b7280;font-weight:400">${sd.lensOn?`— era-aware pricing: each line at its own date's rate${sd.anyLineErr?' <span style="color:#dc2626">⚠ some lines need pricing attention (billed 0%, surfaced)</span>':''}`:`— Franchise discount: ${sd.baseDisc}%${sd.discMissing?' ⚠ NOT SET — billed at 0%':''}`}</span></div>
             <div style="display:flex;gap:16px;font-size:.825rem">
               <span>Retail: <strong>$${sd.totalFull.toFixed(2)}</strong></span>
               <span style="color:#16a34a">Discount: <strong>-$${sd.totalDisc.toFixed(2)}</strong></span>
@@ -4837,7 +4985,7 @@ const Pages = {
               <td><strong>${l.product?.name||'—'}</strong></td>
               <td>${l.qty}</td>
               <td>$${l.sell.toFixed(2)}</td>
-              <td>${l.prodDisc}%</td>
+              <td>${sd.lensOn&&l.lineErr?`0% <span style="color:#dc2626" title="${UI.esc(String(l.lineErr))}">⚠</span>`:`${l.prodDisc}%`}</td>
               <td>$${l.full.toFixed(2)}</td>
               <td style="color:#16a34a">-$${l.discAmt.toFixed(2)}</td>
               <td><strong>$${l.owed.toFixed(2)}</strong></td>

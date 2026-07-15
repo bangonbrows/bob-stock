@@ -63,6 +63,30 @@ const Transfer = {
   // (Chunk-3 Q2 lean b) so they never collide with the receive or each other.
   _receiveKey(transferId, storeId, productId) { return 'transfer:' + transferId + ':receive:' + storeId + ':' + productId; },
 
+  // ── OS-W4.2 P3/P5 (SR-21/49/81/103): the HO→franchise SUBMIT gate ─────────────────────
+  // An HO→franchise submit is the PRICING-COMMITMENT moment (W4.3 stamps land at this transition), so it
+  // requires a resolvable, FRESH pricing state: a dormant/offline device (no settled server observation
+  // since the last invalidating event) HOLDS; post-activation, pricing_stale / a data error / a restore's
+  // unresolved marker HOLD; pre-activation with a fresh "no pricing config" statement passes (the scalar
+  // path is legitimate — SR-49: local absence alone never selects it). Applies ONLY to genuine billing
+  // events: from a non-franchise WAREHOUSE (HO) to a franchise store. Store↔store moves are untouched.
+  _pricingSubmitGate(fromStoreId, toStoreId) {
+    try {
+      if (typeof Pricing === 'undefined' || typeof DB === 'undefined') return { ok: true };
+      const d = DB.get(); if (!d) return { ok: true };
+      const fromSt = (d.stores || []).find(x => x && x.id === fromStoreId);
+      const toSt = (d.stores || []).find(x => x && x.id === toStoreId);
+      if (!(fromSt && !fromSt.isFranchise && fromSt.type === 'warehouse' && toSt && toSt.isFranchise)) return { ok: true };
+      const g = Pricing.commitGate(toStoreId);
+      if (g && g.ok) return { ok: true };
+      const hold = (g && g.hold) || 'PRICING_DATA_ERROR';
+      const msg = hold === 'NO_FRESH_OBSERVATION' ? 'This device needs a fresh sync before sending stock to a franchise store — connect, sync, then try again.'
+        : hold === 'PRICING_UNRESOLVED' ? 'This device was restored from a backup and needs one successful sync before franchise supply can be sent.'
+        : 'Franchise pricing needs attention before new supply can be sent — sync first; if this persists a Director should check the pricing setup.';
+      return { ok: false, error: msg, hold };
+    } catch (e) { return { ok: false, error: 'Franchise pricing could not be verified — try again after a sync.', hold: 'PRICING_DATA_ERROR' }; }
+  },
+
   _notify(payload) {
     // SA-D-F1: never email a full user object (carries password/PIN hashes). Slim every actor field.
     if (payload && typeof Auth!=='undefined' && Auth._slimActorsDeep) Auth._slimActorsDeep(payload);  // SA-I-F1: deep-slim incl nested flaggedItems[].resolvedBy
@@ -143,6 +167,8 @@ const Transfer = {
         const _avail = Stock.qty(i.productId, fromStoreId);
         if (i.qty > _avail) return { ok:false, error:`Cannot send ${i.qty} × ${UI.productName(i.productId)} — ${UI.storeName(fromStoreId)} only has ${_avail} on record. Sync or run a stock-take, then try again.` };
       }
+      const _pg = this._pricingSubmitGate(fromStoreId, toStoreId);   // OS-W4.2 P3/P5: a non-draft create IS a submit — the pricing-commitment gate runs before any write
+      if (!_pg.ok) return { ok:false, error:_pg.error };
     }
     const transfer = {
       id, date: now, createdAt: now, fromStoreId, toStoreId,
@@ -214,6 +240,8 @@ const Transfer = {
     if (!this._canCreate()) return { ok:false, error:'Permission denied' };
     const t = this.get(transferId);
     if (!t || t.status !== 'draft') return { ok:false, error:'Invalid transfer or not a draft' };
+    { const _pg = this._pricingSubmitGate(t.fromStoreId, t.toStoreId);   // OS-W4.2 P3/P5: submit = the pricing-commitment moment; gate BEFORE any mutation
+      if (!_pg.ok) return { ok:false, error:_pg.error }; }
     // T2-06: Snapshot the transfer BEFORE any mutations — passed to atomicTransferWrite for rollback
     const snapshot = JSON.parse(JSON.stringify(t));
     // Remove unconfirmed items
