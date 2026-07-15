@@ -807,8 +807,8 @@ const Sync = {
     const copyFields = (target, row, moneyFields, keepLocalCost) => {
       Object.keys(row).forEach(k => {
         if (RESERVED[k]) return;
-        if (k === 'costPrice') return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data
-        if (k === 'franchiseDiscount' && _holdPricingScalars) return;  // OS-W4.2 (SR-82): a LEADING publication's pricing scalars are held until the config catches up — corporate cost arrives ONLY via the gated corporate_costs path (_fetchCorporateCosts); franchise devices keep their own local cost untouched
+        if (k === 'costPrice') return;  // Chunk 6 (D-COST): cost NEVER comes from the public master_data — corporate cost arrives ONLY via the gated corporate_costs path (_fetchCorporateCosts); franchise devices keep their own local cost untouched
+        if (k === 'franchiseDiscount' && _holdPricingScalars) return;  // OS-W4.2 (SR-82): a LEADING publication's pricing scalars are held until the config catches up
         target[k] = normMoney(k, row[k], moneyFields);
       });
     };
