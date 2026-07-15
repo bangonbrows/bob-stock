@@ -4,10 +4,11 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R23 FOLDED (**✅ BOTH W4.3 AMENDMENTS CLOSED** — AGY fully retracted its amendment-1
-objection with a reasoned adoption of the SR-169 layered-guard rationale; **AGY PASSED W4.4** ["ready to
-build"]; Codex BLOCK×1 → REAL, the final input-completeness pin, folded as SR-170; Codex cleared both
-planted derived-view checks + both transition cases). R24 PENDING — re-verdicts on the SR-170 delta only.
+**Review status:** R24 FOLDED (SPLIT verdict on the planted residual — one PASS ["no window economics"],
+one BLOCK; **ADJUDICATED FOR THE BLOCK:** rejected-now ≠ irrelevant-forever — FINAL is permanent, and a
+later re-attestation legitimizes the quarantined row INTO the closed window, irrevocably losing its value;
+folded as SR-171, the presented-identities completion of the SR-122 grace binding). R25 PENDING —
+re-verdict the SR-171 delta only.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -185,13 +186,17 @@ consistent — else refusal, never a silently short settlement.
 (regenerable). FINAL requires ALL of: (a) graceClosed — the store's old-era flush grace consumed/expired;
 (b) DRAINED ingest — every OS-SR-10 grace record for the store TERMINAL under the pinned lifecycle
 `issued → consumed (durably set BEFORE any row write in the same run) → committed (after the last row
-write)`; `consumed`-but-not-`committed` ⇒ NOT drained (surfaced to reconcile); and (c) VISIBILITY with TERMINAL OUTCOMES (SR-94/107):
-`committed` durably records the WRITTEN ROW IDENTITIES (TransactionIds/item ids) of the grace-admitted
-rows, and the engine asserts every one reached a TERMINAL, ACCOUNTED state in the supplied row set: PRESENT,
-or COVERED by a validated SAME-LIST tombstone/correction (a Director may legitimately delete a
-grace-admitted row later — literal presence alone would block FINAL forever). A recorded identity that is
-neither present nor covered ⇒ refuse FINAL (read-index lag or loss); a CROSS-list tombstone on it stays a
-conflict (P3). `drain` carries (b)+(c) into the engine (P1).
+write)`; `consumed`-but-not-`committed` ⇒ NOT drained (surfaced to reconcile); and (c) VISIBILITY with TERMINAL OUTCOMES over PRESENTED identities (SR-94/107/171):
+the grace record durably logs the FULL PRESENTED ROW MANIFEST of the flush — every identity the device
+attempted, bound at grace consumption exactly like the expected stepIds (SR-122) — not merely the WRITTEN
+ones (SR-171: written-only logging made a MID-EXPORT REJECTION invisible to all three evidence inputs at
+once — not in rows [rejected], not in badVersionEvidence [post-watermark], not in drain [never written] —
+so FINAL could close permanently over a row a Director's later re-attestation would legitimize into the
+window: irrevocable loss). The engine asserts EVERY presented identity reached an ACCOUNTED state:
+PRESENT in the row set, COVERED by a validated same-list control head, or QUEUED in `badVersionEvidence`
+(where SR-170's rule then holds FINAL until it clears). An identity in NONE of the three ⇒ refuse FINAL
+(mid-export escape, read-index lag, or loss — indistinguishable, all unsafe); a CROSS-list tombstone on it
+stays a conflict (P3). `drain` carries (b)+(c) into the engine (P1).
 
 **P6 — line valuation (SR-38/114/122 + W4.3).** Transfer-linked rows follow the FULL W4.3 valuation
 precedence: row stamps → the transfer ITEM's canonical stamps → lens. The middle tier is computed from the
@@ -335,6 +340,11 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R24 fold record (2026-07-15) — 1 REAL (split verdict, adjudicated for the BLOCK)
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-171** | R24 BLOCK (P1; the opposing PASS argued "a later rejected entry contributes no window economics" — REFUTED: FINAL is permanent, and a Director's re-attestation legitimizes the quarantined row INTO the closed window; its value is then irrevocably lost to the store owner). Mechanism: drain logged only WRITTEN identities, so a mid-export rejection escaped rows, badVersionEvidence (post-watermark), AND drain simultaneously | P5: grace records log the full PRESENTED row manifest (bound at consumption, the SR-122 pattern); the engine asserts every presented identity is PRESENT \| COVERED \| QUEUED — none of the three ⇒ refuse FINAL |
 
 ## R23 fold record (2026-07-15) — 1 REAL (Codex; AGY passed W4.4)
 | # | Finding | Fold |

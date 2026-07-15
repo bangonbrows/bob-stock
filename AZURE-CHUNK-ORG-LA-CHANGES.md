@@ -200,11 +200,14 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   inside the same lease, NOT window-bounded (a post-buyback deletion can prove "covered"). Bound to the bought-back storeId,
   boundary-evaluated on the row UTC instant (never the calendar-day string) for ECONOMIC rows; supplies
   full-window enumeration attestations for BOTH lists + graceClosed + (for FINAL) the DRAIN evidence
-  (W4-SR-57/69/91/94/107): the OS-SR-10 grace record carries pinned terminal states `issued → consumed`
-  (durably set BEFORE any row write in the same run) `→ committed` (after the last row write, RECORDING the
-  written row identities); DRAINED = every grace record for the store TERMINAL, and the route/engine assert
-  every committed-recorded row identity reached a TERMINAL ACCOUNTED state in the supplied rows — PRESENT,
-  or covered by a validated SAME-LIST tombstone/correction (W4-SR-107); neither ⇒ refuse FINAL; cross-list ⇒
+  (W4-SR-57/69/91/94/107/171): the OS-SR-10 grace record carries pinned terminal states `issued → consumed`
+  (durably set BEFORE any row write in the same run, RECORDING the FULL PRESENTED row manifest + expected
+  stepIds — W4-SR-122/171: written-only logging let a mid-export rejection escape rows,
+  badVersionEvidence, AND drain simultaneously; a later re-attestation would then legitimize it into a
+  permanently-closed FINAL) `→ committed` (after the last row write); DRAINED = every grace record for the
+  store TERMINAL, and the ENGINE asserts every PRESENTED identity reached an ACCOUNTED state in its
+  attested inputs — PRESENT in rows, COVERED by a validated same-list control head, or QUEUED in
+  badVersionEvidence (where SR-170 then holds FINAL); none of the three ⇒ refuse FINAL; cross-list ⇒
   conflict. IdempotencyKey identity applies to validated NON-EMPTY keys only (W4-SR-109; blanks fall back to
   TransactionId + surfaced legacy count). The `drain` evidence is an ENGINE INPUT (the pure engine itself
   refuses a FINAL without it). Absent graceClosed or drain ⇒ the settlement is marked PROVISIONAL and

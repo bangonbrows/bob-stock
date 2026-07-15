@@ -1,27 +1,28 @@
-# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 24 (paper review) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4 SCOPE REVIEW ROUND 25 (paper review) — Codex + AGY
 
-**You are re-verdicting ONE delta: W4-SR-170.** Everything else is settled: ✅ both W4.3 amendments are
-CLOSED (W4.3 fully locked); AGY PASSED W4.4 at R23 ("ready to build"); Codex's single R23 finding — the
-final input-completeness pin — is folded. If SR-170 holds, W4.4 freezes and the W4 scope review CLOSES.
+**You are re-verdicting ONE delta: W4-SR-171.** R24 split (one PASS, one BLOCK on the planted residual);
+the BLOCK was adjudicated CORRECT: a mid-export rejection escaped rows, badVersionEvidence, AND drain
+simultaneously (written-only logging), and FINAL's permanence means a later Director re-attestation would
+legitimize the quarantined row into a closed settlement — irrevocable loss to the store owner.
+"No window economics NOW" was true but insufficient. Everything else is settled.
 
 ## Read (branch `azure-phase-5-8-server`)
-`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` — P1 (the `badVersionEvidence` signature addition), the SR-168
-queue block's engine-evaluation sentence, and the R23 fold record. `AZURE-CHUNK-ORG-LA-CHANGES.md` §6
-(the route-side supply line). Nothing else changed.
+`AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` — P5(c) (presented-identities drain) + the R24 fold record ·
+`AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (the grace-record consumption line). Nothing else changed.
 
-## The delta (SR-170, your catch Codex)
-The engine input gains `badVersionEvidence`: the store/window-scoped BAD_VERSION queue records + their
-stored-terminal markers, with an ENUMERATION-COMPLETENESS watermark bound to the same lease/settled
-horizon (completeness is not derivable from ledger rows — a rejected row never entered the ledger). The
-ENGINE evaluates each entry: stored-terminal ⇒ unblocked; view-covered against the already-supplied
-control heads ⇒ unblocked; otherwise the engine ITSELF refuses FINAL. This is the same attested-inputs
-pattern as `drain`, `steps`, and `controls`.
+## The delta (SR-171)
+Grace records log the FULL PRESENTED row manifest at consumption (the same binding moment and pattern as
+the SR-122 expected stepIds — the device knows its flush set). The engine asserts every presented identity
+reached an ACCOUNTED state in its attested inputs: PRESENT in rows | COVERED by an active control head |
+QUEUED in badVersionEvidence (where SR-170 then holds FINAL until cleared). None of the three ⇒ refuse
+FINAL. The mid-export escape is closed: a rejected row is presented-but-unaccounted until its queue entry
+is enumerated, holding the settlement PROVISIONAL exactly as long as the loss risk exists.
 
 ## Final check
-- Does the watermark's binding (lease + settled horizon) close the enumeration race the way the
-  run/lease continuity check does for rows — or is there a residual window where an entry created DURING
-  the export escapes both the watermark and the row set? (Note: such an entry's row was rejected, so it
-  affects no economics in THIS window; state whether that makes the residual safe.)
+- The manifest is CLIENT-declared at consumption — a hostile device could OMIT an identity it intends to
+  push (present-but-not-presented). Confirm that direction is harmless: an unpresented-but-present row is
+  in `rows` and valued normally (or rejected into the queue and caught by SR-170's next enumeration); the
+  manifest guards OMISSION FROM THE SETTLEMENT, not admission. State agreement or a counterexample.
 - Anything else — if it's done, PASS it and the scope review closes.
 
 ## Verdict
