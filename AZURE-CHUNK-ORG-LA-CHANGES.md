@@ -22,6 +22,11 @@ Trigger `POST {auth, proof, intent}`.
    Active/franchiseeId/isStorePOS/isFranchiseOffice), the `franchisees` list, the store's `store_eras` +
    `pricing_history`, AND (W4-SR-48) the target franchisee's OFFICE store row + its eras + pricing as
    `state.office` — the planner clones/creates office series and (on onboard) the office store itself.
+   **W41-A-C5:** `state.office` ALWAYS carries `forId` = the exact key the LA queried (the entity's
+   officeStoreId, or intent.officeStoreId on onboard) — the planner binds the read to the intent; an
+   absence-read of a different key is `OFFICE_ID_MISMATCH`. **W41-A-C1:** step preconditions carry the
+   FULL decision fields (Role/franchiseeId/isStorePOS/isFranchiseOffice + StoreIds/Active) and every
+   `createAccounts` entry carries `expect.absent` — the LA conditions creation on the id NOT existing.
 4. `topologyPlan {intent, state, nowMs}` → the plan (era close/open, pricing append, fanout, createAccounts,
    snapshot, export, record). Reject reasons pass through to the client.
    **W4-SR-64/78/98/99/100/110/111/112 CONCURRENCY FENCE — CLAIMS REGISTRY:** claims (storeId,

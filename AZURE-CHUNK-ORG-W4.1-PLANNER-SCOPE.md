@@ -9,6 +9,22 @@ airtight … I pass W4.1 without reservations"; Codex: "PASS — freeze candidat
 two-worker race walkthrough proving the episode binding + ETag fence compose). The spec is LOCKED; any
 future change reopens the part's review. Fold history: SR-76..79, 98..101, 110/111, 117/119/120, 125/126,
 131/132, 136 (+ the R1-R6 ledger folds this doc consolidates).
+**⚠ TWO FLAGGED POST-FREEZE AMENDMENTS (2026-07-15, from the BUILD AUDIT round 1 — scoped re-OK required):**
+1. **`state.office.forId` (W41-A-C5, Codex):** the office bundle gains a REQUIRED `forId` — the query key
+   the LA read it for. An EMPTY read result otherwise carries no identity the pure planner can bind to
+   `intent.officeStoreId` (an absence-read of a DIFFERENT key would schedule creation over an occupied
+   id). A present row must satisfy `store.id === forId` (else `OFFICE_ID_MISMATCH`, a new envelope
+   reason); consulted ops prove `forId === franchisee.officeStoreId` (leg 0). LA §1 step 3 echoes the key.
+2. **`NO_OFFICE_PRICING` diagnostic (W41-A engineer-note 1, confirmed by BOTH auditors):** the
+   missing-open-default case is UNREACHABLE as that reason — the bundle's era-alignment check necessarily
+   surfaces it earlier as `PRICING_ERA_MISALIGNED` (geometrically accurate). The pin is AMENDED:
+   `PRICING_ERA_MISALIGNED` is the surfaced reason for a missing office default; `NO_OFFICE_PRICING`
+   remains as defense-in-depth (now also guarding a future-dated open rate, W41-A-C4a); the sentinel
+   asserts the ACTUAL fail-closed reason.
+The build-audit fixes WITHIN the frozen pins (decision-field preconditions, createAccounts absence
+preconditions, franchiseeId-namespace check, target≠office alias guard, present-effectiveness legs,
+office-surface ORPHAN_ERA_OWNER, four-way onboard id distinctness) are implementation completions of
+SR-111/72/79/101 — recorded in the W41 build-audit response, no spec text change.
 
 ## Why this seam exists
 The R4/R5 model keys pricing PER STORE, with the franchisee's negotiated default living on the OFFICE store

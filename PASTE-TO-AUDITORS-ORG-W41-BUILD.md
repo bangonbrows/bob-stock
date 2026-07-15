@@ -1,62 +1,42 @@
-# AUDIT PACK — Org-Structure chunk, W4.1 BUILD (planner extension) — Codex + AGY
+# AUDIT PACK — Org-Structure chunk, W4.1 BUILD re-audit (round 2) — Codex + AGY
 
-**You are auditing the OS-W4.1 BUILD** — the first W4 build wave, implementing the spec YOU froze
-(`AZURE-CHUNK-ORG-W4.1-PLANNER-SCOPE.md`, locked at R14 after both of you passed it). Your job: verify the
-CODE faithfully implements the LOCKED spec, and try to break it. Branch `azure-phase-5-8-server`, build
-commit **`e479c97`**. Both auditors run in parallel; isolate your own worktree.
+**You are re-auditing the OS-W4.1 BUILD after round 1.** ALL SEVEN of your findings were REAL and are
+FIXED — full ledger in `AZURE-CHUNK-ORG-W41-AUDIT-RESPONSE.md` (one probe per finding, your exact repros
+where you gave them). Branch `azure-phase-5-8-server`; audit the LATEST commit on it. Both auditors in
+parallel; isolate your own worktree; report-only.
 
-## Non-negotiables (framework rules)
-- **RUN it.** `node test/topology-proof.js` → **244/244** on clean code (191 pre-existing + 53 new W4.1
-  probes). Write your OWN adversarial probes against the required module — the suite requires the REAL
-  `azure-functions/src/functions/topology.js`.
-- **Report ONLY.** Numbered findings (P0-P3 + concrete repro). Claude ground-truths every finding.
-- **The frozen spec is the requirement.** Any deviation is a finding even if it "looks fine". Anything
-  needing a SPEC change reopens W4.1's review per the freeze rule — say so explicitly.
+## Two SCOPED SPEC AMENDMENTS need your explicit OK (the freeze rule)
+Flagged in `AZURE-CHUNK-ORG-W4.1-PLANNER-SCOPE.md`'s status block:
+1. **`state.office.forId`** (your C5): the bundle carries its query key; `OFFICE_ID_MISMATCH` for an
+   inconsistent/misdirected bundle; leg 0 binds consulted reads to the entity's officeStoreId; LA §1 echoes.
+2. **`NO_OFFICE_PRICING` diagnostic re-pin** (your C6 / engineer-note 1, which you both technically
+   agreed with): PRICING_ERA_MISALIGNED is the surfaced reason for a missing office default;
+   NO_OFFICE_PRICING = defense-in-depth (now also guarding the future-dated-rate case).
 
-## What was built (all in topology.js + the proof suite; ZERO client files touched)
-| Piece | Spec pin |
-|---|---|
-| `state.office` bundle validation (envelope, strict flags, validEras, whole-map pricing, existence agreement, era alignment — the FULL W2 discipline mirrored) | P1/SR-48 |
-| `provenOffice()` — the SIX-leg identity proof + inherited-rate source | P5/SR-79/101 |
-| add/convert/create-franchise: `intent.rate` FORBIDDEN (`RATE_NOT_ALLOWED`), rate CLONED from the office's open `'*'` | P3/SR-47 |
-| onboard: `officeCreate` (store row + open era + `'*'` series), `BAD_OFFICE_STORE_ID` mutual distinctness, `OFFICE_STORE_ID_TAKEN` via the SR-77 read, office account scoped `[officeStoreId, storeId]`, NO office POS | P2/P4/SR-48/72/77 |
-| `OFFICE_STORE_OP_FORBIDDEN` on any op targeting an office store row (+ target-row flag typing) | P4/SR-71 |
-| plan `claims {ids, pricingKeys, reads.pricing}` + per-fanout `expect` preconditions | P6/SR-98/99/111 |
-| `validPricingSeries` + `isIsoUtc` exported | P7/SR-8 |
+## What changed since round 1 (all in topology.js + the proof suite; zero client files)
+- `expect` = FULL decision fields (Role/franchiseeId/isStorePOS/isFranchiseOffice + StoreIds/Active);
+  createAccounts entries carry `expect.absent`.
+- `franchiseeExists(osid)` joins the officeStoreId namespace check (your C2 repro now ⇒ USERNAME_TAKEN).
+- provenOffice: rejects `officeStoreId === storeId` (your C3); requires the office era AND the inherited
+  rate to be PRESENTLY effective (`from ≤ now`, your C4a); the bundle validation applies ORPHAN_ERA_OWNER
+  to the office surface (your C4b).
+- Onboard: four-way pairwise distinctness across minted ids (AGY's repro ⇒ BAD_NEW_FRANCHISEE); forId
+  binding (`OFFICE_ID_MISMATCH`).
 
-## Engineer's honest notes (attack these first)
-1. **`NO_OFFICE_PRICING` is unreachable through a validating bundle** (belt-and-braces only): the office
-   bundle's era-alignment check already forces an open `'*'` whenever the office era is open — so a
-   missing office default fails earlier as `PRICING_ERA_MISALIGNED`. Verify my reachability analysis; if
-   you find a path where it IS reachable (or the earlier reason masks something the spec wanted distinct),
-   that's a finding.
-2. **`RATE_NOT_ALLOWED` is a NEW reason code** the frozen spec didn't name (it pinned "DROP intent.rate"
-   without the reject-vs-ignore choice). I chose fail-closed-on-contradictory-intent, house style. Judge it.
-3. **Reason-code allocation on onboard ids:** intra-intent collisions (officeStoreId = storeId/
-   officeUsername/franchiseeId) ⇒ `BAD_OFFICE_STORE_ID`; collisions with EXISTING logins ⇒
-   `USERNAME_TAKEN`; an existing store row at the id ⇒ `OFFICE_STORE_ID_TAKEN`. The spec named the reasons
-   but not this exact partition. Judge it.
-4. **`claims.reads.pricing` carries the raw as-read maps** (pure content for the LA's scoped CAS) rather
-   than a digest — the pure engine has no crypto. Confirm this satisfies SR-99's intent.
-5. **Fixture updates to pre-existing probes** (convert/add/onboard success paths + the three OS-A-F3 rate
-   probes) were REQUIRED by the spec's API change — verify each updated probe still proves its ORIGINAL
-   concern (the F3 malformed-rate guards moved to onboard, the only rate-taking op).
+## Run
+`node test/topology-proof.js` → **256/256** on clean code. smoke 251/251 · static PASS · CSP PASS.
 
-## Attack surface
-- Cross-collection: can a state bundle pass all six legs yet bind the WRONG office (aliasing between
-  franchisees, office creds, entity rows)? Can `office.store.id` collide with the TARGET storeId?
-- Onboard: two `usernameTaken` surfaces (storeId vs officeStoreId) — any ordering hole? An office bundle
-  supplied for the WRONG id (the LA read row X, the plan claims id Y — nothing binds `office.store.id` to
-  `intent.officeStoreId` when the row is ABSENT... can a present-row-elsewhere slip through)?
-- The clone: any path where the cloned interval misaligns with the store's new era, or where
-  `appendPricingForKey` errors surface with a confusing reason?
-- Claims/expect completeness: does every mutating plan name every identifier/pricing key it touches?
-- Regression: all 191 pre-existing behaviours (the fixtures changed — did any assertion silently weaken?).
-
-## Gates already green (verify, don't trust)
-topology **244/244** · smoke **251/251** · static PASS · CSP PASS. No client files touched; the saboteur
-sweep's client mutations are untouched by this wave (the proof suite is the pure engine's sentinel layer).
+## Attack (fresh surface)
+- The forId binding: any path where a bundle passes with forId consistent but the CONTENT from elsewhere
+  (the LA is trusted for reads — is the envelope contract with LA §1 step 3 airtight as written)?
+- The effectiveness legs: boundary cases (era.from === now exactly; a closed future interval alongside a
+  current open one).
+- The expanded expect: is any DECISION input still missing (e.g. the credential's id itself, username
+  aliases feeding uniqueness — do any affect fanout selection)?
+- The four-way distinctness: enumerate all 6 pairs across {storeId, officeStoreId, franchiseeId,
+  officeUsername} — each rejected, each with a sensible reason?
+- Regression: your round-1 repros (each is now a permanent probe — verify they bind the REAL module).
 
 ## Verdict
-PASS / PASS-with-notes / BLOCK, numbered findings with concrete repros (a state+intent that produces a
-wrong plan or wrong reason, or a spec pin the code deviates from).
+PASS / PASS-with-notes / BLOCK + explicit OK/objection on EACH of the two scoped amendments. When BOTH of
+you pass all items, W4.1's build converges and W4.2 (the lens) begins.
