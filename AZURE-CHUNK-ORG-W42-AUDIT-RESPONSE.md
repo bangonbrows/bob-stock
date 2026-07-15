@@ -19,7 +19,7 @@
 
 ## GATES (clean code)
 smoke **261/261** · topology **256/256** · static PASS · CSP PASS · dupes grep clean ·
-scoped saboteur (the 10 new mutations): RESULT BELOW · full sweep: RESULT BELOW.
+scoped saboteur (the 10 new mutations): **10/10 CAUGHT** (after two gate-driven fixes: S-269 STRENGTHENED — the first mutation was BLIND because no assertion exercised activated-without-config, the sentinel now asserts that fail-close directly; and the S-266 INFRA root-caused to a comment-splice from the build patch anchor, repaired @ dd64f9c) · **FULL SWEEP: 280/280 accounted — 279 CAUGHT + S-150b re-anchored (its target line moved into the legacy-fallback branch) and verified CAUGHT via a deterministic mutated-copy run — 0 BLIND, 0 unexplained skips.**
 
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
