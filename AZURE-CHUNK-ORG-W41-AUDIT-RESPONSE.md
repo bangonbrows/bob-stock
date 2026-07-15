@@ -18,3 +18,12 @@ the new office-surface ORPHAN fires first); three probes gained forId/entity row
 
 **GATES after round 1:** topology **256/256** (244 → 256, 12 new audit probes) · smoke **251/251** ·
 static PASS · CSP PASS. Zero client files touched.
+
+## Round 2 (2026-07-15): ✅ CONVERGED — BOTH AUDITORS PASS, BOTH AMENDMENTS APPROVED
+AGY PASS ("the W4.1 logic core is rock solid") + Codex PASS ("no findings", detached-commit audit, clean
+worktree). Both EXPLICITLY approved scoped amendments 1 (state.office.forId) and 2 (the NO_OFFICE_PRICING
+diagnostic re-pin). Verified by both with real-module probes: forId airtightness (no caller-controlled
+relabelling path), effectiveness boundaries (from === now succeeds; now+1ms fails; closed-future geometry
+cannot bypass), expect completeness (the credential id is the CAS key; aliases feed only intent
+uniqueness), all SIX minted-id pairs (each with its pinned diagnostic), and all four gates re-run.
+**W4.1 BUILD = CONVERGED @ 8d1a377. The W4.1 spec incl. both amendments is FULLY LOCKED. Next: W4.2.**
