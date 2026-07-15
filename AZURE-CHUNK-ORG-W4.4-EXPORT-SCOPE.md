@@ -4,11 +4,10 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R22 FOLDED (converged queue dual-write finding REAL → SR-168 derived coverage;
-AGY's malformed-fallback demand ADJUDICATED NOT REAL per Codex's own clearing analysis → SR-169 pin;
-CLEARED converged: the composite-parent/coordination composition. **✅ W4.3 AMENDMENT 2 CLOSED — approved
-by BOTH** [Codex R22 + AGY R22]; amendment 1 approved by Codex R22, AGY re-OK pending on the SR-169
-rationale). R23 PENDING — W4.4 verdict + amendment-1 re-OK only.
+**Review status:** R23 FOLDED (**✅ BOTH W4.3 AMENDMENTS CLOSED** — AGY fully retracted its amendment-1
+objection with a reasoned adoption of the SR-169 layered-guard rationale; **AGY PASSED W4.4** ["ready to
+build"]; Codex BLOCK×1 → REAL, the final input-completeness pin, folded as SR-170; Codex cleared both
+planted derived-view checks + both transition cases). R24 PENDING — re-verdicts on the SR-170 delta only.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -18,9 +17,15 @@ wiring are staging-apply.
 
 ## Pinned design
 
-**P1 — signature (SR-61/90/91/114/115, supersedes SR-14/17).**
-`buildBuybackExport({ storeId, rows: { live, archive }, steps, controls, pricing: { storeMap, globalMap },
-window, products, coverage, graceClosed, drain })`. Row PROVENANCE is explicit (SR-90): two separate arrays
+**P1 — signature (SR-61/90/91/114/115/170, supersedes SR-14/17).**
+`buildBuybackExport({ storeId, rows: { live, archive }, steps, controls, badVersionEvidence,
+pricing: { storeMap, globalMap }, window, products, coverage, graceClosed, drain })`.
+`badVersionEvidence` (SR-170) = the store/window-scoped BAD_VERSION queue records + their stored-terminal
+markers, with an ENUMERATION COMPLETENESS attestation (a queue watermark bound to the same lease/settled
+horizon — completeness is NOT derivable from supplied ledger row ids, because a REJECTED row never entered
+the ledger at all: without this input the pure engine would emit FINAL silently missing a quarantined
+row, and a route-side check would violate the standing rule that the engine must refuse FINAL from
+ATTESTED INPUTS, never a route promise). Row PROVENANCE is explicit (SR-90): two separate arrays
 matching the two attestations — a flat set cannot implement per-list tombstone semantics. `steps` (SR-114) =
 the RecordSteps rows for every transferId appearing in the row set (enumeration-attested in `coverage`) —
 the engine derives the transfer-item stamp projection from them (below). `controls` (SR-115/123) = tombstone/
@@ -234,8 +239,11 @@ and be paid on them). Pinned tier-1 rule:
   written only by single-registry operations: `corrected-and-reattested` (by the re-attestation op's own
   journal — which MINTS a server-owned tuple from the histories ACTIVE AT THE MINTING INSTANT, never
   retrying the invalid claim) and `rejected` (which unblocks FINAL only when the offending row is ALSO in
-  a durable accounted/excluded state — a bare rejection cannot). Settlement PROVISIONAL while any entry is
-  neither stored-terminal nor view-covered; FINAL unblocked otherwise. **PUBLICATION PROTOCOL (SR-160/164):** ONE server-only catalogue publisher, following the same
+  a durable accounted/excluded state — a bare rejection cannot). **THE ENGINE EVALUATES IT (SR-170):** the queue evidence
+  is an ENGINE INPUT (`badVersionEvidence`, P1) — for each supplied entry: stored-terminal ⇒ unblocked;
+  view-covered against the already-supplied control heads ⇒ unblocked; otherwise ⇒ the engine itself
+  refuses FINAL (PROVISIONAL). Settlement PROVISIONAL while any entry is neither stored-terminal nor
+  view-covered; FINAL unblocked otherwise. **PUBLICATION PROTOCOL (SR-160/164):** ONE server-only catalogue publisher, following the same
   journaled discipline as every other publication (SR-137 / Chunk-8): journal → persist the CANDIDATE
   (new mutable snapshot + archive record + publication interval) → verify → SWITCH THE ACTIVE POINTER LAST
   → terminal-complete; recovery rolls FORWARD if the pointer switched, else completes/discards the
@@ -327,6 +335,11 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R23 fold record (2026-07-15) — 1 REAL (Codex; AGY passed W4.4)
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-170** | Codex R23-1 (P1): the SR-168 derived view needs BOTH operands and the engine received only the control heads — a row REJECTED at ingest never enters the ledger, so the export input carried no trace of its BAD_VERSION entry: the pure engine could emit FINAL silently missing a quarantined row; a route-side check would violate the standing attested-inputs rule | P1/P6: `badVersionEvidence` engine input (store/window-scoped queue records + stored-terminal markers + an enumeration-completeness watermark bound to the same lease/settled horizon); the engine itself evaluates stored-terminal / view-covered / else-PROVISIONAL |
 
 ## R22 fold record (2026-07-15) — 1 converged REAL + 1 adjudicated NOT REAL
 | # | Finding | Fold |

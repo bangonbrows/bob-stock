@@ -34,10 +34,10 @@ step-level form, Codex OBJECTED with the per-line correction, which is ADOPTED):
    allowlist-merge pattern) → the invoice renders ONLY those, or a surfaced "valuation pending sync"
    state — never local live pricing, never the untrusted stamps** — keeping invoice == settlement for
    restored transfers.
-NOTHING ELSE in this spec changes. **AMENDMENT STATUS (R22): ✅ amendment 2 CLOSED — approved by BOTH
-(Codex R22 + AGY R22). Amendment 1: Codex R22 approved ("internally consistent"); AGY's R22 objection
-rests on the malformed-fallback scenario adjudicated NOT REAL (W4-SR-169 — the ingest boundary precludes
-it; Codex's clearing analysis adopted) — AGY re-OK pending at R23 on that rationale.**
+NOTHING ELSE in this spec changes. **✅ AMENDMENT STATUS — BOTH CLOSED (R23): amendment 2 approved by both
+at R22; amendment 1 approved by Codex at R22 ("internally consistent") + AGY at R23 (full reasoned
+retraction, adopting the SR-169 layered-guard rationale: "failing closed is the only mathematically sound
+posture for a corruption detector"). The W4.3 spec incl. both amendments is FULLY LOCKED.**
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit

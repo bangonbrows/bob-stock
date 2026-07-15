@@ -263,8 +263,12 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   rollback can't falsely clear; WITHDRAW auto-reopens; SUPERSEDE re-evaluates); stored terminals only
   from single-registry ops: corrected-and-reattested (re-attestation MINTS a server-owned tuple from the
   histories active at the minting instant — never retries the invalid claim) and rejected (unblocks FINAL
-  only with the row in a durable accounted/excluded state)); settlement PROVISIONAL while any entry is
-  neither stored-terminal nor view-covered; never current-price fallback — master_data.version alone counts one mutable blob and resolves nothing
+  only with the row in a durable accounted/excluded state)); the export route SUPPLIES the store/window-scoped queue
+  records + stored-terminal markers to the ENGINE as `badVersionEvidence` with an enumeration-completeness
+  watermark under the same lease (SR-170 — a rejected row never entered the ledger, so the engine cannot
+  infer the queue from rows; it evaluates coverage itself and refuses FINAL on any uncleared entry);
+  settlement PROVISIONAL while any entry is neither stored-terminal nor view-covered; never current-price
+  fallback — master_data.version alone counts one mutable blob and resolves nothing
   historical)** and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
   values stripped). Stamped TRANSFERLESS rows (direct HO-supply) carry the five-tuple as ROW columns
   mapped on EVERY transport surface and get the SAME validation at push-v2 ROW ingest with a server-set
