@@ -4,11 +4,11 @@
 `AZURE-CHUNK-ORG-W4-SCOPE.md` after R6; on conflict, THIS doc governs). Carries: W4-SR-9, 14→61, 17, 24,
 25, 26, 36, 37→57/69, 38, 55→70, 56→68/75, 58(engine side), 61, 62→73 + R7 folds SR-90..96. Route/LA
 detail: `AZURE-CHUNK-ORG-LA-CHANGES.md` §3 + §6.
-**Review status:** R21 FOLDED (AGY BLOCK×2 [amendments approved] + Codex BLOCK×2 + objections×2; both
-W4.4 blockers fully CONVERGED = 4 distinct, all REAL — folded as SR-164..167; ADJUDICATED: AGY's
-"replay harmless" superseded by Codex's row-existence-laundering argument; CLEARED: indefinite retention
-["now clean"], the SR-162 fixture surface [modulo the basis split]). W4.3 amendment 1 revised AGAIN
-(rev-3: four authority fields + basis separate, SR-167); amendment 2 revised via SR-166. R22 PENDING.
+**Review status:** R22 FOLDED (converged queue dual-write finding REAL → SR-168 derived coverage;
+AGY's malformed-fallback demand ADJUDICATED NOT REAL per Codex's own clearing analysis → SR-169 pin;
+CLEARED converged: the composite-parent/coordination composition. **✅ W4.3 AMENDMENT 2 CLOSED — approved
+by BOTH** [Codex R22 + AGY R22]; amendment 1 approved by Codex R22, AGY re-OK pending on the SR-169
+rationale). R23 PENDING — W4.4 verdict + amendment-1 re-OK only.
 
 ## The deliverable (D-OS / OS-SR-4)
 The ex-franchisee settlement for a bought-back store's CLOSED era `[from,to)`: usage rows, HO-supply cost
@@ -193,7 +193,12 @@ precedence: row stamps → the transfer ITEM's canonical stamps → lens. The mi
 `steps` input: the engine derives an item-stamp projection keyed `(transferId, productId)` using the SAME
 fold precedence as the client (submit stamps permanent; receive-minted for stampless submits; resolve
 overrides) — shared fixtures prove client fold == engine projection, so invoice and settlement value the
-same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). **ORIGIN + TIER-1 AUTHORITY
+same row IDENTICALLY (both-or-neither enforced at every tier; fail-closed on malformed). **MALFORMED = STOP, by design (SR-169):** a row whose basis×authority combination is malformed FAILS
+CLOSED — it never falls through to the item tier. The ingest boundary enforces the tuple invariant, so a
+malformed row in the engine's input proves the boundary was bypassed; fail-closed is the corruption
+detector, and fall-through would mask the compromise. The legitimate item-tier fallback (SR-97) applies
+only when row-level evidence is WHOLLY ABSENT (the stale-receiver class), never partially present.
+**ORIGIN + TIER-1 AUTHORITY
 (SR-122/150/152):** tier-1 (row stamps) is trusted BY PROVENANCE, never by mere presence (SR-152 — the R16
 narrowing exempted ALL row-stamped rows from origin proof, but ordinary ledger ingest validates only shape/
 range/both-or-neither, not AUTHORITY: an authenticated-but-hostile device could push forged in-range stamps
@@ -215,16 +220,22 @@ and be paid on them). Pinned tier-1 rule:
   publish would be falsely quarantined. Publications are archived append-only, keyed by version, with
   product prices + server publication intervals; the claimed version must EXIST and be VALID for the
   minting instant; unknown/forged versions ⇒ a DISTINCT fail-closed outcome (`BAD_VERSION`), NEVER a
-  fallback to the current price. **THE BAD_VERSION QUEUE IS A DURABLE STATE MACHINE (SR-165, not a
-  rhetorical "until cleared"):** a durable, surfaced, IDEMPOTENT queue record keyed by row/line identity +
-  the offending canonical digest (written by the ingest path itself — a crash cannot lose the work item);
-  terminal states = `corrected-and-reattested | covered-by-active-control | rejected | withdrawn`.
-  LEDGER CONTROL OPERATIONS AUTO-CLEAR: a tombstone/withdraw/supersede covering the target row identity
-  transitions its queue entries to `covered-by-active-control`/`withdrawn` automatically — a deleted row's
-  ghost entry can never block FINAL. RE-ATTESTATION MINTS, never retries: the Director route derives a
-  corrected SERVER-OWNED tuple from the authoritative histories ACTIVE AT THE MINTING INSTANT (retrying
-  the invalid claimed version would just return BAD_VERSION forever). Settlement PROVISIONAL while any
-  NON-TERMINAL entry exists for its rows; FINAL unblocked by terminal states. **PUBLICATION PROTOCOL (SR-160/164):** ONE server-only catalogue publisher, following the same
+  fallback to the current price. **THE BAD_VERSION QUEUE — DURABLE ENTRIES, DERIVED COVERAGE (SR-165/168):** a durable, surfaced,
+  IDEMPOTENT queue record keyed by row/line identity + the offending canonical digest, written by the
+  ingest path itself in ITS OWN journal (a crash cannot lose the work item). **COVERAGE IS A VIEW, NEVER A
+  WRITE (SR-168 — "auto-clear" as a second registry write was a classic dual-write: clear-then-crash
+  silently admits a BAD_VERSION row to FINAL; publish-then-crash leaves a ghost PROVISIONAL forever):**
+  `covered-by-active-control` is EVALUATED AT READ TIME against the active manifest's per-target control
+  head (bound to `{controlId, revision, bornPublicationVersion}`) — no control writer ever touches the
+  queue. This makes every composition case correct by construction: a control rollback never falsely
+  clears (nothing was written); a WITHDRAW automatically REOPENS coverage (the derived view sees no active
+  control — the row's restored BAD_VERSION problem resurfaces, exactly right); a SUPERSEDE re-evaluates
+  against the new head; no reservation↔queue lock ordering exists to deadlock. STORED terminal states are
+  written only by single-registry operations: `corrected-and-reattested` (by the re-attestation op's own
+  journal — which MINTS a server-owned tuple from the histories ACTIVE AT THE MINTING INSTANT, never
+  retrying the invalid claim) and `rejected` (which unblocks FINAL only when the offending row is ALSO in
+  a durable accounted/excluded state — a bare rejection cannot). Settlement PROVISIONAL while any entry is
+  neither stored-terminal nor view-covered; FINAL unblocked otherwise. **PUBLICATION PROTOCOL (SR-160/164):** ONE server-only catalogue publisher, following the same
   journaled discipline as every other publication (SR-137 / Chunk-8): journal → persist the CANDIDATE
   (new mutable snapshot + archive record + publication interval) → verify → SWITCH THE ACTIVE POINTER LAST
   → terminal-complete; recovery rolls FORWARD if the pointer switched, else completes/discards the
@@ -316,6 +327,12 @@ read and SURFACES that older lines need the archive pull — never a silent part
 - W4.3: stamp/label/money field carriage + both-or-neither are its pins; this engine consumes them.
 - W4.1: exports the validators; the buyback plan's export window (`topology.js:517`) supplies
   `{franchiseeId, storeId, from, to}`.
+
+## R22 fold record (2026-07-15) — 1 converged REAL + 1 adjudicated NOT REAL
+| # | Finding | Fold |
+|---|---|---|
+| **W4-SR-168** | AGY R22-1 + Codex R22-1 (CONVERGED, P1): queue "auto-clear" = a dual-write across two registries — clear-then-crash silently ADMITS a BAD_VERSION row to FINAL (security bypass); publish-then-crash leaves a ghost PROVISIONAL forever; and Codex's deeper case: `covered-by-active-control` as a STORED terminal breaks on WITHDRAW (the row's effect returns but the entry stays terminal) | P6: coverage is a DERIVED VIEW over the active control-head manifest, never a write — rollback can't falsely clear, withdraw auto-reopens, supersede re-evaluates, no lock ordering exists; stored terminals only from single-registry ops (re-attestation mints; rejected requires a durable accounted/excluded state) |
+| **W4-SR-169** | AGY R22-2 (P1): demanded malformed rows (stamped basis, stripped authority fields) FALL THROUGH to the item tier — **ADJUDICATED NOT REAL, siding with Codex's explicit clearing analysis:** the INGEST boundary rejects partial tuples, so a malformed row cannot legitimately land server-side through any path; one appearing in export input = the boundary was bypassed (corruption/forgery) and fail-closed is the CORRECT corruption detector — falling through would MASK the compromise. The legitimate fall-through case (SR-97 stale receiver) is distinct: row evidence WHOLLY ABSENT, item tier attested | clarifying pin in P6 (no behaviour change); the basis×authority fixtures already cover the boundary |
 
 ## R21 fold record (2026-07-15) — 4 distinct (two converged pairs), all REAL
 | # | Finding | Fold |

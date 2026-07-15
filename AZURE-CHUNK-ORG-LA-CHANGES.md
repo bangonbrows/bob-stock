@@ -257,12 +257,14 @@ Deploy `topology.js` (topologyPlan/topologyResolve, authLevel function). Add `to
   visibility switch for BOTH domains — no split-brain in either crash order); Chunk-6 catalogue-only
   publishes invoke the publisher directly; the correction op only READS the archive. RETENTION INDEFINITE
   — never pruned, so no expiry state exists; claimed version must exist and be valid for the minting
-  instant; unknown/forged ⇒ BAD_VERSION fail-closed into a DURABLE idempotent queue (SR-165: keyed by
-  row/line identity + offending digest; terminal states corrected-and-reattested |
-  covered-by-active-control | rejected | withdrawn; control ops AUTO-clear their targets' entries;
-  re-attestation MINTS a server-owned tuple from the histories active at the minting instant — never
-  retries the invalid claim); settlement PROVISIONAL while non-terminal entries exist; never
-  current-price fallback — master_data.version alone counts one mutable blob and resolves nothing
+  instant; unknown/forged ⇒ BAD_VERSION fail-closed into a DURABLE idempotent queue (SR-165/168: keyed by
+  row/line identity + offending digest, written by the ingest path's own journal; COVERAGE IS A DERIVED
+  VIEW over the active control-head manifest — control ops never write the queue (dual-write eliminated:
+  rollback can't falsely clear; WITHDRAW auto-reopens; SUPERSEDE re-evaluates); stored terminals only
+  from single-registry ops: corrected-and-reattested (re-attestation MINTS a server-owned tuple from the
+  histories active at the minting instant — never retries the invalid claim) and rejected (unblocks FINAL
+  only with the row in a durable accounted/excluded state)); settlement PROVISIONAL while any entry is
+  neither stored-terminal nor view-covered; never current-price fallback — master_data.version alone counts one mutable blob and resolves nothing
   historical)** and REJECTS mismatches (BAD_STAMPS, quarantined) — accepted steps gain a SERVER-SET attestation marker (client
   values stripped). Stamped TRANSFERLESS rows (direct HO-supply) carry the five-tuple as ROW columns
   mapped on EVERY transport surface and get the SAME validation at push-v2 ROW ingest with a server-set

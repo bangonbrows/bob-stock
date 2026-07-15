@@ -34,9 +34,10 @@ step-level form, Codex OBJECTED with the per-line correction, which is ADOPTED):
    allowlist-merge pattern) → the invoice renders ONLY those, or a surfaced "valuation pending sync"
    state — never local live pricing, never the untrusted stamps** — keeping invoice == settlement for
    restored transfers.
-NOTHING ELSE in this spec changes; the R22 review includes a scoped re-check of exactly these two
-(rev-3 / rev-2) amendments — AGY approved both at R21 pre-revision; Codex's objections drove the
-revisions (SR-167 basis split; SR-166 rowId binding).
+NOTHING ELSE in this spec changes. **AMENDMENT STATUS (R22): ✅ amendment 2 CLOSED — approved by BOTH
+(Codex R22 + AGY R22). Amendment 1: Codex R22 approved ("internally consistent"); AGY's R22 objection
+rests on the malformed-fallback scenario adjudicated NOT REAL (W4-SR-169 — the ingest boundary precludes
+it; Codex's clearing analysis adopted) — AGY re-OK pending at R23 on that rationale.**
 
 ## What stamps are for
 The lens (W4.2) freezes the DISCOUNT per date; nothing freezes the PRICE (`p.price` is live — a price edit
