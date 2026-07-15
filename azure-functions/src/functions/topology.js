@@ -263,26 +263,30 @@ function transitionEras(eras, newOwner, nowMs) {
 function deriveFanout(creds, storeId, opts) {
   const { newFranchiseeId, oldFranchiseeId, cancelPersonal } = opts;
   const out = [];
+  // W4.1 (SR-111/119): every fanout step carries its PRECONDITION — the target row's state AS READ at plan
+  // time. The LA applies each step conditionally on it (ETag or content compare); a mismatch means an admin
+  // write interleaved and the journal goes needs_replan instead of blindly overwriting. Pure echo, no logic.
+  const expect = (c) => ({ StoreIds: Array.isArray(c.StoreIds) ? c.StoreIds.slice() : [], Active: c.Active === undefined ? null : c.Active });
   for (const c of (Array.isArray(creds) ? creds : [])) {
     if (!c || !safeId(String(c.id))) continue;
     const ids = Array.isArray(c.StoreIds) ? c.StoreIds.slice() : [];
     const has = ids.includes(storeId);
-    if (c.isStorePOS && has) { out.push({ id: c.id, action: 'bump' }); continue; }  // POS stays, just bump
+    if (c.isStorePOS && has) { out.push({ id: c.id, action: 'bump', expect: expect(c) }); continue; }  // POS stays, just bump
     if (newFranchiseeId && c.franchiseeId === newFranchiseeId && c.isFranchiseOffice) {
-      if (!has) { ids.push(storeId); out.push({ id: c.id, action: 'setStoreIds', StoreIds: ids, active: true }); }
-      else out.push({ id: c.id, action: 'bump' });
+      if (!has) { ids.push(storeId); out.push({ id: c.id, action: 'setStoreIds', StoreIds: ids, active: true, expect: expect(c) }); }
+      else out.push({ id: c.id, action: 'bump', expect: expect(c) });
       continue;
     }
     if (oldFranchiseeId && c.franchiseeId === oldFranchiseeId && c.isFranchiseOffice && has) {
       const next = ids.filter(x => x !== storeId);
       // D-OS-4: the ex-office is NOT deactivated by losing the store (stays active even if empty). Codex R11 P2:
       // but it must not be REACTIVATED either — a Director-deactivated office stays deactivated. Preserve state.
-      out.push({ id: c.id, action: 'setStoreIds', StoreIds: next, active: isActiveCred(c) });
+      out.push({ id: c.id, action: 'setStoreIds', StoreIds: next, active: isActiveCred(c), expect: expect(c) });
       continue;
     }
     if (cancelPersonal && has && PERSONAL_ROLES.includes(String(c.Role))) {
       const next = ids.filter(x => x !== storeId);
-      out.push({ id: c.id, action: 'setStoreIds', StoreIds: next, active: next.length > 0 });  // deactivate if zero left (D-OS-2)
+      out.push({ id: c.id, action: 'setStoreIds', StoreIds: next, active: next.length > 0, expect: expect(c) });  // deactivate if zero left (D-OS-2)
       continue;
     }
   }
@@ -345,6 +349,16 @@ function planTopologyChange(intent, state, nowMs) {
   if (!Array.isArray(st.eras)) return { ok: false, reason: 'BAD_STATE' };
   if (!st.pricing || typeof st.pricing !== 'object' || Array.isArray(st.pricing)) return { ok: false, reason: 'BAD_STATE' };
   if (st.store != null && (typeof st.store !== 'object' || st.store.id !== storeId)) return { ok: false, reason: 'STORE_ID_MISMATCH' };  // the bundle must be FOR this store
+  // W4.1 (SR-71 + schema sweep): the target store row's FLAGS, when present, must be strict booleans (or the
+  // SharePoint 1/0 for active) — the I1/L1 lesson applied to the NEW surface before it ships. And NO retail
+  // topology op may TARGET a franchise office: office lifecycle = onboard (creation) + MANUAL deactivation,
+  // exclusively. With the office-store POS exemption below, a buyback aimed at an office would otherwise close
+  // the office era/series and orphan every retail store's cloning + office-keyed invoicing.
+  if (st.store != null) {
+    for (const k of ['isFranchise', 'isFranchiseOffice']) { if (st.store[k] !== undefined && typeof st.store[k] !== 'boolean') return { ok: false, reason: 'BAD_STATE' }; }
+    if (st.store.active !== undefined && typeof st.store.active !== 'boolean' && st.store.active !== 0 && st.store.active !== 1) return { ok: false, reason: 'BAD_STATE' };
+    if (st.store.isFranchiseOffice === true) return { ok: false, reason: 'OFFICE_STORE_OP_FORBIDDEN' };
+  }
   // Codex conv-R5 F1 + R7 F1: validate EVERY credential ROW — a malformed row (no id, StoreIds not an array,
   // primitive entry) was SILENTLY SKIPPED by deriveFanout, meaning a required cancellation was never emitted.
   // R7: the fanout-driving flags (isStorePOS / isFranchiseOffice / Active) are read by TRUTHINESS in
@@ -395,6 +409,34 @@ function planTopologyChange(intent, state, nowMs) {
   // key like '__proto__'); every VALUE a valid series.
   if (!Object.keys(st.pricing).every(k => k === PRICING_DEFAULT_KEY || reqId(k))) return { ok: false, reason: 'MALFORMED_PRICING' };
   if (!Object.values(st.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };
+  // W4.1 (SR-48): the OFFICE bundle — `state.office = {store, eras, pricing}` for the target franchisee's
+  // office (or, on ONBOARD, whatever exists at intent.officeStoreId — SR-77). OPTIONAL for ops that never
+  // consult it (create-HO, buyback), but when PRESENT it gets the FULL collection discipline (the conv-R4/R5
+  // envelope rules mirrored onto the new surface — a present-but-wrong-typed field fails closed) plus every
+  // cross-collection invariant the target store already carries (the rounds-12-18 lesson: mirror EVERY guard
+  // onto every sibling surface at birth, don't wait for the audit to find the gap).
+  const office = st.office == null ? null : st.office;
+  if (office != null) {
+    if (typeof office !== 'object' || Array.isArray(office)) return { ok: false, reason: 'BAD_STATE' };
+    if (office.store != null && (typeof office.store !== 'object' || Array.isArray(office.store))) return { ok: false, reason: 'BAD_STATE' };
+    if (!Array.isArray(office.eras)) return { ok: false, reason: 'BAD_STATE' };
+    if (!office.pricing || typeof office.pricing !== 'object' || Array.isArray(office.pricing)) return { ok: false, reason: 'BAD_STATE' };
+    if (office.store != null) {
+      if (!reqId(office.store.id)) return { ok: false, reason: 'BAD_STATE' };
+      for (const k of ['isFranchise', 'isFranchiseOffice']) { if (office.store[k] !== undefined && typeof office.store[k] !== 'boolean') return { ok: false, reason: 'BAD_STATE' }; }
+      if (office.store.active !== undefined && typeof office.store.active !== 'boolean' && office.store.active !== 0 && office.store.active !== 1) return { ok: false, reason: 'BAD_STATE' };
+    }
+    if (!validEras(office.eras)) return { ok: false, reason: 'MALFORMED_STATE' };
+    if (!Object.keys(office.pricing).every(k => k === PRICING_DEFAULT_KEY || reqId(k))) return { ok: false, reason: 'MALFORMED_PRICING' };
+    if (!Object.values(office.pricing).every(v => validPricingSeries(v))) return { ok: false, reason: 'MALFORMED_PRICING' };
+    // Store-row / era-history / pricing-history existence must AGREE on the office surface too (conv-R3 F1
+    // mirrored): an office store with no history, or orphan office history with no store row, is corrupt.
+    if ((!!office.store) !== (office.eras.length > 0)) return { ok: false, reason: 'STORE_ERA_MISMATCH' };
+    if (office.eras.length === 0 && Object.values(office.pricing).some(v => Array.isArray(v) && v.length > 0)) return { ok: false, reason: 'STORE_ERA_MISMATCH' };
+    // The office's '*' history must align with the office eras exactly as retail pricing must (Codex R9 F3
+    // mirrored) — a multi-INTERVAL era is fine (SR-76: contiguous coverage, not 1:1), a gap or HO-bleed is not.
+    if (office.eras.length > 0 && !pricingAlignsWithEras(office.pricing, office.eras, nowMs)) return { ok: false, reason: 'PRICING_ERA_MISALIGNED' };
+  }
   const creds = st.creds;
   const franchisees = st.franchisees;
   const eras = st.eras;
@@ -437,13 +479,39 @@ function planTopologyChange(intent, state, nowMs) {
   // gap; no franchise rate during an HO period). Applies to any store that has history.
   if (eras.length > 0 && !pricingAlignsWithEras(pricing, eras, nowMs)) return { ok: false, reason: 'PRICING_ERA_MISALIGNED' };
   const officeCredFor = (fid) => creds.find(c => c.isFranchiseOffice === true && c.franchiseeId === fid) || null;
+  // W4.1 (SR-47/48/79/101): the SIX-LEG office identity proof + the rate-inheritance source. ADD/CONVERT/
+  // CREATE-born-franchise CLONE the office's current open '*' interval — the pure engine can only do that
+  // from a PROVEN office bundle, grounded entirely in server-owned state (a maliciously assembled bundle
+  // that passes the per-collection validators must still fail the cross-collection identity legs). Returns
+  // { rate, officeStoreId } or { error }.
+  const provenOffice = (fid) => {
+    const f = franchisees.find(x => x && x.franchiseeId === fid);
+    if (!f || !reqId(f.officeStoreId)) return { error: 'OFFICE_STATE_MISMATCH' };            // entity must NAME its office store (SR-79 — set at onboard / cutover backfill)
+    if (!office || !office.store) return { error: 'OFFICE_STATE_MISMATCH' };                 // the bundle must be present and hold the office row
+    if (office.store.isFranchiseOffice !== true) return { error: 'OFFICE_STATE_MISMATCH' };  // leg a
+    if (office.store.isFranchise !== true) return { error: 'OFFICE_STATE_MISMATCH' };        // leg b (SR-101: the invoice selects offices by ALL THREE flags — index.html:4758)
+    if (!(office.store.active === true || office.store.active === 1)) return { error: 'OFFICE_STATE_MISMATCH' };  // leg c (SR-101)
+    if (office.store.id !== f.officeStoreId) return { error: 'OFFICE_STATE_MISMATCH' };      // leg d
+    const oo = openEraOwner(office.eras);
+    if (!oo || oo.owner !== fid) return { error: 'OFFICE_STATE_MISMATCH' };                  // leg e
+    const oc = officeCredFor(fid);
+    if (!oc || !Array.isArray(oc.StoreIds) || !oc.StoreIds.includes(f.officeStoreId)) return { error: 'OFFICE_STATE_MISMATCH' };  // leg f
+    const def = office.pricing[PRICING_DEFAULT_KEY];
+    const openIv = Array.isArray(def) ? def.find(i => i && i.to == null) : null;
+    if (!openIv || !validRate(openIv.rate)) return { error: 'NO_OFFICE_PRICING' };           // SR-47: no open office default ⇒ nothing to inherit ⇒ fail closed
+    return { rate: openIv.rate, officeStoreId: f.officeStoreId };
+  };
+  // W4.1 (SR-64/98/99 — the plan CARRIES its claims + as-read key state so the LA can reserve, scope its
+  // conflict check to the CLAIMED pricing keys, and re-assert at apply-top; SR-111 preconditions ride each
+  // fanout step). Pure data, no side effects.
+  const mkClaims = (ids, pricingKeys, readsPricing) => ({ ids: ids.filter(Boolean), pricingKeys: pricingKeys.filter(Boolean), reads: { pricing: readsPricing } });
 
   // ---- create HO store ----
   if (op === 'create' && intent.type === 'HO') {
     if (st.store) return { ok: false, reason: 'STORE_EXISTS' };
     if (usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: the new store POS login (=storeId) must be unique
     const e = transitionEras([], HO, nowMs); if (e.error) return { ok: false, reason: e.error };
-    return { ok: true, plan: { eras: e.eras, pricing, fanout: [], createAccounts: [{ kind: 'storePOS', storeId }], snapshot: null, export: null, record: { ...rec, from: null, to: HO } } };
+    return { ok: true, plan: { eras: e.eras, pricing, fanout: [], createAccounts: [{ kind: 'storePOS', storeId }], snapshot: null, export: null, record: { ...rec, from: null, to: HO }, claims: mkClaims([storeId], [], {}) } };
   }
 
   // ---- create born-franchise store (existing franchisee) OR add store to existing franchisee ----
@@ -452,16 +520,20 @@ function planTopologyChange(intent, state, nowMs) {
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
     if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3: no direct fran→fran (buy back to HO first) — a franchise-owned store rejects `add` outright
-    { const office = officeCredFor(fid); if (!office) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
-      if (!isActiveCred(office)) return { ok: false, reason: 'INACTIVE_TARGET_OFFICE' }; }   // Codex R10 note: a topology change must not silently reactivate a Director-deactivated office
-    if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3: a franchise op needs a valid rate
+    { const oc = officeCredFor(fid); if (!oc) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
+      if (!isActiveCred(oc)) return { ok: false, reason: 'INACTIVE_TARGET_OFFICE' }; }   // Codex R10 note: a topology change must not silently reactivate a Director-deactivated office
+    // W4.1 (SR-47): ADD/CREATE-born-franchise are RATE-INHERITED — the caller supplies NO rate (a client
+    // could otherwise smuggle 15% vs the office's 25%); the planner CLONES the office's current open '*'.
+    // A supplied rate is contradictory intent ⇒ fail closed, never silently ignored.
+    if (intent.rate !== undefined && intent.rate !== null) return { ok: false, reason: 'RATE_NOT_ALLOWED' };
     if (!st.store && usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: a NEW store's POS login must be unique
+    const po = provenOffice(fid); if (po.error) return { ok: false, reason: po.error };   // SR-48/79/101: six-leg office proof; SR-47: the inherited rate
     const wasHO = currentOwner && currentOwner.owner === HO;   // an existing HO store being handed over
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
-    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, po.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: fid, oldFranchiseeId: e.closedOwner !== HO ? e.closedOwner : null, cancelPersonal: wasHO });
     const createAccounts = st.store ? [] : [{ kind: 'storePOS', storeId }];
-    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: fid } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: fid }, claims: mkClaims([storeId], [storeId, po.officeStoreId], { [storeId]: pricing, [po.officeStoreId]: office.pricing }) } };
   }
 
   // ---- onboard NEW franchisee (+ first store, new or an existing HO store) ----
@@ -472,18 +544,36 @@ function planTopologyChange(intent, state, nowMs) {
     if (nf.displayName != null && typeof nf.displayName !== 'string') return { ok: false, reason: 'BAD_NEW_FRANCHISEE' };   // sweep: displayName flows into the created account
     if (usernameTaken(nf.franchiseeId)) return { ok: false, reason: 'USERNAME_TAKEN' };   // sweep: the new franchiseeId must not collide with an existing login either
     if (usernameTaken(nf.officeUsername) || nf.officeUsername === storeId) return { ok: false, reason: 'USERNAME_TAKEN' };   // Codex-F4 + conv-R2 F4: office login unique AND distinct from the store POS login
-    if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3
+    // W4.1 (SR-48/72/77): ONBOARD creates the office STORE in the same plan. Its id is intent-supplied,
+    // must be well-formed, MUTUALLY DISTINCT from every identifier this intent mints (SR-72 — two "unique"
+    // ids that EQUAL each other pass independent checks and collide at write), unique across the login
+    // namespace, and UNOCCUPIED (SR-77: the LA always reads the row at officeStoreId into state.office —
+    // an existing store row there, retail OR office, is a hard stop).
+    const osid = intent.officeStoreId;
+    if (!reqId(osid) || osid === storeId || osid === nf.officeUsername || osid === nf.franchiseeId) return { ok: false, reason: 'BAD_OFFICE_STORE_ID' };
+    if (usernameTaken(osid)) return { ok: false, reason: 'USERNAME_TAKEN' };
+    if (office == null) return { ok: false, reason: 'BAD_STATE' };   // complete-envelope rule (conv-R5 H1 mirrored): the LA ALWAYS supplies the officeStoreId read result
+    if (office.store) return { ok: false, reason: 'OFFICE_STORE_ID_TAKEN' };
+    // (office.store null + orphan eras/pricing at the id already failed STORE_ERA_MISMATCH in the bundle validation)
+    if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3 — onboard is the ONLY op that takes the negotiated rate (SR-47)
     if (currentOwner && currentOwner.owner !== HO) return { ok: false, reason: 'DIRECT_TRANSFER_FORBIDDEN' };  // OS-A-F8/D-OS-3
     if (!st.store && usernameTaken(storeId)) return { ok: false, reason: 'STORE_LOGIN_TAKEN' };   // conv-R2 F4: new store POS login unique
     const wasHO = currentOwner && currentOwner.owner === HO;
     const e = transitionEras(eras, nf.franchiseeId, nowMs); if (e.error) return { ok: false, reason: e.error };
     const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    // W4.1 (SR-48): the office store row + its OPEN era (owner = the new franchiseeId) + its '*' series at
+    // the negotiated rate, all in THIS plan — offices carry the franchisee's default (R4 model) and the
+    // SR-45 fan-out / SR-47 clone both read it, so it must exist from the moment the franchisee does.
+    const oe = transitionEras([], nf.franchiseeId, nowMs); if (oe.error) return { ok: false, reason: oe.error };
+    const opr = appendPricingForKey({}, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (opr.error) return { ok: false, reason: opr.error };
+    const officeCreate = { store: { id: osid, isFranchise: true, isFranchiseOffice: true, active: true }, eras: oe.eras, pricing: opr.pricing };
     // Codex R10 note: the new office account is born SCOPED to its first store — else, applied literally, it
-    // would start empty and the franchisee couldn't see the store they were just onboarded onto.
-    const createAccounts = [{ kind: 'franchisee', franchiseeId: nf.franchiseeId, displayName: nf.displayName, officeUsername: nf.officeUsername, StoreIds: [storeId] }];
-    if (!st.store) createAccounts.push({ kind: 'storePOS', storeId });
+    // would start empty and the franchisee couldn't see the store they were just onboarded onto. W4.1: it is
+    // ALSO scoped to its own office store (the invoice bills office-keyed rows — the account must see them).
+    const createAccounts = [{ kind: 'franchisee', franchiseeId: nf.franchiseeId, displayName: nf.displayName, officeUsername: nf.officeUsername, officeStoreId: osid, StoreIds: [osid, storeId] }];
+    if (!st.store) createAccounts.push({ kind: 'storePOS', storeId });   // NO storePOS for the office store — offices are not selling locations (SR-48 POS exemption)
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: nf.franchiseeId, oldFranchiseeId: null, cancelPersonal: wasHO });
-    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: nf.franchiseeId } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts, snapshot: wasHO ? { store: storeId, cutoffMs: nowMs } : null, export: null, record: { ...rec, from: e.closedOwner, to: nf.franchiseeId }, officeCreate, claims: mkClaims([storeId, osid, nf.franchiseeId, nf.officeUsername], [storeId, osid], { [storeId]: pricing, [osid]: office.pricing }) } };
   }
 
   // ---- convert HO store → franchise (existing franchisee) — the D-OS-1 case A when the franchisee exists ----
@@ -491,13 +581,14 @@ function planTopologyChange(intent, state, nowMs) {
     if (!currentOwner || currentOwner.owner !== HO) return { ok: false, reason: 'NOT_HO_OWNED' };
     const fid = intent.toFranchiseeId;
     if (!reqId(fid) || !franchiseeExists(fid)) return { ok: false, reason: 'NO_SUCH_FRANCHISEE' };
-    { const office = officeCredFor(fid); if (!office) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
-      if (!isActiveCred(office)) return { ok: false, reason: 'INACTIVE_TARGET_OFFICE' }; }   // Codex R10 note: a topology change must not silently reactivate a Director-deactivated office
-    if (!validRate(intent.rate)) return { ok: false, reason: 'BAD_RATE' };   // OS-A-F3
+    { const oc = officeCredFor(fid); if (!oc) return { ok: false, reason: 'NO_TARGET_OFFICE' };   // Codex R7 F1: the new owner's office cred must exist, else it never gains store scope
+      if (!isActiveCred(oc)) return { ok: false, reason: 'INACTIVE_TARGET_OFFICE' }; }   // Codex R10 note: a topology change must not silently reactivate a Director-deactivated office
+    if (intent.rate !== undefined && intent.rate !== null) return { ok: false, reason: 'RATE_NOT_ALLOWED' };   // W4.1 (SR-47): convert is rate-INHERITED too
+    const po = provenOffice(fid); if (po.error) return { ok: false, reason: po.error };   // SR-48/79/101 six-leg proof + the inherited rate
     const e = transitionEras(eras, fid, nowMs); if (e.error) return { ok: false, reason: e.error };
-    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, intent.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
+    const pr = appendPricingForKey(pricing, PRICING_DEFAULT_KEY, po.rate, nowMs); if (pr.error) return { ok: false, reason: pr.error };
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: fid, oldFranchiseeId: null, cancelPersonal: true });
-    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: null, record: { ...rec, from: HO, to: fid } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: null, record: { ...rec, from: HO, to: fid }, claims: mkClaims([storeId], [storeId, po.officeStoreId], { [storeId]: pricing, [po.officeStoreId]: office.pricing }) } };
   }
 
   // ---- buy-back franchise → HO ----
@@ -513,8 +604,10 @@ function planTopologyChange(intent, state, nowMs) {
     // store (deactivate if zero left). Without this they keep the now-HO store in scope and pull HO's data.
     const fanout = deriveFanout(creds, storeId, { newFranchiseeId: null, oldFranchiseeId: oldFid, cancelPersonal: true });
     // OS-SR-4: export the ex-franchisee's just-closed era [from,to) — server-generated later from this window.
+    // W4.1 (SR-48/71): the buy-back touches ONLY the retail store — the office era + series stay OPEN (other
+    // stores may remain; office deactivation is MANUAL, D-OS). claims.pricingKeys therefore excludes the office.
     const closed = e.eras.find(x => x && x.owner === oldFid && x.to === iso(nowMs));
-    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: { franchiseeId: oldFid, storeId, from: closed ? closed.from : null, to: iso(nowMs) }, record: { ...rec, from: oldFid, to: HO } } };
+    return { ok: true, plan: { eras: e.eras, pricing: pr.pricing, fanout, createAccounts: [], snapshot: { store: storeId, cutoffMs: nowMs }, export: { franchiseeId: oldFid, storeId, from: closed ? closed.from : null, to: iso(nowMs) }, record: { ...rec, from: oldFid, to: HO }, claims: mkClaims([storeId], [storeId], { [storeId]: pricing }) } };
   }
 
   return { ok: false, reason: 'UNKNOWN_OP' };
@@ -532,4 +625,6 @@ function handlerFactory(fn) {
 app.http('topologyPlan', { methods: ['POST'], authLevel: 'function', handler: handlerFactory((b, now) => planTopologyChange(b.intent, b.state, isFiniteMs(b.nowMs) ? b.nowMs : now)) });
 app.http('topologyResolve', { methods: ['POST'], authLevel: 'function', handler: handlerFactory((b) => ({ owner: resolveEra(b.eras, b.dateMs), rate: resolvePricingForProduct(b.pricing, b.productId, b.dateMs) })) });  // OS-A-F7: per-product resolution via the route
 
-module.exports = { resolveEra, eraWindowsFor, resolvePricingRate, resolvePricingForProduct, appendPricingInterval, appendPricingForKey, closePricing, closeAllPricing, transitionEras, deriveFanout, planTopologyChange, HO, PERSONAL_ROLES, PRICING_DEFAULT_KEY };
+// W4-SR-8: the shared validation primitives are EXPORTED so buybackExport.js (OS-W4.4) imports the real
+// functions — no re-derivation, the exact drift class W4 forbids. Additive; zero behaviour change.
+module.exports = { resolveEra, eraWindowsFor, resolvePricingRate, resolvePricingForProduct, appendPricingInterval, appendPricingForKey, closePricing, closeAllPricing, transitionEras, deriveFanout, planTopologyChange, HO, PERSONAL_ROLES, PRICING_DEFAULT_KEY, validPricingSeries, isIsoUtc };
