@@ -1245,7 +1245,7 @@ const Pricing = {
   // device is a fresh RESTORE awaiting resolution (P5b — never treat a backup's scalar as pre-activation truth).
   lensActive(){ const f=this._flags(); return f.activated||f.unresolved; },
   // THE chain. Returns {rate, source} | {notSet:true} | {inactive:true} | {error:'PRICING_DATA_ERROR'|'PRICING_STALE'|'PRICING_UNRESOLVED'}
-  rateAsOf(storeId,productId,dateMs){
+  rateAsOf(storeId,productId,dateMs,storesOpt){   // OS-W42-AUDIT R1 (AGY-2): storesOpt = the CALLER's store topology (a report fixture) for the SR-10 franchise check — omitted ⇒ the live DB
     const f=this._flags();
     if(f.unresolved)return {error:'PRICING_UNRESOLVED'};
     const d=DB.get(); const cfg=d&&d.pricingConfig;
@@ -1261,7 +1261,7 @@ const Pricing = {
     const hasStore=Object.prototype.hasOwnProperty.call(cfg.stores,storeId);
     if(!hasStore){
       // SR-10: once ANY config exists, an uncovered FRANCHISE billing key = present-but-bad ⇒ fail closed.
-      const stRow=(d.stores||[]).find(x=>x&&x.id===storeId);
+      const stRow=((storesOpt||d.stores)||[]).find(x=>x&&x.id===storeId);   // OS-W42-AUDIT R1 (AGY-2): a snapshot/fixture caller's topology governs its own SR-10 verdicts
       if(stRow&&stRow.isFranchise)return {error:'PRICING_DATA_ERROR'};
       return {notSet:true};
     }
@@ -1276,6 +1276,7 @@ const Pricing = {
   commitGate(storeId){
     const f=this._flags();
     if(f.unresolved)return {hold:'PRICING_UNRESOLVED'};
+    if(typeof navigator!=='undefined'&&navigator.onLine===false)return {hold:'NO_FRESH_OBSERVATION'};   // OS-W42-AUDIT R1 (Codex C1): P5 pins a currently-HEALTHY connection at commit — a fresh flag from before the drop is not enough
     if(typeof Sync==='undefined'||Sync._pricingFresh!==true)return {hold:'NO_FRESH_OBSERVATION'};
     if(!f.activated)return {ok:true,scalar:true};                    // the fresh observation SAID "no pricing config" ⇒ scalar path legitimate
     if(f.stale)return {hold:'PRICING_STALE'};
@@ -3455,7 +3456,8 @@ const Pages = {
       const _raw=String(val==null?'':val).trim();
       const _rate=_raw===''?null:(function(){const n=Math.max(0,Math.min(100,parseFloat(_raw)));return (Number.isFinite(n)&&n>0)?n:null;})();
       const r=(typeof Sync!=='undefined'&&Sync.publishPricingChange)?await Sync.publishPricingChange({kind:'global-product',productId,rate:_rate}):{ok:false,reason:'no-endpoint'};
-      if(!r||!r.ok){ UI.toast('Pricing change could not reach the server — nothing was changed.'+(r&&r.reason==='no-endpoint'?' (pricing service not configured)':''),'error'); this._renderProductsTable(); return; }
+      if(!r||!r.ok){ const _unconf=r&&(r.reason==='no-echo'||r.reason==='bad-echo'||r.reason==='echo-not-adopted');   // OS-W42-AUDIT R1 (Codex C4): the server may have committed — say so, never claim "nothing changed"
+        UI.toast(_unconf?'The server accepted the change but this device could not confirm the new pricing — sync, then check this discount before retrying.':'Pricing change could not reach the server — nothing was changed.'+(r&&r.reason==='no-endpoint'?' (pricing service not configured)':''),'error'); this._renderProductsTable(); return; }
       UI.toast('Discount updated — effective from today; past invoices are unaffected','success'); this._renderProductsTable(); return;
     }
     const raw=String(val==null?'':val).trim();  // Wave M2 / GPTa-41: blank = clear → inherit store default (was stored as 0, which blocked the ?? fallback → full price)
@@ -3505,7 +3507,8 @@ const Pages = {
     // orphan scalar; the local add proceeds only on success. Pre-activation: exactly today's behaviour.
     if(_franDisc!=null && typeof Pricing!=='undefined' && Pricing.lensActive()){
       const r=(typeof Sync!=='undefined'&&Sync.publishPricingChange)?await Sync.publishPricingChange({kind:'add-product',productId:id,rate:_franDisc}):{ok:false,reason:'no-endpoint'};
-      if(!r||!r.ok){ UI.toast('This product'+String.fromCharCode(39)+'s franchise discount needs the pricing service '+String.fromCharCode(8212)+' the product was NOT added. Sync and try again.'+(r&&r.reason==='no-endpoint'?' (pricing service not configured)':''),'error'); return; }
+      if(!r||!r.ok){ const _unconf=r&&(r.reason==='no-echo'||r.reason==='bad-echo'||r.reason==='echo-not-adopted');   // OS-W42-AUDIT R1 (Codex C4)
+        UI.toast(_unconf?'The pricing service accepted it but this device could not confirm the new pricing '+String.fromCharCode(8212)+' the product was NOT added locally; it will appear after a successful sync.':'This product'+String.fromCharCode(39)+'s franchise discount needs the pricing service '+String.fromCharCode(8212)+' the product was NOT added. Sync and try again.'+(r&&r.reason==='no-endpoint'?' (pricing service not configured)':''),'error'); return; }
     }
     const d=DB.get();
     const _stockType=stockType==='consumable'?'consumable':'retail';  // K4: explicit type is authoritative; internalUse stays false (legacy flag retired)
@@ -4001,10 +4004,9 @@ const Pages = {
       if(h&&h.costPrice!=null){ const _m=Validate.money(h.costPrice,{optional:true}); if(!_m.ok) return {ok:false,error:'Backup contains an invalid cost-history costPrice ('+(h.id||'unknown')+'): '+_m.error+' — file rejected.'}; h.costPrice=_m.value; }
     }
     this._scrubBackupSecrets(data);  // C1: import cannot inject a live session token / config material -> import cannot restore an active login
-    // OS-W4.2 P5b (SR-104): a RESTORE marks pricing state UNRESOLVED until the next successful config fetch
-    // resolves the true state — a restored device must never treat an exported scalar as pre-activation
-    // truth or resurrect a stale hold. Pricing-sensitive commits hold; the invoice surfaces the state.
-    try{ localStorage.setItem('bob_pricing_unresolved','1'); }catch(e){}
+    // OS-W4.2 P5b (SR-104): the restore pricing hold is ARMED by _importBackup at the restore WRITE via
+    // _armRestorePricingHold — NOT here (OS-W42-AUDIT R1 Codex C6: merely VALIDATING a file must never
+    // strand a healthy device in a pricing hold when the restore is cancelled or fails).
     this._scrubBackupScope(data);    // Chunk 10: import cannot reintroduce another store's rows outside this device's scope
     delete data._meta;
     return {ok:true,data};
@@ -4028,6 +4030,9 @@ const Pages = {
       if(Array.isArray(data.recordSteps))         data.recordSteps=data.recordSteps.filter(s=>s&&(inS(s.ownerStoreId)||inS(s.fromStoreId)||inS(s.toStoreId)));
     }catch(e){}
   },
+  _armRestorePricingHold(){  // OS-W4.2 P5b (SR-104) + OS-W42-AUDIT R1 (Codex C6): armed at the restore WRITE — the restored device holds pricing-sensitive commits until the next successful config fetch; the pre-restore bob_pricing_ver marker is dropped with it (its durable config is being replaced).
+    try{ localStorage.setItem('bob_pricing_unresolved','1'); localStorage.removeItem('bob_pricing_ver'); }catch(e){}
+  },
   async _importBackup() {
     const file=document.getElementById('backup-file-input')?.files?.[0];
     if(!file){UI.toast('Please select a backup file','error');return;}
@@ -4042,12 +4047,14 @@ const Pages = {
       if(!(await Pages._verifyBackupChecksum(parsed))){ UI.toast('Restore failed: backup failed its integrity check — the file may be corrupted or edited.','error'); return; }
       const res=Pages._validateAndScrubBackup(parsed);
       if(!res.ok){ UI.toast('Restore failed: '+res.error,'error'); return; }
+      let _preUnres=false; try{ _preUnres=localStorage.getItem('bob_pricing_unresolved')==='1'; }catch(e){}
       try{
         if(!Pages._snapshotForUndo()){ UI.toast('Restore cancelled — could not save a safety snapshot first (device storage may be full). Free up space and try again.','error'); return; }  // GPT-9 (Wave M3, GPT P2): never overwrite current data without a usable undo snapshot
+        Pages._armRestorePricingHold();   // OS-W42-AUDIT R1 (Codex C6): armed immediately BEFORE the replacement write (never by validation); rolled back below if the write throws
         localStorage.setItem(DB.KEY,JSON.stringify(res.data));DB._cache=null;
         UI.toast('Data restored — reloading in 2 seconds...','success');
         setTimeout(()=>location.reload(),2000);
-      }catch(err){UI.toast('Restore failed: '+err.message,'error');}
+      }catch(err){ if(!_preUnres){ try{ localStorage.removeItem('bob_pricing_unresolved'); }catch(e){} } UI.toast('Restore failed: '+err.message,'error');}
     };
     reader.readAsText(file);
     },'Restore');
@@ -4908,7 +4915,7 @@ const Pages = {
         const sell = p?.price || 0;
         let prodDisc, lineErr = null, rateSource = null;
         if (lensOn) {
-          const r = Pricing.rateAsOf(office.id, t.productId, Date.parse(t.date + 'T00:00:00.000Z'));
+          const r = Pricing.rateAsOf(office.id, t.productId, Date.parse(t.date + 'T00:00:00.000Z'), d.stores);
           if (r.error) { prodDisc = 0; lineErr = r.error; }            // P3: 0% LOUDLY (surfaced), never the scalar
           else if (r.notSet) { prodDisc = 0; lineErr = 'NOT_SET'; }    // per-line-date discMissing (P6)
           else { prodDisc = r.rate; rateSource = r.source; }

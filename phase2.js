@@ -76,7 +76,12 @@ const Transfer = {
       const d = DB.get(); if (!d) return { ok: true };
       const fromSt = (d.stores || []).find(x => x && x.id === fromStoreId);
       const toSt = (d.stores || []).find(x => x && x.id === toStoreId);
-      if (!(fromSt && !fromSt.isFranchise && fromSt.type === 'warehouse' && toSt && toSt.isFranchise)) return { ok: true };
+      // OS-W42-AUDIT R1 (AGY-3): gate the UNION of "warehouse-typed non-franchise sender" and the invoice
+      // generator's structured billing key (stockFromStoreId === 'head_office') — a missing/retyped
+      // head_office store row must never let a BILLED transfer skip the gate. Billed-but-ungated is the
+      // dangerous direction; a second warehouse is gated-but-unbilled, the fail-safe one.
+      const fromWh = fromSt && !fromSt.isFranchise && fromSt.type === 'warehouse';
+      if (!((fromWh || fromStoreId === 'head_office') && toSt && toSt.isFranchise)) return { ok: true };
       const g = Pricing.commitGate(toStoreId);
       if (g && g.ok) return { ok: true };
       const hold = (g && g.hold) || 'PRICING_DATA_ERROR';

@@ -474,6 +474,13 @@ const Sync = {
   async _applyPricingConfig(raw) {
     const fresh = () => { this._pricingFresh = true; };
     if (raw == null) {
+      // OS-W42-AUDIT R1 (Codex C3): the ABSENT item is the server's "not yet activated" statement — but
+      // POST-activation (key ever observed / a config adopted) absence is impossible except as a rollback
+      // and confirms NOTHING: not fresh, a restore's unresolved marker stays. Only a genuinely
+      // pre-activation device treats it as a fresh observation + a restore resolution.
+      let _act = false; try { _act = localStorage.getItem('bob_pricing_activated') === '1'; } catch (e) {}
+      const d0 = DB.get();
+      if (_act || (d0 && d0.pricingConfig)) { console.warn('[Sync] pricing_config item ABSENT after activation — impossible/rollback state, confirms nothing (fail closed)'); return; }
       try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
       fresh();
       return;
@@ -491,15 +498,38 @@ const Sync = {
       return;
     }
     const newV = Number(cfg.version);
-    if (newV <= curV) {
+    if (newV === curV) {
+      // steady-state confirmation. OS-W42-AUDIT R1 (Codex C5): if the last durable commit FAILED (the P4
+      // bob_pricing_ver marker trails the in-memory version) this identical fetch RETRIES persistence —
+      // no freshness claim until the durable state is confirmed.
+      let durV = 0; try { durV = Number(localStorage.getItem('bob_pricing_ver')) || 0; } catch (e) {}
+      if (curV > durV) {
+        let ok2 = false; try { ok2 = await DB.commitDurable(); } catch (e) {}
+        if (!ok2) { console.warn('[Sync] pricing_config v' + curV + ' persist RETRY failed — still in-memory only, no freshness claim'); return; }
+        try { localStorage.setItem('bob_pricing_ver', String(curV)); } catch (e) {}
+      }
       try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}  // a successful fetch RESOLVES the restore state
       fresh();
-      return;                                                                   // monotonic: never adopt a rollback
+      return;
+    }
+    if (newV < curV) {
+      // OS-W42-AUDIT R1 (Codex C3): a served ROLLBACK proves nothing about the adopted version — never
+      // fresh, never a restore resolution; monotonic: never adopt it either.
+      console.warn('[Sync] pricing_config v' + newV + ' is OLDER than the adopted v' + curV + ' — rollback ignored, confirms nothing');
+      return;
     }
     d.pricingConfig = cfg;
     let okc = false;
     try { okc = await DB.commitDurable(); } catch (e) {}
-    if (!okc) { console.warn('[Sync] pricing_config v' + newV + ' persist FAILED — in-memory copy governs this session; the next fetch retries.'); }
+    if (!okc) {
+      // OS-W42-AUDIT R1 (Codex C5): durable adoption UNCONFIRMED — the in-memory copy governs rendering
+      // this session, but NO freshness claim and NO durable-flag clears; the next identical fetch retries
+      // (the bob_pricing_ver marker above still trails the in-memory version).
+      console.warn('[Sync] pricing_config v' + newV + ' persist FAILED — in-memory copy governs this session; the next fetch retries');
+      this._rerender();
+      return;
+    }
+    try { localStorage.setItem('bob_pricing_ver', String(newV)); } catch (e) {}  // P4: the durable-commit marker (the accessPolicy pattern)
     try { localStorage.removeItem('bob_pricing_stale'); } catch (e) {}          // the served latest is now adopted
     try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
     fresh();
@@ -518,7 +548,11 @@ const Sync = {
       if (typeof inst !== 'string' || !Number.isFinite(Date.parse(inst))) return;
       const pv = Number(body.pricingVersion);
       const adopted = (DB.get() && DB.get().pricingConfig && Number(DB.get().pricingConfig.version)) || 0;
-      if (Number.isFinite(pv) && pv > 0 && pv !== adopted) {
+      // OS-W42-AUDIT R1 (Codex C2): a settled echo confirms ONLY an exact, verifiable version match. A
+      // missing version (NaN) confirms nothing; ''/null/0 coerce to 0, which matches ONLY a genuinely
+      // pre-activation device (adopted 0 = the server's own "no pricing config" statement).
+      if (!Number.isFinite(pv) || pv < 0) return;
+      if (pv !== adopted) {
         // the server's latest isn't what we hold — re-fetch config; the horizon must NOT advance
         if (pv > adopted) this._fetchRemoteConfig().catch(() => {});
         return;
@@ -546,7 +580,18 @@ const Sync = {
     if (!resp.ok) { let j = null; try { j = await resp.json(); } catch (e) {} return { ok: false, reason: (j && j.reason) || ('http-' + resp.status) }; }
     let j = null; try { j = await resp.json(); } catch (e) {}
     if (!j || j.ok !== true) return { ok: false, reason: (j && j.reason) || 'rejected' };
-    if (j.config != null) { try { await this._applyPricingConfig(j.config); } catch (e) {} }
+    // OS-W42-AUDIT R1 (Codex C4): the frozen writer contract = the server change FOLLOWED BY adoption of
+    // the ECHOED new publication. No echo / an unparseable echo / an echo we could not adopt ⇒ the writer
+    // FAILS (the server may have committed — the caller's message says so) — never a success report while
+    // the lens and scalar sit unchanged.
+    if (j.config == null) return { ok: false, reason: 'no-echo' };
+    let echoedV = 0;
+    try { const ec = typeof j.config === 'string' ? JSON.parse(j.config) : j.config; echoedV = Number(ec && ec.version) || 0; } catch (e) {}
+    if (!(echoedV > 0)) return { ok: false, reason: 'bad-echo' };
+    try { await this._applyPricingConfig(j.config); } catch (e) {}
+    const dA = DB.get();
+    const adoptedV = (dA && dA.pricingConfig && Number(dA.pricingConfig.version)) || 0;
+    if (adoptedV < echoedV) return { ok: false, reason: 'echo-not-adopted' };
     return { ok: true };
   },
   // AA-04/AA-05: device-level cost-payload scrub with a version-independent pending flag (mirrors the
@@ -2444,6 +2489,7 @@ const Sync = {
     try {
       if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { try { if (document.visibilityState === 'visible') Sync._pricingFresh = false; } catch (e) {} });
       if (typeof window !== 'undefined') window.addEventListener('online', () => { try { Sync._pricingFresh = false; } catch (e) {} });
+      if (typeof window !== 'undefined') window.addEventListener('offline', () => { try { Sync._pricingFresh = false; } catch (e) {} });   // OS-W42-AUDIT R1 (Codex C1): LOSING the connection invalidates freshness too — P5 pins a currently-healthy connection at commit
     } catch (e) {}
     // Chunk 8 (AGY P1 / migration): rows synced BEFORE this build carry no _spId, and the ID-cursor never
     // re-pulls rows below the high-water mark — so they'd stay _spId==null and DOUBLE-COUNT at the first

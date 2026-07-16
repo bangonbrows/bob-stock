@@ -2655,6 +2655,119 @@ async function runSmoke(repo) {
       });
       rec('S-270', 'W4-18: stale horizon = strictly-before the settled server instant; unsettled echoes advance NOTHING; a settled echo advances + clears stale', r.before === 25 && r.atH === 'PRICING_STALE' && r.u === '2025-06-01T00:00:00Z' && r.s === '2025-07-01T00:00:00Z' && r.staleAfter === null, `before=${r.before} atHorizon=${r.atH} afterUnsettled=${r.u} afterSettled=${r.s} stale=${r.staleAfter}`); await ctx.close(); }
 
+    // S-271 (OS-W42-AUDIT R1, Codex C1): OFFLINE kills the pricing-commitment path — losing the connection
+    // invalidates the freshness fact (the 'offline' event), and the commit gate INDEPENDENTLY requires a
+    // currently-healthy connection (a fresh flag from before the drop is not enough).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      await page.evaluate(() => { try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {} delete DB.get().pricingConfig; Sync._pricingFresh = true; });
+      await ctx.setOffline(true); await new Promise(r2 => setTimeout(r2, 150));
+      const r1 = await page.evaluate(() => ({ freshAfterDrop: Sync._pricingFresh, onLine: navigator.onLine }));
+      const r2 = await page.evaluate(() => { Sync._pricingFresh = true; const g = Pricing.commitGate('cockburn'); return { hold: g.hold || null }; });   // even a (stale-world) fresh flag can't commit offline
+      await ctx.setOffline(false); await new Promise(r3 => setTimeout(r3, 150));
+      const r3 = await page.evaluate(() => { Sync._pricingFresh = true; const g = Pricing.commitGate('cockburn'); Sync._pricingFresh = false; return { ok: g.ok === true }; });
+      rec('S-271', 'W42-C1: going OFFLINE invalidates pricing freshness; the commit gate requires a healthy connection; back online + fresh => ok', r1.freshAfterDrop === false && r1.onLine === false && r2.hold === 'NO_FRESH_OBSERVATION' && r3.ok === true, `freshAfterDrop=${r1.freshAfterDrop} onLine=${r1.onLine} offlineHold=${r2.hold} onlineOk=${r3.ok}`); await ctx.close(); }
+
+    // S-272 (OS-W42-AUDIT R1, Codex C2+C3): VERSION-STRICT trust — settled echoes with a missing/empty/
+    // null/zero/mismatched version confirm NOTHING (no horizon advance, stale retained, not fresh); a
+    // served ROLLBACK config and a post-activation ABSENT item also confirm nothing (and keep a restore
+    // hold); only the exact adopted-version match advances + clears + freshens.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); localStorage.setItem('bob_pricing_stale', '1'); localStorage.setItem('bob_pricing_conf_at', '2025-06-01T00:00:00Z'); } catch (e) {}
+        DB.get().pricingConfig = { version: 7, global: {}, stores: {} };
+        const bads = ['MISSING', 0, '', null, 6];
+        const badResults = [];
+        for (const v of bads) {
+          Sync._pricingFresh = false;
+          const body = { pricingSettled: true, pricingInstant: '2025-07-01T00:00:00Z' };
+          if (v !== 'MISSING') body.pricingVersion = v;
+          Sync._notePricingEcho(body);
+          let conf = null, stale = null; try { conf = localStorage.getItem('bob_pricing_conf_at'); stale = localStorage.getItem('bob_pricing_stale'); } catch (e) {}
+          badResults.push(conf === '2025-06-01T00:00:00Z' && stale === '1' && Sync._pricingFresh === false);
+        }
+        Sync._pricingFresh = false;
+        await Sync._applyPricingConfig({ version: 6, global: {}, stores: {} });          // C3a: a served ROLLBACK confirms nothing
+        const rollbackFresh = Sync._pricingFresh;
+        const keptV = Number(DB.get().pricingConfig.version);
+        Sync._pricingFresh = false;
+        try { localStorage.setItem('bob_pricing_unresolved', '1'); } catch (e) {}
+        await Sync._applyPricingConfig(null);                                            // C3b: post-activation ABSENT confirms nothing
+        const absentFresh = Sync._pricingFresh;
+        let unres = null; try { unres = localStorage.getItem('bob_pricing_unresolved'); } catch (e) {}
+        Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-02T00:00:00Z', pricingVersion: 7 });   // control: exact match
+        let confOk = null; try { confOk = localStorage.getItem('bob_pricing_conf_at'); } catch (e) {}
+        const matchFresh = Sync._pricingFresh;
+        delete DB.get().pricingConfig; Sync._pricingFresh = false;
+        try { ['bob_pricing_activated','bob_pricing_stale','bob_pricing_conf_at','bob_pricing_unresolved','bob_pricing_ver'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+        return { allBadInert: badResults.every(x => x), rollbackFresh, keptV, absentFresh, unres, confOk, matchFresh };
+      });
+      rec('S-272', 'W42-C2/C3: non-matching/zero/absent version echoes + rollback/absent configs confirm NOTHING; only the exact match advances', r.allBadInert === true && r.rollbackFresh === false && r.keptV === 7 && r.absentFresh === false && r.unres === '1' && r.confOk === '2025-07-02T00:00:00Z' && r.matchFresh === true, `allBadInert=${r.allBadInert} rollbackFresh=${r.rollbackFresh} keptV=${r.keptV} absentFresh=${r.absentFresh} unres=${r.unres} confOk=${r.confOk} matchFresh=${r.matchFresh}`); await ctx.close(); }
+
+    // S-273 (OS-W42-AUDIT R1, Codex C4+C5): the WRITER CONTRACT — success requires the echoed publication
+    // ADOPTED (no echo => fail, config untouched); a FAILED durable commit claims no freshness, and the
+    // next IDENTICAL fetch retries persistence to the P4 bob_pricing_ver marker.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      await page.route('**pricing-echo-none**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }));
+      await page.route('**pricing-echo-good**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, config: { version: 8, global: {}, stores: {} } }) }));
+      const r = await page.evaluate(async () => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 7, global: {}, stores: {} };
+        Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
+        Sync._pricingChangeUrl = 'https://x.logic.azure.com/pricing-echo-none';
+        const noEcho = await Sync.publishPricingChange({ kind: 'global-product', productId: 'PX', rate: 20 });
+        const vAfterNoEcho = Number(DB.get().pricingConfig.version);
+        Sync._pricingChangeUrl = 'https://x.logic.azure.com/pricing-echo-good';
+        const good = await Sync.publishPricingChange({ kind: 'global-product', productId: 'PX', rate: 20 });
+        const vAfterGood = Number(DB.get().pricingConfig.version);
+        let marker8 = null; try { marker8 = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
+        const realCommit = DB.commitDurable;
+        DB.commitDurable = async () => false;
+        Sync._pricingFresh = false;
+        await Sync._applyPricingConfig({ version: 9, global: {}, stores: {} });          // C5: persist FAILS
+        const freshAfterFail = Sync._pricingFresh; const vMem = Number(DB.get().pricingConfig.version);
+        let markerAfterFail = null; try { markerAfterFail = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
+        DB.commitDurable = async () => true;
+        await Sync._applyPricingConfig({ version: 9, global: {}, stores: {} });          // the IDENTICAL next fetch RETRIES
+        const freshAfterRetry = Sync._pricingFresh;
+        let markerAfterRetry = null; try { markerAfterRetry = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
+        DB.commitDurable = realCommit;
+        delete DB.get().pricingConfig; Sync._pricingFresh = false; Sync._pricingChangeUrl = null;
+        try { ['bob_pricing_activated','bob_pricing_ver'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+        return { noEchoOk: noEcho.ok, noEchoReason: noEcho.reason, vAfterNoEcho, goodOk: good.ok, vAfterGood, marker8, freshAfterFail, vMem, markerAfterFail, freshAfterRetry, markerAfterRetry };
+      });
+      rec('S-273', 'W42-C4/C5: writer success requires the ADOPTED echo; a failed persist claims no freshness and the next identical fetch retries to the durable marker', r.noEchoOk === false && r.noEchoReason === 'no-echo' && r.vAfterNoEcho === 7 && r.goodOk === true && r.vAfterGood === 8 && r.marker8 === '8' && r.freshAfterFail === false && r.vMem === 9 && r.markerAfterFail === '8' && r.freshAfterRetry === true && r.markerAfterRetry === '9', `noEcho=${r.noEchoOk}/${r.noEchoReason} v=${r.vAfterNoEcho} good=${r.goodOk}/${r.vAfterGood} marker=${r.marker8} failFresh=${r.freshAfterFail} vMem=${r.vMem} mFail=${r.markerAfterFail} retryFresh=${r.freshAfterRetry} mRetry=${r.markerAfterRetry}`); await ctx.close(); }
+
+    // S-274 (OS-W42-AUDIT R1, Codex C6 + AGY-2 + AGY-3): VALIDATING a backup never arms the restore
+    // pricing hold (only the restore WRITE does, via _armRestorePricingHold, which also drops the durable
+    // marker); the SR-10 franchise check honours the CALLER's topology; a billed sender
+    // (stockFromStoreId 'head_office') is gated even when its store row is missing.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.removeItem('bob_pricing_unresolved'); localStorage.setItem('bob_pricing_ver', '7'); } catch (e) {}
+        const bk = { _meta: { app: 'bob-stock', backupFormat: Pages._BACKUP_FORMAT }, products: [{ id: 'p', name: 'P' }], stores: [{ id: 's', name: 'S' }], categories: [{ id: 'c', name: 'C' }], users: [], transactions: [] };
+        const val = Pages._validateAndScrubBackup(bk);
+        let unresAfterValidate = null; try { unresAfterValidate = localStorage.getItem('bob_pricing_unresolved'); } catch (e) {}
+        Pages._armRestorePricingHold();
+        let unresAfterArm = null, verAfterArm = 'x'; try { unresAfterArm = localStorage.getItem('bob_pricing_unresolved'); verAfterArm = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
+        try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { somewhere: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const fixStores = [{ id: 'ghost_office', name: 'Ghost', isFranchise: true, isFranchiseOffice: true, active: true }];
+        const viaFixture = Pricing.rateAsOf('ghost_office', null, Date.now(), fixStores);   // AGY-2: the fixture topology governs SR-10
+        const viaLive = Pricing.rateAsOf('ghost_office', null, Date.now());
+        const d = DB.get(); const savedStores = d.stores;
+        d.stores = savedStores.filter(s => s.id !== 'head_office');                          // AGY-3: billed sender, row MISSING
+        Sync._pricingFresh = false;
+        const g = Transfer._pricingSubmitGate('head_office', 'cockburn');
+        d.stores = savedStores;
+        delete DB.get().pricingConfig;
+        try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_ver'); } catch (e) {}
+        return { valOk: val.ok === true, unresAfterValidate, unresAfterArm, verAfterArm, fixErr: viaFixture.error, liveNotSet: viaLive.notSet === true, gateHold: g.hold || null, gateOk: g.ok === true };
+      });
+      rec('S-274', 'W42-C6/AGY-2/AGY-3: validate never arms the restore hold (the write does); SR-10 honours the caller topology; a billed head_office sender is gated even with its row missing', r.valOk && r.unresAfterValidate === null && r.unresAfterArm === '1' && r.verAfterArm === null && r.fixErr === 'PRICING_DATA_ERROR' && r.liveNotSet === true && r.gateOk === false && r.gateHold === 'NO_FRESH_OBSERVATION', `valOk=${r.valOk} unresVal=${r.unresAfterValidate} unresArm=${r.unresAfterArm} verArm=${r.verAfterArm} fix=${r.fixErr} live=${r.liveNotSet} gateHold=${r.gateHold}`); await ctx.close(); }
+
+
+
 
     } catch (e) { console.log(`  [SUITE-ABORT] a sentinel crashed the remainder of the run (expected under clean-boot mutations — results above are still valid): ${e && e.message}`); }
   } finally { await b.close(); }
