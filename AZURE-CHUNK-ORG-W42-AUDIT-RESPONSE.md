@@ -78,6 +78,10 @@ surfaces) · topology 256/256 (no server change).
 **Ops note:** the R1 full sweep was killed mid-run (250/284 caught, no failures, process terminated) —
 collateral of auditor cleanup on the shared machine; relaunched after the R2 fix gates.
 
+**FULL SWEEP (2026-07-16, post-R2, single clean detached run): 289 CAUGHT, 0 BLIND, 0 skipped,
+0 INFRA-FAIL of 289.** Every mutation in the harness — the whole app plus all fifteen W4.2 sentinels and
+their b-variants — is detected.
+
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
 editor exists in today's UI (route support ships now; UI = W5) · the freshness half of the submit gate is
