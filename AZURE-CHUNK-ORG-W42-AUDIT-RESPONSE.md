@@ -69,7 +69,11 @@ types; rollback + non-durable writer echoes; the real failed restore write via a
 **Mutations:** S-272 redesigned (type-coercion revert), plus S-272b/S-273b/S-274b/S-275/S-275b —
 **289 total, parity 266 ↔ 266**, anchor scan 289/289.
 
-**Round-2-fix gates (2026-07-16):** recorded below after the run.
+**Round-2-fix gates (2026-07-16):** smoke **266/266** (S-275 drives the REAL leader-election handler —
+one harness fix: the sentinel initializes `_initLeaderElection()` since the harness boot skips it) ·
+scoped saboteur S-261..S-275 incl. b-variants: **19/19 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single
+clean detached run, baseline 266/266) · anchor scan **289/289** · static/CSP/dupes clean (unchanged
+surfaces) · topology 256/256 (no server change).
 
 **Ops note:** the R1 full sweep was killed mid-run (250/284 caught, no failures, process terminated) —
 collateral of auditor cleanup on the shared machine; relaunched after the R2 fix gates.
