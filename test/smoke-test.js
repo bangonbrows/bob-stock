@@ -2697,11 +2697,27 @@ async function runSmoke(repo) {
         Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-02T00:00:00Z', pricingVersion: 7 });   // control: exact match
         let confOk = null; try { confOk = localStorage.getItem('bob_pricing_conf_at'); } catch (e) {}
         const matchFresh = Sync._pricingFresh;
+        // R2-C2 matrix: type-coerced ''/null confirm nothing even PRE-activation (adopted 0); a NUMERIC 0
+        // is the server's honest pre-activation statement (the ONLY zero that passes); numeric 0 against
+        // an ACTIVATED device confirms nothing.
+        delete DB.get().pricingConfig;
+        try { ['bob_pricing_activated','bob_pricing_stale','bob_pricing_conf_at','bob_pricing_unresolved'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+        Sync._pricingFresh = false;
+        Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-03T00:00:00Z', pricingVersion: '' });
+        const preEmpty = Sync._pricingFresh;
+        Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-03T00:00:00Z', pricingVersion: null });
+        const preNull = Sync._pricingFresh;
+        Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-03T00:00:00Z', pricingVersion: 0 });
+        const preZero = Sync._pricingFresh;
+        Sync._pricingFresh = false;
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        Sync._notePricingEcho({ pricingSettled: true, pricingInstant: '2025-07-03T00:00:00Z', pricingVersion: 0 });
+        const actZero = Sync._pricingFresh;
         delete DB.get().pricingConfig; Sync._pricingFresh = false;
         try { ['bob_pricing_activated','bob_pricing_stale','bob_pricing_conf_at','bob_pricing_unresolved','bob_pricing_ver'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
-        return { allBadInert: badResults.every(x => x), rollbackFresh, keptV, absentFresh, unres, confOk, matchFresh };
+        return { allBadInert: badResults.every(x => x), rollbackFresh, keptV, absentFresh, unres, confOk, matchFresh, preEmpty, preNull, preZero, actZero };
       });
-      rec('S-272', 'W42-C2/C3: non-matching/zero/absent version echoes + rollback/absent configs confirm NOTHING; only the exact match advances', r.allBadInert === true && r.rollbackFresh === false && r.keptV === 7 && r.absentFresh === false && r.unres === '1' && r.confOk === '2025-07-02T00:00:00Z' && r.matchFresh === true, `allBadInert=${r.allBadInert} rollbackFresh=${r.rollbackFresh} keptV=${r.keptV} absentFresh=${r.absentFresh} unres=${r.unres} confOk=${r.confOk} matchFresh=${r.matchFresh}`); await ctx.close(); }
+      rec('S-272', 'W42-C2/C3(+R2): version trust is TYPE-strict pre AND post activation; rollback/absent configs confirm NOTHING; numeric 0 passes only genuinely pre-activation', r.allBadInert === true && r.rollbackFresh === false && r.keptV === 7 && r.absentFresh === false && r.unres === '1' && r.confOk === '2025-07-02T00:00:00Z' && r.matchFresh === true && r.preEmpty === false && r.preNull === false && r.preZero === true && r.actZero === false, `allBadInert=${r.allBadInert} rollbackFresh=${r.rollbackFresh} keptV=${r.keptV} absentFresh=${r.absentFresh} unres=${r.unres} confOk=${r.confOk} matchFresh=${r.matchFresh} preEmpty=${r.preEmpty} preNull=${r.preNull} preZero=${r.preZero} actZero=${r.actZero}`); await ctx.close(); }
 
     // S-273 (OS-W42-AUDIT R1, Codex C4+C5): the WRITER CONTRACT — success requires the echoed publication
     // ADOPTED (no echo => fail, config untouched); a FAILED durable commit claims no freshness, and the
@@ -2709,6 +2725,8 @@ async function runSmoke(repo) {
     { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
       await page.route('**pricing-echo-none**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }));
       await page.route('**pricing-echo-good**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, config: { version: 8, global: {}, stores: {} } }) }));
+      await page.route('**pricing-echo-old**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, config: { version: 6, global: {}, stores: {} } }) }));
+      await page.route('**pricing-echo-v10**', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, config: { version: 10, global: {}, stores: {} } }) }));
       const r = await page.evaluate(async () => {
         try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
         DB.get().pricingConfig = { version: 7, global: {}, stores: {} };
@@ -2730,12 +2748,19 @@ async function runSmoke(repo) {
         await Sync._applyPricingConfig({ version: 9, global: {}, stores: {} });          // the IDENTICAL next fetch RETRIES
         const freshAfterRetry = Sync._pricingFresh;
         let markerAfterRetry = null; try { markerAfterRetry = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
+        // R2-C3: a ROLLBACK echo (older than what we hold) is NOT writer success (holding v9/marker 9)
+        Sync._pricingChangeUrl = 'https://x.logic.azure.com/pricing-echo-old';
+        const rollbackW = await Sync.publishPricingChange({ kind: 'global-product', productId: 'PX', rate: 20 });
+        // R2-C3: a valid NEWER echo whose durable commit fails is NOT writer success either
+        DB.commitDurable = async () => false;
+        Sync._pricingChangeUrl = 'https://x.logic.azure.com/pricing-echo-v10';
+        const nonDurableW = await Sync.publishPricingChange({ kind: 'global-product', productId: 'PX', rate: 20 });
         DB.commitDurable = realCommit;
         delete DB.get().pricingConfig; Sync._pricingFresh = false; Sync._pricingChangeUrl = null;
         try { ['bob_pricing_activated','bob_pricing_ver'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
-        return { noEchoOk: noEcho.ok, noEchoReason: noEcho.reason, vAfterNoEcho, goodOk: good.ok, vAfterGood, marker8, freshAfterFail, vMem, markerAfterFail, freshAfterRetry, markerAfterRetry };
+        return { noEchoOk: noEcho.ok, noEchoReason: noEcho.reason, vAfterNoEcho, goodOk: good.ok, vAfterGood, marker8, freshAfterFail, vMem, markerAfterFail, freshAfterRetry, markerAfterRetry, rollbackWOk: rollbackW.ok, nonDurableWOk: nonDurableW.ok };
       });
-      rec('S-273', 'W42-C4/C5: writer success requires the ADOPTED echo; a failed persist claims no freshness and the next identical fetch retries to the durable marker', r.noEchoOk === false && r.noEchoReason === 'no-echo' && r.vAfterNoEcho === 7 && r.goodOk === true && r.vAfterGood === 8 && r.marker8 === '8' && r.freshAfterFail === false && r.vMem === 9 && r.markerAfterFail === '8' && r.freshAfterRetry === true && r.markerAfterRetry === '9', `noEcho=${r.noEchoOk}/${r.noEchoReason} v=${r.vAfterNoEcho} good=${r.goodOk}/${r.vAfterGood} marker=${r.marker8} failFresh=${r.freshAfterFail} vMem=${r.vMem} mFail=${r.markerAfterFail} retryFresh=${r.freshAfterRetry} mRetry=${r.markerAfterRetry}`); await ctx.close(); }
+      rec('S-273', 'W42-C4/C5(+R2-C3): writer success = the echoed publication adopted EXACTLY + DURABLY; rollback/non-durable echoes fail; a failed persist retries on the next identical fetch', r.noEchoOk === false && r.noEchoReason === 'no-echo' && r.vAfterNoEcho === 7 && r.goodOk === true && r.vAfterGood === 8 && r.marker8 === '8' && r.freshAfterFail === false && r.vMem === 9 && r.markerAfterFail === '8' && r.freshAfterRetry === true && r.markerAfterRetry === '9' && r.rollbackWOk === false && r.nonDurableWOk === false, `noEcho=${r.noEchoOk}/${r.noEchoReason} v=${r.vAfterNoEcho} good=${r.goodOk}/${r.vAfterGood} marker=${r.marker8} failFresh=${r.freshAfterFail} vMem=${r.vMem} mFail=${r.markerAfterFail} retryFresh=${r.freshAfterRetry} mRetry=${r.markerAfterRetry} rollbackW=${r.rollbackWOk} nonDurableW=${r.nonDurableWOk}`); await ctx.close(); }
 
     // S-274 (OS-W42-AUDIT R1, Codex C6 + AGY-2 + AGY-3): VALIDATING a backup never arms the restore
     // pricing hold (only the restore WRITE does, via _armRestorePricingHold, which also drops the durable
@@ -2750,6 +2775,12 @@ async function runSmoke(repo) {
         Pages._armRestorePricingHold();
         let unresAfterArm = null, verAfterArm = 'x'; try { unresAfterArm = localStorage.getItem('bob_pricing_unresolved'); verAfterArm = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
         try { localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+        // R2-C4: a FAILED restore WRITE rolls back BOTH markers (the real _applyRestoreData, write forced to throw)
+        try { localStorage.setItem('bob_pricing_ver', '7'); } catch (e) {}
+        const _origSet = Storage.prototype.setItem;
+        Storage.prototype.setItem = function(k, v) { if (k === DB.KEY) throw new Error('quota'); return _origSet.apply(this, arguments); };
+        let applied = null; try { applied = Pages._applyRestoreData({ data: { products: [], stores: [], transactions: [], users: [], categories: [] } }); } finally { Storage.prototype.setItem = _origSet; }
+        let unresAfterFail = 'x', verAfterFail = null; try { unresAfterFail = localStorage.getItem('bob_pricing_unresolved'); verAfterFail = localStorage.getItem('bob_pricing_ver'); } catch (e) {}
         try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
         DB.get().pricingConfig = { version: 1, global: {}, stores: { somewhere: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
         const fixStores = [{ id: 'ghost_office', name: 'Ghost', isFranchise: true, isFranchiseOffice: true, active: true }];
@@ -2762,9 +2793,28 @@ async function runSmoke(repo) {
         d.stores = savedStores;
         delete DB.get().pricingConfig;
         try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_ver'); } catch (e) {}
-        return { valOk: val.ok === true, unresAfterValidate, unresAfterArm, verAfterArm, fixErr: viaFixture.error, liveNotSet: viaLive.notSet === true, gateHold: g.hold || null, gateOk: g.ok === true };
+        return { valOk: val.ok === true, unresAfterValidate, unresAfterArm, verAfterArm, applied, unresAfterFail, verAfterFail, fixErr: viaFixture.error, liveNotSet: viaLive.notSet === true, gateHold: g.hold || null, gateOk: g.ok === true };
       });
-      rec('S-274', 'W42-C6/AGY-2/AGY-3: validate never arms the restore hold (the write does); SR-10 honours the caller topology; a billed head_office sender is gated even with its row missing', r.valOk && r.unresAfterValidate === null && r.unresAfterArm === '1' && r.verAfterArm === null && r.fixErr === 'PRICING_DATA_ERROR' && r.liveNotSet === true && r.gateOk === false && r.gateHold === 'NO_FRESH_OBSERVATION', `valOk=${r.valOk} unresVal=${r.unresAfterValidate} unresArm=${r.unresAfterArm} verArm=${r.verAfterArm} fix=${r.fixErr} live=${r.liveNotSet} gateHold=${r.gateHold}`); await ctx.close(); }
+      rec('S-274', 'W42-C6/AGY-2/AGY-3(+R2-C4): validate never arms the hold; a FAILED restore write rolls back BOTH markers; SR-10 honours the caller topology; a billed head_office sender is gated with its row missing', r.valOk && r.unresAfterValidate === null && r.unresAfterArm === '1' && r.verAfterArm === null && r.applied === false && r.unresAfterFail === null && r.verAfterFail === '7' && r.fixErr === 'PRICING_DATA_ERROR' && r.liveNotSet === true && r.gateOk === false && r.gateHold === 'NO_FRESH_OBSERVATION', `valOk=${r.valOk} unresVal=${r.unresAfterValidate} unresArm=${r.unresAfterArm} verArm=${r.verAfterArm} applied=${r.applied} unresFail=${r.unresAfterFail} verFail=${r.verAfterFail} fix=${r.fixErr} live=${r.liveNotSet} gateHold=${r.gateHold}`); await ctx.close(); }
+
+    // S-275 (OS-W42-AUDIT R2, Codex C1): LEADERSHIP LOSS invalidates pricing freshness — both real
+    // production branches (the newer-leader heartbeat DEMOTION and the leader-exists STAND-DOWN). A
+    // demoted tab stops pulling; its freshness fact must not outlive its leadership.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
+        delete DB.get().pricingConfig;
+        Sync._isLeader = true; Sync._tabStartedAt = 1000; Sync._pricingFresh = true;
+        Sync._bc.onmessage({ data: { type: 'heartbeat', tabId: 'zz_newer', startedAt: 999999999999999 } });   // the real MFL-011 demotion branch
+        const demotedLeader = Sync._isLeader, demotedFresh = Sync._pricingFresh;
+        const g1 = Pricing.commitGate('cockburn');
+        Sync._pricingFresh = true; Sync._isLeader = false;
+        Sync._bc.onmessage({ data: { type: 'leader-exists', tabId: 'other' } });                              // the stand-down branch
+        const standDownFresh = Sync._pricingFresh;
+        Sync._pricingFresh = false;
+        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh };
+      });
+      rec('S-275', 'W42-R2-C1: heartbeat demotion + leader-exists stand-down both invalidate freshness; the demoted tab holds HO->franchise commits', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDownFresh=${r.standDownFresh}`); await ctx.close(); }
 
 
 

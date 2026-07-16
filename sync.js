@@ -546,12 +546,17 @@ const Sync = {
       if (body.pricingSettled !== true) return;
       const inst = body.pricingInstant;
       if (typeof inst !== 'string' || !Number.isFinite(Date.parse(inst))) return;
-      const pv = Number(body.pricingVersion);
+      const rawPv = body.pricingVersion;
+      // OS-W42-AUDIT R1 C2 + R2 C2: a settled echo confirms ONLY an exact, verifiable version match, and
+      // version-strict means TYPE-strict — ''/null/undefined coerce under Number() and must confirm
+      // NOTHING. Only a numeric non-negative integer counts; 0 (the server's own "no pricing config"
+      // statement) counts ONLY on a genuinely pre-activation device (never activated, nothing adopted).
+      if (typeof rawPv !== 'number') return;
+      const pv = rawPv;
+      if (!Number.isFinite(pv) || pv < 0 || Math.floor(pv) !== pv) return;
       const adopted = (DB.get() && DB.get().pricingConfig && Number(DB.get().pricingConfig.version)) || 0;
-      // OS-W42-AUDIT R1 (Codex C2): a settled echo confirms ONLY an exact, verifiable version match. A
-      // missing version (NaN) confirms nothing; ''/null/0 coerce to 0, which matches ONLY a genuinely
-      // pre-activation device (adopted 0 = the server's own "no pricing config" statement).
-      if (!Number.isFinite(pv) || pv < 0) return;
+      let _act = false; try { _act = localStorage.getItem('bob_pricing_activated') === '1'; } catch (e) {}
+      if (pv === 0 && (_act || adopted > 0)) return;   // a "no pricing" claim against an activated/adopted device confirms nothing (R2-C2)
       if (pv !== adopted) {
         // the server's latest isn't what we hold — re-fetch config; the horizon must NOT advance
         if (pv > adopted) this._fetchRemoteConfig().catch(() => {});
@@ -591,7 +596,11 @@ const Sync = {
     try { await this._applyPricingConfig(j.config); } catch (e) {}
     const dA = DB.get();
     const adoptedV = (dA && dA.pricingConfig && Number(dA.pricingConfig.version)) || 0;
-    if (adoptedV < echoedV) return { ok: false, reason: 'echo-not-adopted' };
+    let _durV = 0; try { _durV = Number(localStorage.getItem('bob_pricing_ver')) || 0; } catch (e) {}
+    // OS-W42-AUDIT R2 (Codex C3): success = the echoed publication adopted EXACTLY, DURABLY, and freshness
+    // confirmed by the adoption itself — a rollback echo (older than what we hold) or a non-durable adopt
+    // reports the honest unconfirmed reason, reaching the caller's "server may have committed" warning UI.
+    if (adoptedV !== echoedV || _durV !== echoedV || this._pricingFresh !== true) return { ok: false, reason: 'echo-not-adopted' };
     return { ok: true };
   },
   // AA-04/AA-05: device-level cost-payload scrub with a version-independent pending flag (mirrors the
@@ -1056,6 +1065,7 @@ const Sync = {
           this._isLeader = false;
           this._pendingClaim = false;
           this._lastLeaderPing = Date.now();
+          this._pricingFresh = false;   // OS-W42-AUDIT R2 (Codex C1): standing down = a leadership loss — the pull loop is leader-only, a freshness fact must not outlive it
           break;
 
         case 'heartbeat':
@@ -1069,6 +1079,7 @@ const Sync = {
             if (this._leaderHeartbeat) { clearInterval(this._leaderHeartbeat); this._leaderHeartbeat = null; }
             if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
             this._lastLeaderPing = Date.now();
+            this._pricingFresh = false;   // OS-W42-AUDIT R2 (Codex C1): the heartbeat DEMOTION is a leadership loss — the demoted tab stops pulling, so its freshness fact would otherwise grow stale forever
           }
           break;
 

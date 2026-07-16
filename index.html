@@ -4030,6 +4030,15 @@ const Pages = {
       if(Array.isArray(data.recordSteps))         data.recordSteps=data.recordSteps.filter(s=>s&&(inS(s.ownerStoreId)||inS(s.fromStoreId)||inS(s.toStoreId)));
     }catch(e){}
   },
+  _applyRestoreData(res){  // OS-W42-AUDIT R1 C6 + R2 C4: the arm/write/rollback core of a restore, extracted so the failed-write rollback is directly provable. A FAILED write rolls back BOTH markers — the device keeps its old data AND its old adoption bookkeeping (bob_pricing_ver included).
+    let _preUnres=false,_preVer=null; try{ _preUnres=localStorage.getItem('bob_pricing_unresolved')==='1'; _preVer=localStorage.getItem('bob_pricing_ver'); }catch(e){}
+    try{
+      if(!Pages._snapshotForUndo()){ UI.toast('Restore cancelled — could not save a safety snapshot first (device storage may be full). Free up space and try again.','error'); return false; }  // GPT-9 (Wave M3, GPT P2): never overwrite current data without a usable undo snapshot
+      Pages._armRestorePricingHold();   // OS-W42-AUDIT R1 (Codex C6): armed immediately BEFORE the replacement write (never by validation); rolled back below if the write throws
+      localStorage.setItem(DB.KEY,JSON.stringify(res.data));DB._cache=null;
+      return true;
+    }catch(err){ try{ if(!_preUnres) localStorage.removeItem('bob_pricing_unresolved'); if(_preVer!=null) localStorage.setItem('bob_pricing_ver',_preVer); }catch(e){} UI.toast('Restore failed: '+err.message,'error'); return false; }
+  },
   _armRestorePricingHold(){  // OS-W4.2 P5b (SR-104) + OS-W42-AUDIT R1 (Codex C6): armed at the restore WRITE — the restored device holds pricing-sensitive commits until the next successful config fetch; the pre-restore bob_pricing_ver marker is dropped with it (its durable config is being replaced).
     try{ localStorage.setItem('bob_pricing_unresolved','1'); localStorage.removeItem('bob_pricing_ver'); }catch(e){}
   },
@@ -4047,14 +4056,9 @@ const Pages = {
       if(!(await Pages._verifyBackupChecksum(parsed))){ UI.toast('Restore failed: backup failed its integrity check — the file may be corrupted or edited.','error'); return; }
       const res=Pages._validateAndScrubBackup(parsed);
       if(!res.ok){ UI.toast('Restore failed: '+res.error,'error'); return; }
-      let _preUnres=false; try{ _preUnres=localStorage.getItem('bob_pricing_unresolved')==='1'; }catch(e){}
-      try{
-        if(!Pages._snapshotForUndo()){ UI.toast('Restore cancelled — could not save a safety snapshot first (device storage may be full). Free up space and try again.','error'); return; }  // GPT-9 (Wave M3, GPT P2): never overwrite current data without a usable undo snapshot
-        Pages._armRestorePricingHold();   // OS-W42-AUDIT R1 (Codex C6): armed immediately BEFORE the replacement write (never by validation); rolled back below if the write throws
-        localStorage.setItem(DB.KEY,JSON.stringify(res.data));DB._cache=null;
-        UI.toast('Data restored — reloading in 2 seconds...','success');
-        setTimeout(()=>location.reload(),2000);
-      }catch(err){ if(!_preUnres){ try{ localStorage.removeItem('bob_pricing_unresolved'); }catch(e){} } UI.toast('Restore failed: '+err.message,'error');}
+      if(!Pages._applyRestoreData(res))return;
+      UI.toast('Data restored — reloading in 2 seconds...','success');
+      setTimeout(()=>location.reload(),2000);
     };
     reader.readAsText(file);
     },'Restore');
