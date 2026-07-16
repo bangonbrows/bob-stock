@@ -5,11 +5,27 @@ froze (`AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md`, locked at R13). This is the wave th
 retroactive-invoice bug (GAP-1). Branch `azure-phase-5-8-server`; audit the LATEST commit. Both auditors in
 parallel; isolate your own worktree; report-only. **RUN it, don't just read it.**
 
+> ## ROUND 2 — re-audit after the R1 fixes
+> R1 verdicts: Codex BLOCK ×6 (W42-A-C1..C6, all runtime-proven — all six REAL, all fixed) · AGY BLOCK ×3
+> (AGY-2 fixed; AGY-3 fixed as a predicate UNION; AGY-1 UTC-midnight REFUTED per the frozen SR-25
+> calendar-day pin — Codex independently retained the same behaviour as the deliberate W4.3 seam).
+> Full per-finding ground-truth ledger + fixes: `AZURE-CHUNK-ORG-W42-AUDIT-RESPONSE.md` (Round 1 table).
+> **What changed:** sync.js `_applyPricingConfig` (exact-match-only freshness, `bob_pricing_ver` durable
+> marker + persist retry, rollback/absent-item fail-closed), `_notePricingEcho` (version-strict),
+> `publishPricingChange` (echo REQUIRED + adopted), the `offline` listener; index.html `commitGate`
+> (healthy-connection hold), `rateAsOf(...,storesOpt)` (SR-10 on the caller's topology), writer toasts
+> (honest "server may have committed"), `_armRestorePricingHold` at the restore WRITE (validation never
+> arms it); phase2.js gate predicate union. **New sentinels S-271..S-274 + 4 mutations (parity 265↔265);
+> S-262's mutation re-anchored.** Numbers below updated for round 2: smoke is now **265/265** and the
+> scoped saboteur set is **S-261..S-274 (14/14 CAUGHT expected)**. Focus the re-audit on the fixed
+> surfaces + any residual you can prove at runtime; the frozen spec is unchanged (every fix implements an
+> existing pin — nothing reopened).
+
 ## Non-negotiables (framework rules)
-- `cd test && node smoke-test.js` → **261/261** (10 new sentinels S-261..S-270 = S-W4-1/2/3/4/6/9/11/16/
-  17/18). `node topology-proof.js` (from the repo root: `node test/topology-proof.js`) → **256/256**.
-- Scoped saboteur: `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270
-  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` — 10/10 CAUGHT expected. (Scoped ONLY — the full
+- `cd test && node smoke-test.js` → **265/265** (S-261..S-270 = the W4.2 build; S-271..S-274 = the R1
+  audit fixes). `node topology-proof.js` (from the repo root: `node test/topology-proof.js`) → **256/256**.
+- Scoped saboteur: `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-273,S-274
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` — 14/14 CAUGHT expected. (Scoped ONLY — the full
   sweep is Claude's local gate.)
 - Report ONLY; numbered findings (P0-P3 + concrete repro). Claude ground-truths every finding.
 - The frozen spec is the requirement; anything needing a SPEC change reopens W4.2's review — say so.
@@ -37,8 +53,9 @@ parallel; isolate your own worktree; report-only. **RUN it, don't just read it.*
    build): an offline/dormant HO device now HOLDS HO→franchise submits until a fresh server observation.
    That is a REAL behaviour change at cutover (deliberate, spec-pinned). Confirm the predicate (from
    non-franchise warehouse → franchise store) catches exactly the billing events and nothing else.
-4. **`_applyPricingConfig` persist-failure** logs and keeps the in-memory copy for the session (no pending
-   flag) — judge whether a durable-commit failure needs the AA-05-style pending flag instead.
+4. **(RESOLVED in R1 — Codex C5 proved the old claim false.)** `_applyPricingConfig` persist-failure now
+   claims NO freshness, clears NO durable flags, and the next identical fetch RETRIES persistence via the
+   P4 `bob_pricing_ver` marker (the accessPolicy pattern, as the spec always pinned).
 5. **The dollar half of S-W4-2 (price freezing) lands with W4.3 stamps** — S-262 proves the DISCOUNT half
    only, per the W4.2/W4.3 seam.
 
@@ -55,8 +72,9 @@ parallel; isolate your own worktree; report-only. **RUN it, don't just read it.*
 - Sentinel/saboteur quality: does each mutation flip ONLY via real behaviour (no tautologies)?
 
 ## Gates already green (verify, don't trust)
-smoke **261/261** · topology **256/256** · scoped saboteur 10/10 CAUGHT (result in the wave doc) · static
-PASS · CSP PASS · dupes grep clean. The FULL sweep runs as Claude's local gate before convergence.
+smoke **265/265** · topology **256/256** · scoped saboteur 14/14 CAUGHT (result in the wave doc) · static
+PASS · CSP PASS · dupes grep clean · anchor-integrity scan 284/284. The FULL sweep runs as Claude's local
+gate before convergence.
 
 ## Verdict
 PASS / PASS-with-notes / BLOCK, numbered findings with concrete repros.

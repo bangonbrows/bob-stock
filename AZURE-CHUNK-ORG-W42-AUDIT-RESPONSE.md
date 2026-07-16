@@ -21,6 +21,39 @@
 smoke **261/261** · topology **256/256** · static PASS · CSP PASS · dupes grep clean ·
 scoped saboteur (the 10 new mutations): **10/10 CAUGHT** (after two gate-driven fixes: S-269 STRENGTHENED — the first mutation was BLIND because no assertion exercised activated-without-config, the sentinel now asserts that fail-close directly; and the S-266 INFRA root-caused to a comment-splice from the build patch anchor, repaired @ dd64f9c) · **FULL SWEEP: 280/280 accounted — 279 CAUGHT + S-150b re-anchored (its target line moved into the legacy-fallback branch) and verified CAUGHT via a deterministic mutated-copy run — 0 BLIND, 0 unexplained skips.**
 
+## ROUND 1 (2026-07-16): Codex BLOCK ×6 (all runtime-proven) · AGY BLOCK ×3 — all ground-truthed
+
+**Verdict ledger (every finding checked against code + the frozen spec before any edit):**
+
+| # | Finding | Ground truth | Action |
+|---|---|---|---|
+| Codex C1 (P1) | offline after a settled observation keeps freshness; a real HO→franchise transfer commits offline | **REAL — spec-pinned** (P5: "the commit path additionally requires the sync layer's connection state to be currently healthy"); I registered `online` but never `offline`, and `commitGate` never checked the connection | `offline` listener invalidates `_pricingFresh`; `commitGate` independently holds on `navigator.onLine === false` |
+| Codex C2 (P1) | settled echoes with missing/0/''/null `pricingVersion` clear stale + advance the horizon + open the gate | **REAL** — the guard only enforced the mismatch when the version was finite-positive | version-strict: a missing version (NaN) confirms nothing; 0 matches ONLY a genuinely pre-activation device (adopted 0) |
+| Codex C3 (P1) | a served rollback or post-activation absent item counts as a fresh observation | **REAL** — `raw == null` and `newV <= curV` both called `fresh()` unconditionally | post-activation absence = fail closed (not fresh, restore hold kept); `newV < curV` rollback confirms nothing; only the EXACT match (`newV === curV`) freshens |
+| Codex C4 (P1) | pricing writers report success without an echoed/adopted config | **REAL** — `j.config` was optional | the echoed publication is REQUIRED + must be adopted (`no-echo` / `bad-echo` / `echo-not-adopted` failures); writer toasts now say honestly "the server may have committed — sync before retrying" |
+| Codex C5 (P2) | failed durable commit never retried; the P4-pinned `bob_pricing_ver` marker absent | **REAL — the spec pin was simply not built** (engineer's note 4 was wrong; Codex proved the "next fetch retries" claim false) | `bob_pricing_ver` = last DURABLY committed version; a failed persist claims NO freshness + clears NO durable flags; the next identical fetch (newV === curV, marker trails) RETRIES persistence |
+| Codex C6 (P2) | backup VALIDATION arms `bob_pricing_unresolved`; a cancelled/failed restore strands a healthy device in HOLD | **REAL** | marker moved out of `_validateAndScrubBackup` into `_armRestorePricingHold()`, armed by `_importBackup` at the restore WRITE, rolled back if the write throws (also drops the stale `bob_pricing_ver`) |
+| AGY-1 | UTC-midnight as-of anchoring = arbitrary intra-day boundary for Perth | **REFUTED** — SR-25 pins CALENDAR-DAY granularity with a deterministic instant (the same date string = the same number on every device); a local-timezone anchor would break exactly that. Codex independently reproduced the behaviour and RETAINED it as the deliberate W4.2/W4.3 seam (exact instants land with the W4.3 stamps) | no change; adjudication recorded |
+| AGY-2 | `rateAsOf` reads live `DB.get().stores` while the invoice runs on a fixture `d` (mixed sources) | **REAL as a latent trap** (every live caller passes `DB.get()` today, but a snapshot caller would get live-topology SR-10 verdicts) | `rateAsOf(storeId, productId, dateMs, storesOpt)` — the SR-10 franchise check honours the caller's topology; the invoice passes `d.stores` |
+| AGY-3 | gate predicate (`type === 'warehouse'`) diverges from `_isHOSupply` (`stockFromStoreId === 'head_office'`) | **PARTIALLY REAL** — the dangerous direction (billed-but-ungated) exists in one edge: a missing/retyped `head_office` store row passed the gate; the second-warehouse divergence is gated-but-unbilled (fail-safe). Codex judged the spec predicate correct; the fix is the UNION (a superset gate, still spec-conformant) | gate = (warehouse-typed non-franchise sender) OR (`fromStoreId === 'head_office'`) → franchise |
+
+**New coverage:** sentinels **S-271..S-274** (offline gate · version-strict echo/config trust · writer echo
+contract + persist retry · restore-hold timing + caller topology + gate union) with four matching saboteur
+mutations (parity 265 ↔ 265); **S-262's mutation re-anchored** (the invoice line gained `d.stores`).
+Anchor-integrity scan (the runner's own MUTATIONS array eval'd, all finds checked CRLF-normalized):
+**284/284 match**.
+
+**Round-1-fix gates (2026-07-16):** smoke **265/265** (S-271..S-274 pass first run, incl. the real
+Playwright offline emulation) · topology **256/256** · static PASS · CSP PASS · dupes grep clean ·
+anchor-integrity scan **284/284** · scoped saboteur S-261..S-274: **14/14 CAUGHT, 0 BLIND, 0 skipped,
+0 INFRA** (single clean run, detached process). The FULL sweep (all 284) relaunched detached as the local
+gate; its result is recorded here when it completes — the anchor scan already proves no mutation lost its
+target.
+
+**Business note for a future decision (not W4.2):** if HO ever operates a SECOND warehouse, its supplies to
+franchises would be gated by pricing but NOT billed by the invoice (`_isHOSupply` is pinned to
+`head_office` per Kunal's "bill only stock WE supplied"). Flagged, deliberately unchanged.
+
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
 editor exists in today's UI (route support ships now; UI = W5) · the freshness half of the submit gate is
