@@ -54,6 +54,26 @@ target.
 franchises would be gated by pricing but NOT billed by the invoice (`_isHOSupply` is pinned to
 `head_office` per Kunal's "bill only stock WE supplied"). Flagged, deliberately unchanged.
 
+## ROUND 2 (2026-07-16): AGY PASS · Codex BLOCK ×4 (runtime-proven, from the recovered fresh-chat session) — all ground-truthed REAL
+
+| # | Finding | Ground truth | Action |
+|---|---|---|---|
+| W42-R2-C1 (P1) | leadership DEMOTION (newer-leader heartbeat) and the leader-exists stand-down keep `_pricingFresh` — a demoted tab stops pulling, so its freshness fact grows stale forever | **REAL** — R1 only invalidated on PROMOTION (`_becomeLeader`); both loss branches (`sync.js` heartbeat demotion + leader-exists) confirmed bare | `_pricingFresh = false` on BOTH leadership-loss branches |
+| W42-R2-C2 (P1) | `Number(body.pricingVersion)` coerces `''`/`null` → 0, which passes as the pre-activation statement; numeric 0 also freshened an activated/config-lost device | **REAL** — my R1 fix was value-strict but not TYPE-strict, and judged zero only against the in-memory adopted version | TYPE-strict: only a numeric non-negative integer counts; version 0 passes ONLY when never activated AND nothing adopted |
+| W42-R2-C3 (P1) | writers report success for a ROLLBACK echo (older than held) or a NON-DURABLE adoption (`adoptedV < echoedV` was the only check) | **REAL** — the R1 check proved presence, not durable exact adoption; the R1-C4/C5 family survived in this corner | success = adopted version `===` echoed version AND `bob_pricing_ver === echoed` AND freshness confirmed by the adoption; otherwise the honest `echo-not-adopted` path (the "server may have committed" UI) |
+| W42-R2-C4 (P2) | a failed restore write rolls back the unresolved hold but NOT the removed `bob_pricing_ver` | **REAL** (minor: it self-healed via one redundant durable commit, but it is state loss) | the restore core extracted to `_applyRestoreData` with a two-marker snapshot/rollback — and the failed-WRITE path is now directly sentinel-provable |
+
+**New coverage:** sentinel **S-275** (both leadership-loss branches, driven through the real `onmessage`
+handler); **S-272/S-273/S-274 strengthened** with Codex's exact matrices (pre/post-activation version
+types; rollback + non-durable writer echoes; the real failed restore write via a throwing `DB.KEY` write).
+**Mutations:** S-272 redesigned (type-coercion revert), plus S-272b/S-273b/S-274b/S-275/S-275b —
+**289 total, parity 266 ↔ 266**, anchor scan 289/289.
+
+**Round-2-fix gates (2026-07-16):** recorded below after the run.
+
+**Ops note:** the R1 full sweep was killed mid-run (250/284 caught, no failures, process terminated) —
+collateral of auditor cleanup on the shared machine; relaunched after the R2 fix gates.
+
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
 editor exists in today's UI (route support ships now; UI = W5) · the freshness half of the submit gate is

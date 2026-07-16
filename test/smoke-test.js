@@ -2804,6 +2804,7 @@ async function runSmoke(repo) {
       const r = await page.evaluate(() => {
         try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
         delete DB.get().pricingConfig;
+        if (!Sync._bc) Sync._initLeaderElection();   // the harness boot skips election — create the REAL channel + handler
         Sync._isLeader = true; Sync._tabStartedAt = 1000; Sync._pricingFresh = true;
         Sync._bc.onmessage({ data: { type: 'heartbeat', tabId: 'zz_newer', startedAt: 999999999999999 } });   // the real MFL-011 demotion branch
         const demotedLeader = Sync._isLeader, demotedFresh = Sync._pricingFresh;
