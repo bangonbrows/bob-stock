@@ -237,6 +237,7 @@ const Sync = {
   // device unauthorised, surface it, and STOP — never a retry-loop on auth failure.
   _handleUnauthorized(where) {
     this._unauthorized = true;
+    this._pricingFresh = false;   // OS-W42-AUDIT pre-R4 (the family's 401 sibling): an auth-paused device stops pulling — no freshness fact survives the pause
     try { sessionStorage.removeItem('bob_sync_config'); } catch (e) {}
     this._showStatus('Sync not authorised — enter sync keys in Settings', 'error', 0);
     try { if (typeof Diag !== 'undefined') Diag.log('auth', '401 unauthorized from ' + where); } catch (e) {}

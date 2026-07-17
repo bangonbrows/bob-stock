@@ -2821,14 +2821,20 @@ async function runSmoke(repo) {
         Sync._tryClaimLeader();
         await new Promise(r2 => setTimeout(r2, 1300));   // jitter (<=300ms) + the 500ms claim window + buffer
         const abandonedFresh = Sync._pricingFresh, abandonedLeader = Sync._isLeader;
+        // pre-R4 sibling: the central 401 pause stops all pulling — freshness must not survive it
+        Sync._pricingFresh = true;
+        const _prevUnauth = Sync._unauthorized;
+        Sync._handleUnauthorized('S-275-probe');
+        const unauthFresh = Sync._pricingFresh;
+        Sync._unauthorized = _prevUnauth;
         // R3 sibling: stop() teardown — a stopped sync can observe nothing (LAST: closes the channel)
         Sync._pricingFresh = true;
         try { Sync.stop(); } catch (e) {}
         const stoppedFresh = Sync._pricingFresh;
         Sync._pricingFresh = false;
-        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, stoppedFresh };
+        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, stoppedFresh };
       });
-      rec('S-275', 'W42-R2-C1+R3-C1: EVERY leadership-loss path invalidates freshness — heartbeat demotion, stand-down, tiebreak loss, abandoned claim, stop()', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} stopped=${r.stoppedFresh}`); await ctx.close(); }
+      rec('S-275', 'W42-R2/R3-C1+pre-R4: EVERY stop-pulling path invalidates freshness — heartbeat demotion, stand-down, tiebreak loss, abandoned claim, 401 pause, stop()', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
 
 
 
