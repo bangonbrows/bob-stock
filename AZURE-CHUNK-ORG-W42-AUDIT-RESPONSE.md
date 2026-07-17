@@ -94,8 +94,20 @@ S-275c/S-275d/S-275e added — **292 mutations, parity 266 ↔ 266, anchor scan 
 
 **Round-3-fix gates (2026-07-17):** smoke **266/266** (S-275 asserts all five paths in one run) · scoped
 saboteur S-261..S-275e: **22/22 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run,
-baseline 266/266) · anchor scan **292/292** · topology 256/256 (no server change) · full sweep (292)
-relaunched detached, result recorded below.
+baseline 266/266) · anchor scan **292/292** · topology 256/256 (no server change).
+
+## PRE-ROUND-4 (2026-07-17): the family's 401 sibling — from Codex's FILTERED round-4 probe, ground-truthed by the engineer
+
+Codex's round-4 session was cut off by its provider's content filter while running a probe named
+`w42-r4-unauthorized-freshness-probe.js` (the probe's own security-flavoured naming tripped the filter —
+see the cover-note guidance). The QUESTION the probe was chasing was ground-truthed directly: **REAL** —
+`_handleUnauthorized` (the central 401 pause, D6) stops ALL pulling but left `_pricingFresh` standing, so
+a key-rotated device could keep passing the P5 commit gate on an ever-staler config. Fixed @ 51c6bbe: the
+401 pause invalidates freshness (the sixth stop-pulling path); S-275 asserts it; mutation S-275f.
+
+**Pre-R4 gates:** smoke **266/266** · scoped saboteur S-261..S-275f: **23/23 CAUGHT, 0 BLIND, 0 skipped,
+0 INFRA** (single clean detached run) · anchor scan **293/293** · full sweep (293) relaunched detached,
+result recorded below.
 
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default

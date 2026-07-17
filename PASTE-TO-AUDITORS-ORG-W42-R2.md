@@ -5,12 +5,15 @@
 > freshness — the third member of the R2-C1 stale-follower family). Fixed — and an engineer inventory of
 > EVERY leadership-loss/absence path found two more bare siblings, fixed in the same commit: a claim
 > ABANDONED to a live leader's mid-claim heartbeat, and `stop()` teardown. Regression test S-275 now
-> drives ALL FIVE paths through the real election machinery (heartbeat demotion · leader-exists
-> stand-down · tiebreak loss · abandoned claim · stop), with three new mutation-testing cases
-> (S-275c/d/e). The scoped mutation command below now lists 22 cases → **22/22 detected** expected.
-> Ground-truth ledger: `AZURE-CHUNK-ORG-W42-AUDIT-RESPONSE.md` (Round 3 table). Focus: the freshness
-> lifecycle across every way a tab can gain, lose, or fail to gain the sync-leader role — is there ANY
-> remaining path where a tab that stops pulling keeps a freshness fact?
+> drives ALL the stop-pulling paths through the real machinery (heartbeat demotion · leader-exists
+> stand-down · tiebreak loss · abandoned claim · **the central 401 auth-pause** · stop), with four new
+> mutation-testing cases (S-275c/d/e/f). The 401 sibling was ground-truthed and fixed pre-round from a
+> round-3 reviewer probe that was cut off mid-run (`_handleUnauthorized` pauses all pulling and now
+> invalidates freshness too). The scoped mutation command below now lists 23 cases → **23/23 detected**
+> expected. Ground-truth ledger: `AZURE-CHUNK-ORG-W42-AUDIT-RESPONSE.md` (Round 3 table). Focus: the
+> freshness lifecycle across every way a device can STOP OBSERVING server pricing state — leadership
+> changes, connection changes, auth pauses, teardown — is there ANY remaining path where a tab that
+> stops pulling keeps a freshness fact?
 
 > ## ROUND 3 — re-review after the round-2 fixes
 > Round-2 verdicts: AGY PASS · Codex ×4 findings (W42-R2-C1..C4) — all confirmed real, all fixed:
@@ -57,8 +60,8 @@ report findings only — the engineer applies any changes.
 - `cd test && node smoke-test.js` → **266/266** expected.
 - `node test/topology-proof.js` (repo root) → **256/256** expected.
 - Scoped mutation testing:
-  `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-272b,S-273,S-273b,S-274,S-274b,S-275,S-275b,S-275c,S-275d,S-275e
-  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **22/22 detected** expected. (Scoped only — the
+  `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-272b,S-273,S-273b,S-274,S-274b,S-275,S-275b,S-275c,S-275d,S-275e,S-275f
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **23/23 detected** expected. (Scoped only — the
   full mutation sweep is the engineer's local gate.)
 - `cd test && node static-check.js` and `node csp-check.js` → PASS.
 
