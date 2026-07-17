@@ -2801,7 +2801,7 @@ async function runSmoke(repo) {
     // production branches (the newer-leader heartbeat DEMOTION and the leader-exists STAND-DOWN). A
     // demoted tab stops pulling; its freshness fact must not outlive its leadership.
     { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
-      const r = await page.evaluate(() => {
+      const r = await page.evaluate(async () => {
         try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
         delete DB.get().pricingConfig;
         if (!Sync._bc) Sync._initLeaderElection();   // the harness boot skips election — create the REAL channel + handler
@@ -2812,10 +2812,23 @@ async function runSmoke(repo) {
         Sync._pricingFresh = true; Sync._isLeader = false;
         Sync._bc.onmessage({ data: { type: 'leader-exists', tabId: 'other' } });                              // the stand-down branch
         const standDownFresh = Sync._pricingFresh;
+        // R3-C1: the election-TIEBREAK loser (a pending claimant beaten by an older tab) invalidates too
+        Sync._isLeader = false; Sync._pendingClaim = true; Sync._tabStartedAt = 5000; Sync._pricingFresh = true;
+        Sync._bc.onmessage({ data: { type: 'claim-leader', tabId: 'aa_older', startedAt: 100 } });
+        const tiebreakFresh = Sync._pricingFresh, tiebreakPending = Sync._pendingClaim;
+        // R3 sibling: a claim ABANDONED to a live leader's mid-claim ping (never demoted, never told leader-exists)
+        Sync._isLeader = false; Sync._pricingFresh = true; Sync._lastLeaderPing = Date.now() + 60000;
+        Sync._tryClaimLeader();
+        await new Promise(r2 => setTimeout(r2, 1300));   // jitter (<=300ms) + the 500ms claim window + buffer
+        const abandonedFresh = Sync._pricingFresh, abandonedLeader = Sync._isLeader;
+        // R3 sibling: stop() teardown — a stopped sync can observe nothing (LAST: closes the channel)
+        Sync._pricingFresh = true;
+        try { Sync.stop(); } catch (e) {}
+        const stoppedFresh = Sync._pricingFresh;
         Sync._pricingFresh = false;
-        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh };
+        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, stoppedFresh };
       });
-      rec('S-275', 'W42-R2-C1: heartbeat demotion + leader-exists stand-down both invalidate freshness; the demoted tab holds HO->franchise commits', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDownFresh=${r.standDownFresh}`); await ctx.close(); }
+      rec('S-275', 'W42-R2-C1+R3-C1: EVERY leadership-loss path invalidates freshness — heartbeat demotion, stand-down, tiebreak loss, abandoned claim, stop()', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} stopped=${r.stoppedFresh}`); await ctx.close(); }
 
 
 

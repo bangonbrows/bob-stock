@@ -1054,6 +1054,7 @@ const Sync = {
               // They have priority — cancel our claim
               this._pendingClaim = false;
               this._lastLeaderPing = Date.now();
+              this._pricingFresh = false;   // OS-W42-AUDIT R3 (Codex C1): LOSING the election tiebreak is a leadership loss too — a pre-election observation must not outlive it
               console.log(`[Sync] Lost election tiebreak to ${msg.tabId} — standing down.`);
             }
             // If we win, we just ignore their claim — they'll see our claim and stand down
@@ -1189,6 +1190,7 @@ const Sync = {
           this._becomeLeader();
         }
         this._pendingClaim = false;
+        if (!this._isLeader) this._pricingFresh = false;   // OS-W42-AUDIT R3 (sibling of Codex C1, found by inventory): a claim ABANDONED to another leader's mid-claim heartbeat is a leadership loss the heartbeat branch never invalidates (it only runs on leaders)
       }, 500);
     }, jitter);
   },
@@ -2602,6 +2604,7 @@ const Sync = {
    * Stops polling and cleans up leader election (for cleanup/testing).
    */
   stop() {
+    this._pricingFresh = false;   // OS-W42-AUDIT R3 (sibling of Codex C1, found by inventory): a stopped sync can observe nothing — no freshness fact survives teardown
     if (this._pollInterval) {
       clearInterval(this._pollInterval);
       this._pollInterval = null;
