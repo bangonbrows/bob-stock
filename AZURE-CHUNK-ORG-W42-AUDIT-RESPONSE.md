@@ -82,6 +82,21 @@ collateral of auditor cleanup on the shared machine; relaunched after the R2 fix
 0 INFRA-FAIL of 289.** Every mutation in the harness — the whole app plus all fifteen W4.2 sentinels and
 their b-variants — is detected.
 
+## ROUND 3 (2026-07-17): AGY PASS (all R2 fixes verified, all gates matched incl. the full-sweep log) · Codex BLOCK ×1 — REAL
+
+| # | Finding | Ground truth | Action |
+|---|---|---|---|
+| W42-R3-C1 (P1) | the election-TIEBREAK loser (a pending claimant beaten by an older tab) keeps `_pricingFresh` — same stale-follower family as R2-C1, third path | **REAL** — the `theyWin` branch cancelled the claim without invalidating | invalidate on tiebreak loss — **and a full inventory of every leadership-loss/absence path found TWO more bare siblings, fixed proactively:** (a) a claim ABANDONED to a live leader's mid-claim heartbeat (the heartbeat branch only invalidates leaders, and no leader-exists message ever arrives); (b) `stop()` teardown (a stopped sync can observe nothing) |
+
+**Coverage:** S-275 extended to assert ALL FIVE leadership-loss paths (heartbeat demotion · stand-down ·
+tiebreak loss · abandoned claim · stop) driven through the real election machinery, with mutations
+S-275c/S-275d/S-275e added — **292 mutations, parity 266 ↔ 266, anchor scan 292/292**.
+
+**Round-3-fix gates (2026-07-17):** smoke **266/266** (S-275 asserts all five paths in one run) · scoped
+saboteur S-261..S-275e: **22/22 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run,
+baseline 266/266) · anchor scan **292/292** · topology 256/256 (no server change) · full sweep (292)
+relaunched detached, result recorded below.
+
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
 editor exists in today's UI (route support ships now; UI = W5) · the freshness half of the submit gate is
