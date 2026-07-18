@@ -1,5 +1,13 @@
 # OS-W4.2 BUILD (the era-aware pricing lens) — wave record + audit response log
 
+## ✅ CONVERGED 2026-07-19 — BOTH AUDITORS PASS @ 56516b6 (round 6)
+AGY PASS (logout fix verified via S-275k; failed-poll adjudication AGREED — "no specification change is
+required"; standing question answered NO — "the invalidation gate is watertight") · Codex PASS (logout
+fix verified at line level; adjudication UPHELD with the spec citation — "adding per-cycle invalidation
+or a freshness TTL would be a spec change, not a W4.2 defect fix"; "no remaining unadjudicated
+production path"). Six rounds total: 9 → 4 → 1 → 2 → 1 → 0 findings. The closing full sweep (298) is
+recorded at the end of this file.
+
 ## BUILD SHIPPED 2026-07-15 (per the LOCKED `AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md`)
 - **index.html:** the `Pricing` module (mirrored validators · SR-42 exact-schema `validConfig` · the
   three-tier `rateAsOf` chain w/ whole-config-validation-first, SR-74 stale horizon, SR-10
