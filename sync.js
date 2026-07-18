@@ -233,11 +233,18 @@ const Sync = {
   },
   personAuthActive() { return !!this._userAdminUrl && !!this._userVerifyUrl; },
 
+  // OS-W42-AUDIT pre-R4b: THE one invalidation door. Every stop-observing event calls this — freshness
+  // dies AND the epoch advances, so a network response already IN FLIGHT when the event fired (captured
+  // epoch ≠ current epoch at processing time) can never resurrect the freshness fact it predates.
+  _invalidatePricingFresh() {
+    this._pricingFresh = false;
+    this._pricingEpoch = (this._pricingEpoch || 0) + 1;
+  },
   // Central 401 handling (D6): clear the cached config (it may be stale), mark the
   // device unauthorised, surface it, and STOP — never a retry-loop on auth failure.
   _handleUnauthorized(where) {
     this._unauthorized = true;
-    this._pricingFresh = false;   // OS-W42-AUDIT pre-R4 (the family's 401 sibling): an auth-paused device stops pulling — no freshness fact survives the pause
+    this._invalidatePricingFresh();   // OS-W42-AUDIT pre-R4 (the family's 401 sibling): an auth-paused device stops pulling — no freshness fact survives the pause
     try { sessionStorage.removeItem('bob_sync_config'); } catch (e) {}
     this._showStatus('Sync not authorised — enter sync keys in Settings', 'error', 0);
     try { if (typeof Diag !== 'undefined') Diag.log('auth', '401 unauthorized from ' + where); } catch (e) {}
@@ -576,6 +583,7 @@ const Sync = {
   // Absent endpoint ⇒ fail closed (the caller blocks the edit) — never a silent local mutation.
   async publishPricingChange(payload) {
     if (!this._pricingChangeUrl) return { ok: false, reason: 'no-endpoint' };
+    const _pep = this._pricingEpoch || 0;   // OS-W42-AUDIT pre-R4b: captured BEFORE the network wait
     const d = DB.get();
     const opId = 'pop_' + Date.now() + '_' + Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2, '0')).join('');
     const body = this._withPerson(Object.assign({}, payload, { opId, expectedVersion: (d && d.pricingConfig && Number(d.pricingConfig.version)) || 0 }));
@@ -595,6 +603,7 @@ const Sync = {
     try { const ec = typeof j.config === 'string' ? JSON.parse(j.config) : j.config; echoedV = Number(ec && ec.version) || 0; } catch (e) {}
     if (!(echoedV > 0)) return { ok: false, reason: 'bad-echo' };
     try { await this._applyPricingConfig(j.config); } catch (e) {}
+    if ((this._pricingEpoch || 0) !== _pep) this._pricingFresh = false;   // OS-W42-AUDIT pre-R4b (the late-response race): this response predates an invalidating event — it proves nothing about NOW
     const dA = DB.get();
     const adoptedV = (dA && dA.pricingConfig && Number(dA.pricingConfig.version)) || 0;
     let _durV = 0; try { _durV = Number(localStorage.getItem('bob_pricing_ver')) || 0; } catch (e) {}
@@ -683,6 +692,7 @@ const Sync = {
       console.warn('[Sync] No config endpoint URL configured.');
       return false;
     }
+    const _pep = this._pricingEpoch || 0;   // OS-W42-AUDIT pre-R4b: captured BEFORE the network wait
     try {
       const resp = await fetch(this.CONFIG_URL, {
         method: 'POST',
@@ -711,6 +721,7 @@ const Sync = {
       } catch (e) {
         console.warn('[Sync] pricing_config adopt failed (previous config retained):', e);
       }
+      if ((this._pricingEpoch || 0) !== _pep) this._pricingFresh = false;   // OS-W42-AUDIT pre-R4b (the late-response race): a config response from before an invalidating event must not resurrect freshness
 
       // F3-CRIT01 (Gemini FINAL CRIT-01): master-data distribution. Before this,
       // products/stores/categories NEVER synced — a Director price change or new
@@ -1055,7 +1066,7 @@ const Sync = {
               // They have priority — cancel our claim
               this._pendingClaim = false;
               this._lastLeaderPing = Date.now();
-              this._pricingFresh = false;   // OS-W42-AUDIT R3 (Codex C1): LOSING the election tiebreak is a leadership loss too — a pre-election observation must not outlive it
+              this._invalidatePricingFresh();   // OS-W42-AUDIT R3 (Codex C1): LOSING the election tiebreak is a leadership loss too — a pre-election observation must not outlive it
               console.log(`[Sync] Lost election tiebreak to ${msg.tabId} — standing down.`);
             }
             // If we win, we just ignore their claim — they'll see our claim and stand down
@@ -1067,7 +1078,7 @@ const Sync = {
           this._isLeader = false;
           this._pendingClaim = false;
           this._lastLeaderPing = Date.now();
-          this._pricingFresh = false;   // OS-W42-AUDIT R2 (Codex C1): standing down = a leadership loss — the pull loop is leader-only, a freshness fact must not outlive it
+          this._invalidatePricingFresh();   // OS-W42-AUDIT R2 (Codex C1): standing down = a leadership loss — the pull loop is leader-only, a freshness fact must not outlive it
           break;
 
         case 'heartbeat':
@@ -1081,7 +1092,7 @@ const Sync = {
             if (this._leaderHeartbeat) { clearInterval(this._leaderHeartbeat); this._leaderHeartbeat = null; }
             if (this._pollInterval) { clearInterval(this._pollInterval); this._pollInterval = null; }
             this._lastLeaderPing = Date.now();
-            this._pricingFresh = false;   // OS-W42-AUDIT R2 (Codex C1): the heartbeat DEMOTION is a leadership loss — the demoted tab stops pulling, so its freshness fact would otherwise grow stale forever
+            this._invalidatePricingFresh();   // OS-W42-AUDIT R2 (Codex C1): the heartbeat DEMOTION is a leadership loss — the demoted tab stops pulling, so its freshness fact would otherwise grow stale forever
           }
           break;
 
@@ -1191,7 +1202,7 @@ const Sync = {
           this._becomeLeader();
         }
         this._pendingClaim = false;
-        if (!this._isLeader) this._pricingFresh = false;   // OS-W42-AUDIT R3 (sibling of Codex C1, found by inventory): a claim ABANDONED to another leader's mid-claim heartbeat is a leadership loss the heartbeat branch never invalidates (it only runs on leaders)
+        if (!this._isLeader) this._invalidatePricingFresh();   // OS-W42-AUDIT R3 (sibling of Codex C1, found by inventory): a claim ABANDONED to another leader's mid-claim heartbeat is a leadership loss the heartbeat branch never invalidates (it only runs on leaders)
       }, 500);
     }, jitter);
   },
@@ -1200,7 +1211,7 @@ const Sync = {
    * Promotes this tab to leader — starts heartbeat and sync polling.
    */
   _becomeLeader() {
-    this._pricingFresh = false;   // OS-W4.2 (SR-103): a leadership handoff invalidates pricing freshness — the new leader must observe for itself
+    this._invalidatePricingFresh();   // OS-W4.2 (SR-103): a leadership handoff invalidates pricing freshness — the new leader must observe for itself
     this._isLeader = true;
     console.log(`[Sync] This tab (${this._tabId}) is now the sync leader.`);
 
@@ -1790,6 +1801,7 @@ const Sync = {
   async pull() {
     if (this._unauthorized) return;  // Chunk 5 (D6): paused after a 401 until keys change
     if (!this._pullUrl) return;
+    const _pullEp = this._pricingEpoch || 0;   // OS-W42-AUDIT pre-R4b: captured BEFORE any network wait
     if (this._syncLock) {
       console.log('[Sync] Sync already in progress, skipping pull.');
       return;
@@ -1869,6 +1881,7 @@ const Sync = {
           } catch (e) {}
           this._reconcilePolicyPurge().catch(() => {});   // AA-05: retry a stuck cost purge every pull, version-independent
           this._notePricingEcho(remote);                  // OS-W4.2 (SR-80): a SETTLED pricing echo on the pull advances the stale horizon + marks freshness
+          if ((this._pricingEpoch || 0) !== _pullEp) this._pricingFresh = false;   // OS-W42-AUDIT pre-R4b (the late-response race): pull-echo variant of the epoch guard
           // 2) Topology hold (OS-SR-1 / W3-SR-8/12/13): a quiesced store's pull is HTTP 200
           //    {topologyPending:true, items:[], policyVersion} — no maxId, no scope. Show a calm hold, leave
           //    EVERY cursor untouched, and set _topologyHold (suppresses pullSteps; pushes still drain).
@@ -2501,9 +2514,9 @@ const Sync = {
     // a settled _notePricingEcho).
     this._pricingFresh = false;
     try {
-      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { try { if (document.visibilityState === 'visible') Sync._pricingFresh = false; } catch (e) {} });
-      if (typeof window !== 'undefined') window.addEventListener('online', () => { try { Sync._pricingFresh = false; } catch (e) {} });
-      if (typeof window !== 'undefined') window.addEventListener('offline', () => { try { Sync._pricingFresh = false; } catch (e) {} });   // OS-W42-AUDIT R1 (Codex C1): LOSING the connection invalidates freshness too — P5 pins a currently-healthy connection at commit
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { try { if (document.visibilityState === 'visible') Sync._invalidatePricingFresh(); } catch (e) {} });
+      if (typeof window !== 'undefined') window.addEventListener('online', () => { try { Sync._invalidatePricingFresh(); } catch (e) {} });
+      if (typeof window !== 'undefined') window.addEventListener('offline', () => { try { Sync._invalidatePricingFresh(); } catch (e) {} });   // OS-W42-AUDIT R1 (Codex C1): LOSING the connection invalidates freshness too — P5 pins a currently-healthy connection at commit
     } catch (e) {}
     // Chunk 8 (AGY P1 / migration): rows synced BEFORE this build carry no _spId, and the ID-cursor never
     // re-pulls rows below the high-water mark — so they'd stay _spId==null and DOUBLE-COUNT at the first
@@ -2605,7 +2618,7 @@ const Sync = {
    * Stops polling and cleans up leader election (for cleanup/testing).
    */
   stop() {
-    this._pricingFresh = false;   // OS-W42-AUDIT R3 (sibling of Codex C1, found by inventory): a stopped sync can observe nothing — no freshness fact survives teardown
+    this._invalidatePricingFresh();   // OS-W42-AUDIT R3 (sibling of Codex C1, found by inventory): a stopped sync can observe nothing — no freshness fact survives teardown
     if (this._pollInterval) {
       clearInterval(this._pollInterval);
       this._pollInterval = null;

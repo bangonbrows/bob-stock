@@ -2797,10 +2797,12 @@ async function runSmoke(repo) {
       });
       rec('S-274', 'W42-C6/AGY-2/AGY-3(+R2-C4): validate never arms the hold; a FAILED restore write rolls back BOTH markers; SR-10 honours the caller topology; a billed head_office sender is gated with its row missing', r.valOk && r.unresAfterValidate === null && r.unresAfterArm === '1' && r.verAfterArm === null && r.applied === false && r.unresAfterFail === null && r.verAfterFail === '7' && r.fixErr === 'PRICING_DATA_ERROR' && r.liveNotSet === true && r.gateOk === false && r.gateHold === 'NO_FRESH_OBSERVATION', `valOk=${r.valOk} unresVal=${r.unresAfterValidate} unresArm=${r.unresAfterArm} verArm=${r.verAfterArm} applied=${r.applied} unresFail=${r.unresAfterFail} verFail=${r.verAfterFail} fix=${r.fixErr} live=${r.liveNotSet} gateHold=${r.gateHold}`); await ctx.close(); }
 
-    // S-275 (OS-W42-AUDIT R2, Codex C1): LEADERSHIP LOSS invalidates pricing freshness — both real
-    // production branches (the newer-leader heartbeat DEMOTION and the leader-exists STAND-DOWN). A
-    // demoted tab stops pulling; its freshness fact must not outlive its leadership.
+    // S-275 (OS-W42-AUDIT R2/R3 C1 + pre-R4/R4b): the freshness-lifecycle sentinel — every stop-observing
+    // path invalidates, and a LATE network response (in flight when an invalidating event fired) can never
+    // resurrect the fact it predates (the epoch guard), proven on real delayed responses.
     { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      await page.route('**pricing-echo-slow**', async r => { await new Promise(res => setTimeout(res, 120)); r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, config: { version: 8, global: {}, stores: {} } }) }); });
+      await page.route('**cfg-slow**', async r => { await new Promise(res => setTimeout(res, 120)); r.fulfill({ status: 200, contentType: 'application/json', body: '{"items":[]}' }); });
       const r = await page.evaluate(async () => {
         try { localStorage.removeItem('bob_pricing_activated'); localStorage.removeItem('bob_pricing_stale'); localStorage.removeItem('bob_pricing_unresolved'); } catch (e) {}
         delete DB.get().pricingConfig;
@@ -2827,14 +2829,38 @@ async function runSmoke(repo) {
         Sync._handleUnauthorized('S-275-probe');
         const unauthFresh = Sync._pricingFresh;
         Sync._unauthorized = _prevUnauth;
+        // pre-R4b: the LATE-RESPONSE race, WRITER path — a pricing-change response in flight when an
+        // invalidating event fires must not resurrect freshness or report success
+        Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        DB.get().pricingConfig = { version: 7, global: {}, stores: {} };
+        Sync._pricingChangeUrl = 'https://x.logic.azure.com/pricing-echo-slow';
+        const _wp = Sync.publishPricingChange({ kind: 'global-product', productId: 'PX', rate: 20 });
+        await new Promise(r2 => setTimeout(r2, 30));
+        window.dispatchEvent(new Event('offline'));                     // the invalidating event, mid-flight
+        const raceW = await _wp;
+        const raceWFresh = Sync._pricingFresh;
+        const ctrlW = await Sync.publishPricingChange({ kind: 'global-product', productId: 'PX', rate: 20 });   // control: no mid-flight event => success
+        // pre-R4b: the CONFIG path of the same race
+        Sync._pricingFresh = false; delete DB.get().pricingConfig;
+        try { ['bob_pricing_activated','bob_pricing_stale','bob_pricing_unresolved','bob_pricing_ver'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+        const _origCfgUrl = Sync.CONFIG_URL; Sync.CONFIG_URL = 'https://x.logic.azure.com/cfg-slow';
+        const _cp = Sync._fetchRemoteConfig();
+        await new Promise(r2 => setTimeout(r2, 30));
+        window.dispatchEvent(new Event('offline'));
+        await _cp;
+        const raceCFresh = Sync._pricingFresh;
+        await Sync._fetchRemoteConfig();                                 // control: no mid-flight event => fresh
+        const ctrlCFresh = Sync._pricingFresh;
+        Sync.CONFIG_URL = _origCfgUrl; Sync._pricingChangeUrl = null;
         // R3 sibling: stop() teardown — a stopped sync can observe nothing (LAST: closes the channel)
         Sync._pricingFresh = true;
         try { Sync.stop(); } catch (e) {}
         const stoppedFresh = Sync._pricingFresh;
         Sync._pricingFresh = false;
-        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, stoppedFresh };
+        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, raceWOk: raceW.ok, raceWFresh, ctrlWOk: ctrlW.ok, raceCFresh, ctrlCFresh, stoppedFresh };
       });
-      rec('S-275', 'W42-R2/R3-C1+pre-R4: EVERY stop-pulling path invalidates freshness — heartbeat demotion, stand-down, tiebreak loss, abandoned claim, 401 pause, stop()', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
+      rec('S-275', 'W42-R2/R3-C1+pre-R4/R4b: EVERY stop-pulling path invalidates freshness, and a LATE response never resurrects it (writer + config races, real delayed network)', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.raceWOk === false && r.raceWFresh === false && r.ctrlWOk === true && r.raceCFresh === false && r.ctrlCFresh === true && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} raceW=${r.raceWOk}/${r.raceWFresh} ctrlW=${r.ctrlWOk} raceC=${r.raceCFresh} ctrlC=${r.ctrlCFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
 
 
 
