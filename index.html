@@ -2230,6 +2230,17 @@ const Pages = {
       const _k4p=d.products.find(pr=>pr.id===txn.productId);
       if(_k4p&&Number.isFinite(_k4p.price))txn.unitPriceAtTime=_k4p.price;
     }
+    // OS-W4.3 P1: a DIRECT-LOGGED HO-supply movement (delivery/transfer category, from head_office, into a
+    // franchise store) is its own pricing-commitment moment — the same gate as a transfer submit holds it,
+    // and the stamps freeze at this commit (both-or-neither; a pricing error blocks the log).
+    if(txn.stockFromStoreId==='head_office'&&Txn.isIn(txn)&&(Txn.category(txn)==='delivery'||Txn.category(txn)==='transfer')&&typeof Transfer!=='undefined'&&Transfer._isBillingSupply&&Transfer._isBillingSupply(d,'head_office',txn.storeId)){
+      const _pg=Transfer._pricingSubmitGate('head_office',txn.storeId);
+      if(!_pg.ok){UI.toast(_pg.error,'error');return;}
+      const _fx={fromStoreId:'head_office',toStoreId:txn.storeId,items:[{productId:txn.productId}]};
+      const _st=Transfer._stampItems(_fx);
+      if(!_st.ok){UI.toast(_st.error,'error');return;}
+      if(_fx.items[0].sellAtSupply!=null&&_fx.items[0].discAtSupply!=null){txn.sellAtSupply=_fx.items[0].sellAtSupply;txn.discAtSupply=_fx.items[0].discAtSupply;}
+    }
     if(Txn.isOut(txn)){
       const avail=Stock.qty(txn.productId,txn.storeId);
       if(avail<txn.qty){UI.toast(`⚠ Insufficient stock — only ${avail} unit${avail!==1?'s':''} available`,'error');return;}
@@ -4916,15 +4927,30 @@ const Pages = {
         && !deleted.some(x => x.id === t.id)
       ).map(t=>{
         const p = d.products.find(pr=>pr.id===t.productId);
-        const sell = p?.price || 0;
+        let sell = p?.price || 0;
         let prodDisc, lineErr = null, rateSource = null;
-        if (lensOn) {
-          const r = Pricing.rateAsOf(office.id, t.productId, Date.parse(t.date + 'T00:00:00.000Z'), d.stores);
-          if (r.error) { prodDisc = 0; lineErr = r.error; }            // P3: 0% LOUDLY (surfaced), never the scalar
-          else if (r.notSet) { prodDisc = 0; lineErr = 'NOT_SET'; }    // per-line-date discMissing (P6)
-          else { prodDisc = r.rate; rateSource = r.source; }
-        } else {
-          prodDisc = (p && p.franchiseDiscount) ? p.franchiseDiscount : baseDisc;  // Wave M2 / GPTa-41: a stored 0 (no UI 0% option) = inherit the office default, not full price
+        // OS-W4.3 (SR-97/114) VALUATION PRECEDENCE: row stamps → the transfer ITEM's canonical stamps
+        // (transferId lookup) → the lens. Stamps freeze BOTH numbers — a later PRICE edit can no longer
+        // rewrite an old invoice's dollars (the lens froze only the discount). One stamp without the
+        // other = a malformed row ⇒ fail-closed line (P6), never a silent half-claim.
+        const _rowHasSell = t.sellAtSupply != null, _rowHasDisc = t.discAtSupply != null;
+        let _stamped = false;
+        if (_rowHasSell && _rowHasDisc) { sell = t.sellAtSupply; prodDisc = t.discAtSupply; rateSource = 'stamped'; _stamped = true; }
+        else if (_rowHasSell || _rowHasDisc) { prodDisc = 0; lineErr = 'STAMP_ERROR'; _stamped = true; }
+        else if (t.transferId) {
+          const _tr = (d.transfers || []).find(x => x && x.id === t.transferId);
+          const _it = _tr && (_tr.items || []).find(i => i && i.productId === t.productId);
+          if (_it && _it.sellAtSupply != null && _it.discAtSupply != null) { sell = _it.sellAtSupply; prodDisc = _it.discAtSupply; rateSource = 'transfer-stamped'; _stamped = true; }
+        }
+        if (!_stamped) {
+          if (lensOn) {
+            const r = Pricing.rateAsOf(office.id, t.productId, Date.parse(t.date + 'T00:00:00.000Z'), d.stores);
+            if (r.error) { prodDisc = 0; lineErr = r.error; }            // P3: 0% LOUDLY (surfaced), never the scalar
+            else if (r.notSet) { prodDisc = 0; lineErr = 'NOT_SET'; }    // per-line-date discMissing (P6)
+            else { prodDisc = r.rate; rateSource = r.source; }
+          } else {
+            prodDisc = (p && p.franchiseDiscount) ? p.franchiseDiscount : baseDisc;  // Wave M2 / GPTa-41: a stored 0 (no UI 0% option) = inherit the office default, not full price
+          }
         }
         const full = sell * t.qty, discAmt = full * (prodDisc/100);
         return { product:p, date:t.date, qty:t.qty, sell, prodDisc, full, discAmt, owed: full - discAmt, lineErr, rateSource };
