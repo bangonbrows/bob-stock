@@ -286,13 +286,24 @@ const Records = {
     else if (rt === 'delivery')  folded = this.foldDelivery(sorted);
     else if (rt === 'stocktake') folded = this.foldStocktake(sorted);
     if (!folded) return null;
-    // GPT Chunk-4 BLOCK #3 (D4-I): if two devices backfilled the same recordId with DIFFERENT content, both
-    // snapshots now land (distinct hash-in-id) — surface that divergence as a conflict instead of silently
-    // letting the last-sorted snapshot win. (Identical-content backfills share a stepId and 409-dedupe upstream.)
-    const bfHashes = new Set(sorted.filter(s => s.stepType === 'backfill').map(s => (s.payload && s.payload.hash) || ''));
-    if (bfHashes.size > 1) {
-      folded.status = 'conflict';
-      folded._conflict = { kind: 'backfill_divergence', hashes: Array.from(bfHashes) };
+    // GPT Chunk-4 BLOCK #3 (D4-I) + OS-W4.3 (W4-SR-113/121/106): if two devices backfilled the same
+    // recordId with DIFFERENT content, both snapshots land (distinct hash-in-id). Divergence is decided by
+    // RECOMPUTING the v4 semantic canonical hash over each snapshot — never by comparing embedded hash
+    // strings (a pre-W4 and a W4 snapshot of the SAME economic reality canonicalize identically, so the
+    // hash-algorithm migration can't false-diverge; meaningful stamp/item differences still conflict).
+    // A resolve step naming the divergent EMBEDDED hashes via resolvesBackfillHashes SETTLES them (SR-106,
+    // the resolvesAttemptIds pattern) — a Director-resolved divergence actually converges.
+    const bfSteps = sorted.filter(s => s.stepType === 'backfill' && s.payload && s.payload.snapshot);
+    if (bfSteps.length > 1) {
+      let lastRes = null;
+      for (const s of sorted) if (s.stepType === 'resolve') lastRes = s;
+      const settled = new Set((lastRes && lastRes.payload && lastRes.payload.resolvesBackfillHashes) || []);
+      const live = bfSteps.filter(s => !settled.has((s.payload && s.payload.hash) || ''));
+      const canon = new Set(live.map(s => this._deepHash(rt, s.payload.snapshot)));
+      if (canon.size > 1) {
+        folded.status = 'conflict';
+        folded._conflict = { kind: 'backfill_divergence', hashes: live.map(s => (s.payload && s.payload.hash) || ''), canonicalHashes: Array.from(canon) };
+      }
     }
     return folded;
   },
@@ -604,14 +615,80 @@ const Records = {
   // (the historical ledger rows already synced); a backfill step never credits stock.
   BACKFILL_FLAG: 'bob_records_backfilled',
 
-  // Small, deterministic, synchronous content hash (FNV-1a 32-bit, hex). Authoritative
-  // dedup is the deterministic StepId + server Enforce-Unique; this hash is the
-  // divergence signal the server/fold can compare (D4-I).
-  _stableHash(obj) {
-    let str; try { str = JSON.stringify(obj, Object.keys(obj || {}).sort()); } catch (e) { str = String(obj); }
+  // ── OS-W4.3 (W4-SR-105): CANONICAL RECURSIVE serializer. The old _stableHash passed
+  // Object.keys(obj).sort() as a stringify REPLACER, which drops nested-object fields at EVERY level —
+  // item stamps, and even item CONTENT, were invisible to it (⚠ pre-existing Chunk-4 bug: backfill
+  // divergence detection was blind to item-level differences since D4-I; flagged Kunal-visible). This
+  // serializer sorts keys at every depth, so $100-vs-$150 item stamps produce distinct hashes.
+  _canonicalSerialize(v) {
+    if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+    if (Array.isArray(v)) return '[' + v.map(x => this._canonicalSerialize(x)).join(',') + ']';
+    const keys = Object.keys(v).filter(k => v[k] !== undefined).sort();
+    return '{' + keys.map(k => JSON.stringify(k) + ':' + this._canonicalSerialize(v[k])).join(',') + '}';
+  },
+  _fnv(str) {
     let h = 0x811c9dc5;
     for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
     return ('0000000' + h.toString(16)).slice(-8);
+  },
+  // OS-W4.3 (W4-SR-121/128): the VERSION-NORMALIZED SEMANTIC CANONICAL FORM, v4 — divergence is decided
+  // by recomputing THIS over each backfill snapshot, never by comparing embedded hash strings (SR-113:
+  // old-algorithm hashes live in historical stepIds; the two algorithms' outputs are never compared).
+  // Rules: STRICT SCHEMA PROJECTION (keys unknown to the pinned W4 shape are STRIPPED — a future field
+  // can never falsely diverge a W4 fold; SR-128 pins every future schema change to a NEW immutable
+  // canonical-form version + fixture extension, never a mutation of this one); legacy ABSENCE maps to
+  // the exact W4 defaults (a stampless legacy item gains basis 'legacy-lens'); explicit-null and absent
+  // collapse to ONE form — so a pre-W4 snapshot and a W4 snapshot of the SAME economic reality hash
+  // IDENTICALLY, while meaningful stamp/basis differences are preserved and still conflict.
+  CANONICAL_FORM_VERSION: 4,
+  _canonTransferItemV4(it) {
+    const o = it || {};
+    const stamped = (o.sellAtSupply != null && o.discAtSupply != null);
+    return {
+      productId: o.productId != null ? o.productId : '',
+      sentQty: o.sentQty != null ? o.sentQty : null,
+      receivedQty: o.receivedQty != null ? o.receivedQty : null,
+      status: o.status || 'confirmed',
+      flagNote: o.flagNote || '',
+      resolvedBy: o.resolvedBy != null ? o.resolvedBy : null,
+      resolvedAction: o.resolvedAction != null ? o.resolvedAction : null,
+      creditedAtReceive: o.creditedAtReceive || 0,
+      sellAtSupply: stamped ? o.sellAtSupply : null,
+      discAtSupply: stamped ? o.discAtSupply : null,
+      basis: o.basis || (stamped ? 'submit-stamped' : 'legacy-lens'),
+    };
+  },
+  _canonicalTransferV4(snap) {
+    const s = snap || {};
+    return {
+      _v: this.CANONICAL_FORM_VERSION,
+      id: s.id != null ? s.id : '',
+      date: s.date || s.createdAt || '',
+      createdAt: s.createdAt || '',
+      fromStoreId: s.fromStoreId || '',
+      toStoreId: s.toStoreId || '',
+      createdBy: s.createdBy || '',
+      status: s.status || 'in_transit',
+      type: s.type || 'standard',
+      returnReason: s.returnReason != null ? s.returnReason : null,
+      returnNote: s.returnNote || '',
+      notes: s.notes || '',
+      items: (s.items || []).map(it => this._canonTransferItemV4(it)),
+    };
+  },
+  // Generic v4 canonical form for the non-transfer record types: strict-projected shallow snapshot
+  // (delivery/stocktake snapshots have no nested pricing surface; their divergence semantics are
+  // whole-content — the recursive serializer alone fixes the SR-105 nesting blindness for them).
+  _canonicalSnapshotV4(recordType, snap) {
+    if (recordType === 'transfer') return this._canonicalTransferV4(snap);
+    return { _v: this.CANONICAL_FORM_VERSION, _t: recordType, snap: snap || {} };
+  },
+  _deepHash(recordType, snap) {
+    return this._fnv(this._canonicalSerialize(this._canonicalSnapshotV4(recordType, snap)));
+  },
+  // Retained ONLY as the legacy stepId-dedup input shape for non-snapshot uses; NOT a divergence signal.
+  _stableHash(obj) {
+    return this._fnv(this._canonicalSerialize(obj));
   },
 
   async runBackfillOnce() {
@@ -632,7 +709,7 @@ const Records = {
     for (const grp of plan) {
       for (const rec of grp.rows) {
         if (!rec || !rec.id || hasStep.has(rec.id)) continue;
-        const hash = this._stableHash(rec);
+        const hash = this._deepHash(grp.type, rec);   // OS-W4.3 (SR-105/113): the v4 canonical deep hash — deterministic across W4 devices; historical steps carry old-algorithm hashes and are never string-compared (divergence recomputes)
         await this.emit({
           recordType: grp.type,
           recordId: rec.id,
@@ -642,7 +719,7 @@ const Records = {
           fromStoreId: grp.type === 'transfer' ? (rec.fromStoreId || '') : '',
           toStoreId: grp.type === 'transfer' ? (rec.toStoreId || '') : '',
           status: rec.status || '',
-          payload: { snapshot: rec, hash: hash, backfilledBy: this._deviceId() },
+          payload: { snapshot: rec, hash: hash, hashVersion: this.CANONICAL_FORM_VERSION, backfilledBy: this._deviceId() },
         });
         emitted++;
       }

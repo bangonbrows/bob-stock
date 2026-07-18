@@ -92,6 +92,112 @@ const Transfer = {
     } catch (e) { return { ok: false, error: 'Franchise pricing could not be verified — try again after a sync.', hold: 'PRICING_DATA_ERROR' }; }
   },
 
+  // ── OS-W4.3 (the stamps seam, AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md) ────────────────────────────
+  // The same billing predicate the gate uses (union of warehouse-typed non-franchise sender and the
+  // invoice's structured billing key) — a transfer is stamped iff it is gated.
+  _isBillingSupply(d, fromStoreId, toStoreId) {
+    const fromSt = (d.stores || []).find(x => x && x.id === fromStoreId);
+    const toSt = (d.stores || []).find(x => x && x.id === toStoreId);
+    const fromWh = fromSt && !fromSt.isFranchise && fromSt.type === 'warehouse';
+    return !!((fromWh || fromStoreId === 'head_office') && toSt && toSt.isFranchise);
+  },
+  // P6 (SR-39/62/89) money policy at the CAPTURE surface: JSON number, finite, >= 0, sell <= 1,000,000,
+  // disc 0-100, BOTH <= 2dp (reject — no rounding; a stamp freezes exactly what is billed).
+  _validStampPair(sell, disc) {
+    const twoDp = (n) => Number(n.toFixed(2)) === n;
+    return typeof sell === 'number' && isFinite(sell) && sell >= 0 && sell <= 1000000 && twoDp(sell)
+        && typeof disc === 'number' && isFinite(disc) && disc >= 0 && disc <= 100 && twoDp(disc);
+  },
+  // P1 (SR-3/7/12/21): capture the stamps at SUBMIT — the pricing-commitment moment. Post-activation the
+  // lens resolves the discount AS-OF NOW (honest NOT-SET freezes the loud 0% the invoice would bill);
+  // pre-activation the byte-identical legacy computation is frozen. A pricing error (or an unstampable
+  // pair) REJECTS the commit — null is never stamped. Both-or-neither by construction.
+  _stampItems(t) {
+    try {
+      if (typeof DB === 'undefined' || typeof Pricing === 'undefined') return { ok: true };
+      const d = DB.get(); if (!d) return { ok: true };
+      if (!this._isBillingSupply(d, t.fromStoreId, t.toStoreId)) return { ok: true };
+      const office = (d.stores || []).find(x => x && x.id === t.toStoreId) || {};
+      const lensOn = Pricing.lensActive();
+      for (const item of (t.items || [])) {
+        const p = (d.products || []).find(pr => pr && pr.id === item.productId);
+        if (!p) return { ok: false, error: 'Franchise pricing could not be stamped (' + item.productId + ' is not in the catalogue) — sync, then try again.' };
+        let disc;
+        if (lensOn) {
+          const r = Pricing.rateAsOf(t.toStoreId, item.productId, Date.now(), d.stores);
+          if (r.error) return { ok: false, error: 'Franchise pricing needs attention before new supply can be sent — sync first; if this persists a Director should check the pricing setup.' };
+          disc = (r.rate != null) ? r.rate : 0;
+        } else {
+          disc = (p && p.franchiseDiscount) ? p.franchiseDiscount : (office.franchiseDiscount || 0);
+        }
+        const sell = (typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
+        if (!this._validStampPair(sell, disc)) return { ok: false, error: 'Franchise pricing produced an out-of-policy value (' + item.productId + ') — a Director should check the pricing setup before new supply is sent.' };
+        item.sellAtSupply = sell; item.discAtSupply = disc; item.basis = 'submit-stamped';
+      }
+      return { ok: true };
+    } catch (e) { return { ok: false, error: 'Franchise pricing could not be verified — try again after a sync.' }; }
+  },
+  // P4 (SR-59/60, replaces the deleted SR-41 migration): a W4 receive of a STAMPLESS submit mints the
+  // stamps at receive — discount = the lens AS-OF THE SUBMIT instant (pre-activation dates hit the frozen
+  // backdated seed; a pre-activation device uses today's scalar computation, exactly what it would bill);
+  // sell = the current catalogue price (what today's system would bill, then frozen). Lens failure or an
+  // out-of-policy pair => both-or-neither => the item's basis is durably 'legacy-lens'. Covers in-transit
+  // transfers at cutover AND stampless submits from stale builds after.
+  _stampAtReceive(t) {
+    try {
+      if (typeof DB === 'undefined' || typeof Pricing === 'undefined') return;
+      const d = DB.get(); if (!d) return;
+      if (!this._isBillingSupply(d, t.fromStoreId, t.toStoreId)) return;
+      const submitMs = Date.parse(t.createdAt || t.date || '') || Date.now();
+      const office = (d.stores || []).find(x => x && x.id === t.toStoreId) || {};
+      const lensOn = Pricing.lensActive();
+      for (const item of (t.items || [])) {
+        if (item.sellAtSupply != null && item.discAtSupply != null) continue;   // SR-97: a stamped item is permanent
+        if (item.basis === 'legacy-lens') continue;                             // durably legacy — never re-minted
+        const p = (d.products || []).find(pr => pr && pr.id === item.productId);
+        let disc = null, sell = null;
+        if (p) {
+          if (lensOn) {
+            const r = Pricing.rateAsOf(t.toStoreId, item.productId, submitMs, d.stores);
+            if (!r.error) disc = (r.rate != null) ? r.rate : 0;
+          } else {
+            disc = (p && p.franchiseDiscount) ? p.franchiseDiscount : (office.franchiseDiscount || 0);
+          }
+          sell = (typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
+        }
+        if (disc != null && sell != null && this._validStampPair(sell, disc)) {
+          item.sellAtSupply = sell; item.discAtSupply = disc; item.basis = 'receive-stamped';
+        } else {
+          delete item.sellAtSupply; delete item.discAtSupply; item.basis = 'legacy-lens';
+        }
+      }
+    } catch (e) {}
+  },
+  // P2/P3 (SR-67/84/88): EVERY transfer-linked ledger row inherits the ITEM's canonical stamps — receive,
+  // discrepancy top-up, remainder-return, conflict correction, and the in-transit cancel's return rows.
+  _stampTxns(t, txns) {
+    try {
+      (txns || []).forEach(x => {
+        if (!x) return;
+        const it = (t.items || []).find(i => i && i.productId === x.productId);
+        if (it && it.sellAtSupply != null && it.discAtSupply != null) { x.sellAtSupply = it.sellAtSupply; x.discAtSupply = it.discAtSupply; }
+      });
+    } catch (e) {}
+  },
+  // P5 (SR-85): the resolve payload carries the pinned per-line stamps + basis, so the chosen outcome
+  // PUBLISHES cross-device instead of staying device-order-dependent.
+  _enrichResolutions(t, resolutions) {
+    return (resolutions || []).map(r => {
+      const o = Object.assign({}, r);
+      const it = (t.items || []).find(i => i && i.productId === r.productId);
+      if (it) {
+        if (it.sellAtSupply != null && it.discAtSupply != null) { o.sellAtSupply = it.sellAtSupply; o.discAtSupply = it.discAtSupply; }
+        if (it.basis) o.basis = it.basis;
+      }
+      return o;
+    });
+  },
+
   _notify(payload) {
     // SA-D-F1: never email a full user object (carries password/PIN hashes). Slim every actor field.
     if (payload && typeof Auth!=='undefined' && Auth._slimActorsDeep) Auth._slimActorsDeep(payload);  // SA-I-F1: deep-slim incl nested flaggedItems[].resolvedBy
@@ -114,7 +220,12 @@ const Transfer = {
       returnReason: t.returnReason || null, returnNote: t.returnNote || '',
       createdAt: t.createdAt || t.date, createdBy: t.createdBy, createdByName: t.createdByName,
       notes: t.notes || '',
-      items: (t.items || []).map(i => ({ productId: i.productId, sentQty: i.sentQty })),
+      items: (t.items || []).map(i => {
+        const o = { productId: i.productId, sentQty: i.sentQty };
+        if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; }   // OS-W4.3 P3 (SR-13/86): stamps + basis ride the submit step
+        if (i.basis) o.basis = i.basis;
+        return o;
+      }),
       expectedLedgerKeys: ledgerIds || [],
     };
   },
@@ -137,7 +248,7 @@ const Transfer = {
         generation: generation || 0,
         resolvesAttemptIds: t._receiveAttemptId ? [t._receiveAttemptId] : [],
         resolvedBy: Auth.actor(),
-        resolutions: resolutions || [],
+        resolutions: this._enrichResolutions(t, resolutions),   // OS-W4.3 P5 (SR-85): per-line stamps + basis publish cross-device
         expectedLedgerKeys: ledgerIds || [],
       },
     });
@@ -196,10 +307,13 @@ const Transfer = {
       if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
       return { ok:true, transferId:id };
     }
+    // OS-W4.3 P1: a non-draft create IS the submit — stamp the items now (a pricing failure rejects, nothing written)
+    { const _st = this._stampItems(transfer); if (!_st.ok) return { ok:false, error:_st.error }; }
     // Transit Void: deduct stock immediately (non-draft), atomically with the new transfer
     if (!DB.get().transfers) DB.get().transfers = [];
     DB.get().transfers.push(transfer);
     const _batch = transfer.items.map(item => this._txn('transfer_out', item.productId, item.sentQty, fromStoreId, id, 'Transfer to ' + UI.storeName(toStoreId)));
+    this._stampTxns(transfer, _batch);
     const _ok = await DB.atomicTransferWriteDurable(_batch, transfer, null);
     if (!_ok) { DB.get().transfers = DB.get().transfers.filter(x => x !== transfer); UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     await this._emitSubmit(transfer, _batch.map(x => x.id));  // Chunk 4: record-step (genesis)
@@ -275,6 +389,9 @@ const Transfer = {
       if (i.sentQty > _avail) { Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot); return { ok:false, error:`Cannot send ${i.sentQty} × ${UI.productName(i.productId)} — ${UI.storeName(t.fromStoreId)} only has ${_avail} on record. Sync or run a stock-take, then try again.` }; }
     }
     t.items.forEach(i => { i.status = 'pending'; });
+    // OS-W4.3 P1: the draft SUBMIT is the pricing-commitment moment — stamp now; restore the snapshot on reject
+    { const _st = this._stampItems(t);
+      if (!_st.ok) { Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot); return { ok:false, error:_st.error }; } }
     t.status = 'in_transit';
     t.date = new Date().toISOString();
     // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
@@ -283,6 +400,7 @@ const Transfer = {
       batchTxns.push(this._txn('transfer_out', item.productId, item.sentQty, t.fromStoreId, transferId, 'Transfer to ' + UI.storeName(t.toStoreId)));
     });
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    this._stampTxns(t, batchTxns);   // OS-W4.3 P2 (SR-67/88): every transfer-linked row inherits the item stamps
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     await this._emitSubmit(t, batchTxns.map(x => x.id));  // Chunk 4: record-step (genesis)
@@ -339,6 +457,7 @@ const Transfer = {
     const snapshot = JSON.parse(JSON.stringify(t));
     const d = DB.get();
     const now = new Date().toISOString();
+    this._stampAtReceive(t);   // OS-W4.3 P4 (SR-59/60): a stampless submit is stamped at receive (or durably legacy-lens)
     let hasFlagged = false;
     // Tier 2 Fix #12: Collect all transactions, then write atomically
     const batchTxns = [];
@@ -371,6 +490,7 @@ const Transfer = {
     t.status = hasFlagged ? 'received' : 'completed';
     if (!hasFlagged) t.completedDate = now;
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    this._stampTxns(t, batchTxns);   // OS-W4.3 P2 (SR-67/88): every transfer-linked row inherits the item stamps
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     // Chunk 4: emit the receive step (keyed on the stable receiveAttemptId; carries the ledger ids for R1).
@@ -381,7 +501,12 @@ const Transfer = {
       status: hasFlagged ? 'received' : 'completed',
       payload: {
         receiveAttemptId: t._receiveAttemptId, receivedBy: t.receivedBy, receivedDate: t.receivedDate,
-        lines: t.items.map(i => ({ productId: i.productId, receivedQty: i.receivedQty, flagged: i.status === 'flagged', flagNote: i.flagNote || '' })),
+        lines: t.items.map(i => {
+          const o = { productId: i.productId, receivedQty: i.receivedQty, flagged: i.status === 'flagged', flagNote: i.flagNote || '' };
+          if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; }   // OS-W4.3 P3 (SR-86): stamps + basis ride the receive step
+          if (i.basis) o.basis = i.basis;
+          return o;
+        }),
         completed: !hasFlagged,
         expectedLedgerKeys: batchTxns.map(x => x.id),
       },
@@ -407,6 +532,7 @@ const Transfer = {
       t.completedDate = new Date().toISOString();
     }
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    this._stampTxns(t, batchTxns);   // OS-W4.3 P2 (SR-67/88): every transfer-linked row inherits the item stamps
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     await this._emitResolve(t, [{ productId, action, qty, note: note || '' }], batchTxns.map(x => x.id), 0);  // Chunk 4
@@ -470,6 +596,7 @@ const Transfer = {
     }
     const allDone = t.items.every(i => i.status === 'accepted' || i.status === 'resolved');
     if (allDone) { t.status = 'completed'; t.completedDate = new Date().toISOString(); }
+    this._stampTxns(t, batchTxns);   // OS-W4.3 P2 (SR-67/88): every transfer-linked row inherits the item stamps
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     await this._emitResolve(t, (resolutions || []).map(r => ({ productId: r.productId, action: r.action, qty: r.qty, note: r.note || '' })), batchTxns.map(x => x.id), 0);  // Chunk 4
@@ -520,6 +647,7 @@ const Transfer = {
     t.status = 'completed';
     t.completedDate = new Date().toISOString();
     delete t._conflict;
+    this._stampTxns(t, batchTxns);   // OS-W4.3 P2 (SR-67/88): every transfer-linked row inherits the item stamps
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Conflict resolution could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     // Emit the resolve step at the bumped generation, naming every attempt it settles.
@@ -527,7 +655,7 @@ const Transfer = {
       recordType: 'transfer', recordId: t.id, stepType: 'resolve',
       stepId: (typeof Records !== 'undefined' && Records.resolveStepId) ? Records.resolveStepId(t.id, generation, resolutions.map(r => r.productId)) : undefined,
       ownerStoreId: t.toStoreId, fromStoreId: t.fromStoreId, toStoreId: t.toStoreId, status: 'completed',
-      payload: { generation, resolvesAttemptIds: attemptIds, resolvedBy: Auth.actor(), resolutions, conflictResolution: true, expectedLedgerKeys: batchTxns.map(x => x.id) },
+      payload: { generation, resolvesAttemptIds: attemptIds, resolvedBy: Auth.actor(), resolutions: this._enrichResolutions(t, resolutions), conflictResolution: true, expectedLedgerKeys: batchTxns.map(x => x.id) },   // OS-W4.3 P5 (SR-85)
     });
     this._notifyCompleted(t);
     return { ok:true };
@@ -594,6 +722,7 @@ const Transfer = {
     t.status = 'cancelled';
     t.completedDate = new Date().toISOString();
     // T2-05/T2-06: Pass pre-mutation snapshot for rollback on failure
+    this._stampTxns(t, batchTxns);   // OS-W4.3 P2 (SR-67/88): every transfer-linked row inherits the item stamps
     const _ok = await DB.atomicTransferWriteDurable(batchTxns, t, snapshot);
     if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
     // Chunk 4: emit a cancel step ONLY for an in-transit cancel (a draft was never synced → nothing to void cross-device).
