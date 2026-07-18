@@ -8,6 +8,10 @@ or a freshness TTL would be a spec change, not a W4.2 defect fix"; "no remaining
 production path"). Six rounds total: 9 → 4 → 1 → 2 → 1 → 0 findings. The closing full sweep (298) is
 recorded at the end of this file.
 
+**CLOSING FULL SWEEP (2026-07-19, post-convergence, single clean detached run): 298 CAUGHT, 0 BLIND,
+0 skipped, 0 INFRA-FAIL of 298.** Every mutation in the harness — the whole app plus the complete W4.2
+sentinel set (S-261..S-275 with all eleven b–k variants) — detected. **W4.2 IS CLOSED.**
+
 ## BUILD SHIPPED 2026-07-15 (per the LOCKED `AZURE-CHUNK-ORG-W4.2-LENS-SCOPE.md`)
 - **index.html:** the `Pricing` module (mirrored validators · SR-42 exact-schema `validConfig` · the
   three-tier `rateAsOf` chain w/ whole-config-validation-first, SR-74 stale horizon, SR-10
