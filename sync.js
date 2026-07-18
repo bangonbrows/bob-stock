@@ -1255,6 +1255,18 @@ const Sync = {
    * Maps a local transaction object to the SharePoint PascalCase format
    * expected by the push-v2 Logic App's Create Item action.
    */
+  // OS-W4.3 P6 (SR-39/62/89): the ONE canonical stamp-ingest pin. JSON NUMBER type (strings rejected —
+  // no Number() coercion), finite, sell 0..1,000,000, disc 0..100, BOTH <= 2dp, BOTH-OR-NEITHER.
+  // Returns {absent:true} (legacy row), {sell,disc} (valid pair), or null (malformed => reject the row).
+  _readRowStamps(sellRaw, discRaw) {
+    const has = (v) => v !== undefined && v !== null && v !== '';
+    if (!has(sellRaw) && !has(discRaw)) return { absent: true };
+    if (!has(sellRaw) || !has(discRaw)) return null;                    // one without the other = malformed
+    const twoDp = (n) => Number(n.toFixed(2)) === n;
+    if (typeof sellRaw !== 'number' || !isFinite(sellRaw) || sellRaw < 0 || sellRaw > 1000000 || !twoDp(sellRaw)) return null;
+    if (typeof discRaw !== 'number' || !isFinite(discRaw) || discRaw < 0 || discRaw > 100 || !twoDp(discRaw)) return null;
+    return { sell: sellRaw, disc: discRaw };
+  },
   _toSharePoint(t) {
     // Derive Timestamp as epoch ms from createdAt or current time.
     // This is the BUSINESS EVENT TIME (when the transaction happened).
@@ -1286,6 +1298,16 @@ const Sync = {
       // product) 409s → stock can't double. Falling back to TransactionId means non-receive rows never collide.
       IdempotencyKey: t.idempotencyKey || t.id
     };
+    // OS-W4.3 P3: the money stamps ride the row (both-or-neither by construction at capture), plus the
+    // export's classification inputs — UnitPriceAtTime (K4) and the StockFrom/To ids + bounded text labels
+    // (index.html:2090-2093: id fields are null for manual movements; the labels are the actual
+    // sale-vs-wastage classification inputs). Absent fields are simply not sent (legacy rows).
+    if (t.sellAtSupply != null && t.discAtSupply != null) { sp.SellAtSupply = t.sellAtSupply; sp.DiscAtSupply = t.discAtSupply; }
+    if (typeof t.unitPriceAtTime === 'number' && isFinite(t.unitPriceAtTime)) sp.UnitPriceAtTime = t.unitPriceAtTime;
+    if (t.stockFromStoreId) sp.StockFromStoreId = String(t.stockFromStoreId).slice(0, 64);
+    if (t.stockToStoreId) sp.StockToStoreId = String(t.stockToStoreId).slice(0, 64);
+    if (t.stockFrom) sp.StockFrom = String(t.stockFrom).slice(0, 300);
+    if (t.stockTo) sp.StockTo = String(t.stockTo).slice(0, 300);
     // Tombstone support: include TargetTransactionId + the deletion audit metadata (Wave I / I-2 —
     // was only TargetTransactionId, so other devices learned a row was deleted but not who/when/why).
     if (t.targetTransactionId) {
@@ -1326,6 +1348,17 @@ const Sync = {
       if (!(_d.products || []).some(p => p && p.id === item.ProductId)) return null;
       if (!(_d.stores || []).some(s => s && s.id === item.StoreId)) return null;
     }
+    // OS-W4.3 P6: stamp ingest — one-without-the-other or an out-of-policy value REJECTS the row (a
+    // boundary must never turn a malformed money claim into durable billing truth). Legacy absence is fine.
+    const _stamps = this._readRowStamps(item.SellAtSupply, item.DiscAtSupply);
+    if (_stamps === null) return null;
+    // UnitPriceAtTime (K4): optional; if present it must be a finite in-policy JSON number (<=2dp, 0..1M).
+    let _upat = null;
+    if (item.UnitPriceAtTime !== undefined && item.UnitPriceAtTime !== null && item.UnitPriceAtTime !== '') {
+      const _u = item.UnitPriceAtTime;
+      if (typeof _u !== 'number' || !isFinite(_u) || _u < 0 || _u > 1000000 || Number(_u.toFixed(2)) !== _u) return null;
+      _upat = _u;
+    }
     const local = {
       id: item.TransactionId,
       date: item.Date || '',
@@ -1345,6 +1378,12 @@ const Sync = {
       // usable ID is stored as null (never 0 — 0 would falsely read as "<= any cutoff" and get pruned/skipped).
       _spId: (function(){ var v = (item.ID != null ? item.ID : item.Id); var n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; })()
     };
+    if (_stamps && !_stamps.absent) { local.sellAtSupply = _stamps.sell; local.discAtSupply = _stamps.disc; }   // OS-W4.3 P3
+    if (_upat !== null) local.unitPriceAtTime = _upat;
+    if (item.StockFromStoreId) local.stockFromStoreId = String(item.StockFromStoreId).slice(0, 64);
+    if (item.StockToStoreId) local.stockToStoreId = String(item.StockToStoreId).slice(0, 64);
+    if (item.StockFrom) local.stockFrom = String(item.StockFrom).slice(0, 300);
+    if (item.StockTo) local.stockTo = String(item.StockTo).slice(0, 300);
     // Tombstone support: map TargetTransactionId if present
     if (item.TargetTransactionId) {
       local.targetTransactionId = item.TargetTransactionId;
@@ -1359,7 +1398,7 @@ const Sync = {
     const _q = (typeof Validate !== 'undefined') ? Validate.qty(item.Qty) : { ok: Number.isSafeInteger(Number(item.Qty)) && Number(item.Qty) >= 0, value: Number(item.Qty) };
     if (!_q.ok) return null;
     const sid = Number(item.SourceId);
-    return {
+    const out = {
       id: String(item.TransactionId || ''),
       date: item.TxnDate || '',
       storeId: item.StoreId || '',
@@ -1376,6 +1415,16 @@ const Sync = {
       _archived: true,   // report-overlay marker; never persisted, never in the stock cache
       _spId: (Number.isSafeInteger(sid) && sid > 0) ? sid : null
     };
+    // OS-W4.3 P3: archived rows round-trip the stamps + export inputs bit-exact (same P6 ingest pin).
+    const _ast = this._readRowStamps(item.SellAtSupply, item.DiscAtSupply);
+    if (_ast === null) return null;
+    if (_ast && !_ast.absent) { out.sellAtSupply = _ast.sell; out.discAtSupply = _ast.disc; }
+    if (typeof item.UnitPriceAtTime === 'number' && isFinite(item.UnitPriceAtTime)) out.unitPriceAtTime = item.UnitPriceAtTime;
+    if (item.StockFromStoreId) out.stockFromStoreId = String(item.StockFromStoreId).slice(0, 64);
+    if (item.StockToStoreId) out.stockToStoreId = String(item.StockToStoreId).slice(0, 64);
+    if (item.StockFrom) out.stockFrom = String(item.StockFrom).slice(0, 300);
+    if (item.StockTo) out.stockTo = String(item.StockTo).slice(0, 300);
+    return out;
   },
 
   // Director/HO on-demand pull of archived movements for a date range (report overlay). Returns an array of
