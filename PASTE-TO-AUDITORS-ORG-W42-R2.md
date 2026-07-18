@@ -10,10 +10,16 @@
 > mutation-testing cases (S-275c/d/e/f). The 401 sibling was ground-truthed and fixed pre-round from a
 > round-3 reviewer probe that was cut off mid-run (`_handleUnauthorized` pauses all pulling and now
 > invalidates freshness too). The scoped mutation command below now lists 23 cases → **23/23 detected**
-> expected. Ground-truth ledger: `AZURE-CHUNK-ORG-W42-AUDIT-RESPONSE.md` (Round 3 table). Focus: the
-> freshness lifecycle across every way a device can STOP OBSERVING server pricing state — leadership
-> changes, connection changes, auth pauses, teardown — is there ANY remaining path where a tab that
-> stops pulling keeps a freshness fact?
+> expected. Ground-truth ledger: `AZURE-CHUNK-ORG-W42-AUDIT-RESPONSE.md` (Round 3 table).
+> **Pre-R4b addendum:** the LATE-RESPONSE race (a response in flight when an invalidating event fires
+> resurrecting the freshness flag afterwards — surfaced by an interrupted round-4 reviewer session) is
+> ground-truthed REAL and structurally fixed: one shared invalidation door advancing an EPOCH counter
+> (all eight stop-observing sites), and the three response processors capture the epoch before their
+> network wait and refuse a stale claim. S-275 proves both the writer and config races on real delayed
+> responses; the scoped command now lists 25 cases → **25/25 detected** expected. Focus: the freshness
+> lifecycle across every way a device can STOP OBSERVING server pricing state — including in-flight
+> responses spanning such an event — is there ANY remaining path where a stale observation survives as
+> a freshness fact?
 
 > ## ROUND 3 — re-review after the round-2 fixes
 > Round-2 verdicts: AGY PASS · Codex ×4 findings (W42-R2-C1..C4) — all confirmed real, all fixed:
@@ -60,8 +66,8 @@ report findings only — the engineer applies any changes.
 - `cd test && node smoke-test.js` → **266/266** expected.
 - `node test/topology-proof.js` (repo root) → **256/256** expected.
 - Scoped mutation testing:
-  `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-272b,S-273,S-273b,S-274,S-274b,S-275,S-275b,S-275c,S-275d,S-275e,S-275f
-  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **23/23 detected** expected. (Scoped only — the
+  `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-272b,S-273,S-273b,S-274,S-274b,S-275,S-275b,S-275c,S-275d,S-275e,S-275f,S-275g,S-275h
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **25/25 detected** expected. (Scoped only — the
   full mutation sweep is the engineer's local gate.)
 - `cd test && node static-check.js` and `node csp-check.js` → PASS.
 

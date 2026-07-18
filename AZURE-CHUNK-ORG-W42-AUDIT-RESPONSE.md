@@ -106,8 +106,28 @@ a key-rotated device could keep passing the P5 commit gate on an ever-staler con
 401 pause invalidates freshness (the sixth stop-pulling path); S-275 asserts it; mutation S-275f.
 
 **Pre-R4 gates:** smoke **266/266** · scoped saboteur S-261..S-275f: **23/23 CAUGHT, 0 BLIND, 0 skipped,
-0 INFRA** (single clean detached run) · anchor scan **293/293** · full sweep (293) relaunched detached,
-result recorded below.
+0 INFRA** (single clean detached run) · anchor scan **293/293**.
+
+## PRE-R4b (2026-07-18): the LATE-RESPONSE freshness race — from Codex's in-flight round-4 probing, ground-truthed by the engineer
+
+Codex's (partially filtered) round-4 session reported reproducing a "late-response freshness race": a
+network response already IN FLIGHT when an invalidating event fires lands afterwards and sets
+`_pricingFresh = true` — resurrecting a fact the event just killed. **REAL by inspection** — nothing
+guarded the flag against responses that predate the invalidation. **Structural fix (closes the CLASS,
+not the instance):** ONE invalidation door `_invalidatePricingFresh()` (all eight stop-observing sites
+now route through it) that kills the flag AND advances an epoch counter; the three response processors
+(`_fetchRemoteConfig`, `pull()` page-1 echo, `publishPricingChange`) capture the epoch BEFORE their
+network wait and refuse the freshness claim if it moved. A raced writer lands in the honest
+`echo-not-adopted` path (the "server may have committed" UI). S-275 now proves both the writer and
+config races on REAL delayed responses (120ms routes, mid-flight offline event) with pass controls;
+mutations S-275g/S-275h target the two asserted guards (the pull-path guard shares the identical
+pattern; noted as un-mutated). Six S-275* mutation anchors re-anchored to the helper lines.
+
+**Pre-R4b gates (2026-07-18):** smoke **266/266** (the race assertions pass on real 120ms-delayed
+responses with pass controls) · scoped saboteur S-261..S-275h: **25/25 CAUGHT, 0 BLIND, 0 skipped,
+0 INFRA** (single clean detached run, baseline 266/266) · anchor scan **295/295** · topology 256/256
+(no server change). The FULL sweep (295) runs after the round-4 auditor sessions finish (two prior
+attempts were killed by auditor process cleanup on the shared machine).
 
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
