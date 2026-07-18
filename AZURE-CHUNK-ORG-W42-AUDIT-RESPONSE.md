@@ -148,6 +148,18 @@ scoped saboteur S-261..S-275j: **27/27 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (si
 baseline 266/266) · anchor scan **297/297** · topology 256/256 (no server change). The FULL sweep (297)
 runs once the round-5 auditor sessions are done.
 
+## ROUND 5 (2026-07-18): Codex PASS ("no remaining production path", full gate reproductions + line-level fix verification) · AGY BLOCK ×1 — REAL, plus one footnote ADJUDICATED
+
+| # | Finding | Ground truth | Action |
+|---|---|---|---|
+| AGY R5-1 (P2) | `Auth.logout()` → `Sync.clearSensitiveData()` nulls the sync URLs (every future `pull()` no-ops — a structural, indefinite halt of observation) but never invalidates `_pricingFresh`; a later re-login whose first `_fetchRemoteConfig` fails silently INHERITS the pre-logout freshness fact | **REAL** — confirmed at `sync.js` `clearSensitiveData()` (no invalidation) | `_invalidatePricingFresh()` first thing in `clearSensitiveData()`; S-275 asserts it (fresh dies + epoch advances on logout); mutation S-275k |
+| AGY R5-note (unnumbered) | failed poll cycles (`!resp.ok` etc.) keep freshness while showing "Data may be stale" | **ADJUDICATED NOT A DEFECT per the frozen P5 event list:** a transient cycle failure is not a stop-observing EVENT — the loop keeps polling (next cycle ≤30s), and ground-truthing the cycle order shows the page-1 pricing echo is processed BEFORE the abort sites (no-progress abort, merge-durable failure, catch) and even before the topology-hold return — so the pricing observation of a cycle survives its ledger-merge failures by design. The "Data may be stale" banner refers to LEDGER rows, not the pricing-state observation. Codex's independent R5 pass reached the same conclusion. If either auditor believes this needs a SPEC change (a freshness TTL or per-cycle invalidation), that reopens W4.2's review per the standing rule — say so explicitly | no code change; adjudication recorded |
+
+**Round-5-fix gates (2026-07-18):** smoke **266/266** (S-275 logout assertion green) · scoped saboteur
+S-261..S-275k: **28/28 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run, baseline
+266/266) · anchor scan **298/298** · topology 256/256 (no server change). The FULL sweep (298) runs
+after the round-6 sessions.
+
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
 editor exists in today's UI (route support ships now; UI = W5) · the freshness half of the submit gate is

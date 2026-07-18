@@ -1,4 +1,18 @@
-# REVIEW PACK — Org-Structure chunk, W4.2 build — ROUND 5 verification review
+# REVIEW PACK — Org-Structure chunk, W4.2 build — ROUND 6 verification review
+
+> ## ROUND 6 — re-review after the round-5 fix
+> Round-5 verdicts: Codex PASS ("no remaining production path", full gate reproductions) · AGY ×1 REAL:
+> `Auth.logout()` → `clearSensitiveData()` halts the pull loop indefinitely (URLs nulled) without
+> invalidating freshness — a later re-login with a silently failed first fetch inherited the pre-logout
+> fact. Fixed: freshness dies (and the epoch advances) first thing in `clearSensitiveData()`; S-275
+> asserts it; mutation S-275k. AGY's unnumbered footnote (failed poll cycles keep freshness) was
+> ADJUDICATED not-a-defect per the frozen P5 event list — the cycle order processes the page-1 pricing
+> echo BEFORE every abort site, so a cycle's pricing observation survives its ledger-merge failures by
+> design, and the loop keeps polling; see the Round 5 table in `AZURE-CHUNK-ORG-W42-AUDIT-RESPONSE.md`.
+> If you believe that needs a SPEC change, say so explicitly (it reopens the review per the standing
+> rule). The scoped command below now lists 28 cases → **28/28 detected** expected; smoke stays
+> **266/266**. This round: verify the logout fix, judge the adjudication, and the standing focus
+> question one final time.
 
 > ## ROUND 5 — re-review after the round-4 fixes
 > Round-4 verdicts: Codex PASS (independent delayed-response matrix — control/offline/auth-pause/stop —
@@ -78,8 +92,8 @@ report findings only — the engineer applies any changes.
 - `cd test && node smoke-test.js` → **266/266** expected.
 - `node test/topology-proof.js` (repo root) → **256/256** expected.
 - Scoped mutation testing:
-  `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-272b,S-273,S-273b,S-274,S-274b,S-275,S-275b,S-275c,S-275d,S-275e,S-275f,S-275g,S-275h,S-275i,S-275j
-  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **27/27 detected** expected. (Scoped only — the
+  `SABOTEUR_ONLY=S-261,S-262,S-263,S-264,S-265,S-266,S-267,S-268,S-269,S-270,S-271,S-272,S-272b,S-273,S-273b,S-274,S-274b,S-275,S-275b,S-275c,S-275d,S-275e,S-275f,S-275g,S-275h,S-275i,S-275j,S-275k
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **28/28 detected** expected. (Scoped only — the
   full mutation sweep is the engineer's local gate.)
 - `cd test && node static-check.js` and `node csp-check.js` → PASS.
 
