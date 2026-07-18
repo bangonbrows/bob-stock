@@ -2829,6 +2829,17 @@ async function runSmoke(repo) {
         Sync._handleUnauthorized('S-275-probe');
         const unauthFresh = Sync._pricingFresh;
         Sync._unauthorized = _prevUnauth;
+        // R4/AGY-1+2: leader-loss DETECTION advances the epoch IMMEDIATELY (before any claim resolves) —
+        // the graceful leaving notice AND the real heartbeat-timeout tick (claim stubbed so detection is
+        // isolated from the later promotion invalidation)
+        const _origClaim = Sync._tryClaimLeader; Sync._tryClaimLeader = () => {};
+        Sync._isLeader = false; Sync._pricingFresh = true; const _e1 = Sync._pricingEpoch || 0;
+        Sync._bc.onmessage({ data: { type: 'leader-leaving', tabId: 'gone' } });
+        const leavingFresh = Sync._pricingFresh, leavingBumped = (Sync._pricingEpoch || 0) > _e1;
+        Sync._isLeader = false; Sync._lastLeaderPing = Date.now() - 60000; Sync._pricingFresh = true; const _e2 = Sync._pricingEpoch || 0;
+        await new Promise(r2 => setTimeout(r2, 5600));   // one real _leaderCheckTimer tick (LEADER_TIMEOUT/2)
+        const timeoutFresh = Sync._pricingFresh, timeoutBumped = (Sync._pricingEpoch || 0) > _e2;
+        Sync._tryClaimLeader = _origClaim; Sync._lastLeaderPing = Date.now();
         // pre-R4b: the LATE-RESPONSE race, WRITER path — a pricing-change response in flight when an
         // invalidating event fires must not resurrect freshness or report success
         Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
@@ -2858,9 +2869,9 @@ async function runSmoke(repo) {
         try { Sync.stop(); } catch (e) {}
         const stoppedFresh = Sync._pricingFresh;
         Sync._pricingFresh = false;
-        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, raceWOk: raceW.ok, raceWFresh, ctrlWOk: ctrlW.ok, raceCFresh, ctrlCFresh, stoppedFresh };
+        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, leavingFresh, leavingBumped, timeoutFresh, timeoutBumped, raceWOk: raceW.ok, raceWFresh, ctrlWOk: ctrlW.ok, raceCFresh, ctrlCFresh, stoppedFresh };
       });
-      rec('S-275', 'W42-R2/R3-C1+pre-R4/R4b: EVERY stop-pulling path invalidates freshness, and a LATE response never resurrects it (writer + config races, real delayed network)', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.raceWOk === false && r.raceWFresh === false && r.ctrlWOk === true && r.raceCFresh === false && r.ctrlCFresh === true && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} raceW=${r.raceWOk}/${r.raceWFresh} ctrlW=${r.ctrlWOk} raceC=${r.raceCFresh} ctrlC=${r.ctrlCFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
+      rec('S-275', 'W42 freshness lifecycle: EVERY stop-observing path invalidates AT DETECTION (incl. leader-leaving + heartbeat timeout), and a LATE response never resurrects a predating fact', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.leavingFresh === false && r.leavingBumped === true && r.timeoutFresh === false && r.timeoutBumped === true && r.raceWOk === false && r.raceWFresh === false && r.ctrlWOk === true && r.raceCFresh === false && r.ctrlCFresh === true && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} leaving=${r.leavingFresh}/${r.leavingBumped} timeout=${r.timeoutFresh}/${r.timeoutBumped} raceW=${r.raceWOk}/${r.raceWFresh} ctrlW=${r.ctrlWOk} raceC=${r.raceCFresh} ctrlC=${r.ctrlCFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
 
 
 

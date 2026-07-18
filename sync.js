@@ -1100,6 +1100,7 @@ const Sync = {
           // Leader is closing — try to promote ourselves
           console.log('[Sync] Leader left. Attempting promotion...');
           this._lastLeaderPing = 0;
+          this._invalidatePricingFresh();   // OS-W42-AUDIT R4 (AGY-1): the LEAVING notice is the stop-observing moment — the epoch advances NOW, not when the claim later resolves
           setTimeout(() => this._tryClaimLeader(), Math.random() * 300);
           break;
 
@@ -1168,6 +1169,7 @@ const Sync = {
       if (!this._isLeader && this._lastLeaderPing > 0 &&
           (Date.now() - this._lastLeaderPing) > this.LEADER_TIMEOUT) {
         console.log('[Sync] Leader heartbeat timeout. Attempting promotion...');
+        this._invalidatePricingFresh();   // OS-W42-AUDIT R4 (AGY-2): timeout DETECTION is the stop-observing moment — observation ended up to LEADER_TIMEOUT ago; the epoch advances before any claim
         this._tryClaimLeader();
       }
     }, this.LEADER_TIMEOUT / 2);
