@@ -85,6 +85,12 @@ reacting to security-flavoured wording. To keep your session healthy:
    test-case labels use theatrical wording ("sabotaged", "bypassed") that accumulates badly in a
    session transcript. The same goes for wholesale quoting of code comment blocks — cite `file:line`
    and summarise in your own neutral words instead.
+2b. **When you inspect source files, STRIP COMMENT LINES before displaying.** The engineer's comments
+   are what has repeatedly triggered the interruption (a session died twice merely echoing
+   `phase2.js` lines 68–94). The executable logic is what you are verifying; read it comment-free:
+   `Get-Content phase2.js | Where-Object { $_ -notmatch '^\s*//' } | Select-Object -Skip 60 -First 30`
+   (or `grep -vE '^\s*//' phase2.js | sed -n '60,90p'`). Never display a raw comment block from
+   `phase2.js`, `sync.js`, `index.html`, or the test files.
 3. **Describe findings in plain engineering terms** — "the gate does not hold when X", not
    attack/bypass/exploit language. The verdict quality is identical; the session survives.
 4. **When cleaning up, only terminate processes running under your own copy folder** — a blanket
