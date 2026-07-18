@@ -338,6 +338,13 @@ const Records = {
             resolvedBy: it.resolvedBy || null,
             resolvedAction: it.resolvedAction || null,
             creditedAtReceive: it.creditedAtReceive || 0,
+            // OS-W4.3 P3 (SR-87): stamps + basis are mapped EXPLICITLY (the old enumeration dropped
+            // unlisted fields). Both-or-neither at the fold; a stampless genesis with no explicit basis
+            // stays UNSET here — "awaiting stamp-at-receive" vs "durably legacy" is decided by the
+            // receive rules (SR-86/97), never silently at genesis.
+            sellAtSupply: (it.sellAtSupply != null && it.discAtSupply != null) ? it.sellAtSupply : null,
+            discAtSupply: (it.sellAtSupply != null && it.discAtSupply != null) ? it.discAtSupply : null,
+            basis: it.basis || null,
           })),
           notes: base.notes || '',
           _stepSourced: true,
@@ -399,6 +406,15 @@ const Records = {
       item.receivedQty = ln.receivedQty;
       if (ln.flagged) { item.status = 'flagged'; item.flagNote = ln.flagNote || ''; item.creditedAtReceive = ln.receivedQty || 0; anyFlag = true; }
       else { item.status = 'accepted'; }
+      // OS-W4.3 (SR-86/97) BASIS PRECEDENCE: a stamped item is PERMANENT — nothing a later step omits can
+      // downgrade it. A stamped receive line fills a stampless item (stamp-at-receive publishing). A
+      // basis-less receive line (a pre-W4 receiver) sets 'legacy-lens' ONLY when the submit is ALSO
+      // stampless — a stamped submit survives a stale receive untouched (its unstamped rows are handled
+      // by valuation precedence, no row mutation).
+      const _itemStamped = (item.sellAtSupply != null && item.discAtSupply != null);
+      const _lnStamped = (ln.sellAtSupply != null && ln.discAtSupply != null);
+      if (_lnStamped && !_itemStamped) { item.sellAtSupply = ln.sellAtSupply; item.discAtSupply = ln.discAtSupply; item.basis = ln.basis || 'receive-stamped'; }
+      else if (!_lnStamped && !_itemStamped && !item.basis) { item.basis = 'legacy-lens'; }
     });
     t.status = anyFlag ? 'received' : 'completed';
     if (!anyFlag) t.completedDate = new Date(s.timestamp || Date.now()).toISOString();
@@ -412,6 +428,10 @@ const Records = {
       item.resolvedBy = p.resolvedBy || s.actorId || null;
       item.resolvedAction = r.action || null;
       item.status = 'resolved';
+      // OS-W4.3 P5 (SR-85): the resolve carries the PINNED stamps — the chosen outcome publishes
+      // cross-device; billing is never sync-order-dependent after a resolution.
+      if (r.sellAtSupply != null && r.discAtSupply != null) { item.sellAtSupply = r.sellAtSupply; item.discAtSupply = r.discAtSupply; }
+      if (r.basis) item.basis = r.basis;
     });
     t.status = 'completed';
     t.completedDate = new Date(s.timestamp || Date.now()).toISOString();
@@ -424,7 +444,12 @@ const Records = {
       deviceId: s.deviceId || '',
       actorName: s.actorName || '',
       timestamp: s.timestamp || 0,
-      lines: (p.lines || []).map(l => ({ productId: l.productId, receivedQty: l.receivedQty })),
+      lines: (p.lines || []).map(l => {
+        const o = { productId: l.productId, receivedQty: l.receivedQty };
+        if (l.sellAtSupply != null && l.discAtSupply != null) { o.sellAtSupply = l.sellAtSupply; o.discAtSupply = l.discAtSupply; }   // OS-W4.3 (SR-66): money is part of the conflict identity
+        if (l.basis) o.basis = l.basis;
+        return o;
+      }),
     };
   },
 
@@ -441,11 +466,18 @@ const Records = {
     const reopened = !!(lastResolve && uncovered.some(a => a.timestamp > (lastResolve.timestamp || 0)));
     // Disagreement is evaluated over UNCOVERED attempts only. A resolve that covers every attempt → no
     // uncovered attempts → no disagreement → resolved (returns null).
-    const lineMap = {};   // productId -> Set of qty
+    // OS-W4.3 (SR-66): the identity extends beyond qty to the FINANCIAL payload — equal quantities with
+    // DIFFERING stamps are a conflict (billing must never be sync-order-dependent). Absence is not a
+    // differing claim: a pre-W4 attempt without stamps does not conflict with a stamped attempt of the
+    // same qty (SR-97 — valuation precedence covers its rows); only two PRESENT-but-unequal stamp sets
+    // disagree.
+    const lineMap = {};   // productId -> { qtys: Set, stamps: Set (stamped lines only) }
     uncovered.forEach(a => a.lines.forEach(l => {
-      (lineMap[l.productId] = lineMap[l.productId] || new Set()).add(Number(l.receivedQty));
+      const e = (lineMap[l.productId] = lineMap[l.productId] || { qtys: new Set(), stamps: new Set() });
+      e.qtys.add(Number(l.receivedQty));
+      if (l.sellAtSupply != null && l.discAtSupply != null) e.stamps.add(l.sellAtSupply + '|' + l.discAtSupply + '|' + (l.basis || ''));
     }));
-    const disagree = Object.keys(lineMap).some(pid => lineMap[pid].size > 1);
+    const disagree = Object.keys(lineMap).some(pid => lineMap[pid].qtys.size > 1 || lineMap[pid].stamps.size > 1);
     if (!disagree && !reopened) return null;
     return {
       kind: reopened ? 'reopened' : 'qty_disagreement',
