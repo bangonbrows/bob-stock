@@ -2864,14 +2864,18 @@ async function runSmoke(repo) {
         await Sync._fetchRemoteConfig();                                 // control: no mid-flight event => fresh
         const ctrlCFresh = Sync._pricingFresh;
         Sync.CONFIG_URL = _origCfgUrl; Sync._pricingChangeUrl = null;
+        // R5/AGY-1: LOGOUT (clearSensitiveData) halts the pull loop indefinitely — freshness dies with it
+        Sync._pricingFresh = true; const _e3 = Sync._pricingEpoch || 0;
+        Sync.clearSensitiveData();
+        const logoutFresh = Sync._pricingFresh, logoutBumped = (Sync._pricingEpoch || 0) > _e3;
         // R3 sibling: stop() teardown — a stopped sync can observe nothing (LAST: closes the channel)
         Sync._pricingFresh = true;
         try { Sync.stop(); } catch (e) {}
         const stoppedFresh = Sync._pricingFresh;
         Sync._pricingFresh = false;
-        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, leavingFresh, leavingBumped, timeoutFresh, timeoutBumped, raceWOk: raceW.ok, raceWFresh, ctrlWOk: ctrlW.ok, raceCFresh, ctrlCFresh, stoppedFresh };
+        return { demotedLeader, demotedFresh, g1hold: g1.hold || null, standDownFresh, tiebreakFresh, tiebreakPending, abandonedFresh, abandonedLeader, unauthFresh, leavingFresh, leavingBumped, timeoutFresh, timeoutBumped, logoutFresh, logoutBumped, raceWOk: raceW.ok, raceWFresh, ctrlWOk: ctrlW.ok, raceCFresh, ctrlCFresh, stoppedFresh };
       });
-      rec('S-275', 'W42 freshness lifecycle: EVERY stop-observing path invalidates AT DETECTION (incl. leader-leaving + heartbeat timeout), and a LATE response never resurrects a predating fact', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.leavingFresh === false && r.leavingBumped === true && r.timeoutFresh === false && r.timeoutBumped === true && r.raceWOk === false && r.raceWFresh === false && r.ctrlWOk === true && r.raceCFresh === false && r.ctrlCFresh === true && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} leaving=${r.leavingFresh}/${r.leavingBumped} timeout=${r.timeoutFresh}/${r.timeoutBumped} raceW=${r.raceWOk}/${r.raceWFresh} ctrlW=${r.ctrlWOk} raceC=${r.raceCFresh} ctrlC=${r.ctrlCFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
+      rec('S-275', 'W42 freshness lifecycle: EVERY stop-observing path invalidates AT DETECTION (incl. leader-leaving, heartbeat timeout, LOGOUT), and a LATE response never resurrects a predating fact', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.leavingFresh === false && r.leavingBumped === true && r.timeoutFresh === false && r.timeoutBumped === true && r.logoutFresh === false && r.logoutBumped === true && r.raceWOk === false && r.raceWFresh === false && r.ctrlWOk === true && r.raceCFresh === false && r.ctrlCFresh === true && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} leaving=${r.leavingFresh}/${r.leavingBumped} timeout=${r.timeoutFresh}/${r.timeoutBumped} logout=${r.logoutFresh}/${r.logoutBumped} raceW=${r.raceWOk}/${r.raceWFresh} ctrlW=${r.ctrlWOk} raceC=${r.raceCFresh} ctrlC=${r.ctrlCFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
 
 
 

@@ -1000,6 +1000,7 @@ const Sync = {
    * Non-sensitive data (device ID, last sync timestamp) stays in localStorage.
    */
   clearSensitiveData() {
+    this._invalidatePricingFresh();   // OS-W42-AUDIT R5 (AGY-1): logout structurally HALTS observation (pull() no-ops without URLs) — the freshness fact must not survive into a later re-login whose first fetch fails silently
     sessionStorage.removeItem('bob_sync_config');
     this._pushUrl = null;
     this._pullUrl = null;
