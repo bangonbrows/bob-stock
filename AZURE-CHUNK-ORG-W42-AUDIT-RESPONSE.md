@@ -129,6 +129,25 @@ responses with pass controls) · scoped saboteur S-261..S-275h: **25/25 CAUGHT, 
 (no server change). The FULL sweep (295) runs after the round-4 auditor sessions finish (two prior
 attempts were killed by auditor process cleanup on the shared machine).
 
+## ROUND 4 (2026-07-18): Codex PASS (independent delayed-response matrix; "no remaining production path") · AGY BLOCK ×2 — both REAL
+
+| # | Finding | Ground truth | Action |
+|---|---|---|---|
+| AGY R4-1 (P1-window) | the `leader-leaving` handler starts promotion without advancing the epoch — an in-flight response landing in the handoff window (≤ ~800ms) resurrects freshness and passes the guard | **REAL** — my epoch sweep covered the loss/abandon/promotion moments but not the two DETECTION moments | `_invalidatePricingFresh()` at the leaving-notice receipt |
+| AGY R4-2 (P1-window) | the `_leaderCheckTimer` heartbeat-timeout branch schedules a claim without advancing the epoch — same window, and observation actually ended up to 10s earlier | **REAL** — same shape | `_invalidatePricingFresh()` at timeout detection, before the claim |
+
+**Coverage:** S-275 asserts BOTH detection moments (the real `onmessage` leaving path; a real
+`_leaderCheckTimer` tick with the claim stubbed so detection is isolated from the later promotion
+invalidation) with epoch-advance checks; mutations S-275i/S-275j — **297 mutations, parity 266 ↔ 266,
+anchor scan 297/297**. Freshness now dies at: 3 leadership-loss events, 2 leader-loss DETECTION events,
+promotion, connection loss/regain, visibility resume, 401 pause, teardown — and the epoch guard refuses
+any response predating any of them.
+
+**Round-4-fix gates (2026-07-18):** smoke **266/266** (both detection assertions on the real handlers) ·
+scoped saboteur S-261..S-275j: **27/27 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run,
+baseline 266/266) · anchor scan **297/297** · topology 256/256 (no server change). The FULL sweep (297)
+runs once the round-5 auditor sessions are done.
+
 ## Engineer's flagged notes (also in the PASTE pack)
 UTC-midnight as-of anchoring for invoice dates (pinned calendar-day granularity) · no office-default
 editor exists in today's UI (route support ships now; UI = W5) · the freshness half of the submit gate is
