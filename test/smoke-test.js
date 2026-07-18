@@ -2877,6 +2877,194 @@ async function runSmoke(repo) {
       });
       rec('S-275', 'W42 freshness lifecycle: EVERY stop-observing path invalidates AT DETECTION (incl. leader-leaving, heartbeat timeout, LOGOUT), and a LATE response never resurrects a predating fact', r.demotedLeader === false && r.demotedFresh === false && r.g1hold === 'NO_FRESH_OBSERVATION' && r.standDownFresh === false && r.tiebreakFresh === false && r.tiebreakPending === false && r.abandonedFresh === false && r.abandonedLeader === false && r.unauthFresh === false && r.leavingFresh === false && r.leavingBumped === true && r.timeoutFresh === false && r.timeoutBumped === true && r.logoutFresh === false && r.logoutBumped === true && r.raceWOk === false && r.raceWFresh === false && r.ctrlWOk === true && r.raceCFresh === false && r.ctrlCFresh === true && r.stoppedFresh === false, `demotedLeader=${r.demotedLeader} demotedFresh=${r.demotedFresh} g1hold=${r.g1hold} standDown=${r.standDownFresh} tiebreak=${r.tiebreakFresh}/${r.tiebreakPending} abandoned=${r.abandonedFresh}/${r.abandonedLeader} unauth=${r.unauthFresh} leaving=${r.leavingFresh}/${r.leavingBumped} timeout=${r.timeoutFresh}/${r.timeoutBumped} logout=${r.logoutFresh}/${r.logoutBumped} raceW=${r.raceWOk}/${r.raceWFresh} ctrlW=${r.ctrlWOk} raceC=${r.raceCFresh} ctrlC=${r.ctrlCFresh} stopped=${r.stoppedFresh}`); await ctx.close(); }
 
+    // ── OS-W4.3 (the stamps seam, S-276..S-282) ─────────────────────────────────────────────────
+
+    // S-276 (S-W4-7, P1): COMMIT-TIME stamps — a draft created under one price/rate, SUBMITTED under
+    // another, carries the SUBMIT-day stamps; changes AFTER submit (price + rate) change nothing; the
+    // received row and the invoice line bill the submit-day dollars (the DOLLAR half, frozen).
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); const p = d.products[0]; const pid = p.id; const _origPrice = p.price;
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        d.pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2020-01-01T00:00:00Z', to: null }] } } };
+        Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
+        Sync._pricingFresh = true;
+        await DB.addTransactionDurable({ id: 't276seed', type: 'in', productId: pid, storeId: 'head_office', qty: 50, date: '2020-01-02', createdAt: new Date().toISOString() });
+        p.price = 100;
+        const c = await Transfer.create('head_office', 'cockburn_office', [{ productId: pid, qty: 2 }], { isDraft: true });
+        await Transfer.confirmDraftItem(c.transferId, pid);
+        p.price = 150;   // the submit-day price
+        d.pricingConfig = { version: 2, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2020-01-01T00:00:00Z', to: '2026-01-01T00:00:00Z' }, { rate: 30, from: '2026-01-01T00:00:00Z', to: null }] } } };
+        const sub = await Transfer.submitDraft(c.transferId);
+        const t = Transfer.get(c.transferId);
+        const stampSell = t.items[0].sellAtSupply, stampDisc = t.items[0].discAtSupply, basis = t.items[0].basis;
+        p.price = 200;   // post-submit changes must not matter
+        d.pricingConfig = { version: 3, global: {}, stores: { cockburn_office: { '*': [{ rate: 40, from: '2020-01-01T00:00:00Z', to: null }] } } };
+        const rec = await Transfer.receive(c.transferId, [{ productId: pid, receivedQty: 2 }]);
+        const row = (d.transactions || []).find(x => x && x.transferId === c.transferId && x.type === 'transfer_in');
+        const sd = Pages._franchiseInvoiceData(d, UI.todayLocal(), UI.todayLocal()).find(s => s.office.id === 'cockburn_office');
+        const line = sd && sd.lines.find(l => l.product && l.product.id === pid);
+        const out = { subOk: sub.ok, recOk: rec.ok, stampSell, stampDisc, basis, rowSell: row && row.sellAtSupply, rowDisc: row && row.discAtSupply, lineSell: line && line.sell, lineDisc: line && line.prodDisc, lineSrc: line && line.rateSource, owed: line && line.owed };
+        d.transactions = d.transactions.filter(x => x.id !== 't276seed' && x.transferId !== c.transferId);
+        d.transfers = (d.transfers || []).filter(x => x.id !== c.transferId);
+        d.recordSteps = (d.recordSteps || []).filter(s => s.recordId !== c.transferId);
+        delete d.pricingConfig; p.price = _origPrice; Stock._qtyCache = Object.create(null);
+        try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {} Sync._pricingFresh = false;
+        return out;
+      });
+      rec('S-276', 'W4.3-P1: stamps freeze at SUBMIT (not draft, not receive) — the received row and invoice bill the submit-day dollars forever', r.subOk === true && r.recOk === true && r.stampSell === 150 && r.stampDisc === 30 && r.basis === 'submit-stamped' && r.rowSell === 150 && r.rowDisc === 30 && r.lineSell === 150 && r.lineDisc === 30 && r.lineSrc === 'stamped' && r.owed === 210, `sub=${r.subOk} rec=${r.recOk} stamp=${r.stampSell}/${r.stampDisc}/${r.basis} row=${r.rowSell}/${r.rowDisc} line=${r.lineSell}/${r.lineDisc}/${r.lineSrc} owed=${r.owed} (clean: 150/30 everywhere, owed 210)`); await ctx.close(); }
+
+    // S-277 (S-W4-12 + S-W4-10, P3/P6): row-sync ROUND-TRIP is bit-exact for stamps + the export inputs;
+    // ingest REJECTS one-sided stamps and every out-of-policy money class (string, 3dp, >1M, non-finite) —
+    // on the live list AND the archive shape.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const d = DB.get(); const pid = d.products[0].id;
+        const sp = Sync._toSharePoint({ id: 't277', date: '2026-07-01', storeId: 'cockburn_office', productId: pid, type: 'transfer_in', qty: 1, transferId: 'tr277', createdAt: new Date().toISOString(), sellAtSupply: 99.95, discAtSupply: 12.5, unitPriceAtTime: 42, stockFromStoreId: 'head_office', stockFrom: 'HO Warehouse — HO', stockTo: 'Shelf' });
+        const mkSp = (extra) => Object.assign({ TransactionId: 't277b', Date: '2026-07-01', StoreId: 'cockburn_office', ProductId: pid, Type: 'transfer_in', Qty: 1, Timestamp: Date.now(), ID: 12345 }, extra || {});
+        const back = Sync._fromSharePoint(mkSp({ SellAtSupply: sp.SellAtSupply, DiscAtSupply: sp.DiscAtSupply, UnitPriceAtTime: sp.UnitPriceAtTime, StockFromStoreId: sp.StockFromStoreId, StockFrom: sp.StockFrom, StockTo: sp.StockTo }));
+        const oneSided = Sync._fromSharePoint(mkSp({ SellAtSupply: 50 }));
+        const threeDp = Sync._fromSharePoint(mkSp({ SellAtSupply: 50, DiscAtSupply: 12.345 }));
+        const strMoney = Sync._fromSharePoint(mkSp({ SellAtSupply: '1e3', DiscAtSupply: 10 }));
+        const huge = Sync._fromSharePoint(mkSp({ SellAtSupply: 1e308, DiscAtSupply: 10 }));
+        const overMax = Sync._fromSharePoint(mkSp({ SellAtSupply: 1000000.01, DiscAtSupply: 10 }));
+        const plain = Sync._fromSharePoint(mkSp({}));
+        const mkAr = (extra) => Object.assign({ TransactionId: 'a277', TxnDate: '2026-07-01', StoreId: 'cockburn_office', ProductId: pid, TxnType: 'transfer_in', Qty: 1, SourceId: 7 }, extra || {});
+        const ar = Sync._fromArchive(mkAr({ SellAtSupply: 99.95, DiscAtSupply: 12.5, UnitPriceAtTime: 42, StockFrom: 'HO Warehouse — HO' }));
+        const arBad = Sync._fromArchive(mkAr({ DiscAtSupply: 12.5 }));
+        return { rtSell: back && back.sellAtSupply, rtDisc: back && back.discAtSupply, rtUpat: back && back.unitPriceAtTime, rtFromId: back && back.stockFromStoreId, rtFrom: back && back.stockFrom, oneSided: oneSided === null, threeDp: threeDp === null, strMoney: strMoney === null, huge: huge === null, overMax: overMax === null, plainOk: !!plain && plain.sellAtSupply === undefined, arSell: ar && ar.sellAtSupply, arUpat: ar && ar.unitPriceAtTime, arBad: arBad === null };
+      });
+      rec('S-277', 'W4.3-P3/P6: stamps + export inputs round-trip bit-exact; ingest rejects one-sided/3dp/string/huge/>1M on live AND archive shapes', r.rtSell === 99.95 && r.rtDisc === 12.5 && r.rtUpat === 42 && r.rtFromId === 'head_office' && r.rtFrom === 'HO Warehouse — HO' && r.oneSided && r.threeDp && r.strMoney && r.huge && r.overMax && r.plainOk && r.arSell === 99.95 && r.arUpat === 42 && r.arBad, `rt=${r.rtSell}/${r.rtDisc}/${r.rtUpat}/${r.rtFromId} rejects=${r.oneSided}/${r.threeDp}/${r.strMoney}/${r.huge}/${r.overMax} plain=${r.plainOk} archive=${r.arSell}/${r.arUpat}/${r.arBad}`); await ctx.close(); }
+
+    // S-278 (P2, SR-67/88): INHERITANCE — the flagged-receive row, the accept-as-is TOP-UP row, and the
+    // in-transit CANCEL's return row all carry the item's canonical stamps.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); const p = d.products[0]; const pid = p.id; const _origPrice = p.price;
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        d.pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 20, from: '2020-01-01T00:00:00Z', to: null }] } } };
+        Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
+        Sync._pricingFresh = true; p.price = 60;
+        await DB.addTransactionDurable({ id: 't278seed', type: 'in', productId: pid, storeId: 'head_office', qty: 50, date: '2020-01-02', createdAt: new Date().toISOString() });
+        // Flow A: flag (receive 3 of 5) then accept-as-is => top-up row
+        const cA = await Transfer.create('head_office', 'cockburn_office', [{ productId: pid, qty: 5 }], {});
+        await Transfer.receive(cA.transferId, [{ productId: pid, receivedQty: 3 }]);
+        await Transfer.resolveAllFlags(cA.transferId, [{ productId: pid, action: 'accept_as_is' }]);
+        const rowsA = (d.transactions || []).filter(x => x && x.transferId === cA.transferId && x.type === 'transfer_in');
+        const allAStamped = rowsA.length === 2 && rowsA.every(x => x.sellAtSupply === 60 && x.discAtSupply === 20);
+        // Flow B: in-transit cancel => the return row carries the stamps
+        const cB = await Transfer.create('head_office', 'cockburn_office', [{ productId: pid, qty: 2 }], {});
+        await Transfer.cancel(cB.transferId);
+        const rowB = (d.transactions || []).find(x => x && x.transferId === cB.transferId && x.type === 'transfer_in');
+        const out = { rowsA: rowsA.length, allAStamped, rowBSell: rowB && rowB.sellAtSupply, rowBDisc: rowB && rowB.discAtSupply };
+        d.transactions = d.transactions.filter(x => x.id !== 't278seed' && x.transferId !== cA.transferId && x.transferId !== cB.transferId);
+        d.transfers = (d.transfers || []).filter(x => x.id !== cA.transferId && x.id !== cB.transferId);
+        d.recordSteps = (d.recordSteps || []).filter(s => s.recordId !== cA.transferId && s.recordId !== cB.transferId);
+        delete d.pricingConfig; p.price = _origPrice; Stock._qtyCache = Object.create(null);
+        try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {} Sync._pricingFresh = false;
+        return out;
+      });
+      rec('S-278', 'W4.3-P2: flagged-receive + top-up + cancel-return rows ALL inherit the item stamps', r.rowsA === 2 && r.allAStamped === true && r.rowBSell === 60 && r.rowBDisc === 20, `rowsA=${r.rowsA} allAStamped=${r.allAStamped} cancelRow=${r.rowBSell}/${r.rowBDisc} (clean: 2/true/60/20)`); await ctx.close(); }
+
+    // S-279 (S-W4-20, P4): STAMP-AT-RECEIVE — a stampless (pre-W4/in-transit-at-cutover) submit received
+    // on a W4 build mints stamps: discount AS-OF THE SUBMIT instant (not receive-day), sell = the current
+    // catalogue price; later price/rate edits leave the received row bit-stable.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(async () => {
+        const d = DB.get(); const p = d.products[0]; const pid = p.id; const _origPrice = p.price;
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        d.pricingConfig = { version: 2, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2020-01-01T00:00:00Z', to: '2026-06-01T00:00:00Z' }, { rate: 30, from: '2026-06-01T00:00:00Z', to: null }] } } };
+        Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
+        Sync._pricingFresh = true; p.price = 120;
+        if (!d.transfers) d.transfers = [];
+        d.transfers.push({ id: 'tr279', status: 'in_transit', fromStoreId: 'head_office', toStoreId: 'cockburn_office', createdAt: '2026-01-15T00:00:00.000Z', date: '2026-01-15T00:00:00.000Z', createdBy: 'dir', createdByName: 'dir', type: 'standard', returnReason: null, returnNote: '', items: [{ productId: pid, sentQty: 1, receivedQty: null, status: 'pending', flagNote: '', resolvedBy: null, resolvedAction: null }], receivedBy: null, receivedDate: null, completedDate: null, notes: '' });
+        const rec1 = await Transfer.receive('tr279', [{ productId: pid, receivedQty: 1 }]);
+        const t = Transfer.get('tr279');
+        const row = (d.transactions || []).find(x => x && x.transferId === 'tr279' && x.type === 'transfer_in');
+        p.price = 500; d.pricingConfig = { version: 3, global: {}, stores: { cockburn_office: { '*': [{ rate: 99, from: '2020-01-01T00:00:00Z', to: null }] } } };
+        const rowAfter = (d.transactions || []).find(x => x && x.transferId === 'tr279' && x.type === 'transfer_in');
+        const out = { recOk: rec1.ok, basis: t.items[0].basis, disc: t.items[0].discAtSupply, sell: t.items[0].sellAtSupply, rowSell: row && row.sellAtSupply, rowDisc: row && row.discAtSupply, stableSell: rowAfter && rowAfter.sellAtSupply, stableDisc: rowAfter && rowAfter.discAtSupply };
+        d.transactions = (d.transactions || []).filter(x => x.transferId !== 'tr279');
+        d.transfers = (d.transfers || []).filter(x => x.id !== 'tr279');
+        d.recordSteps = (d.recordSteps || []).filter(s => s.recordId !== 'tr279');
+        delete d.pricingConfig; p.price = _origPrice; Stock._qtyCache = Object.create(null);
+        try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {} Sync._pricingFresh = false;
+        return out;
+      });
+      rec('S-279', 'W4.3-P4: a stampless submit is stamped AT RECEIVE — discount as-of the SUBMIT instant (25, not receive-day 30), sell frozen at receive; later edits leave the row bit-stable', r.recOk === true && r.basis === 'receive-stamped' && r.disc === 25 && r.sell === 120 && r.rowSell === 120 && r.rowDisc === 25 && r.stableSell === 120 && r.stableDisc === 25, `rec=${r.recOk} basis=${r.basis} stamp=${r.sell}/${r.disc} row=${r.rowSell}/${r.rowDisc} stable=${r.stableSell}/${r.stableDisc} (clean: receive-stamped 120/25 throughout)`); await ctx.close(); }
+
+    // S-280 (P5, SR-66/85): EQUAL-QTY receives with DIFFERING stamps are a CONFLICT (billing is never
+    // sync-order-dependent), and the RESOLVE publishes the pinned stamps into folded item state.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const mk = (ix, extra) => Object.assign({ recordId: 'trC280', recordType: 'transfer', timestamp: 1000 + ix, stepId: 'st280_' + ix }, extra);
+        const base = [
+          mk(0, { stepType: 'submit', payload: { fromStoreId: 'head_office', toStoreId: 'cockburn_office', createdAt: '2026-01-01', items: [{ productId: 'P1', sentQty: 2 }], expectedLedgerKeys: [] } }),
+          mk(1, { stepType: 'receive', payload: { receiveAttemptId: 'a1', lines: [{ productId: 'P1', receivedQty: 2, sellAtSupply: 100, discAtSupply: 10, basis: 'receive-stamped' }], expectedLedgerKeys: [] } }),
+          mk(2, { stepType: 'receive', payload: { receiveAttemptId: 'a2', lines: [{ productId: 'P1', receivedQty: 2, sellAtSupply: 150, discAtSupply: 10, basis: 'receive-stamped' }], expectedLedgerKeys: [] } }),
+        ];
+        const f1 = Records.foldRecord(base);
+        const resolved = base.concat([mk(3, { stepType: 'resolve', payload: { generation: 1, resolvesAttemptIds: ['a1', 'a2'], resolutions: [{ productId: 'P1', action: 'conflict_resolved', sellAtSupply: 150, discAtSupply: 10, basis: 'receive-stamped' }], expectedLedgerKeys: [] } })]);
+        const f2 = Records.foldRecord(resolved);
+        return { conflict: f1 && f1.status === 'conflict', kind: f1 && f1._conflict && f1._conflict.kind, cleared: f2 && f2.status !== 'conflict', pinnedSell: f2 && f2.items[0].sellAtSupply, pinnedDisc: f2 && f2.items[0].discAtSupply };
+      });
+      rec('S-280', 'W4.3-P5: equal-qty different-stamp receives conflict; the resolve PUBLISHES the pinned stamps cross-device', r.conflict === true && r.kind === 'qty_disagreement' && r.cleared === true && r.pinnedSell === 150 && r.pinnedDisc === 10, `conflict=${r.conflict}/${r.kind} cleared=${r.cleared} pinned=${r.pinnedSell}/${r.pinnedDisc} (clean: true/qty_disagreement/true/150/10)`); await ctx.close(); }
+
+    // S-281 (SR-97/114): BASIS PRECEDENCE + VALUATION TIER 2 — a stamped submit SURVIVES a pre-W4
+    // (basis-less) receive; a stampless submit + basis-less receive is durably legacy-lens; an UNSTAMPED
+    // row of a stamped transfer VALUES at the submit stamps via the transferId lookup.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const mk = (rid, ix, extra) => Object.assign({ recordId: rid, recordType: 'transfer', timestamp: 1000 + ix, stepId: rid + '_st' + ix }, extra);
+        const f1 = Records.foldRecord([
+          mk('trS', 0, { stepType: 'submit', payload: { fromStoreId: 'head_office', toStoreId: 'cockburn_office', createdAt: '2026-01-01', items: [{ productId: 'PV', sentQty: 1, sellAtSupply: 80, discAtSupply: 20, basis: 'submit-stamped' }], expectedLedgerKeys: [] } }),
+          mk('trS', 1, { stepType: 'receive', payload: { receiveAttemptId: 'a1', lines: [{ productId: 'PV', receivedQty: 1 }], expectedLedgerKeys: [] } }),
+        ]);
+        const f2 = Records.foldRecord([
+          mk('trL', 0, { stepType: 'submit', payload: { fromStoreId: 'head_office', toStoreId: 'cockburn_office', createdAt: '2026-01-01', items: [{ productId: 'PV', sentQty: 1 }], expectedLedgerKeys: [] } }),
+          mk('trL', 1, { stepType: 'receive', payload: { receiveAttemptId: 'a1', lines: [{ productId: 'PV', receivedQty: 1 }], expectedLedgerKeys: [] } }),
+        ]);
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        const dFix = { stores: DB.get().stores, deletedTransactions: [], products: [{ id: 'PV', name: 'V', price: 999, franchiseDiscount: null, catId: 'c', active: true }],
+          transactions: [{ id: 'tv1', storeId: 'cockburn_office', productId: 'PV', type: 'transfer_in', qty: 1, date: '2026-02-10', transferId: 'trS', stockFrom: 'HO Warehouse — Head Office (Warehouse)' }],
+          transfers: [f1] };
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 5, from: '2020-01-01T00:00:00Z', to: null }] } } };
+        const sd = Pages._franchiseInvoiceData(dFix, '2026-01-01', '2026-12-31')[0];
+        const line = sd && sd.lines[0];
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return { f1Sell: f1.items[0].sellAtSupply, f1Basis: f1.items[0].basis, f2Basis: f2.items[0].basis, f2Sell: f2.items[0].sellAtSupply, lineSell: line && line.sell, lineDisc: line && line.prodDisc, lineSrc: line && line.rateSource };
+      });
+      rec('S-281', 'W4.3-SR-97/114: a stamped submit survives a basis-less receive; stampless+basis-less = legacy-lens; an unstamped row VALUES at the transfer stamps (tier 2)', r.f1Sell === 80 && r.f1Basis === 'submit-stamped' && r.f2Basis === 'legacy-lens' && r.f2Sell == null && r.lineSell === 80 && r.lineDisc === 20 && r.lineSrc === 'transfer-stamped', `f1=${r.f1Sell}/${r.f1Basis} f2=${r.f2Sell}/${r.f2Basis} line=${r.lineSell}/${r.lineDisc}/${r.lineSrc} (clean: 80/submit-stamped, null/legacy-lens, 80/20/transfer-stamped)`); await ctx.close(); }
+
+    // S-282 (SR-105/113/121/128/106): the DEEP HASH — item-level divergence ($100 vs $150) yields distinct
+    // canonical hashes and a surfaced conflict; a pre-W4 and a W4 snapshot of the SAME reality hash
+    // IDENTICALLY (no false divergence across the algorithm migration); a FUTURE-version field is stripped
+    // (no false divergence from schema evolution); a resolve naming the embedded hashes CONVERGES.
+    { const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const r = await page.evaluate(() => {
+        const snapA = { id: 'r282', fromStoreId: 'head_office', toStoreId: 'c', createdAt: '2026-01-01', status: 'completed', items: [{ productId: 'P1', sentQty: 2, sellAtSupply: 100, discAtSupply: 10, basis: 'submit-stamped' }] };
+        const snapB = JSON.parse(JSON.stringify(snapA)); snapB.items[0].sellAtSupply = 150;
+        const preW4 = { id: 'r282', fromStoreId: 'head_office', toStoreId: 'c', createdAt: '2026-01-01', status: 'completed', items: [{ productId: 'P1', sentQty: 2 }] };
+        const w4Null = { id: 'r282', fromStoreId: 'head_office', toStoreId: 'c', createdAt: '2026-01-01', status: 'completed', items: [{ productId: 'P1', sentQty: 2, sellAtSupply: null, discAtSupply: null, basis: null }] };
+        const w5 = JSON.parse(JSON.stringify(preW4)); w5.taxRate = 15; w5.items[0].futureField = 'x';
+        const hA = Records._deepHash('transfer', snapA), hB = Records._deepHash('transfer', snapB);
+        const hPre = Records._deepHash('transfer', preW4), hNull = Records._deepHash('transfer', w4Null), hW5 = Records._deepHash('transfer', w5);
+        const mk = (ix, extra) => Object.assign({ recordId: 'r282', recordType: 'transfer', timestamp: 1000 + ix, stepId: 'st282_' + ix }, extra);
+        const divergent = [
+          mk(0, { stepType: 'backfill', payload: { snapshot: snapA, hash: 'hA', hashVersion: 4 } }),
+          mk(1, { stepType: 'backfill', payload: { snapshot: snapB, hash: 'hB', hashVersion: 4 } }),
+        ];
+        const fDiv = Records.foldRecord(divergent);
+        const fSame = Records.foldRecord([
+          mk(0, { stepType: 'backfill', payload: { snapshot: preW4, hash: 'oldAlgoHash' } }),
+          mk(1, { stepType: 'backfill', payload: { snapshot: w4Null, hash: 'newAlgoHash', hashVersion: 4 } }),
+        ]);
+        const fResolved = Records.foldRecord(divergent.concat([mk(2, { stepType: 'resolve', payload: { generation: 1, resolvesAttemptIds: [], resolvesBackfillHashes: ['hA', 'hB'], resolutions: [], expectedLedgerKeys: [] } })]));
+        return { distinct: hA !== hB, sameReality: hPre === hNull, futureStripped: hW5 === hPre, divConflict: fDiv && fDiv.status === 'conflict' && fDiv._conflict && fDiv._conflict.kind === 'backfill_divergence', noFalseDiv: fSame && fSame.status !== 'conflict', converged: fResolved && fResolved.status !== 'conflict' };
+      });
+      rec('S-282', 'W4.3-SR-105/121/128/106: item-level diffs hash distinct + conflict; same-reality cross-version hashes identical; future fields stripped; a resolve naming the hashes CONVERGES', r.distinct === true && r.sameReality === true && r.futureStripped === true && r.divConflict === true && r.noFalseDiv === true && r.converged === true, `distinct=${r.distinct} sameReality=${r.sameReality} future=${r.futureStripped} divConflict=${r.divConflict} noFalseDiv=${r.noFalseDiv} converged=${r.converged} (clean: all true)`); await ctx.close(); }
+
+
 
 
 
