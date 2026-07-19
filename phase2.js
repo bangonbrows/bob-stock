@@ -123,6 +123,10 @@ const Transfer = {
     const av = this._authorityVersions();
     item.sellAtSupply = sell; item.discAtSupply = disc; item.pricingVersion = av.pv; item.catalogueVersion = av.cv; item.basis = basis;
   },
+  // OS-W43-R3 (Codex): the ONE stamped-item predicate — ALL FOUR authority fields or the item is NOT
+  // stamped. No consumer may treat a money-only item as stamped, and no boundary may default a missing
+  // version (fabrication). Mirrors records.js _fullTuple.
+  _fullTuple(o) { return !!(o && o.sellAtSupply != null && o.discAtSupply != null && o.pricingVersion != null && o.catalogueVersion != null); },
   // P1 (SR-3/7/12/21): capture the stamps at SUBMIT — the pricing-commitment moment. Post-activation the
   // lens resolves the discount AS-OF NOW (honest NOT-SET freezes the loud 0% the invoice would bill);
   // pre-activation the byte-identical legacy computation is frozen. A pricing error (or an unstampable
@@ -172,7 +176,8 @@ const Transfer = {
       const office = (d.stores || []).find(x => x && x.id === t.toStoreId) || {};
       const lensOn = Pricing.lensActive();
       for (const item of (t.items || [])) {
-        if (item.sellAtSupply != null && item.discAtSupply != null) continue;   // SR-97: a stamped item is permanent
+        if (this._fullTuple(item)) continue;                                     // SR-97: a VALIDLY stamped item is permanent
+        if (item.sellAtSupply != null || item.discAtSupply != null) { delete item.sellAtSupply; delete item.discAtSupply; delete item.pricingVersion; delete item.catalogueVersion; }   // OS-W43-R3: a PARTIAL tuple is malformed, not a stamp — clear it and mint honestly below
         if (item.basis === 'legacy-lens') continue;                             // durably legacy — never re-minted
         const p = (d.products || []).find(pr => pr && pr.id === item.productId);
         let disc = null, sell = null;
@@ -204,7 +209,7 @@ const Transfer = {
       (txns || []).forEach(x => {
         if (!x) return;
         const it = (t.items || []).find(i => i && i.productId === x.productId);
-        if (it && it.sellAtSupply != null && it.discAtSupply != null) { x.sellAtSupply = it.sellAtSupply; x.discAtSupply = it.discAtSupply; x.pricingVersion = it.pricingVersion != null ? it.pricingVersion : 0; x.catalogueVersion = it.catalogueVersion != null ? it.catalogueVersion : 0; }
+        if (it && this._fullTuple(it)) { x.sellAtSupply = it.sellAtSupply; x.discAtSupply = it.discAtSupply; x.pricingVersion = it.pricingVersion; x.catalogueVersion = it.catalogueVersion; }   // OS-W43-R3: full tuple or nothing — never default a version
       });
     } catch (e) {}
   },
@@ -215,7 +220,7 @@ const Transfer = {
       const o = Object.assign({}, r);
       const it = (t.items || []).find(i => i && i.productId === r.productId);
       if (it) {
-        if (it.sellAtSupply != null && it.discAtSupply != null) { o.sellAtSupply = it.sellAtSupply; o.discAtSupply = it.discAtSupply; o.pricingVersion = it.pricingVersion != null ? it.pricingVersion : 0; o.catalogueVersion = it.catalogueVersion != null ? it.catalogueVersion : 0; }
+        if (this._fullTuple(it)) { o.sellAtSupply = it.sellAtSupply; o.discAtSupply = it.discAtSupply; o.pricingVersion = it.pricingVersion; o.catalogueVersion = it.catalogueVersion; }   // OS-W43-R3: full tuple or nothing
         if (it.basis) o.basis = it.basis;
       }
       return o;
@@ -246,7 +251,7 @@ const Transfer = {
       notes: t.notes || '',
       items: (t.items || []).map(i => {
         const o = { productId: i.productId, sentQty: i.sentQty };
-        if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; o.pricingVersion = i.pricingVersion != null ? i.pricingVersion : 0; o.catalogueVersion = i.catalogueVersion != null ? i.catalogueVersion : 0; }   // OS-W4.3 P3 (SR-13/86) + R1 Codex-1: the full authority tuple rides the submit step
+        if (Transfer._fullTuple(i)) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; o.pricingVersion = i.pricingVersion; o.catalogueVersion = i.catalogueVersion; }   // OS-W4.3 P3 (SR-13/86) + R3: the full tuple rides or nothing does — never a defaulted version
         if (i.basis) o.basis = i.basis;
         return o;
       }),
@@ -529,7 +534,7 @@ const Transfer = {
         receiveAttemptId: t._receiveAttemptId, receivedBy: t.receivedBy, receivedDate: t.receivedDate,
         lines: t.items.map(i => {
           const o = { productId: i.productId, receivedQty: i.receivedQty, flagged: i.status === 'flagged', flagNote: i.flagNote || '' };
-          if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; o.pricingVersion = i.pricingVersion != null ? i.pricingVersion : 0; o.catalogueVersion = i.catalogueVersion != null ? i.catalogueVersion : 0; }   // OS-W4.3 P3 (SR-86) + R1 Codex-1: the full authority tuple rides the receive step
+          if (Transfer._fullTuple(i)) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; o.pricingVersion = i.pricingVersion; o.catalogueVersion = i.catalogueVersion; }   // OS-W4.3 P3 (SR-86) + R3: the full tuple rides or nothing does
           if (i.basis) o.basis = i.basis;
           return o;
         }),

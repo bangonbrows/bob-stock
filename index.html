@@ -2239,7 +2239,7 @@ const Pages = {
       const _fx={fromStoreId:'head_office',toStoreId:txn.storeId,items:[{productId:txn.productId}]};
       const _st=Transfer._stampItems(_fx);
       if(!_st.ok){UI.toast(_st.error,'error');return;}
-      if(_fx.items[0].sellAtSupply!=null&&_fx.items[0].discAtSupply!=null){txn.sellAtSupply=_fx.items[0].sellAtSupply;txn.discAtSupply=_fx.items[0].discAtSupply;txn.pricingVersion=_fx.items[0].pricingVersion!=null?_fx.items[0].pricingVersion:0;txn.catalogueVersion=_fx.items[0].catalogueVersion!=null?_fx.items[0].catalogueVersion:0;}   // OS-W43-R2 (Codex-1 residual): the FULL authority tuple, never money-only
+      if(typeof Transfer!=='undefined'&&Transfer._fullTuple&&Transfer._fullTuple(_fx.items[0])){txn.sellAtSupply=_fx.items[0].sellAtSupply;txn.discAtSupply=_fx.items[0].discAtSupply;txn.pricingVersion=_fx.items[0].pricingVersion;txn.catalogueVersion=_fx.items[0].catalogueVersion;}   // OS-W43-R2/R3: the FULL tuple or nothing — never money-only, never a defaulted version
     }
     if(Txn.isOut(txn)){
       const avail=Stock.qty(txn.productId,txn.storeId);
@@ -4951,7 +4951,9 @@ const Pages = {
         else if (t.transferId) {
           const _tr = (d.transfers || []).find(x => x && x.id === t.transferId);
           const _it = _tr && (_tr.items || []).find(i => i && i.productId === t.productId);
-          if (_it && _it.sellAtSupply != null && _it.discAtSupply != null) {
+          const _itN = _it ? [_it.sellAtSupply != null, _it.discAtSupply != null, _it.pricingVersion != null, _it.catalogueVersion != null].filter(Boolean).length : 0;
+          if (_it && _itN > 0 && _itN < 4) { prodDisc = 0; lineErr = 'STAMP_ERROR'; _stamped = true; }   // OS-W43-R3 (Codex): a PARTIAL item tuple is malformed — fail closed, never "transfer-stamped", never the lens
+          else if (_it && _itN === 4) {
             if (_it._stampsUntrusted) {
               // OS-W43-R1 (Codex-2, amendment 2): BACKFILL-only item stamps are NOT valuation evidence.
               // Use the server-resolved values installed on the row (the SR-163/157 transport), or
