@@ -275,6 +275,8 @@ const Records = {
     return m;
   },
 
+  // OS-W43-R1 (Codex-1): a line's stamp claim is adopted ALL-FOUR-or-none.
+  _fullTuple(o) { return !!(o && o.sellAtSupply != null && o.discAtSupply != null && o.pricingVersion != null && o.catalogueVersion != null); },
   // Fold one record's steps into the local object shape the UI reads.
   // Dispatches by the recordType of the genesis step.
   foldRecord(steps) {
@@ -338,13 +340,17 @@ const Records = {
             resolvedBy: it.resolvedBy || null,
             resolvedAction: it.resolvedAction || null,
             creditedAtReceive: it.creditedAtReceive || 0,
-            // OS-W4.3 P3 (SR-87): stamps + basis are mapped EXPLICITLY (the old enumeration dropped
-            // unlisted fields). Both-or-neither at the fold; a stampless genesis with no explicit basis
-            // stays UNSET here — "awaiting stamp-at-receive" vs "durably legacy" is decided by the
-            // receive rules (SR-86/97), never silently at genesis.
-            sellAtSupply: (it.sellAtSupply != null && it.discAtSupply != null) ? it.sellAtSupply : null,
-            discAtSupply: (it.sellAtSupply != null && it.discAtSupply != null) ? it.discAtSupply : null,
+            // OS-W4.3 P3 (SR-87) + R1 Codex-1: the FULL authority tuple is mapped EXPLICITLY, all-four-or-
+            // none (a partial tuple is never adopted). A stampless genesis with no explicit basis stays
+            // UNSET — "awaiting stamp-at-receive" vs "durably legacy" is decided by the receive rules.
+            // R1 Codex-2: stamps whose source is a BACKFILL snapshot are marked UNTRUSTED (amendment 2 —
+            // not tier-2 valuation evidence; the invoice uses server-resolved values or a pending state).
+            sellAtSupply: this._fullTuple(it) ? it.sellAtSupply : null,
+            discAtSupply: this._fullTuple(it) ? it.discAtSupply : null,
+            pricingVersion: this._fullTuple(it) ? it.pricingVersion : null,
+            catalogueVersion: this._fullTuple(it) ? it.catalogueVersion : null,
             basis: it.basis || null,
+            _stampsUntrusted: (s.stepType === 'backfill' && this._fullTuple(it)) ? true : undefined,
           })),
           notes: base.notes || '',
           _stepSourced: true,
@@ -412,8 +418,9 @@ const Records = {
       // stampless — a stamped submit survives a stale receive untouched (its unstamped rows are handled
       // by valuation precedence, no row mutation).
       const _itemStamped = (item.sellAtSupply != null && item.discAtSupply != null);
-      const _lnStamped = (ln.sellAtSupply != null && ln.discAtSupply != null);
-      if (_lnStamped && !_itemStamped) { item.sellAtSupply = ln.sellAtSupply; item.discAtSupply = ln.discAtSupply; item.basis = ln.basis || 'receive-stamped'; }
+      const _lnStamped = Records._fullTuple(ln);
+      if (_lnStamped && !_itemStamped) { item.sellAtSupply = ln.sellAtSupply; item.discAtSupply = ln.discAtSupply; item.pricingVersion = ln.pricingVersion; item.catalogueVersion = ln.catalogueVersion; item.basis = ln.basis || 'receive-stamped'; item._stampsUntrusted = undefined; }   // a STEP-sourced tuple is trusted evidence (R1 Codex-2)
+      else if (_lnStamped && _itemStamped && item._stampsUntrusted) { item.sellAtSupply = ln.sellAtSupply; item.discAtSupply = ln.discAtSupply; item.pricingVersion = ln.pricingVersion; item.catalogueVersion = ln.catalogueVersion; item.basis = ln.basis || item.basis; item._stampsUntrusted = undefined; }
       else if (!_lnStamped && !_itemStamped && !item.basis) { item.basis = 'legacy-lens'; }
     });
     t.status = anyFlag ? 'received' : 'completed';
@@ -428,9 +435,9 @@ const Records = {
       item.resolvedBy = p.resolvedBy || s.actorId || null;
       item.resolvedAction = r.action || null;
       item.status = 'resolved';
-      // OS-W4.3 P5 (SR-85): the resolve carries the PINNED stamps — the chosen outcome publishes
-      // cross-device; billing is never sync-order-dependent after a resolution.
-      if (r.sellAtSupply != null && r.discAtSupply != null) { item.sellAtSupply = r.sellAtSupply; item.discAtSupply = r.discAtSupply; }
+      // OS-W4.3 P5 (SR-85) + R1 Codex-1/2: the resolve carries the PINNED full tuple — the chosen
+      // outcome publishes cross-device and is trusted step evidence.
+      if (Records._fullTuple(r)) { item.sellAtSupply = r.sellAtSupply; item.discAtSupply = r.discAtSupply; item.pricingVersion = r.pricingVersion; item.catalogueVersion = r.catalogueVersion; item._stampsUntrusted = undefined; }
       if (r.basis) item.basis = r.basis;
     });
     t.status = 'completed';
@@ -446,7 +453,7 @@ const Records = {
       timestamp: s.timestamp || 0,
       lines: (p.lines || []).map(l => {
         const o = { productId: l.productId, receivedQty: l.receivedQty };
-        if (l.sellAtSupply != null && l.discAtSupply != null) { o.sellAtSupply = l.sellAtSupply; o.discAtSupply = l.discAtSupply; }   // OS-W4.3 (SR-66): money is part of the conflict identity
+        if (l.sellAtSupply != null && l.discAtSupply != null) { o.sellAtSupply = l.sellAtSupply; o.discAtSupply = l.discAtSupply; if (l.pricingVersion != null) o.pricingVersion = l.pricingVersion; if (l.catalogueVersion != null) o.catalogueVersion = l.catalogueVersion; }   // OS-W4.3 (SR-66) + R1: the full tuple is part of the conflict identity
         if (l.basis) o.basis = l.basis;
         return o;
       }),
@@ -475,7 +482,7 @@ const Records = {
     uncovered.forEach(a => a.lines.forEach(l => {
       const e = (lineMap[l.productId] = lineMap[l.productId] || { qtys: new Set(), stamps: new Set() });
       e.qtys.add(Number(l.receivedQty));
-      if (l.sellAtSupply != null && l.discAtSupply != null) e.stamps.add(l.sellAtSupply + '|' + l.discAtSupply + '|' + (l.basis || ''));
+      if (l.sellAtSupply != null && l.discAtSupply != null) e.stamps.add(l.sellAtSupply + '|' + l.discAtSupply + '|' + (l.pricingVersion != null ? l.pricingVersion : '') + '|' + (l.catalogueVersion != null ? l.catalogueVersion : '') + '|' + (l.basis || ''));
     }));
     const disagree = Object.keys(lineMap).some(pid => lineMap[pid].qtys.size > 1 || lineMap[pid].stamps.size > 1);
     if (!disagree && !reopened) return null;
@@ -687,7 +694,12 @@ const Records = {
       creditedAtReceive: o.creditedAtReceive || 0,
       sellAtSupply: stamped ? o.sellAtSupply : null,
       discAtSupply: stamped ? o.discAtSupply : null,
-      basis: o.basis || (stamped ? 'submit-stamped' : 'legacy-lens'),
+      pricingVersion: stamped && o.pricingVersion != null ? o.pricingVersion : null,      // OS-W43-R1 (Codex-1): a version-only difference is a MEANINGFUL canonical difference
+      catalogueVersion: stamped && o.catalogueVersion != null ? o.catalogueVersion : null,
+      // OS-W43-R1 (AGY-4): basis-UNSET ("awaiting stamp-at-receive") and the CHOSEN 'legacy-lens' are
+      // DIFFERENT states and must hash differently — the fleet must be able to surface a disagreement
+      // between them. Pre-W4 absence ≡ unset (null), preserving cross-version same-reality identity.
+      basis: o.basis || (stamped ? 'submit-stamped' : null),
     };
   },
   _canonicalTransferV4(snap) {
@@ -708,11 +720,52 @@ const Records = {
       items: (s.items || []).map(it => this._canonTransferItemV4(it)),
     };
   },
-  // Generic v4 canonical form for the non-transfer record types: strict-projected shallow snapshot
-  // (delivery/stocktake snapshots have no nested pricing surface; their divergence semantics are
-  // whole-content — the recursive serializer alone fixes the SR-105 nesting blindness for them).
+  // OS-W43-R1 (Codex-4/AGY-3): the non-transfer record types get REAL strict-projected v4 forms —
+  // keys unknown to the pinned W4 shapes are STRIPPED before hashing (SR-128), so a future-version
+  // delivery/stocktake snapshot of the same economic reality can never false-diverge a W4 fold.
+  _canonDeliveryLineV4(l) {
+    const o = l || {};
+    return {
+      productId: o.productId != null ? o.productId : '', quantity: o.quantity != null ? o.quantity : null,
+      unitCost: o.unitCost != null ? o.unitCost : null, weightGrams: o.weightGrams || 0,
+      packaging: o.packaging != null ? o.packaging : null, labelling: o.labelling != null ? o.labelling : null,
+      foreignUnitCost: o.foreignUnitCost != null ? o.foreignUnitCost : null,
+      foreignPackaging: o.foreignPackaging != null ? o.foreignPackaging : null,
+      foreignLabelling: o.foreignLabelling != null ? o.foreignLabelling : null,
+      headerCostShare: o.headerCostShare != null ? o.headerCostShare : null,
+      landedCostPerUnit: o.landedCostPerUnit != null ? o.landedCostPerUnit : null,
+      previousCost: o.previousCost != null ? o.previousCost : null,
+      appliedCost: o.appliedCost != null ? o.appliedCost : null,
+      costUpdated: !!o.costUpdated, packagingUpdatedAt: o.packagingUpdatedAt != null ? o.packagingUpdatedAt : null,
+    };
+  },
+  _canonicalDeliveryV4(snap) {
+    const s = snap || {}; const hc = s.headerCosts || {}; const cur = s.currency || {}; const fhc = cur.foreignHeaderCosts || {};
+    return {
+      _v: this.CANONICAL_FORM_VERSION, _t: 'delivery',
+      id: s.id != null ? s.id : '', date: s.date || '', storeId: s.storeId || '',
+      supplier: s.supplier || s.supplierName || '', invoiceNo: s.invoiceNo != null ? s.invoiceNo : null,
+      createdAt: s.createdAt || '', createdBy: s.createdBy || '', status: s.status || '',
+      headerCosts: { freight: hc.freight != null ? hc.freight : null, tax: hc.tax != null ? hc.tax : null, shipping: hc.shipping != null ? hc.shipping : null, customs: hc.customs != null ? hc.customs : null },
+      currency: { code: cur.code || '', rate: cur.rate != null ? cur.rate : null, foreignTotal: cur.foreignTotal != null ? cur.foreignTotal : null, foreignHeaderCosts: { freight: fhc.freight != null ? fhc.freight : null, tax: fhc.tax != null ? fhc.tax : null, shipping: fhc.shipping != null ? fhc.shipping : null } },
+      lines: (s.lines || []).map(l => this._canonDeliveryLineV4(l)),
+    };
+  },
+  _canonicalStocktakeV4(snap) {
+    const s = snap || {};
+    return {
+      _v: this.CANONICAL_FORM_VERSION, _t: 'stocktake',
+      id: s.id != null ? s.id : '', date: s.date || '', storeId: s.storeId || '',
+      completedBy: s.completedBy || '', status: s.status || '',
+      approvedBy: s.approvedBy != null ? s.approvedBy : null, approvedAt: s.approvedAt != null ? s.approvedAt : null,
+      rejectedBy: s.rejectedBy != null ? s.rejectedBy : null, rejectedAt: s.rejectedAt != null ? s.rejectedAt : null,
+      items: (s.items || []).map(i => { const o = i || {}; return { productId: o.productId != null ? o.productId : '', systemCount: o.systemCount != null ? o.systemCount : null, physicalCount: o.physicalCount != null ? o.physicalCount : null, difference: o.difference != null ? o.difference : null, reason: o.reason != null ? o.reason : null, note: o.note != null ? o.note : null }; }),
+    };
+  },
   _canonicalSnapshotV4(recordType, snap) {
     if (recordType === 'transfer') return this._canonicalTransferV4(snap);
+    if (recordType === 'delivery') return this._canonicalDeliveryV4(snap);
+    if (recordType === 'stocktake') return this._canonicalStocktakeV4(snap);
     return { _v: this.CANONICAL_FORM_VERSION, _t: recordType, snap: snap || {} };
   },
   _deepHash(recordType, snap) {

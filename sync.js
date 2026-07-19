@@ -1258,14 +1258,17 @@ const Sync = {
   // OS-W4.3 P6 (SR-39/62/89): the ONE canonical stamp-ingest pin. JSON NUMBER type (strings rejected —
   // no Number() coercion), finite, sell 0..1,000,000, disc 0..100, BOTH <= 2dp, BOTH-OR-NEITHER.
   // Returns {absent:true} (legacy row), {sell,disc} (valid pair), or null (malformed => reject the row).
-  _readRowStamps(sellRaw, discRaw) {
+  _readRowStamps(sellRaw, discRaw, pvRaw, cvRaw) {
     const has = (v) => v !== undefined && v !== null && v !== '';
-    if (!has(sellRaw) && !has(discRaw)) return { absent: true };
-    if (!has(sellRaw) || !has(discRaw)) return null;                    // one without the other = malformed
+    const present = [has(sellRaw), has(discRaw), has(pvRaw), has(cvRaw)].filter(Boolean).length;
+    if (present === 0) return { absent: true };
+    if (present !== 4) return null;                                     // OS-W43-R1 (Codex-1): ALL FOUR authority fields or none — a partial tuple = malformed
     const twoDp = (n) => Number(n.toFixed(2)) === n;
     if (typeof sellRaw !== 'number' || !isFinite(sellRaw) || sellRaw < 0 || sellRaw > 1000000 || !twoDp(sellRaw)) return null;
     if (typeof discRaw !== 'number' || !isFinite(discRaw) || discRaw < 0 || discRaw > 100 || !twoDp(discRaw)) return null;
-    return { sell: sellRaw, disc: discRaw };
+    if (typeof pvRaw !== 'number' || !Number.isSafeInteger(pvRaw) || pvRaw < 0) return null;
+    if (typeof cvRaw !== 'number' || !Number.isSafeInteger(cvRaw) || cvRaw < 0) return null;
+    return { sell: sellRaw, disc: discRaw, pv: pvRaw, cv: cvRaw };
   },
   _toSharePoint(t) {
     // Derive Timestamp as epoch ms from createdAt or current time.
@@ -1302,7 +1305,7 @@ const Sync = {
     // export's classification inputs — UnitPriceAtTime (K4) and the StockFrom/To ids + bounded text labels
     // (index.html:2090-2093: id fields are null for manual movements; the labels are the actual
     // sale-vs-wastage classification inputs). Absent fields are simply not sent (legacy rows).
-    if (t.sellAtSupply != null && t.discAtSupply != null) { sp.SellAtSupply = t.sellAtSupply; sp.DiscAtSupply = t.discAtSupply; }
+    if (t.sellAtSupply != null && t.discAtSupply != null) { sp.SellAtSupply = t.sellAtSupply; sp.DiscAtSupply = t.discAtSupply; sp.PricingVersion = t.pricingVersion != null ? t.pricingVersion : 0; sp.CatalogueVersion = t.catalogueVersion != null ? t.catalogueVersion : 0; }
     if (typeof t.unitPriceAtTime === 'number' && isFinite(t.unitPriceAtTime)) sp.UnitPriceAtTime = t.unitPriceAtTime;
     if (t.stockFromStoreId) sp.StockFromStoreId = String(t.stockFromStoreId).slice(0, 64);
     if (t.stockToStoreId) sp.StockToStoreId = String(t.stockToStoreId).slice(0, 64);
@@ -1350,7 +1353,7 @@ const Sync = {
     }
     // OS-W4.3 P6: stamp ingest — one-without-the-other or an out-of-policy value REJECTS the row (a
     // boundary must never turn a malformed money claim into durable billing truth). Legacy absence is fine.
-    const _stamps = this._readRowStamps(item.SellAtSupply, item.DiscAtSupply);
+    const _stamps = this._readRowStamps(item.SellAtSupply, item.DiscAtSupply, item.PricingVersion, item.CatalogueVersion);
     if (_stamps === null) return null;
     // UnitPriceAtTime (K4): optional; if present it must be a finite in-policy JSON number (<=2dp, 0..1M).
     let _upat = null;
@@ -1378,12 +1381,17 @@ const Sync = {
       // usable ID is stored as null (never 0 — 0 would falsely read as "<= any cutoff" and get pruned/skipped).
       _spId: (function(){ var v = (item.ID != null ? item.ID : item.Id); var n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : null; })()
     };
-    if (_stamps && !_stamps.absent) { local.sellAtSupply = _stamps.sell; local.discAtSupply = _stamps.disc; }   // OS-W4.3 P3
+    if (_stamps && !_stamps.absent) { local.sellAtSupply = _stamps.sell; local.discAtSupply = _stamps.disc; local.pricingVersion = _stamps.pv; local.catalogueVersion = _stamps.cv; }   // OS-W4.3 P3 + R1 Codex-1
     if (_upat !== null) local.unitPriceAtTime = _upat;
     if (item.StockFromStoreId) local.stockFromStoreId = String(item.StockFromStoreId).slice(0, 64);
     if (item.StockToStoreId) local.stockToStoreId = String(item.StockToStoreId).slice(0, 64);
     if (item.StockFrom) local.stockFrom = String(item.StockFrom).slice(0, 300);
     if (item.StockTo) local.stockTo = String(item.StockTo).slice(0, 300);
+    // OS-W43-R1 (Codex-2, SR-163/157): SERVER-OWNED resolved-valuation fields (installed by the gated
+    // resolve-valuation route via the pull's allowlist merge — the route lands at staging-apply; the
+    // digest compare lives with it). Same money policy; a malformed pair is DROPPED (server-owned fields
+    // never reject the whole row).
+    { const _rv = this._readRowStamps(item.ResolvedSell, item.ResolvedDisc, item.ResolvedPricingVersion, item.ResolvedCatalogueVersion); if (_rv && !_rv.absent) { local._rvSell = _rv.sell; local._rvDisc = _rv.disc; local._rvPv = _rv.pv; local._rvCv = _rv.cv; } }
     // Tombstone support: map TargetTransactionId if present
     if (item.TargetTransactionId) {
       local.targetTransactionId = item.TargetTransactionId;
@@ -1416,9 +1424,9 @@ const Sync = {
       _spId: (Number.isSafeInteger(sid) && sid > 0) ? sid : null
     };
     // OS-W4.3 P3: archived rows round-trip the stamps + export inputs bit-exact (same P6 ingest pin).
-    const _ast = this._readRowStamps(item.SellAtSupply, item.DiscAtSupply);
+    const _ast = this._readRowStamps(item.SellAtSupply, item.DiscAtSupply, item.PricingVersion, item.CatalogueVersion);
     if (_ast === null) return null;
-    if (_ast && !_ast.absent) { out.sellAtSupply = _ast.sell; out.discAtSupply = _ast.disc; }
+    if (_ast && !_ast.absent) { out.sellAtSupply = _ast.sell; out.discAtSupply = _ast.disc; out.pricingVersion = _ast.pv; out.catalogueVersion = _ast.cv; }
     if (typeof item.UnitPriceAtTime === 'number' && isFinite(item.UnitPriceAtTime)) out.unitPriceAtTime = item.UnitPriceAtTime;
     if (item.StockFromStoreId) out.stockFromStoreId = String(item.StockFromStoreId).slice(0, 64);
     if (item.StockToStoreId) out.stockToStoreId = String(item.StockToStoreId).slice(0, 64);

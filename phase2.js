@@ -108,6 +108,21 @@ const Transfer = {
     return typeof sell === 'number' && isFinite(sell) && sell >= 0 && sell <= 1000000 && twoDp(sell)
         && typeof disc === 'number' && isFinite(disc) && disc >= 0 && disc <= 100 && twoDp(disc);
   },
+  // OS-W43-R1 (Codex-1, amendment 1 rev-3): the FOUR AUTHORITY FIELDS. Every stamped line carries
+  // {sellAtSupply, discAtSupply, pricingVersion, catalogueVersion} — ALL FOUR or none. The versions are
+  // the device's adopted pricing-config version (0 = the pre-activation statement) and the adopted
+  // master_data catalogue version at the capture instant — the inputs the server's semantic stamp
+  // attestation (W4.4 P6 / LA §6) verifies.
+  _authorityVersions() {
+    let pv = 0, cv = 0;
+    try { const d = DB.get(); pv = (d && d.pricingConfig && Number(d.pricingConfig.version)) || 0; } catch (e) {}
+    try { cv = parseInt(localStorage.getItem('bob_catalogue_version') || '0', 10) || 0; } catch (e) {}
+    return { pv: (Number.isSafeInteger(pv) && pv >= 0) ? pv : 0, cv: (Number.isSafeInteger(cv) && cv >= 0) ? cv : 0 };
+  },
+  _writeStamp(item, sell, disc, basis) {
+    const av = this._authorityVersions();
+    item.sellAtSupply = sell; item.discAtSupply = disc; item.pricingVersion = av.pv; item.catalogueVersion = av.cv; item.basis = basis;
+  },
   // P1 (SR-3/7/12/21): capture the stamps at SUBMIT — the pricing-commitment moment. Post-activation the
   // lens resolves the discount AS-OF NOW (honest NOT-SET freezes the loud 0% the invoice would bill);
   // pre-activation the byte-identical legacy computation is frozen. A pricing error (or an unstampable
@@ -130,9 +145,14 @@ const Transfer = {
         } else {
           disc = (p && p.franchiseDiscount) ? p.franchiseDiscount : (office.franchiseDiscount || 0);
         }
-        const sell = (typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
+        // OS-W43-R1 (Codex-3): a RETAIL product with no valid catalogue price must FAIL CLOSED — freezing
+        // a genuine $0 forever is silent data loss; a consumable's honest billing value IS 0.
+        const _priceOk = (typeof p.price === 'number' && isFinite(p.price));
+        const _isConsumable = (typeof Stock !== 'undefined' && Stock.isConsumableProduct) ? Stock.isConsumableProduct(p) : false;
+        if (!_priceOk && !_isConsumable) return { ok: false, error: UI.productName(item.productId) + ' has no sell price in the catalogue — a Director must set it before franchise supply can be sent.' };
+        const sell = _priceOk ? p.price : 0;
         if (!this._validStampPair(sell, disc)) return { ok: false, error: 'Franchise pricing produced an out-of-policy value (' + item.productId + ') — a Director should check the pricing setup before new supply is sent.' };
-        item.sellAtSupply = sell; item.discAtSupply = disc; item.basis = 'submit-stamped';
+        this._writeStamp(item, sell, disc, 'submit-stamped');   // OS-W43-R1 (Codex-1): all four authority fields
       }
       return { ok: true };
     } catch (e) { return { ok: false, error: 'Franchise pricing could not be verified — try again after a sync.' }; }
@@ -163,12 +183,16 @@ const Transfer = {
           } else {
             disc = (p && p.franchiseDiscount) ? p.franchiseDiscount : (office.franchiseDiscount || 0);
           }
-          sell = (typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
+          // OS-W43-R1 (Codex-3): a retail product with no valid price never mints a $0 stamp at receive —
+          // both-or-neither drops the item to durable legacy-lens (the lens valuation surfaces "Missing").
+          const _priceOk = (typeof p.price === 'number' && isFinite(p.price));
+          const _isConsumable = (typeof Stock !== 'undefined' && Stock.isConsumableProduct) ? Stock.isConsumableProduct(p) : false;
+          sell = _priceOk ? p.price : (_isConsumable ? 0 : null);
         }
         if (disc != null && sell != null && this._validStampPair(sell, disc)) {
-          item.sellAtSupply = sell; item.discAtSupply = disc; item.basis = 'receive-stamped';
+          this._writeStamp(item, sell, disc, 'receive-stamped');   // OS-W43-R1 (Codex-1): all four authority fields
         } else {
-          delete item.sellAtSupply; delete item.discAtSupply; item.basis = 'legacy-lens';
+          delete item.sellAtSupply; delete item.discAtSupply; delete item.pricingVersion; delete item.catalogueVersion; item.basis = 'legacy-lens';
         }
       }
     } catch (e) {}
@@ -180,7 +204,7 @@ const Transfer = {
       (txns || []).forEach(x => {
         if (!x) return;
         const it = (t.items || []).find(i => i && i.productId === x.productId);
-        if (it && it.sellAtSupply != null && it.discAtSupply != null) { x.sellAtSupply = it.sellAtSupply; x.discAtSupply = it.discAtSupply; }
+        if (it && it.sellAtSupply != null && it.discAtSupply != null) { x.sellAtSupply = it.sellAtSupply; x.discAtSupply = it.discAtSupply; x.pricingVersion = it.pricingVersion != null ? it.pricingVersion : 0; x.catalogueVersion = it.catalogueVersion != null ? it.catalogueVersion : 0; }
       });
     } catch (e) {}
   },
@@ -191,7 +215,7 @@ const Transfer = {
       const o = Object.assign({}, r);
       const it = (t.items || []).find(i => i && i.productId === r.productId);
       if (it) {
-        if (it.sellAtSupply != null && it.discAtSupply != null) { o.sellAtSupply = it.sellAtSupply; o.discAtSupply = it.discAtSupply; }
+        if (it.sellAtSupply != null && it.discAtSupply != null) { o.sellAtSupply = it.sellAtSupply; o.discAtSupply = it.discAtSupply; o.pricingVersion = it.pricingVersion != null ? it.pricingVersion : 0; o.catalogueVersion = it.catalogueVersion != null ? it.catalogueVersion : 0; }
         if (it.basis) o.basis = it.basis;
       }
       return o;
@@ -222,7 +246,7 @@ const Transfer = {
       notes: t.notes || '',
       items: (t.items || []).map(i => {
         const o = { productId: i.productId, sentQty: i.sentQty };
-        if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; }   // OS-W4.3 P3 (SR-13/86): stamps + basis ride the submit step
+        if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; o.pricingVersion = i.pricingVersion != null ? i.pricingVersion : 0; o.catalogueVersion = i.catalogueVersion != null ? i.catalogueVersion : 0; }   // OS-W4.3 P3 (SR-13/86) + R1 Codex-1: the full authority tuple rides the submit step
         if (i.basis) o.basis = i.basis;
         return o;
       }),
@@ -503,7 +527,7 @@ const Transfer = {
         receiveAttemptId: t._receiveAttemptId, receivedBy: t.receivedBy, receivedDate: t.receivedDate,
         lines: t.items.map(i => {
           const o = { productId: i.productId, receivedQty: i.receivedQty, flagged: i.status === 'flagged', flagNote: i.flagNote || '' };
-          if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; }   // OS-W4.3 P3 (SR-86): stamps + basis ride the receive step
+          if (i.sellAtSupply != null && i.discAtSupply != null) { o.sellAtSupply = i.sellAtSupply; o.discAtSupply = i.discAtSupply; o.pricingVersion = i.pricingVersion != null ? i.pricingVersion : 0; o.catalogueVersion = i.catalogueVersion != null ? i.catalogueVersion : 0; }   // OS-W4.3 P3 (SR-86) + R1 Codex-1: the full authority tuple rides the receive step
           if (i.basis) o.basis = i.basis;
           return o;
         }),

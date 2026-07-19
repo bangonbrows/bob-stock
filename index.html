@@ -4894,10 +4894,18 @@ const Pages = {
   // ── Franchise Invoice Report (Director only) ──
   // ── Wave K3 (Tier 4 #10): franchise billing = what HO actually SUPPLIED to the franchise OFFICE ──
   // Kunal (A): bill only stock WE supplied. A genuine HO supply row = stock that came FROM head office.
-  _isHOSupply(t){
+  _isHOSupply(t, dOpt){
     // GPT K3: trust STRUCTURED source first; the free-text reason fallback is for LEGACY rows ONLY (no
     // structured source) — else a "from Head Office" note on a Supplier row would be mis-billed as HO supply.
     if (t.stockFromStoreId) return t.stockFromStoreId === 'head_office';
+    // OS-W43-R1 (AGY-1): a TRANSFER-LINKED row derives its origin from the transfer RECORD — a franchise
+    // store whose NAME happens to contain "Head Office" must never regex-match a store↔store transfer
+    // into the invoice. The text fallbacks below serve only rows with no transfer record at all.
+    if (t.transferId) {
+      const _d = dOpt || DB.get();
+      const _tr = ((_d && _d.transfers) || []).find(x => x && x.id === t.transferId);
+      if (_tr) return _tr.fromStoreId === 'head_office';
+    }
     const fromBase = (t.stockFrom || '').split(' — ')[0];
     if (fromBase) return fromBase === 'HO Warehouse';
     return /head\s*office|from ho\b/i.test(t.reason || '');  // legacy/seed rows ("Received from Head Office", no stockFrom)
@@ -4922,7 +4930,7 @@ const Pages = {
       const lines = d.transactions.filter(t =>
         t.storeId === office.id && Txn.isIn(t)
         && (Txn.category(t) === 'delivery' || Txn.category(t) === 'transfer')
-        && Pages._isHOSupply(t)
+        && Pages._isHOSupply(t, d)
         && t.date >= fromDate && t.date <= toDate
         && !deleted.some(x => x.id === t.id)
       ).map(t=>{
@@ -4940,8 +4948,19 @@ const Pages = {
         else if (t.transferId) {
           const _tr = (d.transfers || []).find(x => x && x.id === t.transferId);
           const _it = _tr && (_tr.items || []).find(i => i && i.productId === t.productId);
-          if (_it && _it.sellAtSupply != null && _it.discAtSupply != null) { sell = _it.sellAtSupply; prodDisc = _it.discAtSupply; rateSource = 'transfer-stamped'; _stamped = true; }
+          if (_it && _it.sellAtSupply != null && _it.discAtSupply != null) {
+            if (_it._stampsUntrusted) {
+              // OS-W43-R1 (Codex-2, amendment 2): BACKFILL-only item stamps are NOT valuation evidence.
+              // Use the server-resolved values installed on the row (the SR-163/157 transport), or
+              // surface a loud "valuation pending sync" state — never the untrusted stamps, never live pricing.
+              if (t._rvSell != null && t._rvDisc != null) { sell = t._rvSell; prodDisc = t._rvDisc; rateSource = 'server-resolved'; _stamped = true; }
+              else { sell = 0; prodDisc = 0; lineErr = 'VALUATION_PENDING'; _stamped = true; }
+            } else { sell = _it.sellAtSupply; prodDisc = _it.discAtSupply; rateSource = 'transfer-stamped'; _stamped = true; }
+          }
         }
+        // OS-W43-R1 (AGY-2): a STAMPED 0% is the frozen honest NOT-SET — it must stay LOUD on the
+        // invoice (matching the legacy discMissing surfacing), never a silent full-price line.
+        if (_stamped && !lineErr && prodDisc === 0) lineErr = 'NOT_SET';
         if (!_stamped) {
           if (lensOn) {
             const r = Pricing.rateAsOf(office.id, t.productId, Date.parse(t.date + 'T00:00:00.000Z'), d.stores);
