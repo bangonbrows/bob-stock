@@ -5,8 +5,11 @@ AGY PASS ("the atomicity requirement for the four-field tuple is hermetically en
 stack") · Codex PASS ("No findings" — line-level evidence at every consumer + a runtime script proving
 row/item/payload/wire assertions incl. non-zero source versions on the receive re-mint). Both answered
 the standing question NO: no partial authority tuple, at any level, survives as billable data or gains
-fabricated fields. Four rounds: 8 → 3 → 1 → 0 findings. The wave-close full sweep (318) is recorded at
-the end of this file.
+fabricated fields. Four rounds: 8 → 3 → 1 → 0 findings.
+
+**WAVE-CLOSE FULL SWEEP (2026-07-20, single clean detached run): 318 CAUGHT, 0 BLIND, 0 skipped,
+0 INFRA-FAIL of 318.** Every mutation in the harness — the whole app plus the complete W4.3 set —
+detected. **W4.3 IS CLOSED.**
 
 ## BUILD SHIPPED 2026-07-19 (per the FULLY LOCKED `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md`, incl. both approved amendments)
 
