@@ -2983,7 +2983,8 @@ async function runSmoke(repo) {
       const r = await page.evaluate(async () => {
         const d = DB.get(); const p = d.products[0]; const pid = p.id; const _origPrice = p.price;
         try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
-        d.pricingConfig = { version: 2, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2020-01-01T00:00:00Z', to: '2026-06-01T00:00:00Z' }, { rate: 30, from: '2026-06-01T00:00:00Z', to: null }] } } };
+        // THREE distinct eras so every wrong instant is DETECTABLE: creation 25% · submit 30% · today 45%
+        d.pricingConfig = { version: 2, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2020-01-01T00:00:00Z', to: '2026-06-01T00:00:00Z' }, { rate: 30, from: '2026-06-01T00:00:00Z', to: '2026-07-15T00:00:00Z' }, { rate: 45, from: '2026-07-15T00:00:00Z', to: null }] } } };
         Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
         Sync._pricingFresh = true; p.price = 120;
         if (!d.transfers) d.transfers = [];
