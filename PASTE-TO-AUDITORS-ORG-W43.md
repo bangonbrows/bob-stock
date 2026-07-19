@@ -1,4 +1,18 @@
-# REVIEW PACK — Org-Structure chunk, W4.3 build (commit-time money stamps) — round 2
+# REVIEW PACK — Org-Structure chunk, W4.3 build (commit-time money stamps) — round 3
+
+> ## ROUND 3 — re-review after the round-2 fixes
+> Round-2 verdicts: AGY PASS (all eight round-1 fixes verified) · Codex ×3, all real residuals, all
+> fixed: (1) the direct-log path now carries the FULL four-field tuple, sync egress never fabricates
+> versions (all-four-or-unstamped), and the invoice fails a partial row tuple closed; (2) a
+> transfer-linked row derives its invoice origin SOLELY from its transfer record — an absent record
+> fails closed and self-heals on arrival (the rows-before-steps window is sealed); (3) an explicit
+> `submittedAt` now records the true submit instant at both submit moments (carried in payloads, folded
+> from the step's own timestamp for pre-W4 steps, excluded from canonical hashing) and stamp-at-receive
+> uses it — a stale draft submitted across a rate change stamps the SUBMIT-era rate, proven with a
+> three-era fixture. Ledger: the Round 2 table in `AZURE-CHUNK-ORG-W43-AUDIT-RESPONSE.md`. The scoped
+> command now lists **25 cases → 25/25 detected** expected; smoke stays **273/273**. Also fixed: the
+> engineer's full sweep no longer runs during audit rounds (it held the runner lock and blocked your
+> round-2 scoped run — apologies; scoped runs are now uncontended).
 
 > ## ROUND 2 — re-review after the round-1 fixes
 > Round-1 verdicts: AGY ×4 + Codex ×4 — ALL EIGHT REAL (one converged pair), all fixed; AGY's fifth item
@@ -57,9 +71,9 @@ Branch `azure-phase-5-8-server`; review the LATEST commit. Work in your own copy
 - `cd test && node smoke-test.js` → **273/273** expected (S-276..S-282 are this wave's).
 - `node test/topology-proof.js` (repo root) → **256/256** expected (no server change this wave).
 - Scoped mutation testing:
-  `SABOTEUR_ONLY=S-276,S-276b,S-277,S-278,S-278b,S-278c,S-279,S-280,S-280b,S-281,S-281b,S-281c,S-281d,S-281e,S-282,S-282b,S-282c,S-282d,S-108,S-262,S-150b,S-70,S-174,S-185
-  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **24/24 detected** expected. (Scoped only —
-  the full mutation sweep is the engineer's local gate.)
+  `SABOTEUR_ONLY=S-276,S-276b,S-277,S-278,S-278b,S-278c,S-279,S-279b,S-280,S-280b,S-281,S-281b,S-281c,S-281d,S-281e,S-282,S-282b,S-282c,S-282d,S-108,S-262,S-150b,S-70,S-174,S-185
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **25/25 detected** expected. (Scoped only —
+  the full mutation sweep is the engineer's local gate, run at wave close.)
 - `cd test && node static-check.js` and `node csp-check.js` → PASS.
 
 ## Focus areas

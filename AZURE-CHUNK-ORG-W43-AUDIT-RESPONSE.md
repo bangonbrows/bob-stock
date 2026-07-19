@@ -61,6 +61,28 @@ caught by the anchor scan before they could silently skip.
 **24/24 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run, baseline 273/273) · anchor
 scan **316/316** · topology 256/256 · full sweep (316) recorded below.
 
+## ROUND 2 (2026-07-19): AGY PASS (all eight R1 fixes verified) · Codex BLOCK ×3 — all REAL residuals, all fixed @ 5d48ea7/14f962d
+
+| # | Finding | Ground truth | Fix |
+|---|---|---|---|
+| Codex R2-1 (P1) | the DIRECT-LOG path copies only the money fields; sync then FABRICATES versions 0/0; the invoice treats the malformed row as valid | **REAL — a Codex-1 residual** (the direct-log copy line predated the tuple work) | the copy carries all four; egress requires ALL FOUR or ships the row unstamped (never fabricates); the invoice row tier fails a PARTIAL tuple closed (`STAMP_ERROR`) |
+| Codex R2-2 (P1) | a transfer-linked row whose record hasn't arrived (rows pull BEFORE steps) falls through to the reason regex — reopening AGY-1 in that window | **REAL** | `transferId` present ⇒ origin derives SOLELY from the record; absent record ⇒ fail closed (not billed this fold — self-heals when the record arrives) |
+| Codex R2-3 (P1) | stamp-at-receive reads `createdAt` (DRAFT creation), violating P4's submit-instant rule for stale drafts submitted across a rate change | **REAL** | explicit `submittedAt` recorded at both submit moments + carried in the submit payload + folded (a pre-W4 step's own timestamp backfills it; EXCLUDED from the canonical form as derived metadata); `_stampAtReceive` prefers `submittedAt || date || createdAt` |
+
+**Coverage:** S-277 no-fabrication egress · S-281 ghost-record exclusion + partial-row fail-closed ·
+S-279 reworked to Codex's exact stale-draft repro with THREE distinct rate eras (creation 25% / submit
+30% / receive-day 45%) — the era split matters: the first re-run caught MY OWN weakened fixture (the
+receive-day mutation went BLIND while submit-era == receive-era; fixed, re-run clean). Mutations:
+S-279b (creation-day revert) added; S-279/S-281d re-anchored. **317 total, parity 273 ↔ 273.**
+
+**Round-2-fix gates (2026-07-19):** smoke **273/273** · scoped saboteur (19 W4.3 + 6 re-anchored):
+**25/25 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run after the fixture fix) · anchor
+scan **317/317** · topology 256/256.
+
+**Ops note:** Codex's R2 scoped run was blocked by the engineer's own full sweep holding the runner lock —
+process rule updated: the FULL sweep now runs ONLY at wave close (post-convergence), never during audit
+rounds; scoped runs are the in-loop gate.
+
 ## Engineer's honest notes (attack these first)
 1. **Stamping scope = the billing predicate** (warehouse-typed non-franchise sender OR `head_office` → a
    franchise store) — non-billing store↔store transfers are deliberately un-stamped (their rows never hit
