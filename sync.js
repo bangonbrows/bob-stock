@@ -1305,7 +1305,7 @@ const Sync = {
     // export's classification inputs — UnitPriceAtTime (K4) and the StockFrom/To ids + bounded text labels
     // (index.html:2090-2093: id fields are null for manual movements; the labels are the actual
     // sale-vs-wastage classification inputs). Absent fields are simply not sent (legacy rows).
-    if (t.sellAtSupply != null && t.discAtSupply != null) { sp.SellAtSupply = t.sellAtSupply; sp.DiscAtSupply = t.discAtSupply; sp.PricingVersion = t.pricingVersion != null ? t.pricingVersion : 0; sp.CatalogueVersion = t.catalogueVersion != null ? t.catalogueVersion : 0; }
+    if (t.sellAtSupply != null && t.discAtSupply != null && t.pricingVersion != null && t.catalogueVersion != null) { sp.SellAtSupply = t.sellAtSupply; sp.DiscAtSupply = t.discAtSupply; sp.PricingVersion = t.pricingVersion; sp.CatalogueVersion = t.catalogueVersion; }   // OS-W43-R2 (Codex-1 residual): ALL FOUR or the row ships unstamped — the boundary never FABRICATES an authority version
     if (typeof t.unitPriceAtTime === 'number' && isFinite(t.unitPriceAtTime)) sp.UnitPriceAtTime = t.unitPriceAtTime;
     if (t.stockFromStoreId) sp.StockFromStoreId = String(t.stockFromStoreId).slice(0, 64);
     if (t.stockToStoreId) sp.StockToStoreId = String(t.stockToStoreId).slice(0, 64);

@@ -2239,7 +2239,7 @@ const Pages = {
       const _fx={fromStoreId:'head_office',toStoreId:txn.storeId,items:[{productId:txn.productId}]};
       const _st=Transfer._stampItems(_fx);
       if(!_st.ok){UI.toast(_st.error,'error');return;}
-      if(_fx.items[0].sellAtSupply!=null&&_fx.items[0].discAtSupply!=null){txn.sellAtSupply=_fx.items[0].sellAtSupply;txn.discAtSupply=_fx.items[0].discAtSupply;}
+      if(_fx.items[0].sellAtSupply!=null&&_fx.items[0].discAtSupply!=null){txn.sellAtSupply=_fx.items[0].sellAtSupply;txn.discAtSupply=_fx.items[0].discAtSupply;txn.pricingVersion=_fx.items[0].pricingVersion!=null?_fx.items[0].pricingVersion:0;txn.catalogueVersion=_fx.items[0].catalogueVersion!=null?_fx.items[0].catalogueVersion:0;}   // OS-W43-R2 (Codex-1 residual): the FULL authority tuple, never money-only
     }
     if(Txn.isOut(txn)){
       const avail=Stock.qty(txn.productId,txn.storeId);
@@ -4904,7 +4904,10 @@ const Pages = {
     if (t.transferId) {
       const _d = dOpt || DB.get();
       const _tr = ((_d && _d.transfers) || []).find(x => x && x.id === t.transferId);
-      if (_tr) return _tr.fromStoreId === 'head_office';
+      // OS-W43-R2 (Codex-2, AGY-1 residual): rows pull BEFORE record steps — a transfer-linked row whose
+      // record hasn't arrived must FAIL CLOSED (not billed this fold; the next pull's re-fold bills it).
+      // Falling through to the reason text re-opened the named-store hole in that window.
+      return _tr ? _tr.fromStoreId === 'head_office' : false;
     }
     const fromBase = (t.stockFrom || '').split(' — ')[0];
     if (fromBase) return fromBase === 'HO Warehouse';
@@ -4941,10 +4944,10 @@ const Pages = {
         // (transferId lookup) → the lens. Stamps freeze BOTH numbers — a later PRICE edit can no longer
         // rewrite an old invoice's dollars (the lens froze only the discount). One stamp without the
         // other = a malformed row ⇒ fail-closed line (P6), never a silent half-claim.
-        const _rowHasSell = t.sellAtSupply != null, _rowHasDisc = t.discAtSupply != null;
+        const _rowN = [t.sellAtSupply != null, t.discAtSupply != null, t.pricingVersion != null, t.catalogueVersion != null].filter(Boolean).length;
         let _stamped = false;
-        if (_rowHasSell && _rowHasDisc) { sell = t.sellAtSupply; prodDisc = t.discAtSupply; rateSource = 'stamped'; _stamped = true; }
-        else if (_rowHasSell || _rowHasDisc) { prodDisc = 0; lineErr = 'STAMP_ERROR'; _stamped = true; }
+        if (_rowN === 4) { sell = t.sellAtSupply; prodDisc = t.discAtSupply; rateSource = 'stamped'; _stamped = true; }
+        else if (_rowN > 0) { prodDisc = 0; lineErr = 'STAMP_ERROR'; _stamped = true; }   // OS-W43-R2 (Codex-1 residual): a PARTIAL authority tuple is malformed, never valid stamped data
         else if (t.transferId) {
           const _tr = (d.transfers || []).find(x => x && x.id === t.transferId);
           const _it = _tr && (_tr.items || []).find(i => i && i.productId === t.productId);

@@ -168,7 +168,7 @@ const Transfer = {
       if (typeof DB === 'undefined' || typeof Pricing === 'undefined') return;
       const d = DB.get(); if (!d) return;
       if (!this._isBillingSupply(d, t.fromStoreId, t.toStoreId)) return;
-      const submitMs = Date.parse(t.createdAt || t.date || '') || Date.now();
+      const submitMs = Date.parse(t.submittedAt || t.date || t.createdAt || '') || Date.now();   // OS-W43-R2 (Codex-3): the SUBMIT instant — submittedAt (W4 rows/steps), else date (set at submit in BOTH eras), createdAt last (draft creation, the bug Codex reproduced)
       const office = (d.stores || []).find(x => x && x.id === t.toStoreId) || {};
       const lensOn = Pricing.lensActive();
       for (const item of (t.items || [])) {
@@ -242,7 +242,7 @@ const Transfer = {
     return {
       fromStoreId: t.fromStoreId, toStoreId: t.toStoreId, type: t.type,
       returnReason: t.returnReason || null, returnNote: t.returnNote || '',
-      createdAt: t.createdAt || t.date, createdBy: t.createdBy, createdByName: t.createdByName,
+      createdAt: t.createdAt || t.date, submittedAt: t.submittedAt || t.date, createdBy: t.createdBy, createdByName: t.createdByName,
       notes: t.notes || '',
       items: (t.items || []).map(i => {
         const o = { productId: i.productId, sentQty: i.sentQty };
@@ -331,6 +331,7 @@ const Transfer = {
       if (!_ok) { UI.fatalSaveError('Transfer could not be saved to this device.'); return { ok:false, error:'Save failed - not saved' }; }
       return { ok:true, transferId:id };
     }
+    transfer.submittedAt = now;   // OS-W43-R2 (Codex-3): the SUBMIT instant, recorded explicitly (createdAt = draft creation on the other path)
     // OS-W4.3 P1: a non-draft create IS the submit — stamp the items now (a pricing failure rejects, nothing written)
     { const _st = this._stampItems(transfer); if (!_st.ok) return { ok:false, error:_st.error }; }
     // Transit Void: deduct stock immediately (non-draft), atomically with the new transfer
@@ -418,6 +419,7 @@ const Transfer = {
       if (!_st.ok) { Object.keys(t).forEach(k => delete t[k]); Object.assign(t, snapshot); return { ok:false, error:_st.error }; } }
     t.status = 'in_transit';
     t.date = new Date().toISOString();
+    t.submittedAt = t.date;   // OS-W43-R2 (Codex-3): a stale draft's createdAt is the DRAFT-CREATION instant — P4 needs the SUBMIT instant
     // Tier 2 Fix #12 (GPT review): collect all transactions, write atomically
     const batchTxns = [];
     t.items.forEach(item => {

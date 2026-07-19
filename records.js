@@ -323,6 +323,7 @@ const Records = {
           id: s.recordId,
           date: base.createdAt || base.date || new Date(s.timestamp || Date.now()).toISOString(),
           createdAt: base.createdAt || '',
+          submittedAt: base.submittedAt || ((s.stepType === 'submit' && s.timestamp) ? new Date(s.timestamp).toISOString() : (base.date || '')),   // OS-W43-R2 (Codex-3): the submit step's own instant backfills pre-W4 payloads; EXCLUDED from the canonical form (derived metadata, cross-version stable)
           fromStoreId: s.fromStoreId || base.fromStoreId || '',
           toStoreId: s.toStoreId || base.toStoreId || '',
           createdBy: base.createdBy || s.actorId || '',

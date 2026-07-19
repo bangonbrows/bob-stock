@@ -2930,14 +2930,17 @@ async function runSmoke(repo) {
         const overMax = Sync._fromSharePoint(mkSp({ SellAtSupply: 1000000.01, DiscAtSupply: 10 }));
         const plain = Sync._fromSharePoint(mkSp({}));
         const partialTuple = Sync._fromSharePoint(mkSp({ SellAtSupply: 50, DiscAtSupply: 10 }));   // R1 Codex-1: money without versions = malformed
+        // R2 Codex-1 residual: a money-only LOCAL row egresses UNSTAMPED — the boundary never fabricates versions
+        const spPartial = Sync._toSharePoint({ id: 't277p', date: '2026-07-01', storeId: 'cockburn_office', productId: pid, type: 'transfer_in', qty: 1, createdAt: new Date().toISOString(), sellAtSupply: 50, discAtSupply: 10 });
+        const noFab = spPartial.SellAtSupply === undefined && spPartial.PricingVersion === undefined;
         const rvRow = Sync._fromSharePoint(mkSp({ ResolvedSell: 44.5, ResolvedDisc: 15, ResolvedPricingVersion: 3, ResolvedCatalogueVersion: 9 }));
         const rvBad = Sync._fromSharePoint(mkSp({ ResolvedSell: 44.5 }));                          // malformed server pair: DROPPED, row survives
         const mkAr = (extra) => Object.assign({ TransactionId: 'a277', TxnDate: '2026-07-01', StoreId: 'cockburn_office', ProductId: pid, TxnType: 'transfer_in', Qty: 1, SourceId: 7 }, extra || {});
         const ar = Sync._fromArchive(mkAr({ SellAtSupply: 99.95, DiscAtSupply: 12.5, PricingVersion: 2, CatalogueVersion: 5, UnitPriceAtTime: 42, StockFrom: 'HO Warehouse — HO' }));
         const arBad = Sync._fromArchive(mkAr({ DiscAtSupply: 12.5 }));
-        return { rtSell: back && back.sellAtSupply, rtDisc: back && back.discAtSupply, rtPv: back && back.pricingVersion, rtCv: back && back.catalogueVersion, rtUpat: back && back.unitPriceAtTime, rtFromId: back && back.stockFromStoreId, rtFrom: back && back.stockFrom, oneSided: oneSided === null, threeDp: threeDp === null, strMoney: strMoney === null, huge: huge === null, overMax: overMax === null, partialTuple: partialTuple === null, rvSell: rvRow && rvRow._rvSell, rvDisc: rvRow && rvRow._rvDisc, rvBadDropped: !!rvBad && rvBad._rvSell === undefined, plainOk: !!plain && plain.sellAtSupply === undefined, arSell: ar && ar.sellAtSupply, arPv: ar && ar.pricingVersion, arUpat: ar && ar.unitPriceAtTime, arBad: arBad === null };
+        return { noFab, rtSell: back && back.sellAtSupply, rtDisc: back && back.discAtSupply, rtPv: back && back.pricingVersion, rtCv: back && back.catalogueVersion, rtUpat: back && back.unitPriceAtTime, rtFromId: back && back.stockFromStoreId, rtFrom: back && back.stockFrom, oneSided: oneSided === null, threeDp: threeDp === null, strMoney: strMoney === null, huge: huge === null, overMax: overMax === null, partialTuple: partialTuple === null, rvSell: rvRow && rvRow._rvSell, rvDisc: rvRow && rvRow._rvDisc, rvBadDropped: !!rvBad && rvBad._rvSell === undefined, plainOk: !!plain && plain.sellAtSupply === undefined, arSell: ar && ar.sellAtSupply, arPv: ar && ar.pricingVersion, arUpat: ar && ar.unitPriceAtTime, arBad: arBad === null };
       });
-      rec('S-277', 'W4.3-P3/P6(+R1): the FULL tuple round-trips bit-exact; ingest rejects one-sided/partial-tuple/3dp/string/huge/>1M live AND archive; server-resolved fields map (malformed pair dropped, row kept)', r.rtSell === 99.95 && r.rtDisc === 12.5 && r.rtPv === 2 && r.rtCv === 5 && r.rtUpat === 42 && r.rtFromId === 'head_office' && r.rtFrom === 'HO Warehouse — HO' && r.oneSided && r.threeDp && r.strMoney && r.huge && r.overMax && r.partialTuple && r.rvSell === 44.5 && r.rvDisc === 15 && r.rvBadDropped && r.plainOk && r.arSell === 99.95 && r.arPv === 2 && r.arUpat === 42 && r.arBad, `rt=${r.rtSell}/${r.rtDisc}/pv${r.rtPv}/cv${r.rtCv} rejects=${r.oneSided}/${r.threeDp}/${r.strMoney}/${r.huge}/${r.overMax}/partial=${r.partialTuple} rv=${r.rvSell}/${r.rvDisc}/badDropped=${r.rvBadDropped} archive=${r.arSell}/pv${r.arPv}/${r.arBad}`); await ctx.close(); }
+      rec('S-277', 'W4.3-P3/P6(+R1): the FULL tuple round-trips bit-exact; ingest rejects one-sided/partial-tuple/3dp/string/huge/>1M live AND archive; server-resolved fields map (malformed pair dropped, row kept)', r.rtSell === 99.95 && r.rtDisc === 12.5 && r.rtPv === 2 && r.rtCv === 5 && r.rtUpat === 42 && r.rtFromId === 'head_office' && r.rtFrom === 'HO Warehouse — HO' && r.noFab === true && r.oneSided && r.threeDp && r.strMoney && r.huge && r.overMax && r.partialTuple && r.rvSell === 44.5 && r.rvDisc === 15 && r.rvBadDropped && r.plainOk && r.arSell === 99.95 && r.arPv === 2 && r.arUpat === 42 && r.arBad, `rt=${r.rtSell}/${r.rtDisc}/pv${r.rtPv}/cv${r.rtCv} rejects=${r.oneSided}/${r.threeDp}/${r.strMoney}/${r.huge}/${r.overMax}/partial=${r.partialTuple} rv=${r.rvSell}/${r.rvDisc}/badDropped=${r.rvBadDropped} archive=${r.arSell}/pv${r.arPv}/${r.arBad}`); await ctx.close(); }
 
     // S-278 (P2, SR-67/88): INHERITANCE — the flagged-receive row, the accept-as-is TOP-UP row, and the
     // in-transit CANCEL's return row all carry the item's canonical stamps.
@@ -2984,7 +2987,8 @@ async function runSmoke(repo) {
         Auth._user = { id: 'dir', username: 'dir', role: 'director', storeIds: [] };
         Sync._pricingFresh = true; p.price = 120;
         if (!d.transfers) d.transfers = [];
-        d.transfers.push({ id: 'tr279', status: 'in_transit', fromStoreId: 'head_office', toStoreId: 'cockburn_office', createdAt: '2026-01-15T00:00:00.000Z', date: '2026-01-15T00:00:00.000Z', createdBy: 'dir', createdByName: 'dir', type: 'standard', returnReason: null, returnNote: '', items: [{ productId: pid, sentQty: 1, receivedQty: null, status: 'pending', flagNote: '', resolvedBy: null, resolvedAction: null }], receivedBy: null, receivedDate: null, completedDate: null, notes: '' });
+        // a STALE draft: created 2026-01-15 (25% era), SUBMITTED 2026-07-01 (30% era) — P4 must stamp 30
+        d.transfers.push({ id: 'tr279', status: 'in_transit', fromStoreId: 'head_office', toStoreId: 'cockburn_office', createdAt: '2026-01-15T00:00:00.000Z', date: '2026-07-01T00:00:00.000Z', submittedAt: '2026-07-01T00:00:00.000Z', createdBy: 'dir', createdByName: 'dir', type: 'standard', returnReason: null, returnNote: '', items: [{ productId: pid, sentQty: 1, receivedQty: null, status: 'pending', flagNote: '', resolvedBy: null, resolvedAction: null }], receivedBy: null, receivedDate: null, completedDate: null, notes: '' });
         const rec1 = await Transfer.receive('tr279', [{ productId: pid, receivedQty: 1 }]);
         const t = Transfer.get('tr279');
         const row = (d.transactions || []).find(x => x && x.transferId === 'tr279' && x.type === 'transfer_in');
@@ -2998,7 +3002,7 @@ async function runSmoke(repo) {
         try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {} Sync._pricingFresh = false;
         return out;
       });
-      rec('S-279', 'W4.3-P4: a stampless submit is stamped AT RECEIVE — discount as-of the SUBMIT instant (25, not receive-day 30), sell frozen at receive; later edits leave the row bit-stable', r.recOk === true && r.basis === 'receive-stamped' && r.disc === 25 && r.sell === 120 && r.rowSell === 120 && r.rowDisc === 25 && r.stableSell === 120 && r.stableDisc === 25, `rec=${r.recOk} basis=${r.basis} stamp=${r.sell}/${r.disc} row=${r.rowSell}/${r.rowDisc} stable=${r.stableSell}/${r.stableDisc} (clean: receive-stamped 120/25 throughout)`); await ctx.close(); }
+      rec('S-279', 'W4.3-P4(+R2): a stale draft stamped at receive uses the SUBMIT instant (30% era), never draft-creation (25%) or receive-day (99%); the row stays bit-stable', r.recOk === true && r.basis === 'receive-stamped' && r.disc === 30 && r.sell === 120 && r.rowSell === 120 && r.rowDisc === 30 && r.stableSell === 120 && r.stableDisc === 30, `rec=${r.recOk} basis=${r.basis} stamp=${r.sell}/${r.disc} row=${r.rowSell}/${r.rowDisc} stable=${r.stableSell}/${r.stableDisc} (clean: receive-stamped 120/30 throughout)`); await ctx.close(); }
 
     // S-280 (P5, SR-66/85): EQUAL-QTY receives with DIFFERING stamps are a CONFLICT (billing is never
     // sync-order-dependent), and the RESOLVE publishes the pinned stamps into folded item state.
@@ -3058,19 +3062,21 @@ async function runSmoke(repo) {
             { id: 'tv3', storeId: 'cockburn_office', productId: 'PV', type: 'transfer_in', qty: 1, date: '2026-02-12', transferId: 'trB', _rvSell: 66, _rvDisc: 25 },
             { id: 'tv4', storeId: 'cockburn_office', productId: 'PV', type: 'transfer_in', qty: 1, date: '2026-02-13', transferId: 'trZ' },
             { id: 'tv5', storeId: 'cockburn_office', productId: 'PV', type: 'transfer_in', qty: 1, date: '2026-02-14', transferId: 'trH', reason: 'Received from Head Office South' },
+            { id: 'tv6', storeId: 'cockburn_office', productId: 'PV', type: 'transfer_in', qty: 1, date: '2026-02-15', transferId: 'ghost_not_arrived', reason: 'Received from Head Office North' },
+            { id: 'tv7', storeId: 'cockburn_office', productId: 'PV', type: 'transfer_in', qty: 1, date: '2026-02-16', transferId: 'trS', sellAtSupply: 80, discAtSupply: 20 },
           ],
           transfers: [f1, fB, fZ, fH] };
         DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 5, from: '2020-01-01T00:00:00Z', to: null }] } } };
         const sd = Pages._franchiseInvoiceData(dFix, '2026-01-01', '2026-12-31')[0];
         const byId = {}; (sd ? sd.lines : []).forEach((l, ix) => { });
         const lineOf = (rowDate) => sd && sd.lines.find(l => l.date === rowDate);
-        const line = lineOf('2026-02-10'), lineU = lineOf('2026-02-11'), lineRv = lineOf('2026-02-12'), lineZ = lineOf('2026-02-13'), lineH = lineOf('2026-02-14');
+        const line = lineOf('2026-02-10'), lineU = lineOf('2026-02-11'), lineRv = lineOf('2026-02-12'), lineZ = lineOf('2026-02-13'), lineH = lineOf('2026-02-14'), lineG = lineOf('2026-02-15'), lineP = lineOf('2026-02-16');
         delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
         return { f1Sell: f1.items[0].sellAtSupply, f1Basis: f1.items[0].basis, f2Basis: f2.items[0].basis, f2Sell: f2.items[0].sellAtSupply, lineSell: line && line.sell, lineDisc: line && line.prodDisc, lineSrc: line && line.rateSource,
           untrusted: fB.items[0]._stampsUntrusted === true, uErr: lineU && lineU.lineErr, uSell: lineU && lineU.sell, rvSell: lineRv && lineRv.sell, rvDisc: lineRv && lineRv.prodDisc, rvSrc: lineRv && lineRv.rateSource,
-          zErr: lineZ && lineZ.lineErr, zDisc: lineZ && lineZ.prodDisc, hExcluded: !lineH };
+          zErr: lineZ && lineZ.lineErr, zDisc: lineZ && lineZ.prodDisc, hExcluded: !lineH, gExcluded: !lineG, pErr: lineP && lineP.lineErr };
       });
-      rec('S-281', 'W4.3(+R1): basis precedence + tier-2 valuation; UNTRUSTED backfill stamps go pending/server-resolved; stamped 0% is LOUD; a head-office-named store never regexes into the invoice', r.f1Sell === 80 && r.f1Basis === 'submit-stamped' && r.f2Basis === 'legacy-lens' && r.f2Sell == null && r.lineSell === 80 && r.lineDisc === 20 && r.lineSrc === 'transfer-stamped' && r.untrusted === true && r.uErr === 'VALUATION_PENDING' && r.uSell === 0 && r.rvSell === 66 && r.rvDisc === 25 && r.rvSrc === 'server-resolved' && r.zErr === 'NOT_SET' && r.zDisc === 0 && r.hExcluded === true, `f1=${r.f1Sell}/${r.f1Basis} f2=${r.f2Sell}/${r.f2Basis} line=${r.lineSell}/${r.lineDisc}/${r.lineSrc} untrusted=${r.untrusted}/${r.uErr}/${r.uSell} rv=${r.rvSell}/${r.rvDisc}/${r.rvSrc} loud0=${r.zErr}/${r.zDisc} hExcluded=${r.hExcluded}`); await ctx.close(); }
+      rec('S-281', 'W4.3(+R1): basis precedence + tier-2 valuation; UNTRUSTED backfill stamps go pending/server-resolved; stamped 0% is LOUD; a head-office-named store never regexes into the invoice', r.f1Sell === 80 && r.f1Basis === 'submit-stamped' && r.f2Basis === 'legacy-lens' && r.f2Sell == null && r.lineSell === 80 && r.lineDisc === 20 && r.lineSrc === 'transfer-stamped' && r.untrusted === true && r.uErr === 'VALUATION_PENDING' && r.uSell === 0 && r.rvSell === 66 && r.rvDisc === 25 && r.rvSrc === 'server-resolved' && r.zErr === 'NOT_SET' && r.zDisc === 0 && r.hExcluded === true && r.gExcluded === true && r.pErr === 'STAMP_ERROR', `f1=${r.f1Sell}/${r.f1Basis} f2=${r.f2Sell}/${r.f2Basis} line=${r.lineSell}/${r.lineDisc}/${r.lineSrc} untrusted=${r.untrusted}/${r.uErr}/${r.uSell} rv=${r.rvSell}/${r.rvDisc}/${r.rvSrc} loud0=${r.zErr}/${r.zDisc} hExcluded=${r.hExcluded} ghost=${r.gExcluded} partialRow=${r.pErr}`); await ctx.close(); }
 
     // S-282 (SR-105/113/121/128/106): the DEEP HASH — item-level divergence ($100 vs $150) yields distinct
     // canonical hashes and a surfaced conflict; a pre-W4 and a W4 snapshot of the SAME reality hash
