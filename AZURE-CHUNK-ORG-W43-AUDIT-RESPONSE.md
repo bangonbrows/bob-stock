@@ -1,5 +1,13 @@
 # OS-W4.3 BUILD (commit-time money stamps · transport · pricing bases) — wave record + audit response log
 
+## ✅ CONVERGED 2026-07-20 — BOTH AUDITORS PASS @ 0186326 (round 4)
+AGY PASS ("the atomicity requirement for the four-field tuple is hermetically enforced across the
+stack") · Codex PASS ("No findings" — line-level evidence at every consumer + a runtime script proving
+row/item/payload/wire assertions incl. non-zero source versions on the receive re-mint). Both answered
+the standing question NO: no partial authority tuple, at any level, survives as billable data or gains
+fabricated fields. Four rounds: 8 → 3 → 1 → 0 findings. The wave-close full sweep (318) is recorded at
+the end of this file.
+
 ## BUILD SHIPPED 2026-07-19 (per the FULLY LOCKED `AZURE-CHUNK-ORG-W4.3-STAMPS-SCOPE.md`, incl. both approved amendments)
 
 **What the wave does (plain English):** every franchise supply line now gets its money — the sell price
