@@ -83,6 +83,19 @@ scan **317/317** · topology 256/256.
 process rule updated: the FULL sweep now runs ONLY at wave close (post-convergence), never during audit
 rounds; scoped runs are the in-loop gate.
 
+## ROUND 3 (2026-07-19): AGY PASS (all three R2 fixes verified) · Codex BLOCK ×1 — REAL, fixed @ b9396df
+
+| # | Finding | Ground truth | Fix |
+|---|---|---|---|
+| Codex R3-1 (P1) | a PARTIAL transfer-ITEM tuple (money without versions) still bills as "transfer-stamped", and FOUR helper sites default the missing versions to 0 (fabrication one layer above R2's row fix) | **REAL — the R2 fix closed rows but not items** | ONE shared `_fullTuple` predicate at EVERY consumer: `_stampTxns`, both step-payload builders, `_enrichResolutions`, the direct-log copy — full tuple copied LITERALLY or nothing (no defaults anywhere); the invoice tier-2 fails a partial item CLOSED (`STAMP_ERROR`, never "transfer-stamped", never the lens); `_stampAtReceive` treats a partial as malformed — clears it and mints honestly |
+
+**Coverage:** S-281 partial-ITEM fixture (money-only item → `STAMP_ERROR` line) + mutation S-281g;
+S-278b re-anchored. **318 mutations, parity 273 ↔ 273.**
+
+**Round-3-fix gates (2026-07-19):** smoke **273/273** · scoped saboteur (20 W4.3 + 6 re-anchored):
+**26/26 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run) · anchor scan **318/318** ·
+topology 256/256.
+
 ## Engineer's honest notes (attack these first)
 1. **Stamping scope = the billing predicate** (warehouse-typed non-franchise sender OR `head_office` → a
    franchise store) — non-billing store↔store transfers are deliberately un-stamped (their rows never hit
