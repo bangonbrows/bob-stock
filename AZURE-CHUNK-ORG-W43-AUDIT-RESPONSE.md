@@ -33,8 +33,9 @@ S-278/b, S-279, S-280, S-281/b, S-282/b/c — **11 new (309 total)**; 5 pre-exis
 ## GATES (clean code, 2026-07-19)
 smoke **273/273** · topology **256/256** (no server change this wave) · static PASS · CSP PASS · dupes
 grep clean · anchor scan **309/309** · scoped saboteur (11 new + 5 re-anchored): **16/16 CAUGHT, 0 BLIND,
-0 skipped, 0 INFRA** (single clean detached run, baseline 273/273) · FULL sweep (309): recorded below
-when the detached run completes.
+0 skipped, 0 INFRA** (single clean detached run, baseline 273/273) · **FULL SWEEP: 309 CAUGHT, 0 BLIND,
+0 skipped, 0 INFRA-FAIL of 309 (single clean detached run)** — every mutation in the harness, the whole
+app plus the complete W4.3 set, detected.
 
 ## Engineer's honest notes (attack these first)
 1. **Stamping scope = the billing predicate** (warehouse-typed non-franchise sender OR `head_office` → a
