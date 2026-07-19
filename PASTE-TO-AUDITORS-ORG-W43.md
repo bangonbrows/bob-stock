@@ -1,4 +1,18 @@
-# REVIEW PACK — Org-Structure chunk, W4.3 build (commit-time money stamps) — round 1
+# REVIEW PACK — Org-Structure chunk, W4.3 build (commit-time money stamps) — round 2
+
+> ## ROUND 2 — re-review after the round-1 fixes
+> Round-1 verdicts: AGY ×4 + Codex ×4 — ALL EIGHT REAL (one converged pair), all fixed; AGY's fifth item
+> (the `_stableHash` equivalence claim) was upheld as true. The full ground-truth ledger with per-finding
+> fixes is the Round 1 table in `AZURE-CHUNK-ORG-W43-AUDIT-RESPONSE.md`. Headlines: the FULL four-field
+> authority tuple ({sellAtSupply, discAtSupply, pricingVersion, catalogueVersion}, all-four-or-none) now
+> rides every surface — capture, step payloads, fold, rows, archive, conflict identity, canonical hashing;
+> BACKFILL-only item stamps are untrusted (server-resolved row fields or a loud "valuation pending sync"
+> line); a priceless RETAIL product fails the submit closed; delivery/stocktake get real strict-projected
+> canonical forms; transfer-linked rows derive their invoice origin from the transfer record (never the
+> reason text); a stamped 0% is loud; basis-unset and chosen-legacy hash differently. Numbers below
+> updated: smoke stays **273/273** (assertions strengthened in place); the scoped mutation command now
+> lists **24 cases → 24/24 detected** expected. This round: verify each fix against its finding + any
+> runtime-provable residual.
 
 **Context.** You are reviewing the OS-W4.3 build for our own internal stock-management app (ordinary
 pre-release QA; the reviewers and the engineer all work for the owner — no third party, no
@@ -43,8 +57,8 @@ Branch `azure-phase-5-8-server`; review the LATEST commit. Work in your own copy
 - `cd test && node smoke-test.js` → **273/273** expected (S-276..S-282 are this wave's).
 - `node test/topology-proof.js` (repo root) → **256/256** expected (no server change this wave).
 - Scoped mutation testing:
-  `SABOTEUR_ONLY=S-276,S-277,S-278,S-278b,S-279,S-280,S-281,S-281b,S-282,S-282b,S-282c,S-262,S-150b,S-70,S-174,S-185
-  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **16/16 detected** expected. (Scoped only —
+  `SABOTEUR_ONLY=S-276,S-276b,S-277,S-278,S-278b,S-278c,S-279,S-280,S-280b,S-281,S-281b,S-281c,S-281d,S-281e,S-282,S-282b,S-282c,S-282d,S-108,S-262,S-150b,S-70,S-174,S-185
+  SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js` → **24/24 detected** expected. (Scoped only —
   the full mutation sweep is the engineer's local gate.)
 - `cd test && node static-check.js` and `node csp-check.js` → PASS.
 

@@ -37,6 +37,30 @@ grep clean · anchor scan **309/309** · scoped saboteur (11 new + 5 re-anchored
 0 skipped, 0 INFRA-FAIL of 309 (single clean detached run)** — every mutation in the harness, the whole
 app plus the complete W4.3 set, detected.
 
+## ROUND 1 (2026-07-19): AGY BLOCK ×4 (+1 note upheld) · Codex BLOCK ×4 — ALL EIGHT REAL, all fixed @ c6918ea/0810de4
+
+| # | Finding | Ground truth | Fix |
+|---|---|---|---|
+| Codex-1 (P1) | the FOUR authority fields (`pricingVersion`/`catalogueVersion`) absent throughout — amendment 1 rev-3 requires all four per stamped line | **REAL — a genuine spec-implementation miss by the engineer** (only the two money fields were built) | full tuple end-to-end: capture (`_writeStamp` + `_authorityVersions`), payloads, fold (all-four-or-none via `_fullTuple`), rows + ingest (`_readRowStamps` tuple form), archive, conflict identity, canonical item form |
+| Codex-2 (P1) | backfill-only stamps trusted by the invoice instead of server-resolved valuation / "valuation pending sync" (amendment 2) | **REAL** — the untrusted marking was never built client-side | genesis backfill stamps → `_stampsUntrusted`; any STEP-sourced tuple (receive/resolve) clears it; invoice tier-2: untrusted ⇒ server-resolved row fields (`_rvSell`/`_rvDisc`, mapped at ingest w/ the same policy, malformed pair DROPPED not row-rejected) or a loud `VALUATION_PENDING` line — never the untrusted stamps, never live pricing |
+| Codex-3 (P1) | a missing/non-numeric catalogue price commits a genuine $0 stamp | **REAL** — silent data loss for RETAIL products; a consumable's honest billing value IS 0 | retail-no-price REJECTS the submit (Director must set the price); at receive it drops to durable legacy-lens; consumables stamp the honest 0 |
+| Codex-4 ≡ AGY-3 (P1) | delivery/stocktake canonicalization preserved unknown fields — violating SR-128's strict projection | **REAL** — the generic branch wrapped the raw snapshot | real v4 canonical forms for both types (field-enumerated from the creation shapes incl. legacy `customs`), unknown keys stripped |
+| AGY-1 (P2) | a franchise store NAMED like "Head Office …" regex-matches store↔store transfers into the invoice | **REAL** (the free-text fallback is reachable by transfer rows) | a TRANSFER-LINKED row derives its origin from the transfer RECORD (fixture-pure via the passed `d`); the text fallbacks now serve only rows with no transfer record |
+| AGY-2 (P2) | the stamped NOT-SET 0% renders silently (the loud surfacing was lost) | **REAL** | a stamped 0% line surfaces `NOT_SET` loudly (a genuine 0% stamp cannot arise otherwise — 0=inherit has no UI option; an unset office default was already the loud-0 case) |
+| AGY-4 (P2) | the canonicalizer collapsed basis-UNSET ("awaiting") and CHOSEN `legacy-lens` to one hash — the fleet can't surface that disagreement | **REAL** | stampless canonical basis = `o.basis || null` — unset ≡ pre-W4 absence (same-reality identity preserved), chosen legacy hashes differently |
+| AGY-5 | `_stableHash` flat-input equivalence claim | **UPHELD by AGY** (true — arrays/primitives ignore a replacer array; historical stepIds unaffected) | no change |
+
+**Coverage:** every fix sentinel-asserted (S-276..S-282 strengthened: full-tuple fixtures, partial-tuple
+rejects, server-resolved mapping w/ drop-not-reject, priceless-retail reject, version-only conflicts,
+untrusted-pending/server-resolved tiers, loud stamped-0, the named-store exclusion, version/basis-state/
+delivery/stocktake hash cases) + 7 new mutations (S-276b, S-278c, S-280b, S-281c/d/e, S-282d — **316
+total**, parity 273 ↔ 273) + 6 re-anchors (S-108, S-277, S-278b, S-280, S-281 + the earlier set), all
+caught by the anchor scan before they could silently skip.
+
+**Round-1-fix gates (2026-07-19):** smoke **273/273** · scoped saboteur (18 W4.3 + 6 re-anchored):
+**24/24 CAUGHT, 0 BLIND, 0 skipped, 0 INFRA** (single clean detached run, baseline 273/273) · anchor
+scan **316/316** · topology 256/256 · full sweep (316) recorded below.
+
 ## Engineer's honest notes (attack these first)
 1. **Stamping scope = the billing predicate** (warehouse-typed non-franchise sender OR `head_office` → a
    franchise store) — non-billing store↔store transfers are deliberately un-stamped (their rows never hit
