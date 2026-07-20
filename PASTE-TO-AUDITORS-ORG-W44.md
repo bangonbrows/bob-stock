@@ -1,4 +1,19 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 build (buy-back settlement export engine) — round 1
+# REVIEW PACK — Org-Structure chunk, W4.4 build (buy-back settlement export engine)
+
+> ## STATUS BANNER (read this first)
+> The engine has had TWO correctness rounds since the build + one owner decision. If you reviewed a
+> prior version, the full round-by-round ledger is in `AZURE-CHUNK-ORG-W44-AUDIT-RESPONSE.md` (read
+> only the "Audit rounds" table — top two rows).
+> - **R1 (2 fixes):** a committed flush record with no presented-row manifest could finalize; a
+>   correction could be placed at a different date than the movement it replaces.
+> - **R2 (3 fixes):** a received-stock row with a transferId but no backing records + stripped source
+>   labels could be silently dropped instead of held; a committed flush record missing its expected-
+>   records list accepted a suppressed record; a correction that itself corrected another correction
+>   double-counted. All now hold the settlement "provisional" / fail closed.
+> - **Owner decision (N9):** retail-profit revenue is now NET of customer refunds; stock returned to
+>   Head Office is NOT credited against the supply bill (treated as fresh HO arrival).
+> - **Current gate numbers are in "Required checks" below** — they supersede any earlier pack.
+> A FRESH reviewer can ignore this banner and read the whole pack normally.
 
 **Context.** You are reviewing the OS-W4.4 build for our own internal stock-management app (ordinary
 pre-release QA; the reviewers and the engineer all work for the owner — no third party, no
@@ -51,10 +66,10 @@ Branch `azure-phase-5-8-server`; review the LATEST commit. Work in your own copy
   MUTATIONS table and asserts every anchor still matches its file — 322/322.
 - **NO client-file changes this wave** (index.html/sync.js/records.js/phase2.js/db.js untouched).
 
-## Required checks (run them, don't just read)
-- `node test/buyback-export-proof.js` → **122/122** expected (this wave's core gate).
+## Required checks (run them, don't just read) — CURRENT gate numbers
+- `node test/buyback-export-proof.js` → **135/135** expected (this wave's core gate; 122 build + 4 R1 + 7 R2 + 2 N9).
 - `node test/topology-proof.js` → **256/256** expected (proves the additive export changed nothing).
-- `cd test && node smoke-test.js` → **277/277** expected (S-283..S-286 are this wave's).
+- `cd test && node smoke-test.js` → **277/277** expected (S-283..S-286 are this wave's parity sentinels).
 - Scoped mutation testing:
   `SABOTEUR_ONLY=S-283,S-284,S-285,S-286 SABOTEUR_CONCURRENCY=5 node test/saboteur-runner.js`
   → **4/4 detected** expected. (Scoped only — the full mutation sweep is the engineer's local gate,
