@@ -474,6 +474,15 @@ ok('sale WITHOUT UnitPriceAtTime falls back to the current price, SURFACED (K4 r
   const r = run(v => { delete v.rows.live[1].unitPriceAtTime; });
   return r.ok && r.settlement.retailProfit.revenue === 200 && r.settlement.retailProfit.legacyPriceFallbackCount === 1;   // 2 x prodA price 100
 })());
+ok('N9 (Kunal): a customer refund (return_in) NETS OFF revenue at the frozen price', (() => {
+  // base sale: 2 x prodA @150 = 300; add a refund of 1 @150 => net revenue 150
+  const r = run(v => { v.rows.live.push({ id: 'row_refund', type: 'return_in', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-07-11', createdAt: '2025-07-11T05:00:00Z', idempotencyKey: 'row_refund', unitPriceAtTime: 150, _spId: 240 }); });
+  return r.ok && r.settlement.retailProfit.revenue === 150 && r.settlement.retailProfit.salesQty === 2 && r.settlement.retailProfit.refundQty === 1 && r.settlement.status === 'FINAL';
+})());
+ok('N9 (Kunal): an HO return (transfer_out to HO) is NOT credited against the supply bill (usage-only)', (() => {
+  const r = run(v => { v.rows.live.push({ id: 'row_horet', type: 'transfer_out', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-12', createdAt: '2025-07-12T05:00:00Z', idempotencyKey: 'row_horet', stockToStoreId: 'head_office', stockTo: 'HO Warehouse — return', _spId: 250 }); });
+  return r.ok && !line(r, 'row_horet') && r.settlement.totals.owed === 915 && (r.settlement.usage.prodA.transfer || 0) >= 2 && r.settlement.status === 'FINAL';
+})());
 ok("'deleted'-type rows carry no economics and no unclassified noise", (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_del', type: 'deleted', productId: 'prodA', storeId: 'boor', qty: 9, date: '2025-07-01', createdAt: '2025-07-01T04:30:00Z', idempotencyKey: 'row_del', _spId: 520 }); });
   return r.ok && !line(r, 'row_del') && !r.settlement.meta.unclassified.includes('row_del') && r.settlement.totals.owed === 915;

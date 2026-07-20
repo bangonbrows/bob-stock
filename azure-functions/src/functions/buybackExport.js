@@ -521,7 +521,7 @@ function buildBuybackExport(input) {
   const surfaced = { pendingValuations: [], notSet: [], lineErrors: [], unclassified: [] };
   const costLines = [];
   const usage = {};              // productId -> { category -> qty }
-  let revenue = 0, legacyPriceFallbackCount = 0, salesQty = 0;
+  let revenue = 0, legacyPriceFallbackCount = 0, salesQty = 0, refundQty = 0;
   const block = (code, id) => finalBlockers.push(code + ':' + id);
 
   for (const e of economic) {
@@ -537,14 +537,13 @@ function buildBuybackExport(input) {
     u[cat] = (u[cat] || 0) + t.qty;
 
     // retail profit — sales revenue at the FROZEN UnitPriceAtTime (K4); legacy fallback surfaced.
-    if (cat === 'sale') {
-      const p = productById.get(t.productId);
-      let unit;
-      if (Number.isFinite(t.unitPriceAtTime)) unit = t.unitPriceAtTime;
-      else { unit = (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0; legacyPriceFallbackCount++; }
-      revenue += unit * t.qty;
-      salesQty += t.qty;
-    }
+    // Kunal 2026-07-20 (N9): revenue is NET OF CUSTOMER REFUNDS — a return_in (category 'return') is a
+    // returned sale and is DEDUCTED at the same frozen price. (HO returns — a transfer_out to HO — are
+    // NOT credited against the supply bill: Kunal's rule is that returned supply is treated as a fresh HO
+    // arrival because it was already billed to the franchisee; so it stays usage-only, no cost-line credit.)
+    const unitOf = (t) => { const p = productById.get(t.productId); if (Number.isFinite(t.unitPriceAtTime)) return t.unitPriceAtTime; legacyPriceFallbackCount++; return (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0; };
+    if (cat === 'sale') { revenue += unitOf(t) * t.qty; salesQty += t.qty; }
+    else if (cat === 'return') { revenue -= unitOf(t) * t.qty; refundQty += t.qty; }   // customer refund nets off revenue
 
     // HO-supply COST LINES — the invoice's exact line filter (category delivery/transfer, incoming,
     // HO-sourced), then the full W4.3 valuation precedence. Control rows face the SAME filter on their
@@ -687,7 +686,7 @@ function buildBuybackExport(input) {
       status, provisionalReasons: finalBlockers,
       costLines, totals: { full: totalFull, discount: totalDisc, owed: totalOwed },
       usage,
-      retailProfit: { revenue, salesQty, supplyCost: totalOwed, profit: revenue - totalOwed, legacyPriceFallbackCount },
+      retailProfit: { revenue, salesQty, refundQty, supplyCost: totalOwed, profit: revenue - totalOwed, legacyPriceFallbackCount },   // revenue is NET of customer refunds (N9, Kunal 2026-07-20)
       meta: {
         legacyKeyedRowCount,
         rowCounts: { live: rows.live.length, archive: rows.archive.length, deduped: deduped.length, economicInWindow: costLines.length },
