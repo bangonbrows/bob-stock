@@ -22,6 +22,10 @@ let AP_PARITY = null; try { AP_PARITY = require(path.join(DEFAULT_REPO, 'azure-f
 // OS-W4.2 (S-W4-1): the REAL topology.js primitives, so S-261 asserts client-lens/server parity in-gate
 // (the same drift-closure mechanism as AP_PARITY/S-247 — a one-sided edit to either side diverges).
 let TOPO = null; try { TOPO = require(path.join(DEFAULT_REPO, 'azure-functions', 'src', 'functions', 'topology.js')); } catch (e) {}
+// OS-W4.4: the REAL buy-back export engine, so S-283..S-286 assert client/engine parity in-gate — the
+// invoice and the settlement must value the same row IDENTICALLY (W4-SR-114; same drift-closure
+// mechanism as AP_PARITY/TOPO — a one-sided edit to either side diverges and flips the sentinel).
+let BBX = null; try { BBX = require(path.join(DEFAULT_REPO, 'azure-functions', 'src', 'functions', 'buybackExport.js')); } catch (e) {}
 
 async function newPage(b) { const ctx = await b.newContext({ timezoneId: 'Australia/Perth' }); const page = await ctx.newPage(); return { ctx, page }; }
 async function waitBoot(page, repo) {
@@ -3120,6 +3124,155 @@ async function runSmoke(repo) {
         return { distinct: hA !== hB, sameReality: hPre === hNull, futureStripped: hW5 === hPre, versionMeaningful: hV1 !== hV2, basisStates: hPre !== hChosen, dlStripped: hDl === hDlF, stStripped: hSt === hStF, divConflict: fDiv && fDiv.status === 'conflict' && fDiv._conflict && fDiv._conflict.kind === 'backfill_divergence', noFalseDiv: fSame && fSame.status !== 'conflict', converged: fResolved && fResolved.status !== 'conflict' };
       });
       rec('S-282', 'W4.3-SR-105/121/128/106(+R1): item diffs + VERSION-only diffs + basis-state diffs hash distinct; same-reality identical; future fields stripped on ALL types; resolve converges', r.distinct === true && r.sameReality === true && r.futureStripped === true && r.versionMeaningful === true && r.basisStates === true && r.dlStripped === true && r.stStripped === true && r.divConflict === true && r.noFalseDiv === true && r.converged === true, `distinct=${r.distinct} sameReality=${r.sameReality} future=${r.futureStripped} vMeaningful=${r.versionMeaningful} basisStates=${r.basisStates} dl=${r.dlStripped} st=${r.stStripped} divConflict=${r.divConflict} noFalseDiv=${r.noFalseDiv} converged=${r.converged}`); await ctx.close(); }
+
+    // ═══ OS-W4.4 sentinels (S-283..S-286): the buy-back settlement ENGINE parity seam ═══
+    // Spec: AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md (FROZEN R25). The engine (buybackExport.js) is proven
+    // by test/buyback-export-proof.js (122 probes); THESE sentinels close the CLIENT-DRIFT class — the
+    // client invoice and the server settlement must value the same evidence identically (W4-SR-114/153),
+    // so each runs the REAL client code in the booted app against the REAL engine module over one shared
+    // fixture set. A one-sided edit to either side diverges and flips the sentinel.
+
+    // S-283 (P7/SR-62/89): STAMP-TUPLE + MONEY POLICY PARITY — client Sync._readRowStamps vs the
+    // engine's readTuple must be verdict-identical across the pinned fixture classes (all-four /
+    // all-absent / every partial class / 3dp / string / >1M / disc>100 / negative+fractional versions).
+    { const TUPFX = [
+        [100, 25, 3, 7], [null, null, null, null], [100, 25, 3, null], [null, null, 3, 7],
+        [100.005, 25, 3, 7], ['100', 25, 3, 7], [1000001, 25, 3, 7], [100, 101, 3, 7],
+        [100, 25, -1, 7], [100, 25, 1.5, 7], [12.25, 12.25, 0, 0], ['', '', '', ''],
+      ];
+      const enc = (r) => r === null ? 'NULL' : (r.absent ? 'ABS' : `${r.sell}|${r.disc}|${r.pv}|${r.cv}`);
+      const engine = BBX ? TUPFX.map(f => enc(BBX.readTuple(f[0], f[1], f[2], f[3]))) : [];
+      const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const client = await page.evaluate((TUPFX) => TUPFX.map(f => {
+        const r = Sync._readRowStamps(f[0], f[1], f[2], f[3]);
+        return r === null ? 'NULL' : (r.absent ? 'ABS' : `${r.sell}|${r.disc}|${r.pv}|${r.cv}`);
+      }), TUPFX);
+      const agree = BBX && engine.length === client.length && engine.every((v, i) => v === client[i]);
+      rec('S-283', 'W4.4-P7: client _readRowStamps == engine readTuple across the money/tuple fixture classes', !!agree, `engine=[${engine}] client=[${client}]`); await ctx.close(); }
+
+    // S-284 (P6/SR-97/114): FOLD == PROJECTION PARITY — the client transfer fold (Records.foldRecord)
+    // and the engine's item-stamp projection must produce IDENTICAL item stamp state {tuple, basis,
+    // untrusted} over shared step fixtures: submit-permanence, receive-mint, durable legacy-lens,
+    // resolve-pin, backfill-upgrade. This is the tier-2 interface the settlement bills from.
+    { const TUP = { sellAtSupply: 100, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 };
+      const mk = (ix, extra) => Object.assign({ recordId: 'r284', recordType: 'transfer', timestamp: 1000 + ix, stepId: 's284_' + ix, seq: (ix + 1) * 10 }, extra);
+      const FOLDFX = [
+        ['permanence', [mk(0, { stepType: 'submit', fromStoreId: 'head_office', toStoreId: 'c', payload: { fromStoreId: 'head_office', toStoreId: 'c', items: [Object.assign({ productId: 'P1', sentQty: 2, basis: 'submit-stamped' }, TUP)] } }),
+                        mk(1, { stepType: 'receive', payload: { lines: [{ productId: 'P1', receivedQty: 2, basis: 'receive-stamped', sellAtSupply: 90, discAtSupply: 20, pricingVersion: 3, catalogueVersion: 7 }] } })]],
+        ['receive-mint', [mk(0, { stepType: 'submit', fromStoreId: 'head_office', toStoreId: 'c', payload: { fromStoreId: 'head_office', toStoreId: 'c', items: [{ productId: 'P1', sentQty: 2 }] } }),
+                          mk(1, { stepType: 'receive', payload: { lines: [{ productId: 'P1', receivedQty: 2, basis: 'receive-stamped', sellAtSupply: 90, discAtSupply: 20, pricingVersion: 3, catalogueVersion: 7 }] } })]],
+        ['legacy-durable', [mk(0, { stepType: 'submit', fromStoreId: 'head_office', toStoreId: 'c', payload: { fromStoreId: 'head_office', toStoreId: 'c', items: [{ productId: 'P1', sentQty: 2 }] } }),
+                            mk(1, { stepType: 'receive', payload: { lines: [{ productId: 'P1', receivedQty: 2 }] } })]],
+        ['resolve-pin', [mk(0, { stepType: 'submit', fromStoreId: 'head_office', toStoreId: 'c', payload: { fromStoreId: 'head_office', toStoreId: 'c', items: [{ productId: 'P1', sentQty: 2 }] } }),
+                         mk(1, { stepType: 'receive', payload: { lines: [{ productId: 'P1', receivedQty: 2, basis: 'receive-stamped', sellAtSupply: 90, discAtSupply: 20, pricingVersion: 3, catalogueVersion: 7 }] } }),
+                         mk(2, { stepType: 'resolve', payload: { resolutions: [{ productId: 'P1', action: 'adjust', basis: 'receive-stamped', sellAtSupply: 80, discAtSupply: 10, pricingVersion: 4, catalogueVersion: 8 }], resolvesAttemptIds: [], expectedLedgerKeys: [] } })]],
+        ['backfill-upgrade', [mk(0, { stepType: 'backfill', payload: { snapshot: { fromStoreId: 'head_office', toStoreId: 'c', createdAt: '2025-01-01', status: 'in_transit', items: [Object.assign({ productId: 'P1', sentQty: 2, basis: 'submit-stamped' }, TUP)] }, hash: 'h284' } }),
+                              mk(1, { stepType: 'receive', payload: { lines: [{ productId: 'P1', receivedQty: 2, basis: 'receive-stamped', sellAtSupply: 90, discAtSupply: 20, pricingVersion: 3, catalogueVersion: 7 }] } })]],
+      ];
+      const encE = (p) => Array.from(p.items.entries()).map(([pid, it]) => `${pid}:${it.tuple ? `${it.tuple.sell}|${it.tuple.disc}|${it.tuple.pv}|${it.tuple.cv}` : ''}|${it.basis || ''}|${it.untrusted ? 'U' : 'T'}`).sort().join(';');
+      const engine = BBX ? FOLDFX.map(fx => encE(BBX.foldProjection(fx[1]))) : [];
+      const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const client = await page.evaluate((FOLDFX) => FOLDFX.map(fx => {
+        const t = Records.foldRecord(fx[1]);
+        return (t.items || []).map(it => `${it.productId}:${(it.sellAtSupply != null && it.discAtSupply != null && it.pricingVersion != null && it.catalogueVersion != null) ? `${it.sellAtSupply}|${it.discAtSupply}|${it.pricingVersion}|${it.catalogueVersion}` : ''}|${it.basis || ''}|${it._stampsUntrusted === true ? 'U' : 'T'}`).sort().join(';');
+      }), FOLDFX);
+      const agree = BBX && engine.length === client.length && engine.every((v, i) => v === client[i]);
+      rec('S-284', 'W4.4-P6: client fold == engine item-stamp projection (permanence/mint/legacy/resolve/upgrade)', !!agree, `engine=[${engine.join(' :: ')}] client=[${client.join(' :: ')}]`); await ctx.close(); }
+
+    // S-285 (P6/SR-114/153): INVOICE == SETTLEMENT PARITY — the client invoice line valuation and the
+    // engine's cost-line valuation must agree {owed, error, source} per line across every VALID tier
+    // class: row-stamped, transfer-stamped, server-resolved, valuation-pending, lens, stamped-honest-0.
+    // (The malformed classes are deliberately absent: the client surfaces STAMP_ERROR per line, the
+    // engine REFUSES the export — engine strictly stricter, pinned in the wave notes.)
+    { const T = (s, d) => ({ sellAtSupply: s, discAtSupply: d, pricingVersion: 3, catalogueVersion: 7 });
+      const engineInput = {
+        storeId: 'cockburn_office',
+        window: { from: '2025-01-01T00:00:00Z', to: '2026-01-01T00:00:00Z' },
+        rows: { live: [
+          Object.assign({ id: 'x1', type: 'transfer_in', productId: 'PA', storeId: 'cockburn_office', qty: 2, date: '2025-03-10', createdAt: '2025-03-10T02:00:00Z', idempotencyKey: 'x1', stockFrom: 'HO Warehouse — Head Office (Warehouse)', stockFromStoreId: 'head_office', _attested: true }, T(100, 25)),
+          { id: 'x2', type: 'transfer_in', productId: 'PB', storeId: 'cockburn_office', qty: 1, date: '2025-03-10', createdAt: '2025-03-10T02:10:00Z', idempotencyKey: 'x2', transferId: 'trP1' },
+          { id: 'x3', type: 'transfer_in', productId: 'PC', storeId: 'cockburn_office', qty: 1, date: '2025-03-10', createdAt: '2025-03-10T02:20:00Z', idempotencyKey: 'x3', transferId: 'trP2', _rvSell: 90, _rvDisc: 20, _rvPv: 3, _rvCv: 7 },
+          { id: 'x4', type: 'transfer_in', productId: 'PD', storeId: 'cockburn_office', qty: 1, date: '2025-03-10', createdAt: '2025-03-10T02:30:00Z', idempotencyKey: 'x4', transferId: 'trP3' },
+          { id: 'x5', type: 'transfer_in', productId: 'PE', storeId: 'cockburn_office', qty: 2, date: '2025-03-10', createdAt: '2025-03-10T02:40:00Z', idempotencyKey: 'x5', stockFrom: 'HO Warehouse — Head Office (Warehouse)' },
+          Object.assign({ id: 'x6', type: 'transfer_in', productId: 'PF', storeId: 'cockburn_office', qty: 1, date: '2025-03-10', createdAt: '2025-03-10T02:50:00Z', idempotencyKey: 'x6', stockFrom: 'HO Warehouse — Head Office (Warehouse)', stockFromStoreId: 'head_office', _attested: true }, T(100, 0)),
+        ], archive: [] },
+        steps: [
+          { stepId: 'sp1', recordId: 'trP1', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: 1000, fromStoreId: 'head_office', toStoreId: 'cockburn_office', _attested: true, payload: { items: [Object.assign({ productId: 'PB', sentQty: 1, basis: 'submit-stamped' }, T(100, 25))] } },
+          { stepId: 'sp2', recordId: 'trP2', recordType: 'transfer', stepType: 'backfill', seq: 10, timestamp: 1000, payload: { snapshot: { fromStoreId: 'head_office', toStoreId: 'cockburn_office', items: [Object.assign({ productId: 'PC', sentQty: 1, basis: 'submit-stamped' }, T(100, 25))] } } },
+          { stepId: 'sp3', recordId: 'trP3', recordType: 'transfer', stepType: 'backfill', seq: 10, timestamp: 1000, payload: { snapshot: { fromStoreId: 'head_office', toStoreId: 'cockburn_office', items: [Object.assign({ productId: 'PD', sentQty: 1, basis: 'submit-stamped' }, T(100, 25))] } } },
+        ],
+        controls: { live: [], archive: [], activeManifest: { version: 1, controlHeads: {} } },
+        badVersionEvidence: { entries: [] },
+        pricing: { storeMap: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] }, globalMap: {} },
+        products: [{ id: 'PA', price: 100 }, { id: 'PB', price: 100 }, { id: 'PC', price: 100 }, { id: 'PD', price: 100 }, { id: 'PE', price: 100 }, { id: 'PF', price: 100 }],
+        coverage: { continuity: true,
+          live: { complete: true, leaseId: 'ls285', runVersion: 1, window: { from: '2025-01-01T00:00:00Z', to: '2026-01-01T00:00:00Z' } },
+          archive: { complete: true, leaseId: 'ls285', runVersion: 1, window: { from: '2025-01-01T00:00:00Z', to: '2026-01-01T00:00:00Z' } },
+          steps: { complete: true, leaseId: 'ls285' }, controls: { live: { complete: true, leaseId: 'ls285' }, archive: { complete: true, leaseId: 'ls285' } },
+          badVersion: { complete: true, leaseId: 'ls285' }, stepsEpochId: 1 },
+        graceClosed: true, drain: { graceRecords: [] },
+      };
+      const encL = (pid, owed, err, src) => `${pid}:${owed}|${err || ''}|${src || ''}`;
+      let engine = [];
+      if (BBX) { const r = BBX.buildBuybackExport(engineInput); engine = r.ok ? r.settlement.costLines.map(l => encL(l.productId, l.owed, l.lineErr, l.source)).sort() : ['ENGINE-REFUSED:' + r.reason]; }
+      const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const client = await page.evaluate(() => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        const T = (s, d) => ({ sellAtSupply: s, discAtSupply: d, pricingVersion: 3, catalogueVersion: 7 });
+        const mkP = (id) => ({ id, name: id, price: 100, franchiseDiscount: null, catId: 'c', active: true });
+        const dFix = { stores: DB.get().stores, deletedTransactions: [],
+          products: ['PA', 'PB', 'PC', 'PD', 'PE', 'PF'].map(mkP),
+          transfers: [
+            { id: 'trP1', fromStoreId: 'head_office', toStoreId: 'cockburn_office', items: [Object.assign({ productId: 'PB', sentQty: 1, basis: 'submit-stamped' }, T(100, 25))] },
+            { id: 'trP2', fromStoreId: 'head_office', toStoreId: 'cockburn_office', items: [Object.assign({ productId: 'PC', sentQty: 1, basis: 'submit-stamped', _stampsUntrusted: true }, T(100, 25))] },
+            { id: 'trP3', fromStoreId: 'head_office', toStoreId: 'cockburn_office', items: [Object.assign({ productId: 'PD', sentQty: 1, basis: 'submit-stamped', _stampsUntrusted: true }, T(100, 25))] },
+          ],
+          transactions: [
+            Object.assign({ id: 'x1', storeId: 'cockburn_office', productId: 'PA', type: 'transfer_in', qty: 2, date: '2025-03-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' }, T(100, 25)),
+            { id: 'x2', storeId: 'cockburn_office', productId: 'PB', type: 'transfer_in', qty: 1, date: '2025-03-10', transferId: 'trP1', stockFrom: 'HO Warehouse — Head Office (Warehouse)' },
+            { id: 'x3', storeId: 'cockburn_office', productId: 'PC', type: 'transfer_in', qty: 1, date: '2025-03-10', transferId: 'trP2', stockFrom: 'HO Warehouse — Head Office (Warehouse)', _rvSell: 90, _rvDisc: 20 },
+            { id: 'x4', storeId: 'cockburn_office', productId: 'PD', type: 'transfer_in', qty: 1, date: '2025-03-10', transferId: 'trP3', stockFrom: 'HO Warehouse — Head Office (Warehouse)' },
+            { id: 'x5', storeId: 'cockburn_office', productId: 'PE', type: 'transfer_in', qty: 2, date: '2025-03-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' },
+            Object.assign({ id: 'x6', storeId: 'cockburn_office', productId: 'PF', type: 'transfer_in', qty: 1, date: '2025-03-10', stockFrom: 'HO Warehouse — Head Office (Warehouse)' }, T(100, 0)),
+          ] };
+        DB.get().pricingConfig = { version: 1, global: {}, stores: { cockburn_office: { '*': [{ rate: 25, from: '2024-01-01T00:00:00Z', to: null }] } } };
+        const sd = Pages._franchiseInvoiceData(dFix, '2025-01-01', '2025-12-31')[0];
+        const out = sd.lines.map(l => `${l.product.id}:${l.owed}|${l.lineErr || ''}|${l.rateSource || ''}`).sort();
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return out;
+      });
+      const agree = BBX && engine.length === client.length && engine.every((v, i) => v === client[i]);
+      rec('S-285', 'W4.4-P6: client invoice valuation == engine settlement valuation per line (all six valid tier classes)', !!agree, `engine=[${engine.join(' ')}] client=[${client.join(' ')}]`); await ctx.close(); }
+
+    // S-286 (P1): LENS CHAIN PARITY — client Pricing.rateAsOf vs the engine's rateAsOf across the chain
+    // matrix (override-wins / global-mid / store-default / valid-gap-falls-through / boundary / not-set).
+    { const IV = (rate, from, to) => ({ rate, from: from + 'T00:00:00Z', to: to ? to + 'T00:00:00Z' : null });
+      const CHFX = [
+        { n: 'override-wins', sm: { '*': [IV(25, '2024-01-01', null)], PX: [IV(10, '2024-01-01', null)] }, g: { PX: [IV(40, '2024-01-01', null)] }, pid: 'PX', d: '2025-01-01' },
+        { n: 'global-mid', sm: { '*': [IV(25, '2024-01-01', null)] }, g: { PX: [IV(40, '2024-01-01', null)] }, pid: 'PX', d: '2025-01-01' },
+        { n: 'store-default', sm: { '*': [IV(25, '2024-01-01', null)] }, g: {}, pid: 'QX', d: '2025-01-01' },
+        { n: 'valid-gap-falls-through', sm: { '*': [IV(25, '2024-01-01', null)], PX: [IV(10, '2024-01-01', '2024-06-01')] }, g: {}, pid: 'PX', d: '2025-01-01' },
+        { n: 'boundary-at-from', sm: { '*': [IV(25, '2024-01-01', '2024-06-01'), IV(30, '2024-06-01', null)] }, g: {}, pid: null, d: '2024-06-01' },
+        { n: 'to-exclusive-not-set', sm: { '*': [IV(25, '2024-01-01', '2024-06-01')] }, g: {}, pid: null, d: '2024-06-01' },
+      ];
+      const engine = BBX ? CHFX.map(fx => {
+        if (!BBX.validStoreMap(fx.sm) || !BBX.validGlobalMap(fx.g)) return 'ERR';
+        const r = BBX.rateAsOf(fx.sm, fx.g, fx.pid, Date.parse(fx.d + 'T00:00:00Z'));
+        return r.error ? 'ERR' : (r.notSet ? 'NOTSET' : `${r.rate}|${r.source}`);
+      }) : [];
+      const { ctx, page } = await newPage(b); await page.route('**logic.azure.com**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true,"items":[]}' })); await waitBoot(page, repo); await setup(page);
+      const client = await page.evaluate((CHFX) => {
+        try { localStorage.setItem('bob_pricing_activated', '1'); } catch (e) {}
+        const out = CHFX.map(fx => {
+          DB.get().pricingConfig = { version: 1, global: fx.g, stores: { sfix: fx.sm } };
+          const r = Pricing.rateAsOf('sfix', fx.pid, Date.parse(fx.d + 'T00:00:00Z'));
+          return r.error ? 'ERR' : (r.notSet ? 'NOTSET' : `${r.rate}|${r.source}`);
+        });
+        delete DB.get().pricingConfig; try { localStorage.removeItem('bob_pricing_activated'); } catch (e) {}
+        return out;
+      }, CHFX);
+      const agree = BBX && engine.length === client.length && engine.every((v, i) => v === client[i]);
+      rec('S-286', 'W4.4-P1: client lens chain == engine rateAsOf incl. tier SOURCE across the chain matrix', !!agree, `engine=[${engine}] client=[${client}]`); await ctx.close(); }
 
 
 

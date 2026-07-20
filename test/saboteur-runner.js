@@ -1359,6 +1359,26 @@ const MUTATIONS = [
     find: "    if (this._unauthorized) return;                  // Chunk 5 (D6) + OS-W3 build-audit R2 (Codex): a ledger 401 pauses the WHOLE cycle — the step cursor must not advance while auth is paused",
     repl: "    /* sabotaged: no auth pause on pullSteps */",
     note: "OS-W3 build-audit R2 (Codex P2): pullSteps loses its auth-pause guard -> a ledger 401 pauses push/pull but the step cursor keeps advancing with stale keys (the paused device silently drifts its step high-water mark)" },
+  // ─── OS-W4.4 (the buy-back settlement engine parity seam) — one mutation per sentinel, S-283..S-286.
+  // The engine itself is proven by test/buyback-export-proof.js; these mutations drift the CLIENT half
+  // of each parity pair (the runner copies client files only — the engine loads from the live repo,
+  // the same one-sided-drift mechanism as S-247/S-261).
+  { id: 'S-283', file: 'sync.js',
+    find: "    const twoDp = (n) => Number(n.toFixed(2)) === n;",
+    repl: "    const twoDp = (n) => true;   /* sabotaged: sub-cent stamps accepted */",
+    note: 'W4.4-P7: the client stamp ingest stops rejecting >2dp money -> a 100.005 stamp is adopted client-side while the engine refuses it (invoice bills what the settlement will not) — the tuple-policy parity sentinel flips' },
+  { id: 'S-284', file: 'records.js',
+    find: "      if (_lnStamped && !_itemStamped) { item.sellAtSupply = ln.sellAtSupply;",
+    repl: "      if (_lnStamped) { item.sellAtSupply = ln.sellAtSupply;",
+    note: 'W4.4-P6: the client fold lets a receive OVERWRITE a stamped submit (SR-97 permanence lost) -> the invoice re-prices an item the settlement values at submit stamps — the fold/projection parity sentinel flips' },
+  { id: 'S-285', file: 'index.html',
+    find: "        const full = sell * t.qty, discAmt = full * (prodDisc/100);",
+    repl: "        const full = sell * t.qty, discAmt = full * (prodDisc/10);",
+    note: 'W4.4-P6: the invoice discount maths drifts (a 25% discount deducts 250%) -> client owed diverges from the engine settlement on every discounted line — the invoice/settlement parity sentinel flips' },
+  { id: 'S-286', file: 'index.html',
+    find: "    if(productId!=null&&Object.prototype.hasOwnProperty.call(sm,productId)){ const r=this._resolveSeries(sm[productId],dateMs); if(r!=null)return {rate:r,source:'store-override'}; }",
+    repl: "    if(false&&productId!=null&&Object.prototype.hasOwnProperty.call(sm,productId)){ const r=this._resolveSeries(sm[productId],dateMs); if(r!=null)return {rate:r,source:'store-override'}; }",
+    note: 'W4.4-P1: the client lens drops its store-override tier -> a per-product rate resolves at the global tier client-side while the engine bills the override — the chain parity sentinel flips' },
 ];
 
 function copyRepoTo(dir) {
