@@ -166,18 +166,42 @@ function category(t) {
   }
 }
 function isIn(t) { return classify(t).direction === 'in'; }
-// HO-supply predicate — structured source first, transfer-record origin second (from the STEPS
-// projection: the engine's server-truth equivalent of the client's transfer record; fail-closed when
-// the record hasn't arrived), text label third, reason regex last. Mirrors Pages._isHOSupply.
+// HO-supply predicate. W44-R3 (Codex-2/AGY-2): for a TRANSFER-LINKED row the SERVER STEPS PROJECTION is
+// authoritative — checked BEFORE any client-mutable field. The client `stockFromStoreId` label is
+// trusted ONLY for transferless (direct-log) rows, where no step exists. Previously the client field
+// was read first, so a genuine HO transfer relabelled to a peer store escaped billing (free stock),
+// and a peer transfer relabelled 'head_office' was over-billed. Now the transfer's own genesis source
+// decides. (The integrity gate above the valuation loop separately proves the transfer exists, has a
+// genesis, delivers to THIS store, and contains this product.)
 function isHOSupply(t, projections) {
-  if (t.stockFromStoreId) return t.stockFromStoreId === HEAD_OFFICE;
   if (t.transferId) {
     const proj = projections.get(t.transferId);
-    return proj && proj.hasGenesis ? proj.fromStoreId === HEAD_OFFICE : false;
+    if (proj) return proj.hasGenesis ? proj.fromStoreId === HEAD_OFFICE : false;   // steps exist => server truth, ignore client labels
+    // no projection: a genuine PRE-EPOCH legacy transfer (the integrity gate has already proven it is
+    // pre-epoch — a post-epoch no-steps row blocked before reaching here), so its structured field is
+    // the only source evidence and is trustworthy for a pre-Chunk-4 row. Fall through.
   }
+  if (t.stockFromStoreId) return t.stockFromStoreId === HEAD_OFFICE;             // transferless direct-log / pre-epoch legacy
   const fromBase = baseLabel(t.stockFrom);
   if (fromBase) return fromBase === 'HO Warehouse';
   return /head\s*office|from ho\b/i.test(t.reason || '');
+}
+// W44-R3 (Codex-2/AGY-2): the single LEDGER-INTEGRITY gate for a transfer-linked row, bound to the
+// SERVER steps projection — run BEFORE any classification/HO-supply skip so a mutated `type`, source
+// label, product, or destination can't route the row past it. Returns null (ok) or a block reason.
+function transferIntegrity(t, e, projections, storeId, stepsEpochId) {
+  const proj = projections.get(t.transferId);
+  if (!proj) {
+    // no steps at all: legacy ONLY if the row provably predates the Chunk-4 steps epoch (SR-129).
+    const provId = e.list === 'archive' ? t.sourceId : t._spId;
+    if (!validVersion(provId)) return 'PROVENANCE_ABSENT';
+    if (provId >= stepsEpochId) return 'POST_EPOCH_NO_STEPS';
+    return null;   // genuine pre-epoch legacy — valued via the lens downstream
+  }
+  if (!proj.hasGenesis) return 'ORIGIN_UNPROVEN';                                // steps present, no origin (SR-122)
+  if (proj.toStoreId !== storeId && proj.fromStoreId !== storeId) return 'STORE_NOT_IN_TRANSFER';   // the transfer must involve this store (Codex-2c)
+  if (!proj.items.has(t.productId)) return 'PRODUCT_NOT_IN_TRANSFER';            // the row's product must belong to its claimed transfer (Codex-2a)
+  return null;
 }
 
 // ── Pricing chain (P1 — the SAME chain as the client lens: storeMap[productId] -> globalMap[productId]
@@ -528,6 +552,15 @@ function buildBuybackExport(input) {
     const t = e.row;
     const inWindow = e.instantMs >= fromMs && e.instantMs < toMs;   // [from,to): at `to` EXCLUDED (S-W4-5)
     if (!inWindow) continue;                                        // post-buy-back HO rows never leak in
+    // W44-R3 (Codex-2/AGY-2): LEDGER-INTEGRITY GATE — runs for EVERY in-window transfer-linked row
+    // BEFORE any classification/HO-supply skip. A row that fails (no/late steps, wrong store, wrong
+    // product) is surfaced + held FINAL and contributes NO economics — it cannot be hidden by mutating
+    // its `type` (AGY-2a: a bad type used to `continue` at the classifier before integrity ran) or its
+    // source label (AGY-2b). Control rows are server-minted (integrity is their head check).
+    if (t.transferId && !e.isControl) {
+      const bad = transferIntegrity(t, e, projections, storeId, coverage.stepsEpochId);
+      if (bad) { block(bad, t.id); surfaced.lineErrors.push(t.id + ':' + bad); continue; }
+    }
     const cls = classify(t);
     const cat = category(t);
     if (cls.direction === 'none') { if (cat !== 'deleted') surfaced.unclassified.push(t.id); continue; }
@@ -543,30 +576,15 @@ function buildBuybackExport(input) {
     // arrival because it was already billed to the franchisee; so it stays usage-only, no cost-line credit.)
     const unitOf = (t) => { const p = productById.get(t.productId); if (Number.isFinite(t.unitPriceAtTime)) return t.unitPriceAtTime; legacyPriceFallbackCount++; return (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0; };
     if (cat === 'sale') { revenue += unitOf(t) * t.qty; salesQty += t.qty; }
-    else if (cat === 'return') { revenue -= unitOf(t) * t.qty; refundQty += t.qty; }   // customer refund nets off revenue
+    // W44-R3 (Codex-1): ONLY a CUSTOMER return reverses a sale — store/franchise/supplier returns are
+    // not refunds (mirrors the client `_grossSales` guard index.html:4423). The classifier input is the
+    // StockFrom label ('Customer' | 'Another Store' | 'Franchise Store' | 'Supplier').
+    else if (cat === 'return' && baseLabel(t.stockFrom) === 'Customer') { revenue -= unitOf(t) * t.qty; refundQty += t.qty; }
 
     // HO-supply COST LINES — the invoice's exact line filter (category delivery/transfer, incoming,
     // HO-sourced), then the full W4.3 valuation precedence. Control rows face the SAME filter on their
     // own carried fields — a replacement correcting a NON-HO movement must never become a billed line.
-    if (!(isIn(t) && (cat === 'delivery' || cat === 'transfer') && isHOSupply(t, projections))) {
-      // W44-R2 (Codex-1): a NON-billed transfer-linked row is still subject to LEDGER-INTEGRITY checks.
-      // isHOSupply fails to `false` when a transferId has no steps + no structured source — so stripping
-      // the HO labels AND suppressing the steps would otherwise make a genuine HO-supply row look like a
-      // peer transfer and be silently dropped, finalizing the settlement WITHOUT billing it. A transfer-
-      // linked row whose origin can't be proven is a corruption signal that must hold FINAL regardless of
-      // whether it ends up billed (SR-122/129). A legitimate peer transfer has a proven genesis (no block)
-      // or is genuine pre-epoch legacy (no block); only the suppression case blocks.
-      if (t.transferId && !e.isControl) {
-        const proj = projections.get(t.transferId);
-        if (!proj) {
-          const provId = e.list === 'archive' ? t.sourceId : t._spId;
-          if (!validVersion(provId)) { block('PROVENANCE_ABSENT', t.id); surfaced.lineErrors.push(t.id + ':PROVENANCE_ABSENT'); }
-          else if (provId >= coverage.stepsEpochId) { block('POST_EPOCH_NO_STEPS', t.id); surfaced.lineErrors.push(t.id + ':POST_EPOCH_NO_STEPS'); }
-          // genuine pre-epoch legacy peer transfer: fine
-        } else if (!proj.hasGenesis) { block('ORIGIN_UNPROVEN', t.id); surfaced.lineErrors.push(t.id + ':ORIGIN_UNPROVEN'); }
-      }
-      continue;
-    }
+    if (!(isIn(t) && (cat === 'delivery' || cat === 'transfer') && isHOSupply(t, projections))) continue;   // not HO supply — integrity already gated above
     const p = productById.get(t.productId);
     let sell = (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
     let disc = null, lineErr = null, source = null, paid = true;
@@ -667,7 +685,14 @@ function buildBuybackExport(input) {
   // FINAL. Coverage is a DERIVED VIEW over the active control heads — evaluated here, never stored
   // (entries were shape-validated at the envelope).
   for (const q of badVersionEvidence.entries) {
-    if (q.terminal === 'corrected-and-reattested') continue;
+    // W44-R3 (AGY-1): a corrected-and-reattested entry unblocks FINAL ONLY when the corrected row is
+    // ACTUALLY PRESENT in the settlement (a ledger row or a control target). A Director's re-attestation
+    // does not produce a client grace record, so the row is absent from writtenIds — without this check a
+    // franchisee could delete the corrected row from the payload and finalize with it silently omitted.
+    if (q.terminal === 'corrected-and-reattested') {
+      if (!(byId.has(q.rowId) || controlByTarget.has(q.rowId))) block('CORRECTED_ROW_MISSING', q.rowId);
+      continue;
+    }
     if (q.terminal === 'rejected' && q.rejectedAccounted === true) continue;   // a bare rejection cannot unblock (SR-165)
     const head = Object.prototype.hasOwnProperty.call(manifest.controlHeads, q.rowId) ? manifest.controlHeads[q.rowId] : undefined;
     if (head != null && controlByTarget.has(q.rowId)) continue;                 // view-covered by the ACTIVE supplied control (withdraw auto-reopens: null head falls through)

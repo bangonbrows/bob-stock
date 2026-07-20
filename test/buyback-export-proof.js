@@ -348,14 +348,13 @@ ok('BACKFILL-only stamps, NO server resolution => loud VALUATION_PENDING; FINAL 
   return r.ok && l && l.owed === 0 && l.lineErr === 'VALUATION_PENDING'
     && r.settlement.meta.pendingValuations.includes('row_t1') && r.settlement.status === 'FINAL';
 })());
-ok('steps present but NO origin (receive without genesis) => fail closed, PROVISIONAL (SR-122)', (() => {
+ok('steps present but NO origin (receive without genesis) => fail closed, PROVISIONAL, no economics (SR-122)', (() => {
   const r = run(v => {
     v.steps = [v.steps[1]]; v.drain.graceRecords[0].expectedStepIds = ['st2'];
     const t = v.rows.live[0];   // origin assertion gates the UNSTAMPED fallback (SR-150)
     delete t.sellAtSupply; delete t.discAtSupply; delete t.pricingVersion; delete t.catalogueVersion;
   });
-  const l = line(r, 'row_t1');
-  return r.ok && l && l.owed === 0 && r.settlement.provisionalReasons.some(x => x === 'ORIGIN_UNPROVEN:row_t1');
+  return r.ok && !line(r, 'row_t1') && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'ORIGIN_UNPROVEN:row_t1');
 })());
 ok('NO steps + POST-epoch id => the resurrection corner fails closed, PROVISIONAL + surfaced (SR-129)', (() => {
   const r = run(v => { v.steps = []; v.drain.graceRecords[0].expectedStepIds = []; delete v.rows.live[0].sellAtSupply; delete v.rows.live[0].discAtSupply; delete v.rows.live[0].pricingVersion; delete v.rows.live[0].catalogueVersion; });
@@ -465,6 +464,38 @@ ok('a genuine PRE-epoch peer transfer (no steps, pre-epoch id) does NOT falsely 
   const r = run(v => { v.rows.live.push({ id: 'row_peer_old', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-02', createdAt: '2025-07-02T04:00:00Z', transferId: 'trOldPeer', idempotencyKey: 'row_peer_old', stockFromStoreId: 'karr', _spId: 40 }); });
   return r.ok && !line(r, 'row_peer_old') && r.settlement.status === 'FINAL';
 })());
+// W44-R3 (Codex-2 / AGY-2): the SERVER steps projection binds product + endpoints + HO-source; a
+// mutated row field can't route past the integrity gate. Base has tr1 (genesis head_office->boor, prodA).
+ok('W44-R3 AGY-2b: a genuine HO transfer relabelled to a peer store is STILL billed (genesis is authority, not the label)', (() => {
+  const r = run(v => { v.rows.live[0].stockFromStoreId = 'FakeStore'; });   // row_t1 has tr1 with a genesis head_office submit
+  const l = line(r, 'row_t1');
+  return r.ok && l && l.owed === 375 && r.settlement.status === 'FINAL';
+})());
+ok('W44-R3 Codex-2b: a peer transfer relabelled head_office is NOT billed as HO supply (genesis says peer)', (() => {
+  const r = run(v => {
+    v.steps.push({ stepId: 'stPeer', recordId: 'trPeer', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), fromStoreId: 'karr', toStoreId: 'boor', _attested: true, payload: { items: [{ productId: 'prodA', sentQty: 5, basis: 'submit-stamped', ...TUP_A }] } });
+    v.rows.live.push({ id: 'row_fakeHO', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'trPeer', idempotencyKey: 'row_fakeHO', stockFromStoreId: 'head_office', _spId: 301, ...TUP_A });
+  });
+  return r.ok && !line(r, 'row_fakeHO') && r.settlement.status === 'FINAL';   // usage-only, not a cost line
+})());
+ok('W44-R3 Codex-2a: a row whose product is NOT in its claimed transfer fails closed', (() => {
+  const r = run(v => {
+    v.steps.push({ stepId: 'stX', recordId: 'trX', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'boor', _attested: true, payload: { items: [{ productId: 'prodA', sentQty: 5, basis: 'submit-stamped', ...TUP_A }] } });
+    v.rows.live.push({ id: 'row_wrongp', type: 'transfer_in', productId: 'prodB', storeId: 'boor', qty: 1, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'trX', idempotencyKey: 'row_wrongp', stockFromStoreId: 'head_office', _spId: 302 });
+  });
+  return r.ok && r.settlement.provisionalReasons.some(x => x === 'PRODUCT_NOT_IN_TRANSFER:row_wrongp');
+})());
+ok('W44-R3 Codex-2c: a row claiming a transfer destined for ANOTHER store fails closed', (() => {
+  const r = run(v => {
+    v.steps.push({ stepId: 'stD', recordId: 'trD', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'karr', _attested: true, payload: { items: [{ productId: 'prodA', sentQty: 5, basis: 'submit-stamped', ...TUP_A }] } });
+    v.rows.live.push({ id: 'row_wrongdest', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'trD', idempotencyKey: 'row_wrongdest', stockFromStoreId: 'head_office', _spId: 303, ...TUP_A });
+  });
+  return r.ok && r.settlement.provisionalReasons.some(x => x === 'STORE_NOT_IN_TRANSFER:row_wrongdest');
+})());
+ok('W44-R3 AGY-2a: a transfer-linked row with a MUTATED type cannot bypass integrity (bad type + no steps + post-epoch)', (() => {
+  const r = run(v => { v.rows.live.push({ id: 'row_badtype', type: 'weird_type', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'trGhost', idempotencyKey: 'row_badtype', _spId: 400 }); });
+  return r.ok && r.settlement.provisionalReasons.some(x => x === 'POST_EPOCH_NO_STEPS:row_badtype');
+})());
 ok('HO-supply via the STEPS projection when the row has no structured source (fail-closed until the record arrives)', (() => {
   const r = run(v => { delete v.rows.live[0].stockFromStoreId; });   // tr1's submit says fromStoreId head_office
   const l = line(r, 'row_t1');
@@ -474,10 +505,16 @@ ok('sale WITHOUT UnitPriceAtTime falls back to the current price, SURFACED (K4 r
   const r = run(v => { delete v.rows.live[1].unitPriceAtTime; });
   return r.ok && r.settlement.retailProfit.revenue === 200 && r.settlement.retailProfit.legacyPriceFallbackCount === 1;   // 2 x prodA price 100
 })());
-ok('N9 (Kunal): a customer refund (return_in) NETS OFF revenue at the frozen price', (() => {
-  // base sale: 2 x prodA @150 = 300; add a refund of 1 @150 => net revenue 150
-  const r = run(v => { v.rows.live.push({ id: 'row_refund', type: 'return_in', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-07-11', createdAt: '2025-07-11T05:00:00Z', idempotencyKey: 'row_refund', unitPriceAtTime: 150, _spId: 240 }); });
+ok('N9 (Kunal): a CUSTOMER refund (return_in from Customer) NETS OFF revenue at the frozen price', (() => {
+  // base sale: 2 x prodA @150 = 300; add a customer refund of 1 @150 => net revenue 150
+  const r = run(v => { v.rows.live.push({ id: 'row_refund', type: 'return_in', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-07-11', createdAt: '2025-07-11T05:00:00Z', idempotencyKey: 'row_refund', stockFrom: 'Customer', unitPriceAtTime: 150, _spId: 240 }); });
   return r.ok && r.settlement.retailProfit.revenue === 150 && r.settlement.retailProfit.salesQty === 2 && r.settlement.retailProfit.refundQty === 1 && r.settlement.status === 'FINAL';
+})());
+ok('W44-R3 Codex-1: a SUPPLIER/store/franchise return does NOT net revenue (only Customer reverses a sale)', (() => {
+  const r = run(v => {
+    v.rows.live.push({ id: 'row_supret', type: 'return_in', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-07-11', createdAt: '2025-07-11T05:00:00Z', idempotencyKey: 'row_supret', stockFrom: 'Supplier', unitPriceAtTime: 150, _spId: 241 });
+  });
+  return r.ok && r.settlement.retailProfit.revenue === 300 && r.settlement.retailProfit.refundQty === 0;
 })());
 ok('N9 (Kunal): an HO return (transfer_out to HO) is NOT credited against the supply bill (usage-only)', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_horet', type: 'transfer_out', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-12', createdAt: '2025-07-12T05:00:00Z', idempotencyKey: 'row_horet', stockToStoreId: 'head_office', stockTo: 'HO Warehouse — return', _spId: 250 }); });
@@ -546,9 +583,16 @@ ok('expected STEP not ingested => refuse FINAL (drain proves step ingest, SR-122
   const r = run(v => { v.drain.graceRecords[0].expectedStepIds.push('st_missing'); });
   return r.ok && r.settlement.provisionalReasons.some(x => x === 'STEP_NOT_INGESTED:st_missing');
 })());
-ok('BAD_VERSION stored-terminal corrected-and-reattested => unblocked (SR-165)', (() => {
-  const r = run(v => { v.badVersionEvidence.entries.push({ rowId: 'row_q2', digest: 'd2', terminal: 'corrected-and-reattested' }); });
+ok('BAD_VERSION corrected-and-reattested => unblocked ONLY when the corrected row is PRESENT (SR-165)', (() => {
+  const r = run(v => {
+    v.rows.live.push({ id: 'row_q2', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-07-01', createdAt: '2025-07-01T06:00:00Z', idempotencyKey: 'row_q2', stockFromStoreId: 'head_office', _spId: 260, _attested: true, ...TUP_A });
+    v.badVersionEvidence.entries.push({ rowId: 'row_q2', digest: 'd2', terminal: 'corrected-and-reattested' });
+  });
   return r.ok && r.settlement.status === 'FINAL';
+})());
+ok('W44-R3 AGY-1: corrected-and-reattested but the row is MISSING from the payload => refuse FINAL', (() => {
+  const r = run(v => { v.badVersionEvidence.entries.push({ rowId: 'row_gone', digest: 'd9', terminal: 'corrected-and-reattested' }); });
+  return r.ok && r.settlement.provisionalReasons.some(x => x === 'CORRECTED_ROW_MISSING:row_gone');
 })());
 ok('BAD_VERSION rejected + durably accounted => unblocked; a BARE rejection holds (SR-165)', (() => {
   const a = run(v => { v.badVersionEvidence.entries.push({ rowId: 'row_q3', digest: 'd3', terminal: 'rejected', rejectedAccounted: true }); });
