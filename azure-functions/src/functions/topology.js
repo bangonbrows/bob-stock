@@ -665,4 +665,6 @@ app.http('topologyResolve', { methods: ['POST'], authLevel: 'function', handler:
 
 // W4-SR-8: the shared validation primitives are EXPORTED so buybackExport.js (OS-W4.4) imports the real
 // functions — no re-derivation, the exact drift class W4 forbids. Additive; zero behaviour change.
-module.exports = { resolveEra, eraWindowsFor, resolvePricingRate, resolvePricingForProduct, appendPricingInterval, appendPricingForKey, closePricing, closeAllPricing, transitionEras, deriveFanout, planTopologyChange, HO, PERSONAL_ROLES, PRICING_DEFAULT_KEY, validPricingSeries, isIsoUtc };
+// (W4.4 build note N2: reqId joins the export list for the same reason — the engine's id validation is
+// THIS function, not a copy.)
+module.exports = { resolveEra, eraWindowsFor, resolvePricingRate, resolvePricingForProduct, appendPricingInterval, appendPricingForKey, closePricing, closeAllPricing, transitionEras, deriveFanout, planTopologyChange, HO, PERSONAL_ROLES, PRICING_DEFAULT_KEY, validPricingSeries, isIsoUtc, reqId };
