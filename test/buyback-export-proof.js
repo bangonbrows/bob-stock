@@ -234,10 +234,19 @@ ok('replacement original-event as a calendar day refused (SR-130)', run(v => {
   const c = REPL(); c.row.originalEventAt = '2025-07-01';
   v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
 }).reason === 'MALFORMED_CONTROL');
-ok('replacement window membership judged on the ORIGINAL event (post-window original => excluded)', (() => {
-  const c = REPL(); c.row.originalEventAt = '2025-12-01T00:00:00Z';
-  const r = run(v => { v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11); });
-  return r.ok && !line(r, 'ctl_r1_row') && !line(r, 'row_t1') && r.settlement.totals.owed === 915 - 375;
+ok('W44-R1 Codex-2: a replacement whose original instant DISAGREES with its present target is refused (no silent window-shift under-billing, SR-142)', run(v => {
+  const c = REPL(); c.row.originalEventAt = '2025-12-01T00:00:00Z';   // target row_t1 sits at 2025-07-01 (in-window)
+  v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
+}).reason === 'CONTROL_INSTANT_MISMATCH');
+ok('replacement of an out-of-window OWN-INSTANT-BOUND target is legitimately excluded (both out => net zero)', (() => {
+  // target row_pre sits BEFORE the window; the replacement carries the SAME (out-of-window) instant.
+  const r = run(v => {
+    v.rows.live.push({ id: 'row_pre', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-05-01', createdAt: '2025-05-01T00:00:00Z', transferId: 'tr1', idempotencyKey: 'row_pre', stockFromStoreId: 'head_office', _spId: 205, ...TUP_A });
+    v.controls.live.push({ controlId: 'ctl_pre', type: 'replacement', targetTransactionId: 'row_pre', revision: 1, bornPublicationVersion: 11,
+      row: { id: 'ctl_pre_row', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-05-01T00:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
+    v.controls.activeManifest.controlHeads.row_pre = HEAD('ctl_pre', 1, 11);
+  });
+  return r.ok && !line(r, 'ctl_pre_row') && !line(r, 'row_pre') && r.settlement.totals.owed === 915 && r.settlement.status === 'FINAL';
 })());
 ok('CROSS-PRODUCT replacement values at the REPLACEMENT product\'s server-minted stamps, no origin proof (SR-145/150)', (() => {
   const c = REPL(); c.row.productId = 'prodB'; c.row.sellAtSupply = 40;
@@ -472,6 +481,18 @@ ok('presented identity QUEUED in badVersionEvidence => accounted, but the OPEN e
 ok('committed grace whose WRITTEN id is neither present nor covered => refuse FINAL (SR-94)', (() => {
   const r = run(v => { v.drain.graceRecords[0].writtenIds.push('row_lost'); });
   return r.ok && r.settlement.provisionalReasons.some(x => x === 'WRITTEN_ROW_MISSING:row_lost');
+})());
+ok('W44-R1 Codex-1: committed grace record with NO presented manifest => refuse FINAL (SR-171)', (() => {
+  const r = run(v => { v.drain.graceRecords = [{ id: 'g1', state: 'committed' }]; });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'DRAIN_MANIFEST_MISSING:g1');
+})());
+ok('W44-R1 Codex-1: committed grace record missing the WRITTEN set => refuse FINAL (SR-171)', (() => {
+  const r = run(v => { delete v.drain.graceRecords[0].writtenIds; });
+  return r.ok && r.settlement.provisionalReasons.some(x => x === 'DRAIN_MANIFEST_MISSING:g1');
+})());
+ok('an EMPTY presented manifest is legitimate (a flush that presented nothing) => still drained', (() => {
+  const r = run(v => { v.drain.graceRecords = [{ id: 'g1', state: 'committed', presentedIds: [], writtenIds: [], expectedStepIds: [] }]; });
+  return r.ok && r.settlement.status === 'FINAL';
 })());
 ok('expected STEP not ingested => refuse FINAL (drain proves step ingest, SR-122)', (() => {
   const r = run(v => { v.drain.graceRecords[0].expectedStepIds.push('st_missing'); });

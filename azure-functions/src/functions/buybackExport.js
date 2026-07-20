@@ -462,6 +462,15 @@ function buildBuybackExport(input) {
         const rt = readTuple(r.sellAtSupply, r.discAtSupply, r.pricingVersion, r.catalogueVersion);
         if (rt === null || rt.absent) return refuse('MALFORMED_CONTROL', c.controlId + ':stamps');   // an UNSTAMPED replacement is malformed (SR-130/134)
         if (r.unitPriceAtTime != null && !validMoney(r.unitPriceAtTime)) return refuse('MALFORMED_CONTROL', c.controlId + ':unitPriceAtTime');
+        // W44-R1 (Codex-2): the replacement's ORIGINAL-EVENT instant must be BOUND to the target it
+        // substitutes (SR-130/134: the correction route binds it from the AUTHORITATIVE target). When the
+        // target row is SUPPLIED, the engine re-checks the binding: an originalEventAt that disagrees with
+        // the target's own economic instant would move the replacement's window membership INDEPENDENTLY of
+        // the original — a Director-supplied out-of-window instant would then EXCLUDE an in-window original
+        // AND drop its own line, silently under-billing the store owner and breaking SR-142 delta exactness.
+        // (A target NOT in the supplied set — archived-not-pulled / drain-only — is trusted per SR-134's
+        // server-side authoritative fetch; there is no local instant to compare against.)
+        { const te = byId.get(target); if (te && Date.parse(r.originalEventAt) !== te.instantMs) return refuse('CONTROL_INSTANT_MISMATCH', c.controlId + '->' + target); }
         c._tuple = rt;
       }
       controlByTarget.set(target, { ctl: c, list });
@@ -595,6 +604,13 @@ function buildBuybackExport(input) {
   else {
     for (const g of drain.graceRecords) {
       if (g.state !== 'committed') { block('GRACE_NOT_TERMINAL', g.id != null ? g.id : '?'); continue; }   // consumed-but-not-committed = NOT drained
+      // W44-R1 (Codex-1): a committed grace record MUST carry its FULL presented manifest + written set
+      // (SR-171: the manifest is bound at CONSUMPTION, so a consumed/committed record without it is
+      // incomplete attestation). A MISSING manifest is NOT "presented nothing" — the two are
+      // indistinguishable, and treating absence as empty let a mid-flush escaped row evade the
+      // presented-identity accounting entirely (FINAL closing over lost data — the exact SR-171 class).
+      // An EMPTY array is legitimate (a flush that presented nothing); a MISSING field is malformed.
+      if (!Array.isArray(g.presentedIds) || !Array.isArray(g.writtenIds)) { block('DRAIN_MANIFEST_MISSING', g.id != null ? g.id : '?'); continue; }
       for (const sid of (g.expectedStepIds || [])) {
         if (!stepIds.has(String(sid))) block('STEP_NOT_INGESTED', sid);   // drain proves STEP ingest too (SR-122)
       }

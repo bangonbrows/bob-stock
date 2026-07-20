@@ -62,7 +62,7 @@ REAL client code against the REAL engine module in the four new sentinels.
 ## Gates at build close (2026-07-20)
 | Gate | Result |
 |---|---|
-| `node test/buyback-export-proof.js` | **122/122 PASS** |
+| `node test/buyback-export-proof.js` | **126/126 PASS** (122 at build + 4 from Codex R1) |
 | `node test/topology-proof.js` | **256/256 PASS** (unchanged) |
 | `cd test && node smoke-test.js` | **277/277 PASS** (S-283..S-286 new, all CLEAN-PASS first run) |
 | Scoped saboteur `S-283,S-284,S-285,S-286` | **4 CAUGHT / 0 BLIND / 0 skipped / 0 INFRA** (single clean run; baseline 277/277 — log `audit-artifacts/scoped-w44-r0.log`) |
@@ -73,4 +73,4 @@ REAL client code against the REAL engine module in the four new sentinels.
 ## Audit rounds
 | Round | Verdicts | Findings → fixes |
 |---|---|---|
-| R1 | (pending) | |
+| R1 (Codex, partial) | Codex ×2 — BOTH ground-truthed REAL (reproduced against the real engine before fixing). Codex's session tripped OpenAI's cyber filter mid-report (the settlement-behaviour-check ran and printed two probe result lines, then the filter cut off the written findings) — the two probe names + FINAL outputs were enough to reconstruct, reproduce, and fix both. | **C1 (drain manifest, SR-171):** a `committed` grace record with NO presented manifest (or missing `writtenIds`) reached FINAL — absence was read as "presented nothing" instead of "incomplete attestation", the exact SR-171 escape. Fixed: a committed record MUST carry `presentedIds` AND `writtenIds` as arrays; a missing manifest blocks FINAL (`DRAIN_MANIFEST_MISSING`); an EMPTY array stays legitimate. **C2 (replacement instant binding, SR-130/134/142):** a replacement could remove an in-window original (worth 375) while carrying an out-of-window `originalEventAt`, so its own line wasn't billed — silent −375 under-bill, still FINAL, breaking SR-142 delta exactness (my own proof test had blessed it). Fixed: when the target row is SUPPLIED, the replacement's `originalEventAt` MUST equal the target's economic instant, else refuse (`CONTROL_INSTANT_MISMATCH`); a target not in the supplied set is trusted per SR-134's server-side authoritative fetch. Both fixed @ (this commit); proof suite 122→126 (2 new drain probes, 1 corrected + 1 new replacement-instant probe, 1 empty-manifest-legit probe); smoke 277/277, topology 256/256 unchanged. |
