@@ -263,6 +263,32 @@ ok('wrong-store replacement row refused', run(v => {
   const c = REPL(); c.row.storeId = 'karr';
   v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
 }).reason === 'MALFORMED_CONTROL');
+ok('W44-R2 Codex-1: a replacement CHAIN (a control targeting another replacement\'s output) fails closed (SR-146)', (() => {
+  const r = run(v => {
+    v.rows.live.push({ id: 'rowA', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, date: '2025-07-02', createdAt: '2025-07-02T03:00:00Z', idempotencyKey: 'rowA', stockFromStoreId: 'head_office', _spId: 51, _attested: true, ...TUP_A });
+    v.controls.live.push(
+      { controlId: 'ctlA', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, row: { id: 'rowA', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-07-01T03:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
+      { controlId: 'ctlB', type: 'replacement', targetTransactionId: 'rowA', revision: 1, bornPublicationVersion: 11, row: { id: 'rowB', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, originalEventAt: '2025-07-02T03:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
+    v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctlA', 1, 11);
+    v.controls.activeManifest.controlHeads.rowA = HEAD('ctlB', 1, 11);
+  }).reason === 'CONTROL_CHAIN';
+  return r;
+})());
+ok('W44-R2 Codex-1: a replacement output id colliding with a supplied ledger row fails closed', run(v => {
+  v.controls.live.push({ controlId: 'ctlC', type: 'replacement', targetTransactionId: 'row_direct1', revision: 1, bornPublicationVersion: 11, row: { id: 'row_t1', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-08-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
+  v.controls.activeManifest.controlHeads.row_direct1 = HEAD('ctlC', 1, 11);
+}).reason === 'CONTROL_OUTPUT_COLLISION');
+ok('W44-R2 Codex-1: two replacements minting the same output id fail closed', run(v => {
+  v.controls.live.push(
+    { controlId: 'ctlD', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-07-01T03:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
+    { controlId: 'ctlE', type: 'replacement', targetTransactionId: 'row_direct1', revision: 1, bornPublicationVersion: 11, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-08-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
+  v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctlD', 1, 11);
+  v.controls.activeManifest.controlHeads.row_direct1 = HEAD('ctlE', 1, 11);
+}).reason === 'CONTROL_OUTPUT_COLLISION');
+ok('replacement row missing its id is malformed', run(v => {
+  const c = REPL(); delete c.row.id;
+  v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
+}).reason === 'MALFORMED_CONTROL');
 ok('duplicate controlId with identical content collapses; differing content is ambiguity', (() => {
   const a = run(v => { v.controls.live.push(J(DEL1), J(DEL1)); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_d1', 1, 11); });
   const c2 = J(DEL1); c2.revision = 2;
@@ -430,6 +456,15 @@ ok('non-HO transfer_in is usage, never a cost line', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_store_t', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-02', createdAt: '2025-07-02T04:00:00Z', stockFromStoreId: 'karr', idempotencyKey: 'row_store_t', _spId: 510 }); });
   return r.ok && !line(r, 'row_store_t') && r.settlement.usage.prodA.transfer >= 2;
 })());
+ok('W44-R2 Codex-1: a transfer-linked row with SUPPRESSED steps + stripped labels (post-epoch) cannot hide — holds FINAL', (() => {
+  // labels stripped so isHOSupply=false (looks peer), transferId present, NO steps, post-epoch id
+  const r = run(v => { v.rows.live.push({ id: 'row_hidden', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-02', createdAt: '2025-07-02T04:00:00Z', transferId: 'trGhost', idempotencyKey: 'row_hidden', _spId: 520 }); });
+  return r.ok && !line(r, 'row_hidden') && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'POST_EPOCH_NO_STEPS:row_hidden');
+})());
+ok('a genuine PRE-epoch peer transfer (no steps, pre-epoch id) does NOT falsely block (no over-block)', (() => {
+  const r = run(v => { v.rows.live.push({ id: 'row_peer_old', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-02', createdAt: '2025-07-02T04:00:00Z', transferId: 'trOldPeer', idempotencyKey: 'row_peer_old', stockFromStoreId: 'karr', _spId: 40 }); });
+  return r.ok && !line(r, 'row_peer_old') && r.settlement.status === 'FINAL';
+})());
 ok('HO-supply via the STEPS projection when the row has no structured source (fail-closed until the record arrives)', (() => {
   const r = run(v => { delete v.rows.live[0].stockFromStoreId; });   // tr1's submit says fromStoreId head_office
   const l = line(r, 'row_t1');
@@ -493,6 +528,10 @@ ok('W44-R1 Codex-1: committed grace record missing the WRITTEN set => refuse FIN
 ok('an EMPTY presented manifest is legitimate (a flush that presented nothing) => still drained', (() => {
   const r = run(v => { v.drain.graceRecords = [{ id: 'g1', state: 'committed', presentedIds: [], writtenIds: [], expectedStepIds: [] }]; });
   return r.ok && r.settlement.status === 'FINAL';
+})());
+ok('W44-R2 Codex-2: committed grace record missing the EXPECTED-STEP list => refuse FINAL (a suppressed mint step can\'t hide)', (() => {
+  const r = run(v => { delete v.drain.graceRecords[0].expectedStepIds; });
+  return r.ok && r.settlement.provisionalReasons.some(x => x === 'DRAIN_MANIFEST_MISSING:g1');
 })());
 ok('expected STEP not ingested => refuse FINAL (drain proves step ingest, SR-122)', (() => {
   const r = run(v => { v.drain.graceRecords[0].expectedStepIds.push('st_missing'); });

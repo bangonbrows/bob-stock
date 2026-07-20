@@ -455,6 +455,7 @@ function buildBuybackExport(input) {
       if (c.type === 'replacement') {
         const r = c.row;
         if (!r || typeof r !== 'object' || Array.isArray(r)) return refuse('MALFORMED_CONTROL', c.controlId + ':row');
+        if (!reqId(r.id)) return refuse('MALFORMED_CONTROL', c.controlId + ':row.id');   // the output row's id is a cost-line identity — validate it (chain/collision checks below rely on it)
         if (!isIsoUtc(r.originalEventAt)) return refuse('MALFORMED_CONTROL', c.controlId + ':originalEventAt');   // SR-130: window membership needs a validated UTC instant
         if (!reqId(r.productId) || typeof r.qty !== 'number' || !isFinite(r.qty) || r.qty < 0) return refuse('MALFORMED_CONTROL', c.controlId + ':row');
         if (r.storeId !== storeId) return refuse('MALFORMED_CONTROL', c.controlId + ':storeId');
@@ -481,6 +482,22 @@ function buildBuybackExport(input) {
   for (const target of Object.keys(manifest.controlHeads)) {
     const head = manifest.controlHeads[target];
     if (head !== null && suppliedIdentity(target) && !controlByTarget.has(target)) return refuse('MISSING_CONTROL', target);
+  }
+  // W44-R2 (Codex-1): a replacement CHAIN — a control whose target is itself the OUTPUT row of another
+  // replacement — must FAIL CLOSED (SR-146: a chain never resolves to a single effective value). The
+  // output row of a replacement is a server-minted identity: no other control may target it, no two
+  // replacements may mint the same one, and it must be DISJOINT from every supplied ledger row (else the
+  // original re-enters as a replacement output AND is counted again — the double-charge Codex found).
+  const replacementOutputs = new Set();
+  for (const { ctl } of controlByTarget.values()) {
+    if (ctl.type !== 'replacement') continue;
+    const oid = ctl.row.id;
+    if (replacementOutputs.has(oid)) return refuse('CONTROL_OUTPUT_COLLISION', oid);   // two replacements minting one output id
+    replacementOutputs.add(oid);
+  }
+  for (const oid of replacementOutputs) {
+    if (controlByTarget.has(oid)) return refuse('CONTROL_CHAIN', oid);          // another control targets this replacement's output
+    if (byId.has(oid)) return refuse('CONTROL_OUTPUT_COLLISION', oid);          // the output id collides with a supplied ledger row
   }
 
   // G) effective economic set — apply controls, then the window (P2/P3).
@@ -532,7 +549,25 @@ function buildBuybackExport(input) {
     // HO-supply COST LINES — the invoice's exact line filter (category delivery/transfer, incoming,
     // HO-sourced), then the full W4.3 valuation precedence. Control rows face the SAME filter on their
     // own carried fields — a replacement correcting a NON-HO movement must never become a billed line.
-    if (!(isIn(t) && (cat === 'delivery' || cat === 'transfer') && isHOSupply(t, projections))) continue;
+    if (!(isIn(t) && (cat === 'delivery' || cat === 'transfer') && isHOSupply(t, projections))) {
+      // W44-R2 (Codex-1): a NON-billed transfer-linked row is still subject to LEDGER-INTEGRITY checks.
+      // isHOSupply fails to `false` when a transferId has no steps + no structured source — so stripping
+      // the HO labels AND suppressing the steps would otherwise make a genuine HO-supply row look like a
+      // peer transfer and be silently dropped, finalizing the settlement WITHOUT billing it. A transfer-
+      // linked row whose origin can't be proven is a corruption signal that must hold FINAL regardless of
+      // whether it ends up billed (SR-122/129). A legitimate peer transfer has a proven genesis (no block)
+      // or is genuine pre-epoch legacy (no block); only the suppression case blocks.
+      if (t.transferId && !e.isControl) {
+        const proj = projections.get(t.transferId);
+        if (!proj) {
+          const provId = e.list === 'archive' ? t.sourceId : t._spId;
+          if (!validVersion(provId)) { block('PROVENANCE_ABSENT', t.id); surfaced.lineErrors.push(t.id + ':PROVENANCE_ABSENT'); }
+          else if (provId >= coverage.stepsEpochId) { block('POST_EPOCH_NO_STEPS', t.id); surfaced.lineErrors.push(t.id + ':POST_EPOCH_NO_STEPS'); }
+          // genuine pre-epoch legacy peer transfer: fine
+        } else if (!proj.hasGenesis) { block('ORIGIN_UNPROVEN', t.id); surfaced.lineErrors.push(t.id + ':ORIGIN_UNPROVEN'); }
+      }
+      continue;
+    }
     const p = productById.get(t.productId);
     let sell = (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
     let disc = null, lineErr = null, source = null, paid = true;
@@ -610,7 +645,12 @@ function buildBuybackExport(input) {
       // indistinguishable, and treating absence as empty let a mid-flush escaped row evade the
       // presented-identity accounting entirely (FINAL closing over lost data — the exact SR-171 class).
       // An EMPTY array is legitimate (a flush that presented nothing); a MISSING field is malformed.
-      if (!Array.isArray(g.presentedIds) || !Array.isArray(g.writtenIds)) { block('DRAIN_MANIFEST_MISSING', g.id != null ? g.id : '?'); continue; }
+      // W44-R2 (Codex-2): the EXPECTED-STEP list joins the manifest-completeness requirement. A committed
+      // record with presented/written rows but an ABSENT expectedStepIds let a suppressed minting step
+      // slip through (the row fell to the lens instead of its attested stamp, and FINAL closed over it) —
+      // the same "absence read as empty" class as R1's presented manifest. An EMPTY list stays legitimate
+      // (a flush of stepless direct-log rows); a MISSING field is incomplete attestation.
+      if (!Array.isArray(g.presentedIds) || !Array.isArray(g.writtenIds) || !Array.isArray(g.expectedStepIds)) { block('DRAIN_MANIFEST_MISSING', g.id != null ? g.id : '?'); continue; }
       for (const sid of (g.expectedStepIds || [])) {
         if (!stepIds.has(String(sid))) block('STEP_NOT_INGESTED', sid);   // drain proves STEP ingest too (SR-122)
       }
