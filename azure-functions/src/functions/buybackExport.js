@@ -99,6 +99,9 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // sync _readRowStamps; the S-283 parity sentinel proves it against the REAL client code) ─────────────
 function twoDp(n) { return Number(n.toFixed(2)) === n; }
 function validMoney(v) { return typeof v === 'number' && isFinite(v) && v >= 0 && v <= 1000000 && twoDp(v); }
+// W44-R6 (AGY-3): stock quantities are WHOLE units (mirrors the client `_QTY_RE` whole-number policy) —
+// a fractional/unsafe quantity is malformed at every surface (row, step, targetLine, replacement).
+function validQty(v) { return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0; }
 function validDiscPct(v) { return typeof v === 'number' && isFinite(v) && v >= 0 && v <= 100 && twoDp(v); }
 function validVersion(v) { return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0; }
 // The FOUR authority fields — ALL FOUR or none (W4.3 amendment 1 rev-3). Returns {absent:true} |
@@ -277,7 +280,8 @@ function foldProjection(stepsForTransfer) {
       const gMs = (s.stepType === 'submit' && Number.isFinite(s.timestamp)) ? s.timestamp
         : (Date.parse(base.submittedAt || base.date || base.createdAt || '') || (Number.isFinite(s.timestamp) ? s.timestamp : null));
       t = { hasGenesis: true, originType: isBackfill ? 'backfill' : 'submit', submitMs: gMs,
-            fromStoreId: s.fromStoreId || base.fromStoreId || '', toStoreId: s.toStoreId || base.toStoreId || '', items: new Map() };
+            fromStoreId: s.fromStoreId || base.fromStoreId || '', toStoreId: s.toStoreId || base.toStoreId || '', items: new Map(),
+            ledgerKeys: new Set(), hasLedgerKeys: false };
       for (const it of (base.items || [])) {
         if (!it || !reqId(it.productId)) return { error: 'MALFORMED_STEP_LINE' };
         const r = readLineStamps(it);
@@ -286,18 +290,26 @@ function foldProjection(stepsForTransfer) {
         // each ledger row's editable qty to it. sentQty at submit; a BACKFILL snapshot records receivedQty
         // too (records.js:335) and it is the billed authority (W44-R5 Codex-2: initializing from sentQty
         // alone over-blocked a legit received-3-of-5 backfill and let a row edited to 5 pass).
-        let iQty = Number.isFinite(it.sentQty) ? it.sentQty : null, iRecv = false;
-        if (isBackfill && Number.isFinite(it.receivedQty)) { iQty = it.receivedQty; iRecv = true; }
+        if (it.sentQty != null && !validQty(it.sentQty)) return { error: 'BAD_QTY' };
+        if (it.receivedQty != null && !validQty(it.receivedQty)) return { error: 'BAD_QTY' };
+        let iQty = validQty(it.sentQty) ? it.sentQty : null, iRecv = false;
+        if (isBackfill && validQty(it.receivedQty)) { iQty = it.receivedQty; iRecv = true; }
         // Backfill-sourced stamps are UNTRUSTED (SR-154/W4.3 amendment 2 — never tier-2 evidence).
         t.items.set(it.productId, { tuple: r.tuple, basis: r.basis, untrusted: isBackfill && !!r.tuple, mintAttested: !isBackfill && !!r.tuple && attested, qty: iQty, received: iRecv });
       }
     } else if (!t) {
       continue;   // a step before its genesis — same hold as the client fold (re-pull reconciles)
     } else if (s.stepType === 'receive') {
+      // W44-R6 (Codex-1/AGY-1): capture the step's AUTHORITATIVE ledger-row identities — the exact
+      // TransactionIds this receive created (phase2.js:542). A billed transfer-linked row must BE one of
+      // them; a foreign/repointed row (a direct-log row or a sale relabelled to claim this transfer) has
+      // an id that isn't in this set, so it can't hijack the transfer's aggregate quantity.
+      if (Array.isArray(p.expectedLedgerKeys)) { t.hasLedgerKeys = true; for (const k of p.expectedLedgerKeys) if (typeof k === 'string') t.ledgerKeys.add(k); }
       for (const ln of (p.lines || [])) {
         const item = ln && t.items.get(ln.productId);
         if (!item) continue;
-        if (Number.isFinite(ln.receivedQty)) { item.qty = ln.receivedQty; item.received = true; }   // W44-R4: received overrides sent as the billed authority
+        if (ln.receivedQty != null && !validQty(ln.receivedQty)) return { error: 'BAD_QTY' };
+        if (validQty(ln.receivedQty)) { item.qty = ln.receivedQty; item.received = true; }   // W44-R4: received overrides sent as the billed authority
         const r = readLineStamps(ln);
         if (typeof r === 'string') return { error: r };
         const lnStamped = !!r.tuple, itemStamped = !!item.tuple;
@@ -309,6 +321,7 @@ function foldProjection(stepsForTransfer) {
         else if (!lnStamped && !itemStamped && !item.basis) { item.basis = 'legacy-lens'; }
       }
     } else if (s.stepType === 'resolve') {
+      if (Array.isArray(p.expectedLedgerKeys)) { t.hasLedgerKeys = true; for (const k of p.expectedLedgerKeys) if (typeof k === 'string') t.ledgerKeys.add(k); }
       for (const rl of (p.resolutions || [])) {
         const item = rl && t.items.get(rl.productId);
         if (!item) continue;
@@ -318,12 +331,13 @@ function foldProjection(stepsForTransfer) {
         if (r.basis) item.basis = r.basis;
         // W44-R5 (Codex-1): the resolve step PINS the Director's chosen quantity (phase2.js:674) — it is
         // the authoritative billed quantity, overriding the divergent receive attempts (last-wins was wrong).
-        if (Number.isFinite(rl.qty)) { item.qty = rl.qty; item.received = true; }
+        if (rl.qty != null && !validQty(rl.qty)) return { error: 'BAD_QTY' };
+        if (validQty(rl.qty)) { item.qty = rl.qty; item.received = true; }
       }
     }
     // cancel: return rows inherit the item state (SR-88) — no projection change needed.
   }
-  return t || { hasGenesis: false, originType: null, submitMs: null, fromStoreId: '', toStoreId: '', items: new Map() };
+  return t || { hasGenesis: false, originType: null, submitMs: null, fromStoreId: '', toStoreId: '', items: new Map(), ledgerKeys: new Set(), hasLedgerKeys: false };
 }
 
 // ── The engine ───────────────────────────────────────────────────────────────────────────────────────
@@ -396,7 +410,7 @@ function buildBuybackExport(input) {
       if (raw.storeId !== storeId) return refuse('WRONG_STORE_ROW', raw.id);        // P2 re-check
       if (typeof raw.type !== 'string') return refuse('MALFORMED_ROW', raw.id + ':type');
       if (!reqId(raw.productId)) return refuse('MALFORMED_ROW', raw.id + ':productId');
-      if (typeof raw.qty !== 'number' || !isFinite(raw.qty) || raw.qty < 0) return refuse('MALFORMED_ROW', raw.id + ':qty');
+      if (!validQty(raw.qty)) return refuse('MALFORMED_ROW', raw.id + ':qty');   // W44-R6 (AGY-3): whole units only
       if (!isIsoUtc(raw.createdAt)) return refuse('BAD_ROW_INSTANT', raw.id);       // SR-25: window boundary needs a valid UTC instant
       if (raw.date != null && (typeof raw.date !== 'string' || !DATE_RE.test(raw.date) || !Number.isFinite(Date.parse(raw.date + 'T00:00:00.000Z')))) return refuse('MALFORMED_ROW', raw.id + ':date');
       if (raw.idempotencyKey != null && typeof raw.idempotencyKey !== 'string') return refuse('MALFORMED_ROW', raw.id + ':idempotencyKey');
@@ -513,7 +527,7 @@ function buildBuybackExport(input) {
       let targetLine = null;
       if (c.targetLine != null) {
         const tl = c.targetLine;
-        if (typeof tl !== 'object' || Array.isArray(tl) || !reqId(tl.transferId) || !reqId(tl.productId) || typeof tl.qty !== 'number' || !isFinite(tl.qty) || tl.qty < 0) return refuse('MALFORMED_CONTROL', c.controlId + ':targetLine');
+        if (typeof tl !== 'object' || Array.isArray(tl) || !reqId(tl.transferId) || !reqId(tl.productId) || !validQty(tl.qty)) return refuse('MALFORMED_CONTROL', c.controlId + ':targetLine');
         targetLine = tl;
       }
       if (targetEntry && targetEntry.row.transferId && !targetLine) return refuse('MALFORMED_CONTROL', c.controlId + ':targetLine-required');
@@ -523,7 +537,7 @@ function buildBuybackExport(input) {
         if (!r || typeof r !== 'object' || Array.isArray(r)) return refuse('MALFORMED_CONTROL', c.controlId + ':row');
         if (!reqId(r.id)) return refuse('MALFORMED_CONTROL', c.controlId + ':row.id');   // the output row's id is a cost-line identity — validate it (chain/collision checks below rely on it)
         if (!isIsoUtc(r.originalEventAt)) return refuse('MALFORMED_CONTROL', c.controlId + ':originalEventAt');   // SR-130: window membership needs a validated UTC instant
-        if (!reqId(r.productId) || typeof r.qty !== 'number' || !isFinite(r.qty) || r.qty < 0) return refuse('MALFORMED_CONTROL', c.controlId + ':row');
+        if (!reqId(r.productId) || !validQty(r.qty)) return refuse('MALFORMED_CONTROL', c.controlId + ':row');   // W44-R6 (AGY-3): whole units only
         if (r.storeId !== storeId) return refuse('MALFORMED_CONTROL', c.controlId + ':storeId');
         if (typeof r.type !== 'string') return refuse('MALFORMED_CONTROL', c.controlId + ':type');
         const rt = readTuple(r.sellAtSupply, r.discAtSupply, r.pricingVersion, r.catalogueVersion);
@@ -639,7 +653,20 @@ function buildBuybackExport(input) {
     // has no server line to bind to (its authenticity rests on the validated pre-epoch provenance id,
     // SR-129 — a flagged residual: pre-Chunk-4 rows carry no server-side quantity).
     let stepBacked = false;
-    if (t.transferId && !e.isControl) { const pj = projections.get(t.transferId); if (pj && pj.hasGenesis) { stepBacked = true; claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty); } }
+    if (t.transferId && !e.isControl) {
+      const pj = projections.get(t.transferId);
+      if (pj && pj.hasGenesis) {
+        stepBacked = true;
+        // W44-R6 (Codex-1/AGY-1): IDENTITY binding — a billed transfer-linked row must BE one of the
+        // transfer's authoritative ledger keys (the receive/resolve step's expectedLedgerKeys). A foreign
+        // row (a repointed direct-log row, or a sale relabelled to claim this transfer) has an id that is
+        // NOT in the set, so it can't satisfy the aggregate quantity for a transfer it doesn't belong to.
+        // A transfer with a real receive carries keys (phase2.js:542); one without (pure backfill) values
+        // its rows via untrusted/server-resolved paths, so it never reaches a trusted aggregate here.
+        if (pj.hasLedgerKeys && !pj.ledgerKeys.has(t.id)) block('ROW_NOT_IN_TRANSFER_LEDGER', t.id + '->' + t.transferId);
+        claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty);
+      }
+    }
     // W44-R5 (AGY-2/3): a billed HO row whose QUANTITY has NO server step to bind to — a transferless
     // direct-log HO row, or a pre-epoch legacy transfer (no projection) — is UNVERIFIABLE by the engine:
     // the reconciliation cannot check its qty/date. Such a row is still valued (invoice parity holds), but
@@ -676,7 +703,11 @@ function buildBuybackExport(input) {
               // BACKFILL-only stamps are never evidence (SR-154/158) — server-resolved values or a
               // surfaced pending state; FINAL not blocked either way.
               if (e.rv) { sell = e.rv.sell; disc = e.rv.disc; source = 'server-resolved'; }
-              else { sell = 0; disc = 0; lineErr = 'VALUATION_PENDING'; paid = false; surfaced.pendingValuations.push(t.id); }
+              // W44-R6 (Codex-3): a PENDING valuation on an accountable HO line must HOLD FINAL — otherwise
+              // clearing the server-resolved fields bills the line at $0 while its quantity still satisfies
+              // the reconciliation (stock at $0). Surfaced + regenerable once the resolution syncs. (This
+              // amends SR-154's "FINAL not blocked" — a $0 HO cost line cannot be a FINAL settlement.)
+              else { sell = 0; disc = 0; lineErr = 'VALUATION_PENDING'; paid = false; surfaced.pendingValuations.push(t.id); block('VALUATION_PENDING', t.id); }
             } else if (item.mintAttested) { sell = item.tuple.sell; disc = item.tuple.disc; source = 'transfer-stamped'; }   // TIER 2 — the stale-receiver class (SR-97)
             else { sell = 0; disc = 0; lineErr = 'UNATTESTED'; paid = false; block('UNATTESTED_ITEM', t.id); }               // N3: unattested mint never pays
           } else {
@@ -721,7 +752,13 @@ function buildBuybackExport(input) {
     // regenerable): once the push-v2 qty attestation ships (staging-apply), these become verifiable and
     // finalize automatically. Surfaced either way so the Director sees exactly which lines need eyes.
     if (paid && unverifiableQty) { surfaced.unverifiableQty.push(t.id); block('MANUAL_REVIEW_UNVERIFIABLE_QTY', t.id); }
-    costLines.push({ transactionId: t.id, productId: t.productId, date: t.date || null, qty: t.qty, sell: paid ? sell : null, discPct: paid ? disc : null, full, discAmt, owed: full - discAmt, source, lineErr, control: !!e.isControl, unverifiableQty: unverifiableQty && paid });
+    // W44-R6 (AGY-4): the exported line date is the AUTHORITATIVE instant, not the editable row `date` —
+    // the submit-step day for a transfer-linked row (server truth), the bound instant for a control row,
+    // else the row's own date (transferless / unverifiable).
+    let authInstant = e.instantMs;
+    if (!e.isControl && t.transferId) { const pj = projections.get(t.transferId); if (pj && pj.hasGenesis && Number.isFinite(pj.submitMs)) authInstant = pj.submitMs; }
+    const authDate = Number.isFinite(authInstant) ? new Date(authInstant).toISOString().slice(0, 10) : (t.date || null);
+    costLines.push({ transactionId: t.id, productId: t.productId, date: authDate, qty: t.qty, sell: paid ? sell : null, discPct: paid ? disc : null, full, discAmt, owed: full - discAmt, source, lineErr, control: !!e.isControl, unverifiableQty: unverifiableQty && paid });
   }
 
   // W44-R4 (Codex/AGY-2,3): RECONCILE the claimed HO rows against the authoritative line set. Every HO
@@ -813,7 +850,11 @@ function buildBuybackExport(input) {
       status, provisionalReasons: finalBlockers,
       costLines, totals: { full: totalFull, discount: totalDisc, owed: totalOwed },
       usage,
-      retailProfit: { revenue, salesQty, refundQty, supplyCost: totalOwed, profit: revenue - totalOwed, legacyPriceFallbackCount },   // revenue is NET of customer refunds (N9, Kunal 2026-07-20)
+      // revenue is NET of customer refunds (N9, Kunal 2026-07-20). W44-R6 (Codex-2): sale prices
+      // (unitPriceAtTime) are CLIENT-RECORDED — sales have no server step to anchor them — so retailProfit
+      // is INFORMATIONAL and flagged; it does NOT affect the PAYABLE (totals.owed = the HO supply cost,
+      // which is server-anchored). A robust sale-price attestation is a staging-apply item.
+      retailProfit: { revenue, salesQty, refundQty, supplyCost: totalOwed, profit: revenue - totalOwed, legacyPriceFallbackCount, clientRecordedSalePrices: (salesQty > 0 || refundQty > 0), informationalOnly: true },
       meta: {
         legacyKeyedRowCount,
         rowCounts: { live: rows.live.length, archive: rows.archive.length, deduped: deduped.length, economicInWindow: costLines.length },

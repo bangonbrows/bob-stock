@@ -38,7 +38,7 @@ function VALID() {
       { stepId: 'st1', recordId: 'tr1', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'boor', _attested: true,
         payload: { items: [{ productId: 'prodA', sentQty: 5, basis: 'submit-stamped', ...TUP_A }] } },
       { stepId: 'st2', recordId: 'tr1', recordType: 'transfer', stepType: 'receive', seq: 20, timestamp: Date.parse('2025-07-01T03:00:00Z'), _attested: true,
-        payload: { lines: [{ productId: 'prodA', receivedQty: 5 }] } },
+        payload: { lines: [{ productId: 'prodA', receivedQty: 5 }], expectedLedgerKeys: ['row_t1'] } },
     ],
     controls: { live: [], archive: [], activeManifest: { version: 12, controlHeads: {} } },
     badVersionEvidence: { entries: [] },
@@ -65,7 +65,7 @@ const line = (res, id) => res.ok && res.settlement.costLines.find(l => l.transac
 function lensRow(v, id, productId, submitDate, qty) {
   const tid = 'tr_' + id, n = v.rows.live.length + v.rows.archive.length;
   v.steps.push({ stepId: 's_' + id, recordId: tid, recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse(submitDate + 'T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'boor', _attested: true, payload: { items: [{ productId, sentQty: qty }] } });
-  v.steps.push({ stepId: 'r_' + id, recordId: tid, recordType: 'transfer', stepType: 'receive', seq: 20, timestamp: Date.parse(submitDate + 'T03:00:00Z'), _attested: true, payload: { lines: [{ productId, receivedQty: qty }] } });
+  v.steps.push({ stepId: 'r_' + id, recordId: tid, recordType: 'transfer', stepType: 'receive', seq: 20, timestamp: Date.parse(submitDate + 'T03:00:00Z'), _attested: true, payload: { lines: [{ productId, receivedQty: qty }], expectedLedgerKeys: [id] } });
   v.rows.live.push({ id, type: 'transfer_in', productId, storeId: 'boor', qty, date: submitDate, createdAt: submitDate + 'T03:00:00Z', transferId: tid, idempotencyKey: id, stockFromStoreId: 'head_office', _spId: 500 + n });
 }
 
@@ -373,7 +373,7 @@ ok('BACKFILL-only stamps + server-resolved row fields => paid from the SERVER re
   const l = line(r, 'row_t1');
   return r.ok && l && l.source === 'server-resolved' && l.owed === 360 && r.settlement.status === 'FINAL';   // 90 x5 @20%
 })());
-ok('BACKFILL-only stamps, NO server resolution => loud VALUATION_PENDING; FINAL NOT blocked (SR-154)', (() => {
+ok('W44-R6 Codex-3: BACKFILL-only stamps with NO server resolution => VALUATION_PENDING HOLDS FINAL (a $0 HO line can\'t finalize)', (() => {
   const r = run(v => {
     v.steps[0] = { stepId: 'st1', recordId: 'tr1', recordType: 'transfer', stepType: 'backfill', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), _attested: true,
       payload: { snapshot: { fromStoreId: 'head_office', toStoreId: 'boor', items: [{ productId: 'prodA', sentQty: 5, basis: 'submit-stamped', ...TUP_A }] } } };
@@ -381,7 +381,7 @@ ok('BACKFILL-only stamps, NO server resolution => loud VALUATION_PENDING; FINAL 
   });
   const l = line(r, 'row_t1');
   return r.ok && l && l.owed === 0 && l.lineErr === 'VALUATION_PENDING'
-    && r.settlement.meta.pendingValuations.includes('row_t1') && r.settlement.status === 'FINAL';
+    && r.settlement.meta.pendingValuations.includes('row_t1') && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'VALUATION_PENDING:row_t1');
 })());
 ok('steps present but NO origin (receive without genesis) => fail closed, PROVISIONAL, no economics (SR-122)', (() => {
   const r = run(v => {
@@ -626,6 +626,39 @@ ok('W44-R5 Codex-3: a FAITHFUL replacement (server submit instant) bills in-wind
 ok('W44-R5 Codex-4: a committed flush whose written id was NOT presented fails closed', run(v => {
   v.drain.graceRecords[0].presentedIds = ['row_sale1']; v.drain.graceRecords[0].writtenIds = ['row_t1'];   // row_t1 written but not presented
 }).ok && run(v => { v.drain.graceRecords[0].presentedIds = ['row_sale1']; v.drain.graceRecords[0].writtenIds = ['row_t1']; }).settlement.provisionalReasons.some(x => x === 'WRITTEN_NOT_PRESENTED:row_t1'));
+// ── W44-R6: ledger-identity binding, integer qty, $0-pending block, authoritative export date ──
+console.log('== W44-R6: identity binding + qty policy + pending block + date ==');
+ok('W44-R6 Codex-1: a FOREIGN row (repointed direct-log) claiming a real transfer is rejected by ledger-identity', (() => {
+  // a direct-log row repointed to mimic tr1; the genuine row_t1 is left out
+  const r = run(v => {
+    v.rows.live[0] = Object.assign({ id: 'row_dl', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'tr1', idempotencyKey: 'kdl', stockFromStoreId: 'head_office', _spId: 220 }, TUP_A);
+    v.drain.graceRecords[0].presentedIds = ['row_dl', 'row_sale1']; v.drain.graceRecords[0].writtenIds = [];
+  });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('ROW_NOT_IN_TRANSFER_LEDGER:row_dl'));
+})());
+ok('W44-R6 AGY-1: converting a SALE row into a transfer_in to satisfy the aggregate is rejected (identity + qty)', (() => {
+  const r = run(v => {
+    v.rows.live[0].qty = 3;
+    Object.assign(v.rows.live[1], { type: 'transfer_in', qty: 2, transferId: 'tr1', stockFromStoreId: 'head_office', ...TUP_A }); delete v.rows.live[1].stockTo; delete v.rows.live[1].unitPriceAtTime;
+  });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && (r.settlement.provisionalReasons.some(x => x.startsWith('ROW_NOT_IN_TRANSFER_LEDGER:row_sale1')) || r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH')));
+})());
+ok('a genuine receive-keyed row IS accepted (identity binding does not break the happy path)', base.ok && base.settlement.status === 'FINAL' && line(base, 'row_t1').owed === 375);
+ok('W44-R6 AGY-3: a fractional row quantity is refused (whole units only)', run(v => { v.rows.live[0].qty = 1.5; }).reason === 'MALFORMED_ROW');
+ok('W44-R6 AGY-3: a fractional step quantity is refused', run(v => { v.steps[1].payload.lines[0].receivedQty = 1.5; }).reason === 'MALFORMED_STEP_STAMPS');
+ok('W44-R6 AGY-3: a fractional replacement quantity is refused', run(v => {
+  const c = REPL(); c.row.qty = 1.5;
+  v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
+}).reason === 'MALFORMED_CONTROL');
+ok('W44-R6 AGY-4: the exported line date is the SUBMIT-step day, not the editable row date', (() => {
+  const r = run(v => { v.rows.live[0].date = '2025-10-20'; });   // submit is 2025-07-01
+  const l = line(r, 'row_t1');
+  return r.ok && l && l.date === '2025-07-01';
+})());
+ok('W44-R6 Codex-2: retailProfit is flagged client-recorded + informational; the PAYABLE is unaffected', (() => {
+  const r = run(v => { v.rows.live[1].unitPriceAtTime = 1000000; });
+  return r.ok && r.settlement.retailProfit.clientRecordedSalePrices === true && r.settlement.retailProfit.informationalOnly === true && r.settlement.totals.owed === 375;
+})());
 ok('W44-R5 AGY-2/3: all three unverifiable-qty classes are billed, SURFACED, and held for review', (() => {
   const r = run(v => { v.rows.live.push(J(DIRECT1), J(LEGACY1)); v.rows.archive.push(J(ARCH1)); });
   return r.ok && r.settlement.status === 'PROVISIONAL'
