@@ -714,12 +714,13 @@ function buildBuybackExport(input) {
     else if (lineErr) surfaced.lineErrors.push(t.id + ':' + lineErr);
     const full = paid ? sell * t.qty : 0;
     const discAmt = paid ? full * (disc / 100) : 0;
-    // W44-R5 (AGY-2/3): a PAID row whose quantity has NO server step to bind to (transferless direct-log,
-    // or pre-epoch legacy transfer) is SURFACED as unverifiable so no settlement silently rests on it. It
-    // is NOT hard-blocked: within the app boundary an existing row cannot be edited (push-v2 is idempotent
-    // on TransactionId — P-13; SharePoint-direct tamper is out of scope), and the robust fix is a
-    // server-side qty attestation at push-v2 ingest (a staging-apply item, flagged in the wave doc).
-    if (paid && unverifiableQty) surfaced.unverifiableQty.push(t.id);
+    // W44-R5 (AGY-2/3) + Kunal 2026-07-21: a PAID row whose quantity has NO server step to bind to
+    // (transferless direct-log, or pre-epoch legacy transfer) is UNVERIFIABLE by the engine — it is still
+    // VALUED (invoice parity holds) but HELD FOR MANUAL REVIEW: a buy-back settlement is a rare, high-stakes
+    // ex-franchisee document, so an unverifiable quantity must not auto-finalize. Fails safe (PROVISIONAL is
+    // regenerable): once the push-v2 qty attestation ships (staging-apply), these become verifiable and
+    // finalize automatically. Surfaced either way so the Director sees exactly which lines need eyes.
+    if (paid && unverifiableQty) { surfaced.unverifiableQty.push(t.id); block('MANUAL_REVIEW_UNVERIFIABLE_QTY', t.id); }
     costLines.push({ transactionId: t.id, productId: t.productId, date: t.date || null, qty: t.qty, sell: paid ? sell : null, discPct: paid ? disc : null, full, discAmt, owed: full - discAmt, source, lineErr, control: !!e.isControl, unverifiableQty: unverifiableQty && paid });
   }
 

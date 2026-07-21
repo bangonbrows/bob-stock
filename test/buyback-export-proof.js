@@ -23,19 +23,16 @@ function VALID() {
   return {
     storeId: 'boor',
     window: { from: WFROM, to: WTO },
+    // Clean, fully step-backed base (finalizable). The UNVERIFIABLE-QTY row classes (direct-log,
+    // transferless-legacy, pre-epoch) are exercised in their own dedicated section — they are billed but
+    // held for manual review (W44-R5 / Kunal 2026-07-21), so they don't belong in the clean-FINAL base.
     rows: {
       live: [
         { id: 'row_t1', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'tr1', idempotencyKey: 'transfer:tr1:receive:boor:prodA', stockFromStoreId: 'head_office', _spId: 200, ...TUP_A },
         { id: 'row_sale1', type: 'out', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-10', createdAt: '2025-07-10T05:00:00Z', idempotencyKey: 'row_sale1', stockTo: 'Customer Sale — walk-in', unitPriceAtTime: 150, _spId: 210 },
-        { id: 'row_direct1', type: 'in', productId: 'prodB', storeId: 'boor', qty: 10, date: '2025-08-01', createdAt: '2025-08-01T02:00:00Z', idempotencyKey: 'row_direct1', stockFrom: 'HO Warehouse — bulk', stockFromStoreId: 'head_office', _spId: 220, _attested: true, sellAtSupply: 40, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 },
         { id: 'row_waste1', type: 'wastage', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-08-05', createdAt: '2025-08-05T02:00:00Z', idempotencyKey: 'row_waste1', _spId: 230 },
-        // legacy DIRECT row (transferless, pre-stamps direct-log path): lens by client parity
-        { id: 'row_legacy1', type: 'in', productId: 'prodB', storeId: 'boor', qty: 3, date: '2025-09-01', createdAt: '2025-09-01T02:00:00Z', stockFrom: 'HO Warehouse — old app', _spId: 90 },
       ],
-      archive: [
-        // legacy TRANSFER row (transferId but NO steps — pre-Chunk-4): epoch provenance via SourceId
-        { id: 'row_arch1', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-06-15', createdAt: '2025-06-15T02:00:00Z', transferId: 'tr_old', stockFromStoreId: 'head_office', sourceId: 12 },
-      ],
+      archive: [],
     },
     steps: [
       { stepId: 'st1', recordId: 'tr1', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'boor', _attested: true,
@@ -62,20 +59,52 @@ function VALID() {
 }
 const run = (mut) => { const v = VALID(); if (mut) mut(v); return E.buildBuybackExport(v); };
 const line = (res, id) => res.ok && res.settlement.costLines.find(l => l.transactionId === id);
+// A VERIFIABLE, lens-valued HO transfer row: a stampless submit => legacy-lens, valued as-of the SUBMIT
+// day (W44-R4). Step-backed so it's qty-reconciled (not unverifiable) and can reach FINAL. Used by the
+// lens-chain probes now that the old direct-log/pre-epoch lens vehicles live in their own section.
+function lensRow(v, id, productId, submitDate, qty) {
+  const tid = 'tr_' + id, n = v.rows.live.length + v.rows.archive.length;
+  v.steps.push({ stepId: 's_' + id, recordId: tid, recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse(submitDate + 'T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'boor', _attested: true, payload: { items: [{ productId, sentQty: qty }] } });
+  v.steps.push({ stepId: 'r_' + id, recordId: tid, recordType: 'transfer', stepType: 'receive', seq: 20, timestamp: Date.parse(submitDate + 'T03:00:00Z'), _attested: true, payload: { lines: [{ productId, receivedQty: qty }] } });
+  v.rows.live.push({ id, type: 'transfer_in', productId, storeId: 'boor', qty, date: submitDate, createdAt: submitDate + 'T03:00:00Z', transferId: tid, idempotencyKey: id, stockFromStoreId: 'head_office', _spId: 500 + n });
+}
 
 // ── P1: the valid fixture reaches FINAL with the right economics ─────────────────────────────────────
 console.log('== base fixture (P1/P5/P6) ==');
 const base = run();
 ok('valid input => ok', base.ok === true, JSON.stringify(base));
 ok('valid input => FINAL', base.ok && base.settlement.status === 'FINAL', base.ok ? base.settlement.provisionalReasons.join(';') : '');
+ok('clean base => FINAL', base.ok && base.settlement.status === 'FINAL', base.ok ? base.settlement.provisionalReasons.join(';') : '');
 ok('tier-1 corroborated transfer row billed at its stamps (100 x5 @25% => 375)', (() => { const l = line(base, 'row_t1'); return l && l.source === 'stamped' && l.owed === 375; })());
-ok('attested direct HO-supply row billed (40 x10 @25% => 300)', (() => { const l = line(base, 'row_direct1'); return l && l.source === 'stamped' && l.owed === 300; })());
-ok('legacy lens row billed via the chain (40 x3 @25% => 90)', (() => { const l = line(base, 'row_legacy1'); return l && l.source === 'store-default' && l.owed === 90; })());
-ok('pre-epoch ARCHIVED legacy row billed via SourceId provenance (100 x2 @25% => 150)', (() => { const l = line(base, 'row_arch1'); return l && l.source === 'store-default' && l.owed === 150; })());
 ok('sale revenue at the FROZEN UnitPriceAtTime (2 x150 = 300, K4)', base.ok && base.settlement.retailProfit.revenue === 300 && base.settlement.retailProfit.legacyPriceFallbackCount === 0);
-ok('totals owed = 915; profit = revenue - supply cost', base.ok && base.settlement.totals.owed === 915 && base.settlement.retailProfit.profit === 300 - 915);
+ok('clean base totals owed = 375; profit = revenue - supply cost', base.ok && base.settlement.totals.owed === 375 && base.settlement.retailProfit.profit === 300 - 375);
 ok('wastage tallied in usage, not billed', base.ok && base.settlement.usage.prodA && base.settlement.usage.prodA.wastage === 1 && !line(base, 'row_waste1'));
-ok('legacy-keyed row count surfaced (row_legacy1 + row_arch1 have no key)', base.ok && base.settlement.meta.legacyKeyedRowCount === 2);
+ok('clean base has no unverifiable rows', base.ok && base.settlement.meta.unverifiableQty.length === 0);
+
+// ── UNVERIFIABLE-QTY row classes (W44-R5 / Kunal 2026-07-21): billed + SURFACED + held for manual review ──
+console.log('== unverifiable-qty rows (direct-log / legacy / pre-epoch) ==');
+const DIRECT1 = { id: 'row_direct1', type: 'in', productId: 'prodB', storeId: 'boor', qty: 10, date: '2025-08-01', createdAt: '2025-08-01T02:00:00Z', idempotencyKey: 'row_direct1', stockFrom: 'HO Warehouse — bulk', stockFromStoreId: 'head_office', _spId: 220, _attested: true, sellAtSupply: 40, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 };
+const LEGACY1 = { id: 'row_legacy1', type: 'in', productId: 'prodB', storeId: 'boor', qty: 3, date: '2025-09-01', createdAt: '2025-09-01T02:00:00Z', stockFrom: 'HO Warehouse — old app', _spId: 90 };
+const ARCH1 = { id: 'row_arch1', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-06-15', createdAt: '2025-06-15T02:00:00Z', transferId: 'tr_old', stockFromStoreId: 'head_office', sourceId: 12 };
+ok('attested direct HO-supply row billed (40 x10 @25% => 300) but SURFACED + held for manual review', (() => {
+  const r = run(v => v.rows.live.push(J(DIRECT1)));
+  const l = line(r, 'row_direct1');
+  return l && l.source === 'stamped' && l.owed === 300 && l.unverifiableQty === true && r.settlement.meta.unverifiableQty.includes('row_direct1') && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'MANUAL_REVIEW_UNVERIFIABLE_QTY:row_direct1');
+})());
+ok('legacy lens row billed via the chain (40 x3 @25% => 90) but SURFACED + held', (() => {
+  const r = run(v => v.rows.live.push(J(LEGACY1)));
+  const l = line(r, 'row_legacy1');
+  return l && l.source === 'store-default' && l.owed === 90 && r.settlement.meta.unverifiableQty.includes('row_legacy1') && r.settlement.status === 'PROVISIONAL';
+})());
+ok('pre-epoch ARCHIVED legacy row billed via SourceId provenance (100 x2 @25% => 150) but SURFACED + held', (() => {
+  const r = run(v => v.rows.archive.push(J(ARCH1)));
+  const l = line(r, 'row_arch1');
+  return l && l.source === 'store-default' && l.owed === 150 && r.settlement.meta.unverifiableQty.includes('row_arch1') && r.settlement.status === 'PROVISIONAL';
+})());
+ok('legacy-keyed row count surfaced (a keyless legacy row)', (() => {
+  const r = run(v => v.rows.archive.push(J(ARCH1)));   // ARCH1 has no idempotencyKey
+  return r.ok && r.settlement.meta.legacyKeyedRowCount === 1;
+})());
 ok('deterministic: identical inputs => identical settlement (clock-free, N4)', JSON.stringify(run()) === JSON.stringify(run()));
 
 // ── envelope / shape (SR-90 provenance; conv-R4/R5 discipline) ───────────────────────────────────────
@@ -104,27 +133,27 @@ ok('out-of-range stored rate refused', run(v => { v.pricing.storeMap['*'] = [{ r
 ok('overlapping intervals refused', run(v => { v.pricing.storeMap['*'] = [{ rate: 10, from: WFROM, to: null }, { rate: 20, from: '2025-07-01T00:00:00Z', to: null }]; }).reason === 'MALFORMED_PRICING');
 ok('chain: store-override beats global beats store-default', (() => {
   const r = run(v => {
+    lensRow(v, 'lp1', 'prodB', '2025-07-01', 1);
     v.pricing.storeMap.prodB = [{ rate: 50, from: WFROM, to: null }];
     v.pricing.globalMap.prodB = [{ rate: 40, from: WFROM, to: null }];
   });
-  const l = line(r, 'row_legacy1');
+  const l = line(r, 'lp1');
   return l && l.discPct === 50 && l.source === 'store-override';
 })());
 ok('chain: global tier used when no override', (() => {
-  const r = run(v => { v.pricing.globalMap.prodB = [{ rate: 40, from: WFROM, to: null }]; });
-  const l = line(r, 'row_legacy1');
+  const r = run(v => { lensRow(v, 'lp2', 'prodB', '2025-07-01', 1); v.pricing.globalMap.prodB = [{ rate: 40, from: WFROM, to: null }]; });
+  const l = line(r, 'lp2');
   return l && l.discPct === 40 && l.source === 'global';
 })());
-ok('lens resolves HISTORICALLY (interval boundary [from,to) exclusive; a later rate change never rewrites)', (() => {
-  const r = run(v => { v.pricing.storeMap['*'] = [{ rate: 25, from: WFROM, to: '2025-09-01T00:00:00Z' }, { rate: 10, from: '2025-09-01T00:00:00Z', to: null }]; });
-  const lOld = line(r, 'row_arch1');      // 2025-06-15 => 25
-  const lNew = line(r, 'row_legacy1');    // 2025-09-01 midnight => the NEW interval ([from,to) exclusive)
+ok('lens resolves HISTORICALLY as-of the SUBMIT day (a later rate change never rewrites)', (() => {
+  const r = run(v => { lensRow(v, 'lpOld', 'prodA', '2025-06-15', 1); lensRow(v, 'lpNew', 'prodA', '2025-09-15', 1); v.pricing.storeMap['*'] = [{ rate: 25, from: WFROM, to: '2025-09-01T00:00:00Z' }, { rate: 10, from: '2025-09-01T00:00:00Z', to: null }]; });
+  const lOld = line(r, 'lpOld'), lNew = line(r, 'lpNew');
   return lOld && lOld.discPct === 25 && lNew && lNew.discPct === 10;
 })());
 ok('valid config, uncovered date => honest NOT_SET at 0% (surfaced, FINAL keeps)', (() => {
-  const r = run(v => { v.pricing.storeMap['*'] = [{ rate: 25, from: '2025-10-01T00:00:00Z', to: null }]; });
-  const l = line(r, 'row_legacy1');
-  return r.ok && l && l.discPct === 0 && l.lineErr === 'NOT_SET' && r.settlement.meta.notSet.includes('row_legacy1') && r.settlement.status === 'FINAL';
+  const r = run(v => { lensRow(v, 'lpU', 'prodA', '2025-07-01', 1); v.pricing.storeMap['*'] = [{ rate: 25, from: '2025-10-01T00:00:00Z', to: null }]; });
+  const l = line(r, 'lpU');
+  return r.ok && l && l.discPct === 0 && l.lineErr === 'NOT_SET' && r.settlement.meta.notSet.includes('lpU') && r.settlement.status === 'FINAL';
 })());
 
 // ── coverage (P4 — SR-26/56/92/93/95/170) ────────────────────────────────────────────────────────────
@@ -146,7 +175,7 @@ ok('row instant as a calendar day refused (SR-25)', run(v => { v.rows.live[0].cr
 ok('rolled-over instant (2025-02-30) refused', run(v => { v.rows.live[0].createdAt = '2025-02-30T00:00:00Z'; }).reason === 'BAD_ROW_INSTANT');
 ok('row at exactly window.to EXCLUDED (S-W4-5)', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_at_to', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, date: '2025-11-01', createdAt: WTO, stockFromStoreId: 'head_office', _spId: 300, idempotencyKey: 'row_at_to', ...TUP_A }); });
-  return r.ok && !line(r, 'row_at_to') && r.settlement.totals.owed === 915;
+  return r.ok && !line(r, 'row_at_to') && r.settlement.totals.owed === 375;
 })());
 ok('row at exactly window.from INCLUDED', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_at_from', type: 'transfer_in', productId: 'prodB', storeId: 'boor', qty: 1, date: '2025-06-01', createdAt: WFROM, stockFrom: 'HO Warehouse — x', _spId: 60, idempotencyKey: 'row_at_from' }); });
@@ -155,7 +184,7 @@ ok('row at exactly window.from INCLUDED', (() => {
 })());
 ok('post-buy-back HO row excluded (S-W4-5)', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_post', type: 'in', productId: 'prodB', storeId: 'boor', qty: 100, date: '2025-12-01', createdAt: '2025-12-01T02:00:00Z', stockFromStoreId: 'head_office', _attested: true, sellAtSupply: 40, discAtSupply: 0, pricingVersion: 4, catalogueVersion: 8, _spId: 400, idempotencyKey: 'row_post' }); });
-  return r.ok && !line(r, 'row_post') && r.settlement.totals.owed === 915;
+  return r.ok && !line(r, 'row_post') && r.settlement.totals.owed === 375;
 })());
 ok('PARTIAL authority tuple on a row refused (SR-169 corruption class)', run(v => { delete v.rows.live[0].catalogueVersion; }).reason === 'MALFORMED_ROW');
 ok('3dp money refused', run(v => { v.rows.live[0].sellAtSupply = 100.005; }).reason === 'MALFORMED_ROW');
@@ -170,13 +199,13 @@ ok('malformed server-resolved fields refused (partial _rv tuple)', run(v => { v.
 console.log('== dedup ==');
 ok('same-ID bit-identical copies across lists collapse (counted once)', (() => {
   const r = run(v => { v.rows.archive.push(J(v.rows.live[0])); });
-  return r.ok && r.settlement.totals.owed === 915;
+  return r.ok && r.settlement.totals.owed === 375;
 })());
 ok('same-ID DIFFERING copies fail closed (SR-55)', run(v => { const c = J(v.rows.live[0]); c.qty = 6; v.rows.archive.push(c); }).reason === 'DUPLICATE_ID_CONFLICT');
 ok('distinct IDs sharing a non-empty IdempotencyKey fail closed (SR-96)', run(v => { v.rows.live[1].idempotencyKey = v.rows.live[0].idempotencyKey; }).reason === 'IDEMPOTENCY_KEY_CONFLICT');
 ok('blank keys NEVER group (two blank-key rows coexist; surfaced legacy count)', (() => {
-  const r = run(v => { v.rows.live[1].idempotencyKey = ''; });
-  return r.ok && r.settlement.meta.legacyKeyedRowCount === 3;
+  const r = run(v => { v.rows.live[1].idempotencyKey = ''; v.rows.live[2].idempotencyKey = ''; });   // sale + wastage blanked
+  return r.ok && r.settlement.meta.legacyKeyedRowCount === 2;
 })());
 
 // ── controls (P2 — SR-115/123/124/130/141/144/145/148/150/151) ───────────────────────────────────────
@@ -190,7 +219,7 @@ ok('untargeted control refused (P2)', run(v => {
 }).reason === 'UNTARGETED_CONTROL');
 ok('deletion REMOVES the target from the settlement + covers its identity', (() => {
   const r = run(v => { v.controls.live.push(J(DEL1)); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_d1', 1, 11); });
-  return r.ok && !line(r, 'row_t1') && r.settlement.totals.owed === 915 - 375 && r.settlement.status === 'FINAL'
+  return r.ok && !line(r, 'row_t1') && r.settlement.totals.owed === 0 && r.settlement.status === 'FINAL'
     && r.settlement.meta.coveredIdentities.includes('row_t1');   // presented row_t1 stays accounted: COVERED
 })());
 ok('control supplied but head names a DIFFERENT revision => refused (SR-151)', run(v => {
@@ -211,7 +240,8 @@ ok('two controls on one target fail closed (SR-144 ambiguity)', run(v => {
   v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_d1', 1, 11);
 }).reason === 'CONTROL_AMBIGUITY');
 ok('cross-list control => fail-closed conflict (SR-70)', run(v => {
-  v.controls.live.push({ ...J(DEL1), targetTransactionId: 'row_arch1' });
+  v.rows.archive.push(J(ARCH1));   // an archived target; the control lives in the LIVE list
+  v.controls.live.push({ ...J(DEL1), targetTransactionId: 'row_arch1', targetLine: { transferId: 'tr_old', productId: 'prodA', qty: 2 } });
   v.controls.activeManifest.controlHeads.row_arch1 = HEAD('ctl_d1', 1, 11);
 }).reason === 'CROSS_LIST_CONTROL_CONFLICT');
 ok('unknown control type refused (exactly two types, no delta — SR-124)', run(v => {
@@ -226,7 +256,7 @@ const REPL = (over) => Object.assign({
 ok('replacement SUBSTITUTES: original excluded, server-minted row billed at ITS stamps (SR-124/134)', (() => {
   const r = run(v => { v.controls.live.push(REPL()); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11); });
   const l = line(r, 'ctl_r1_row');
-  return r.ok && !line(r, 'row_t1') && l && l.source === 'control' && l.owed === 300 && r.settlement.totals.owed === 915 - 375 + 300 && r.settlement.status === 'FINAL';
+  return r.ok && !line(r, 'row_t1') && l && l.source === 'control' && l.owed === 300 && r.settlement.totals.owed === 300 && r.settlement.status === 'FINAL';
 })());
 ok('UNSTAMPED replacement is malformed (SR-130)', run(v => {
   const c = REPL(); delete c.row.sellAtSupply; delete c.row.discAtSupply; delete c.row.pricingVersion; delete c.row.catalogueVersion;
@@ -249,7 +279,7 @@ ok('replacement of an out-of-window OWN-INSTANT-BOUND target is legitimately exc
       row: { id: 'ctl_pre_row', type: 'in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-05-01T00:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
     v.controls.activeManifest.controlHeads.row_pre = HEAD('ctl_pre', 1, 11);
   });
-  return r.ok && !line(r, 'ctl_pre_row') && !line(r, 'row_pre') && r.settlement.totals.owed === 915 && r.settlement.status === 'FINAL';
+  return r.ok && !line(r, 'ctl_pre_row') && !line(r, 'row_pre') && r.settlement.totals.owed === 375 && r.settlement.status === 'FINAL';
 })());
 ok('CROSS-PRODUCT replacement values at the REPLACEMENT product\'s server-minted stamps, no origin proof (SR-145/150)', (() => {
   const c = REPL(); c.row.productId = 'prodB'; c.row.sellAtSupply = 40;
@@ -260,7 +290,7 @@ ok('CROSS-PRODUCT replacement values at the REPLACEMENT product\'s server-minted
 ok('replacement correcting a NON-HO movement is NOT billed (same line filter)', (() => {
   const c = REPL(); c.row.stockFromStoreId = 'karr';
   const r = run(v => { v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11); });
-  return r.ok && !line(r, 'ctl_r1_row') && r.settlement.totals.owed === 915 - 375;
+  return r.ok && !line(r, 'ctl_r1_row') && r.settlement.totals.owed === 0;
 })());
 ok('wrong-store replacement row refused', run(v => {
   const c = REPL(); c.row.storeId = 'karr';
@@ -278,10 +308,12 @@ ok('W44-R2 Codex-1: a replacement CHAIN (a control targeting another replacement
   return r;
 })());
 ok('W44-R2 Codex-1: a replacement output id colliding with a supplied ledger row fails closed', run(v => {
+  v.rows.live.push(J(DIRECT1));   // a transferless target (no targetLine required)
   v.controls.live.push({ controlId: 'ctlC', type: 'replacement', targetTransactionId: 'row_direct1', revision: 1, bornPublicationVersion: 11, row: { id: 'row_t1', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-08-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
   v.controls.activeManifest.controlHeads.row_direct1 = HEAD('ctlC', 1, 11);
 }).reason === 'CONTROL_OUTPUT_COLLISION');
 ok('W44-R2 Codex-1: two replacements minting the same output id fail closed', run(v => {
+  v.rows.live.push(J(DIRECT1));
   v.controls.live.push(
     { controlId: 'ctlD', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, targetLine: TL_T1, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-07-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
     { controlId: 'ctlE', type: 'replacement', targetTransactionId: 'row_direct1', revision: 1, bornPublicationVersion: 11, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-08-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
@@ -313,7 +345,7 @@ ok('UNATTESTED minting step => tier-1 row not paid; FINAL refused (SR-153)', (()
   return r.ok && l && l.owed === 0 && r.settlement.status === 'PROVISIONAL';
 })());
 ok('transferless stamped row WITHOUT the server attestation column not paid (SR-155)', (() => {
-  const r = run(v => { delete v.rows.live[2]._attested; });
+  const r = run(v => { const d = J(DIRECT1); delete d._attested; v.rows.live.push(d); });
   const l = line(r, 'row_direct1');
   return r.ok && l && l.owed === 0 && r.settlement.status === 'PROVISIONAL'
     && r.settlement.provisionalReasons.some(x => x === 'UNATTESTED_ROW:row_direct1');
@@ -371,14 +403,15 @@ ok('NO steps + PRE-epoch id => genuine legacy, lens (SR-129)', (() => {
     t._spId = 50;   // < epoch 100
   });
   const l = line(r, 'row_t1');
-  return r.ok && l && l.source === 'store-default' && l.owed === 375 && r.settlement.status === 'FINAL';   // 100 x5 @25%
+  // pre-epoch legacy is billed via lens (100 x5 @25% => 375) but is UNVERIFIABLE-qty => held for review
+  return r.ok && l && l.source === 'store-default' && l.owed === 375 && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'MANUAL_REVIEW_UNVERIFIABLE_QTY:row_t1');
 })());
 ok('ARCHIVED row epoch uses the preserved SourceId, never the archive item id (SR-129)', (() => {
-  const r = run(v => { v.rows.archive[0].sourceId = 500; });   // post-epoch => resurrection corner
+  const r = run(v => { const a = J(ARCH1); a.sourceId = 500; v.rows.archive.push(a); });   // post-epoch => resurrection corner
   return r.ok && r.settlement.provisionalReasons.some(x => x === 'POST_EPOCH_NO_STEPS:row_arch1');
 })());
 ok('absent provenance id => refuse the legacy claim, PROVISIONAL (SR-129)', (() => {
-  const r = run(v => { delete v.rows.archive[0].sourceId; });
+  const r = run(v => { const a = J(ARCH1); delete a.sourceId; v.rows.archive.push(a); });
   return r.ok && r.settlement.provisionalReasons.some(x => x === 'PROVENANCE_ABSENT:row_arch1');
 })());
 ok('PARTIAL item tuple in a step => refusal (SR-169/W4.3 R3)', run(v => { delete v.steps[0].payload.items[0].catalogueVersion; }).reason === 'MALFORMED_STEP_STAMPS');
@@ -389,12 +422,16 @@ ok('legacy-lens basis WITH authority fields => refusal (SR-167 cross-class)', ru
   v.steps[0].payload.items[0].basis = 'legacy-lens';
 }).reason === 'MALFORMED_STEP_STAMPS');
 ok('stamped honest 0% stays LOUD (NOT_SET surfaced, still FINAL)', (() => {
-  const r = run(v => { v.rows.live[2].discAtSupply = 0; v.rows.live[2].sellAtSupply = 40; });
-  const l = line(r, 'row_direct1');
-  return r.ok && l && l.lineErr === 'NOT_SET' && l.owed === 400 && r.settlement.meta.notSet.includes('row_direct1') && r.settlement.status === 'FINAL';
+  // a VERIFIABLE (step-backed) transfer row stamped at 0% — row + step stamps agree at disc 0
+  const r = run(v => {
+    v.rows.live[0].discAtSupply = 0;
+    v.steps[0].payload.items[0].discAtSupply = 0;
+  });
+  const l = line(r, 'row_t1');
+  return r.ok && l && l.lineErr === 'NOT_SET' && l.owed === 500 && r.settlement.meta.notSet.includes('row_t1') && r.settlement.status === 'FINAL';   // 100 x5 @0%
 })());
 ok('lens row with NO date => fail closed, PROVISIONAL', (() => {
-  const r = run(v => { delete v.rows.live[4].date; });
+  const r = run(v => { const g = J(LEGACY1); delete g.date; v.rows.live.push(g); });
   return r.ok && r.settlement.provisionalReasons.some(x => x === 'NO_LENS_DATE:row_legacy1');
 })());
 
@@ -589,9 +626,10 @@ ok('W44-R5 Codex-3: a FAITHFUL replacement (server submit instant) bills in-wind
 ok('W44-R5 Codex-4: a committed flush whose written id was NOT presented fails closed', run(v => {
   v.drain.graceRecords[0].presentedIds = ['row_sale1']; v.drain.graceRecords[0].writtenIds = ['row_t1'];   // row_t1 written but not presented
 }).ok && run(v => { v.drain.graceRecords[0].presentedIds = ['row_sale1']; v.drain.graceRecords[0].writtenIds = ['row_t1']; }).settlement.provisionalReasons.some(x => x === 'WRITTEN_NOT_PRESENTED:row_t1'));
-ok('W44-R5 AGY-2/3: an unverifiable-qty row (direct-log / pre-epoch) is billed but SURFACED for review', (() => {
-  // base already contains row_direct1 (direct-log) + row_legacy1 (transferless) + row_arch1 (pre-epoch)
-  return base.ok && base.settlement.meta.unverifiableQty.includes('row_direct1') && base.settlement.meta.unverifiableQty.includes('row_legacy1') && base.settlement.meta.unverifiableQty.includes('row_arch1') && line(base, 'row_direct1').unverifiableQty === true;
+ok('W44-R5 AGY-2/3: all three unverifiable-qty classes are billed, SURFACED, and held for review', (() => {
+  const r = run(v => { v.rows.live.push(J(DIRECT1), J(LEGACY1)); v.rows.archive.push(J(ARCH1)); });
+  return r.ok && r.settlement.status === 'PROVISIONAL'
+    && ['row_direct1', 'row_legacy1', 'row_arch1'].every(id => r.settlement.meta.unverifiableQty.includes(id) && line(r, id) && line(r, id).unverifiableQty === true);
 })());
 ok('W44-R4: a legacy-lens transfer row values at the SUBMIT-step day, not the editable row date (rate can\'t be shifted)', (() => {
   const mk = (rowDate) => run(v => {
@@ -628,18 +666,18 @@ ok('W44-R3 Codex-1: a SUPPLIER/store/franchise return does NOT net revenue (only
 })());
 ok('N9 (Kunal): an HO return (transfer_out to HO) is NOT credited against the supply bill (usage-only)', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_horet', type: 'transfer_out', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-12', createdAt: '2025-07-12T05:00:00Z', idempotencyKey: 'row_horet', stockToStoreId: 'head_office', stockTo: 'HO Warehouse — return', _spId: 250 }); });
-  return r.ok && !line(r, 'row_horet') && r.settlement.totals.owed === 915 && (r.settlement.usage.prodA.transfer || 0) >= 2 && r.settlement.status === 'FINAL';
+  return r.ok && !line(r, 'row_horet') && r.settlement.totals.owed === 375 && (r.settlement.usage.prodA.transfer || 0) >= 2 && r.settlement.status === 'FINAL';
 })());
 ok("'deleted'-type rows carry no economics and no unclassified noise", (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_del', type: 'deleted', productId: 'prodA', storeId: 'boor', qty: 9, date: '2025-07-01', createdAt: '2025-07-01T04:30:00Z', idempotencyKey: 'row_del', _spId: 520 }); });
-  return r.ok && !line(r, 'row_del') && !r.settlement.meta.unclassified.includes('row_del') && r.settlement.totals.owed === 915;
+  return r.ok && !line(r, 'row_del') && !r.settlement.meta.unclassified.includes('row_del') && r.settlement.totals.owed === 375;
 })());
 
 // ── PROVISIONAL vs FINAL (P5 — SR-37/57/94/107/122/170/171) ──────────────────────────────────────────
 console.log('== PROVISIONAL vs FINAL ==');
 ok('graceClosed false => PROVISIONAL (GRACE_OPEN), settlement still produced/regenerable', (() => {
   const r = run(v => { v.graceClosed = false; });
-  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.includes('GRACE_OPEN') && r.settlement.totals.owed === 915;
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.includes('GRACE_OPEN') && r.settlement.totals.owed === 375;
 })());
 ok('drain evidence absent => PROVISIONAL (never an error)', (() => {
   const r = run(v => { v.drain = null; });
@@ -695,7 +733,7 @@ ok('expected STEP not ingested => refuse FINAL (drain proves step ingest, SR-122
 })());
 ok('BAD_VERSION corrected-and-reattested => unblocked ONLY when the corrected row is PRESENT (SR-165)', (() => {
   const r = run(v => {
-    v.rows.live.push({ id: 'row_q2', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, date: '2025-07-01', createdAt: '2025-07-01T06:00:00Z', idempotencyKey: 'row_q2', stockFromStoreId: 'head_office', _spId: 260, _attested: true, ...TUP_A });
+    lensRow(v, 'row_q2', 'prodA', '2025-07-01', 1);   // a verifiable step-backed HO row that's present
     v.badVersionEvidence.entries.push({ rowId: 'row_q2', digest: 'd2', terminal: 'corrected-and-reattested' });
   });
   return r.ok && r.settlement.status === 'FINAL';
