@@ -23,14 +23,17 @@
 >   type out of the cost filter, swapping its product within a transfer, repointing its transferId, or
 >   shifting its window/rate date all fail closed. Two residuals are FLAGGED (see notes): pre-epoch
 >   legacy transfers (no server-side qty/date) and direct-log transferless rows (qty is HO's own entry).
-> - **R5 (5 fixes + 2 residuals adjudicated):** the resolve step's Director-chosen qty and a backfill's
->   recorded receivedQty are now the billed authority. A control's reconciliation OFFSET comes from a
->   NEW server-declared `targetLine {transferId,productId,qty}` (required for transfer-linked targets),
->   not the mutable target row. A transfer-linked replacement's instant binds to the SERVER submit step.
->   A committed flush's writtenIds must be ⊆ presentedIds. The two residuals (direct-log / pre-epoch,
->   no server step for qty) are SURFACED (`meta.unverifiableQty` + per-line flag) and adjudicated to the
->   P-13 boundary — see notes N7/N9 + the STAGING-APPLY items. TWO NEW STAGING-APPLY CONTRACTS: push-v2
->   qty attestation; the correction route must populate `control.targetLine`.
+> - **R5 (5 fixes + 2 residuals):** the resolve step's Director-chosen qty and a backfill's recorded
+>   receivedQty are now the billed authority. A control's reconciliation OFFSET comes from a NEW
+>   server-declared `targetLine {transferId,productId,qty}` (required for transfer-linked targets), not
+>   the mutable target row. A transfer-linked replacement's instant binds to the SERVER submit step. A
+>   committed flush's writtenIds must be ⊆ presentedIds. The direct-log / pre-epoch rows (no server step
+>   for qty) are now HARD-BLOCKED (Kunal's call): a settlement containing one is held PROVISIONAL with
+>   `MANUAL_REVIEW_UNVERIFIABLE_QTY` + surfaced. TWO STAGING-APPLY CONTRACTS follow: push-v2 qty
+>   attestation; the correction route must populate `control.targetLine`.
+>
+> The base proof fixture is now clean/step-backed (bills 375); the unverifiable classes have their own
+> section. This is the FIFTH round — the engine has changed materially. Review the current code.
 > - **Current gate numbers are in "Required checks" below** — they supersede any earlier pack.
 > A FRESH reviewer can ignore this banner and read the whole pack normally.
 
@@ -86,7 +89,7 @@ Branch `azure-phase-5-8-server`; review the LATEST commit. Work in your own copy
 - **NO client-file changes this wave** (index.html/sync.js/records.js/phase2.js/db.js untouched).
 
 ## Required checks (run them, don't just read) — CURRENT gate numbers
-- `node test/buyback-export-proof.js` → **156/156** expected (this wave's core gate; 122 build + 4 R1 + 7 R2 + 2 N9 + 7 R3 + 6 R4 + 8 R5).
+- `node test/buyback-export-proof.js` → **158/158** expected (this wave's core gate).
 - `node test/topology-proof.js` → **256/256** expected (proves the additive export changed nothing).
 - `cd test && node smoke-test.js` → **277/277** expected (S-283..S-286 are this wave's parity sentinels).
 - Scoped mutation testing:
