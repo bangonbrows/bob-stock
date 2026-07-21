@@ -271,14 +271,23 @@ function foldProjection(stepsForTransfer) {
     if (s.stepType === 'submit' || (s.stepType === 'backfill' && p.snapshot)) {
       const isBackfill = s.stepType === 'backfill';
       const base = isBackfill ? p.snapshot : p;
-      t = { hasGenesis: true, originType: isBackfill ? 'backfill' : 'submit',
+      // W44-R4: the genesis instant is authoritative for a transfer-linked row's window + lens date
+      // (row createdAt/date are client-editable — Codex/AGY-4). Submit step: its own timestamp; a
+      // backfill snapshot carries submittedAt/date.
+      const gMs = (s.stepType === 'submit' && Number.isFinite(s.timestamp)) ? s.timestamp
+        : (Date.parse(base.submittedAt || base.date || base.createdAt || '') || (Number.isFinite(s.timestamp) ? s.timestamp : null));
+      t = { hasGenesis: true, originType: isBackfill ? 'backfill' : 'submit', submitMs: gMs,
             fromStoreId: s.fromStoreId || base.fromStoreId || '', toStoreId: s.toStoreId || base.toStoreId || '', items: new Map() };
       for (const it of (base.items || [])) {
         if (!it || !reqId(it.productId)) return { error: 'MALFORMED_STEP_LINE' };
         const r = readLineStamps(it);
         if (typeof r === 'string') return { error: r };
+        // W44-R4 (Codex/AGY-2): the AUTHORITATIVE dispatched quantity from the server step — the
+        // reconciliation below binds each ledger row's editable qty to it. sentQty at submit; the
+        // received quantity overrides at receive (what actually landed and is billed).
+        const sQty = Number.isFinite(it.sentQty) ? it.sentQty : null;
         // Backfill-sourced stamps are UNTRUSTED (SR-154/W4.3 amendment 2 — never tier-2 evidence).
-        t.items.set(it.productId, { tuple: r.tuple, basis: r.basis, untrusted: isBackfill && !!r.tuple, mintAttested: !isBackfill && !!r.tuple && attested });
+        t.items.set(it.productId, { tuple: r.tuple, basis: r.basis, untrusted: isBackfill && !!r.tuple, mintAttested: !isBackfill && !!r.tuple && attested, qty: sQty, received: false });
       }
     } else if (!t) {
       continue;   // a step before its genesis — same hold as the client fold (re-pull reconciles)
@@ -286,6 +295,7 @@ function foldProjection(stepsForTransfer) {
       for (const ln of (p.lines || [])) {
         const item = ln && t.items.get(ln.productId);
         if (!item) continue;
+        if (Number.isFinite(ln.receivedQty)) { item.qty = ln.receivedQty; item.received = true; }   // W44-R4: received overrides sent as the billed authority
         const r = readLineStamps(ln);
         if (typeof r === 'string') return { error: r };
         const lnStamped = !!r.tuple, itemStamped = !!item.tuple;
@@ -308,7 +318,7 @@ function foldProjection(stepsForTransfer) {
     }
     // cancel: return rows inherit the item state (SR-88) — no projection change needed.
   }
-  return t || { hasGenesis: false, originType: null, fromStoreId: '', toStoreId: '', items: new Map() };
+  return t || { hasGenesis: false, originType: null, submitMs: null, fromStoreId: '', toStoreId: '', items: new Map() };
 }
 
 // ── The engine ───────────────────────────────────────────────────────────────────────────────────────
@@ -437,6 +447,19 @@ function buildBuybackExport(input) {
     if (proj.error) return refuse('MALFORMED_STEP_STAMPS', tid + ':' + proj.error);
     projections.set(tid, proj);
   }
+  // W44-R4 (Codex/AGY-2,3): the AUTHORITATIVE HO-supply line set — every (transferId, productId) HO
+  // dispatched to THIS store, keyed to the server step's quantity. Each such line must be claimed by the
+  // supplied ledger rows summing to EXACTLY that quantity (built + reconciled around the valuation loop),
+  // so an editable qty, a type flipped out of the cost filter, a product swapped within a transfer, or a
+  // transferId repointed all fail closed — the ledger row is a pointer, the step is the authority.
+  const hoLines = new Map();   // `${transferId}|${productId}` -> { qty, transferId, productId }
+  for (const [tid, proj] of projections) {
+    if (!proj.hasGenesis || proj.fromStoreId !== HEAD_OFFICE || proj.toStoreId !== storeId) continue;
+    for (const [pid, item] of proj.items) {
+      if (!Number.isFinite(item.qty)) return refuse('MALFORMED_STEP_STAMPS', tid + '|' + pid + ':qty');   // an HO line with no server quantity is unbindable
+      hoLines.set(tid + '|' + pid, { qty: item.qty, transferId: tid, productId: pid });
+    }
+  }
 
   // F) controls — typed, target-bound, head-verified (P2, SR-115/123/124/130/144/151).
   const drainIdentitySet = new Set();
@@ -545,8 +568,10 @@ function buildBuybackExport(input) {
   const surfaced = { pendingValuations: [], notSet: [], lineErrors: [], unclassified: [] };
   const costLines = [];
   const usage = {};              // productId -> { category -> qty }
+  const claimedHO = new Map();   // `${transferId}|${productId}` -> summed billed row qty (W44-R4 reconciliation)
   let revenue = 0, legacyPriceFallbackCount = 0, salesQty = 0, refundQty = 0;
   const block = (code, id) => finalBlockers.push(code + ':' + id);
+  const utcMidnight = (ms) => Date.parse(new Date(ms).toISOString().slice(0, 10) + 'T00:00:00.000Z');
 
   for (const e of economic) {
     const t = e.row;
@@ -585,6 +610,13 @@ function buildBuybackExport(input) {
     // HO-sourced), then the full W4.3 valuation precedence. Control rows face the SAME filter on their
     // own carried fields — a replacement correcting a NON-HO movement must never become a billed line.
     if (!(isIn(t) && (cat === 'delivery' || cat === 'transfer') && isHOSupply(t, projections))) continue;   // not HO supply — integrity already gated above
+    // W44-R4 (Codex/AGY-2,3): record this row's CLAIM on its authoritative HO transfer line. The row's
+    // editable qty is summed here and reconciled against the server quantity after the loop — so a
+    // lowered/inflated qty, a product-swap within the transfer, or a repointed transferId all fail closed.
+    // Only STEP-BACKED rows (a genesis projection exists) participate; a genuine PRE-epoch legacy transfer
+    // has no server line to bind to (its authenticity rests on the validated pre-epoch provenance id,
+    // SR-129 — a flagged residual: pre-Chunk-4 rows carry no server-side quantity).
+    if (t.transferId && !e.isControl) { const pj = projections.get(t.transferId); if (pj && pj.hasGenesis) claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty); }
     const p = productById.get(t.productId);
     let sell = (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
     let disc = null, lineErr = null, source = null, paid = true;
@@ -631,11 +663,17 @@ function buildBuybackExport(input) {
         // else: genuine pre-epoch legacy -> lens below
       }
     }
-    // TIER 3 — the lens, as-of the row's own calendar day at UTC midnight (SR-25; invoice parity).
+    // TIER 3 — the lens, as-of the pricing-commitment day at UTC midnight (SR-25). W44-R4 (Codex/AGY-4):
+    // for a transfer-linked row the authoritative day is the SUBMIT step instant (server truth), NOT the
+    // row's editable `date` — else shifting a legacy-lens row's date moves its franchise rate. A pre-epoch
+    // legacy transfer (no step) has no server day and falls back to its own date (flagged residual).
     if (disc === null && !lineErr) {
-      if (t.date == null) { sell = 0; disc = 0; lineErr = 'PRICING_DATA_ERROR'; paid = false; block('NO_LENS_DATE', t.id); }
+      let lensMs = null;
+      if (t.transferId && !e.isControl) { const proj = projections.get(t.transferId); if (proj && proj.hasGenesis && Number.isFinite(proj.submitMs)) lensMs = utcMidnight(proj.submitMs); }
+      if (lensMs == null && t.date != null) lensMs = Date.parse(t.date + 'T00:00:00.000Z');
+      if (lensMs == null) { sell = 0; disc = 0; lineErr = 'PRICING_DATA_ERROR'; paid = false; block('NO_LENS_DATE', t.id); }
       else {
-        const r = rateAsOf(pricing.storeMap, pricing.globalMap, t.productId, Date.parse(t.date + 'T00:00:00.000Z'));
+        const r = rateAsOf(pricing.storeMap, pricing.globalMap, t.productId, lensMs);
         if (r.error) { disc = 0; lineErr = r.error; paid = false; block('LENS_' + r.error, t.id); }
         else if (r.notSet) { disc = 0; lineErr = 'NOT_SET'; }   // honest per-line-date NOT SET — loud, still billed at 0%
         else { disc = r.rate; source = r.source; }
@@ -648,6 +686,31 @@ function buildBuybackExport(input) {
     const full = paid ? sell * t.qty : 0;
     const discAmt = paid ? full * (disc / 100) : 0;
     costLines.push({ transactionId: t.id, productId: t.productId, date: t.date || null, qty: t.qty, sell: paid ? sell : null, discPct: paid ? disc : null, full, discAmt, owed: full - discAmt, source, lineErr, control: !!e.isControl });
+  }
+
+  // W44-R4 (Codex/AGY-2,3): RECONCILE the claimed HO rows against the authoritative line set. Every HO
+  // line the server dispatched to this store must be claimed by billed rows summing to EXACTLY its
+  // quantity — a shortfall (a row dropped, typed out of the cost filter, window-evaded, or qty-lowered)
+  // and an excess (qty inflated, product/transfer repointed onto a line) both fail closed. The ledger
+  // row is a pointer; the step is the authority.
+  // A DELETION/REPLACEMENT control legitimately removes a supplied row from ordinary billing (the
+  // replacement bills via the control path, a deletion writes it off), so its quantity is netted OUT of
+  // the line's expected ordinary claim — else a Director correction would trip the reconciliation.
+  const controlledLineQty = new Map();
+  for (const target of controlByTarget.keys()) {
+    const te = byId.get(target);
+    if (te && te.row.transferId && Number.isFinite(te.row.qty)) {
+      const k = te.row.transferId + '|' + te.row.productId;
+      controlledLineQty.set(k, (controlledLineQty.get(k) || 0) + te.row.qty);
+    }
+  }
+  for (const [key, line] of hoLines) {
+    const expected = line.qty - (controlledLineQty.get(key) || 0);
+    const claimed = claimedHO.get(key) || 0;
+    if (claimed !== expected) block('HO_LINE_QTY_MISMATCH', key + ' expected ' + expected + ' got ' + claimed);
+  }
+  for (const key of claimedHO.keys()) {
+    if (!hoLines.has(key)) block('UNBOUND_HO_CLAIM', key);   // a billed transfer-linked row with no authoritative HO line (belt-and-braces; the integrity gate normally precludes it)
   }
 
   // I) FINAL evaluation (P5) — graceClosed + drain + presented-identity accounting + BAD_VERSION view.

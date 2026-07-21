@@ -241,9 +241,10 @@ ok('W44-R1 Codex-2: a replacement whose original instant DISAGREES with its pres
 ok('replacement of an out-of-window OWN-INSTANT-BOUND target is legitimately excluded (both out => net zero)', (() => {
   // target row_pre sits BEFORE the window; the replacement carries the SAME (out-of-window) instant.
   const r = run(v => {
-    v.rows.live.push({ id: 'row_pre', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-05-01', createdAt: '2025-05-01T00:00:00Z', transferId: 'tr1', idempotencyKey: 'row_pre', stockFromStoreId: 'head_office', _spId: 205, ...TUP_A });
+    // transferless direct-log target (its transfer-linkage is irrelevant to this test) sitting BEFORE the window
+    v.rows.live.push({ id: 'row_pre', type: 'in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-05-01', createdAt: '2025-05-01T00:00:00Z', idempotencyKey: 'row_pre', stockFromStoreId: 'head_office', _spId: 205, _attested: true, ...TUP_A });
     v.controls.live.push({ controlId: 'ctl_pre', type: 'replacement', targetTransactionId: 'row_pre', revision: 1, bornPublicationVersion: 11,
-      row: { id: 'ctl_pre_row', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-05-01T00:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
+      row: { id: 'ctl_pre_row', type: 'in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-05-01T00:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
     v.controls.activeManifest.controlHeads.row_pre = HEAD('ctl_pre', 1, 11);
   });
   return r.ok && !line(r, 'ctl_pre_row') && !line(r, 'row_pre') && r.settlement.totals.owed === 915 && r.settlement.status === 'FINAL';
@@ -495,6 +496,54 @@ ok('W44-R3 Codex-2c: a row claiming a transfer destined for ANOTHER store fails 
 ok('W44-R3 AGY-2a: a transfer-linked row with a MUTATED type cannot bypass integrity (bad type + no steps + post-epoch)', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_badtype', type: 'weird_type', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'trGhost', idempotencyKey: 'row_badtype', _spId: 400 }); });
   return r.ok && r.settlement.provisionalReasons.some(x => x === 'POST_EPOCH_NO_STEPS:row_badtype');
+})());
+// W44-R4 (Codex/AGY-2,3,4): the billed row is a POINTER; the server step is the authority for qty,
+// product-line ownership, and the valuation date. Base tr1 = genesis head_office->boor, prodA, qty 5.
+ok('W44-R4: editing the row qty away from the authoritative received qty fails closed', (() => {
+  const lo = run(v => { v.rows.live[0].qty = 1; });
+  const hi = run(v => { v.rows.live[0].qty = 500; });
+  return lo.ok && lo.settlement.status === 'PROVISIONAL' && lo.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'))
+    && hi.ok && hi.settlement.status === 'PROVISIONAL' && hi.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'));
+})());
+ok('W44-R4: flipping a valid HO receipt\'s type out of the cost filter leaves its line unclaimed => fails closed', (() => {
+  const a = run(v => { v.rows.live[0].type = 'out'; });
+  const b = run(v => { v.rows.live[0].type = 'deleted'; });
+  return a.ok && a.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'))
+    && b.ok && b.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'));
+})());
+ok('W44-R4: a valid HO row shifted OUT of the window leaves its line unclaimed => fails closed', (() => {
+  const r = run(v => { v.rows.live[0].createdAt = '2025-12-01T03:00:00Z'; });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'));
+})());
+ok('W44-R4: swapping a row\'s productId to another product in the SAME transfer fails closed (both lines mismatch)', (() => {
+  // give tr1 a second line prodB(3); row_t1 (prodA,5) swapped to prodB
+  const r = run(v => {
+    v.steps[0].payload.items.push({ productId: 'prodB', sentQty: 3, basis: 'submit-stamped', sellAtSupply: 50, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 });
+    v.steps[1].payload.lines.push({ productId: 'prodB', receivedQty: 3 });
+    v.rows.live[0].productId = 'prodB'; v.rows.live[0].sellAtSupply = 50;
+  });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA')) && r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodB'));
+})());
+ok('W44-R4: repointing a row\'s transferId to a DIFFERENT valid HO transfer fails closed (wrong qty / unclaimed origin)', (() => {
+  const r = run(v => {
+    v.steps.push({ stepId: 'st3', recordId: 'tr2', recordType: 'transfer', stepType: 'submit', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), fromStoreId: 'head_office', toStoreId: 'boor', _attested: true, payload: { items: [{ productId: 'prodA', sentQty: 2, basis: 'submit-stamped', ...TUP_A }] } });
+    v.steps.push({ stepId: 'st4', recordId: 'tr2', recordType: 'transfer', stepType: 'receive', seq: 20, timestamp: Date.parse('2025-07-01T03:00:00Z'), _attested: true, payload: { lines: [{ productId: 'prodA', receivedQty: 2 }] } });
+    v.rows.live[0].transferId = 'tr2';
+  });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH'));
+})());
+ok('W44-R4: a legacy-lens transfer row values at the SUBMIT-step day, not the editable row date (rate can\'t be shifted)', (() => {
+  const mk = (rowDate) => run(v => {
+    v.steps[0].payload.items = [{ productId: 'prodA', sentQty: 5 }];   // stampless submit => legacy-lens
+    v.steps[1].payload.lines = [{ productId: 'prodA', receivedQty: 5 }];
+    const t = v.rows.live[0]; delete t.sellAtSupply; delete t.discAtSupply; delete t.pricingVersion; delete t.catalogueVersion;
+    if (rowDate) { t.date = rowDate; t.createdAt = rowDate + 'T03:00:00Z'; }
+    v.pricing.storeMap['*'] = [{ rate: 25, from: WFROM, to: '2025-08-01T00:00:00Z' }, { rate: 50, from: '2025-08-01T00:00:00Z', to: null }];
+  });
+  const jul = mk(null);           // submit + row both July
+  const shifted = mk('2025-09-01'); // row date shifted to Sept (higher rate) — submit stays July
+  const lj = line(jul, 'row_t1'), ls = line(shifted, 'row_t1');
+  return jul.ok && lj && lj.owed === 375 && shifted.ok && ls && ls.owed === 375;   // both bill at July's 25%
 })());
 ok('HO-supply via the STEPS projection when the row has no structured source (fail-closed until the record arrives)', (() => {
   const r = run(v => { delete v.rows.live[0].stockFromStoreId; });   // tr1's submit says fromStoreId head_office
