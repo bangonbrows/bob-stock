@@ -182,7 +182,8 @@ ok('blank keys NEVER group (two blank-key rows coexist; surfaced legacy count)',
 // ── controls (P2 — SR-115/123/124/130/141/144/145/148/150/151) ───────────────────────────────────────
 console.log('== controls ==');
 const HEAD = (cid, rev, born) => ({ controlId: cid, revision: rev, bornPublicationVersion: born });
-const DEL1 = { controlId: 'ctl_d1', type: 'deletion', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11 };
+const TL_T1 = { transferId: 'tr1', productId: 'prodA', qty: 5 };   // server-declared authoritative line for row_t1 (W44-R5)
+const DEL1 = { controlId: 'ctl_d1', type: 'deletion', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, targetLine: TL_T1 };
 ok('untargeted control refused (P2)', run(v => {
   v.controls.live.push({ ...DEL1, targetTransactionId: 'ghost_row' });
   v.controls.activeManifest.controlHeads.ghost_row = HEAD('ctl_d1', 1, 11);
@@ -217,9 +218,10 @@ ok('unknown control type refused (exactly two types, no delta — SR-124)', run(
   v.controls.live.push({ ...J(DEL1), type: 'delta' });
   v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_d1', 1, 11);
 }).reason === 'MALFORMED_CONTROL');
+// originalEventAt = the SERVER submit instant of tr1 (02:00), which the engine binds to (W44-R5 Codex-3)
 const REPL = (over) => Object.assign({
-  controlId: 'ctl_r1', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11,
-  row: { id: 'ctl_r1_row', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-07-01T03:00:00Z', stockFromStoreId: 'head_office', sellAtSupply: 100, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 },
+  controlId: 'ctl_r1', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, targetLine: TL_T1,
+  row: { id: 'ctl_r1_row', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-07-01T02:00:00Z', stockFromStoreId: 'head_office', sellAtSupply: 100, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 },
 }, over || {});
 ok('replacement SUBSTITUTES: original excluded, server-minted row billed at ITS stamps (SR-124/134)', (() => {
   const r = run(v => { v.controls.live.push(REPL()); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11); });
@@ -268,7 +270,7 @@ ok('W44-R2 Codex-1: a replacement CHAIN (a control targeting another replacement
   const r = run(v => {
     v.rows.live.push({ id: 'rowA', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, date: '2025-07-02', createdAt: '2025-07-02T03:00:00Z', idempotencyKey: 'rowA', stockFromStoreId: 'head_office', _spId: 51, _attested: true, ...TUP_A });
     v.controls.live.push(
-      { controlId: 'ctlA', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, row: { id: 'rowA', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-07-01T03:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
+      { controlId: 'ctlA', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, targetLine: TL_T1, row: { id: 'rowA', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 4, originalEventAt: '2025-07-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
       { controlId: 'ctlB', type: 'replacement', targetTransactionId: 'rowA', revision: 1, bornPublicationVersion: 11, row: { id: 'rowB', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, originalEventAt: '2025-07-02T03:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
     v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctlA', 1, 11);
     v.controls.activeManifest.controlHeads.rowA = HEAD('ctlB', 1, 11);
@@ -281,7 +283,7 @@ ok('W44-R2 Codex-1: a replacement output id colliding with a supplied ledger row
 }).reason === 'CONTROL_OUTPUT_COLLISION');
 ok('W44-R2 Codex-1: two replacements minting the same output id fail closed', run(v => {
   v.controls.live.push(
-    { controlId: 'ctlD', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-07-01T03:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
+    { controlId: 'ctlD', type: 'replacement', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11, targetLine: TL_T1, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-07-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } },
     { controlId: 'ctlE', type: 'replacement', targetTransactionId: 'row_direct1', revision: 1, bornPublicationVersion: 11, row: { id: 'dup_out', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 1, originalEventAt: '2025-08-01T02:00:00Z', stockFromStoreId: 'head_office', ...TUP_A } });
   v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctlD', 1, 11);
   v.controls.activeManifest.controlHeads.row_direct1 = HEAD('ctlE', 1, 11);
@@ -531,6 +533,65 @@ ok('W44-R4: repointing a row\'s transferId to a DIFFERENT valid HO transfer fail
     v.rows.live[0].transferId = 'tr2';
   });
   return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH'));
+})());
+// ── W44-R5: quantity authority (resolution/backfill), control-offset from server truth, manifest consistency ──
+console.log('== W44-R5: quantity authority + control offset ==');
+ok('W44-R5 Codex-1: the resolve step PINS the Director\'s chosen qty (not the last receive attempt)', (() => {
+  const mk = (rowQty) => run(v => {
+    v.steps[1].payload.lines = [{ productId: 'prodA', receivedQty: 3 }];
+    v.steps.push({ stepId: 'st2b', recordId: 'tr1', recordType: 'transfer', stepType: 'receive', seq: 21, timestamp: Date.parse('2025-07-01T03:30:00Z'), _attested: true, payload: { lines: [{ productId: 'prodA', receivedQty: 5 }] } });
+    v.steps.push({ stepId: 'st3', recordId: 'tr1', recordType: 'transfer', stepType: 'resolve', seq: 30, timestamp: Date.parse('2025-07-01T04:00:00Z'), _attested: true, payload: { resolutions: [{ productId: 'prodA', action: 'conflict_resolved', qty: 3 }] } });
+    v.drain.graceRecords[0].expectedStepIds = ['st1', 'st2', 'st2b', 'st3'];
+    v.rows.live[0].qty = rowQty;
+  });
+  const legit = mk(3), tampered = mk(5);   // resolved qty is 3
+  const l = line(legit, 'row_t1');
+  return legit.ok && legit.settlement.status === 'FINAL' && l && l.owed === 225 && tampered.ok && tampered.settlement.status === 'PROVISIONAL' && tampered.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH'));
+})());
+ok('W44-R5 Codex-2: a backfill\'s recorded receivedQty is the authority (not sentQty)', (() => {
+  const mk = (rowQty) => run(v => {
+    v.steps = [{ stepId: 'st1', recordId: 'tr1', recordType: 'transfer', stepType: 'backfill', seq: 10, timestamp: Date.parse('2025-07-01T02:00:00Z'), _attested: true, payload: { snapshot: { fromStoreId: 'head_office', toStoreId: 'boor', items: [{ productId: 'prodA', sentQty: 5, receivedQty: 3 }] } } }];
+    v.drain.graceRecords[0].expectedStepIds = ['st1'];
+    const t = v.rows.live[0]; delete t.sellAtSupply; delete t.discAtSupply; delete t.pricingVersion; delete t.catalogueVersion;   // stampless => lens
+    t.qty = rowQty;
+  });
+  const legit = mk(3), tampered = mk(5);   // received 3 is authoritative
+  return legit.ok && !legit.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH')) && tampered.ok && tampered.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'));
+})());
+ok('W44-R5 AGY-1: the control OFFSET uses the server targetLine, not the (mutable) target row — a mutated target can\'t drop a genuine line', (() => {
+  const r = run(v => {
+    // a valid deletion issued server-side for a low-value line; franchisee mutates the target row to claim tr1|prodA:5 and zeroes the genuine row
+    v.rows.live.push({ id: 'row_999', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'tr1', idempotencyKey: 'k999', stockFromStoreId: 'head_office', _spId: 205, ...TUP_A });
+    v.rows.live[0].qty = 0;
+    v.controls.live.push({ controlId: 'ctlDel', type: 'deletion', targetTransactionId: 'row_999', revision: 1, bornPublicationVersion: 11, targetLine: { transferId: 'tr_low', productId: 'prodX', qty: 2 } });
+    v.controls.activeManifest.controlHeads.row_999 = HEAD('ctlDel', 1, 11);
+  });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH:tr1|prodA'));
+})());
+ok('W44-R5: a deletion/replacement of a transfer-linked target REQUIRES a server targetLine', run(v => {
+  v.controls.live.push({ controlId: 'ctlNoTL', type: 'deletion', targetTransactionId: 'row_t1', revision: 1, bornPublicationVersion: 11 });   // no targetLine
+  v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctlNoTL', 1, 11);
+}).reason === 'MALFORMED_CONTROL');
+ok('W44-R5 Codex-3: a replacement whose original instant differs from the SERVER submit instant is refused (edited target time can\'t excise a dispatch)', run(v => {
+  v.rows.live[0].createdAt = '2025-12-01T03:00:00Z';   // move the target row out of window
+  const c = REPL(); c.row.originalEventAt = '2025-12-01T03:00:00Z';   // match the moved row, not the July submit
+  v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
+}).reason === 'CONTROL_INSTANT_MISMATCH');
+ok('W44-R5 Codex-3: a FAITHFUL replacement (server submit instant) bills in-window despite an edited target createdAt', (() => {
+  const r = run(v => {
+    v.rows.live[0].createdAt = '2025-12-01T03:00:00Z';   // target row moved, but the server submit is July
+    const c = REPL();   // originalEventAt = July submit
+    v.controls.live.push(c); v.controls.activeManifest.controlHeads.row_t1 = HEAD('ctl_r1', 1, 11);
+  });
+  const l = line(r, 'ctl_r1_row');
+  return r.ok && l && l.owed === 300 && r.settlement.status === 'FINAL';
+})());
+ok('W44-R5 Codex-4: a committed flush whose written id was NOT presented fails closed', run(v => {
+  v.drain.graceRecords[0].presentedIds = ['row_sale1']; v.drain.graceRecords[0].writtenIds = ['row_t1'];   // row_t1 written but not presented
+}).ok && run(v => { v.drain.graceRecords[0].presentedIds = ['row_sale1']; v.drain.graceRecords[0].writtenIds = ['row_t1']; }).settlement.provisionalReasons.some(x => x === 'WRITTEN_NOT_PRESENTED:row_t1'));
+ok('W44-R5 AGY-2/3: an unverifiable-qty row (direct-log / pre-epoch) is billed but SURFACED for review', (() => {
+  // base already contains row_direct1 (direct-log) + row_legacy1 (transferless) + row_arch1 (pre-epoch)
+  return base.ok && base.settlement.meta.unverifiableQty.includes('row_direct1') && base.settlement.meta.unverifiableQty.includes('row_legacy1') && base.settlement.meta.unverifiableQty.includes('row_arch1') && line(base, 'row_direct1').unverifiableQty === true;
 })());
 ok('W44-R4: a legacy-lens transfer row values at the SUBMIT-step day, not the editable row date (rate can\'t be shifted)', (() => {
   const mk = (rowDate) => run(v => {

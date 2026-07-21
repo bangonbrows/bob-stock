@@ -282,12 +282,14 @@ function foldProjection(stepsForTransfer) {
         if (!it || !reqId(it.productId)) return { error: 'MALFORMED_STEP_LINE' };
         const r = readLineStamps(it);
         if (typeof r === 'string') return { error: r };
-        // W44-R4 (Codex/AGY-2): the AUTHORITATIVE dispatched quantity from the server step — the
-        // reconciliation below binds each ledger row's editable qty to it. sentQty at submit; the
-        // received quantity overrides at receive (what actually landed and is billed).
-        const sQty = Number.isFinite(it.sentQty) ? it.sentQty : null;
+        // W44-R4/R5 (Codex-2): the AUTHORITATIVE quantity from the server step — the reconciliation binds
+        // each ledger row's editable qty to it. sentQty at submit; a BACKFILL snapshot records receivedQty
+        // too (records.js:335) and it is the billed authority (W44-R5 Codex-2: initializing from sentQty
+        // alone over-blocked a legit received-3-of-5 backfill and let a row edited to 5 pass).
+        let iQty = Number.isFinite(it.sentQty) ? it.sentQty : null, iRecv = false;
+        if (isBackfill && Number.isFinite(it.receivedQty)) { iQty = it.receivedQty; iRecv = true; }
         // Backfill-sourced stamps are UNTRUSTED (SR-154/W4.3 amendment 2 — never tier-2 evidence).
-        t.items.set(it.productId, { tuple: r.tuple, basis: r.basis, untrusted: isBackfill && !!r.tuple, mintAttested: !isBackfill && !!r.tuple && attested, qty: sQty, received: false });
+        t.items.set(it.productId, { tuple: r.tuple, basis: r.basis, untrusted: isBackfill && !!r.tuple, mintAttested: !isBackfill && !!r.tuple && attested, qty: iQty, received: iRecv });
       }
     } else if (!t) {
       continue;   // a step before its genesis — same hold as the client fold (re-pull reconciles)
@@ -314,6 +316,9 @@ function foldProjection(stepsForTransfer) {
         if (typeof r === 'string') return { error: r };
         if (r.tuple) { item.tuple = r.tuple; item.untrusted = false; item.mintAttested = attested; }   // the resolve PINS the outcome (SR-85)
         if (r.basis) item.basis = r.basis;
+        // W44-R5 (Codex-1): the resolve step PINS the Director's chosen quantity (phase2.js:674) — it is
+        // the authoritative billed quantity, overriding the divergent receive attempts (last-wins was wrong).
+        if (Number.isFinite(rl.qty)) { item.qty = rl.qty; item.received = true; }
       }
     }
     // cancel: return rows inherit the item state (SR-88) — no projection change needed.
@@ -499,6 +504,20 @@ function buildBuybackExport(input) {
       if (head === undefined || head === null) return refuse('CONTROL_HEAD_MISMATCH', c.controlId + ':no-active-head');
       if (head.controlId !== c.controlId || head.revision !== c.revision || head.bornPublicationVersion !== c.bornPublicationVersion) return refuse('CONTROL_HEAD_MISMATCH', c.controlId);
       if (!(head.bornPublicationVersion <= manifest.version)) return refuse('CONTROL_HEAD_MISMATCH', c.controlId + ':born>active');
+      // W44-R5 (AGY-1/Codex-3): a control's OFFSET to the HO reconciliation must come from a SERVER-DECLARED
+      // target line, NEVER the client-editable target ROW. The correction route captures the authoritative
+      // target at approval (SR-134) and carries `targetLine: {transferId, productId, qty}`. It is REQUIRED
+      // whenever the supplied target row is transfer-linked — else a mutated target row could redirect the
+      // reconciliation offset onto a different HO line (AGY-1) or shift a replacement's window via the row's
+      // editable instant (Codex-3). The engine trusts targetLine, not the row's fields.
+      let targetLine = null;
+      if (c.targetLine != null) {
+        const tl = c.targetLine;
+        if (typeof tl !== 'object' || Array.isArray(tl) || !reqId(tl.transferId) || !reqId(tl.productId) || typeof tl.qty !== 'number' || !isFinite(tl.qty) || tl.qty < 0) return refuse('MALFORMED_CONTROL', c.controlId + ':targetLine');
+        targetLine = tl;
+      }
+      if (targetEntry && targetEntry.row.transferId && !targetLine) return refuse('MALFORMED_CONTROL', c.controlId + ':targetLine-required');
+      c._targetLine = targetLine;
       if (c.type === 'replacement') {
         const r = c.row;
         if (!r || typeof r !== 'object' || Array.isArray(r)) return refuse('MALFORMED_CONTROL', c.controlId + ':row');
@@ -510,15 +529,16 @@ function buildBuybackExport(input) {
         const rt = readTuple(r.sellAtSupply, r.discAtSupply, r.pricingVersion, r.catalogueVersion);
         if (rt === null || rt.absent) return refuse('MALFORMED_CONTROL', c.controlId + ':stamps');   // an UNSTAMPED replacement is malformed (SR-130/134)
         if (r.unitPriceAtTime != null && !validMoney(r.unitPriceAtTime)) return refuse('MALFORMED_CONTROL', c.controlId + ':unitPriceAtTime');
-        // W44-R1 (Codex-2): the replacement's ORIGINAL-EVENT instant must be BOUND to the target it
-        // substitutes (SR-130/134: the correction route binds it from the AUTHORITATIVE target). When the
-        // target row is SUPPLIED, the engine re-checks the binding: an originalEventAt that disagrees with
-        // the target's own economic instant would move the replacement's window membership INDEPENDENTLY of
-        // the original — a Director-supplied out-of-window instant would then EXCLUDE an in-window original
-        // AND drop its own line, silently under-billing the store owner and breaking SR-142 delta exactness.
-        // (A target NOT in the supplied set — archived-not-pulled / drain-only — is trusted per SR-134's
-        // server-side authoritative fetch; there is no local instant to compare against.)
-        { const te = byId.get(target); if (te && Date.parse(r.originalEventAt) !== te.instantMs) return refuse('CONTROL_INSTANT_MISMATCH', c.controlId + '->' + target); }
+        // W44-R1/R5 (Codex-2/3): the replacement's ORIGINAL-EVENT instant must be bound to the target's
+        // SERVER instant. For a transfer-linked target the authority is the transfer's SUBMIT step
+        // (server truth) — NOT the target row's editable createdAt (R5 Codex-3: moving the row + the
+        // replacement to a matching out-of-window instant otherwise excised an in-window dispatch). Only a
+        // target with no server step (direct-log / drain-only) falls back to the supplied row instant.
+        let serverInstant = null;
+        if (targetLine) { const pj = projections.get(targetLine.transferId); if (pj && pj.hasGenesis && Number.isFinite(pj.submitMs)) serverInstant = pj.submitMs; }
+        if (serverInstant != null) { if (Date.parse(r.originalEventAt) !== serverInstant) return refuse('CONTROL_INSTANT_MISMATCH', c.controlId + '->server'); }
+        else { const te = byId.get(target); if (te && Date.parse(r.originalEventAt) !== te.instantMs) return refuse('CONTROL_INSTANT_MISMATCH', c.controlId + '->' + target); }
+        c._instantMs = serverInstant != null ? serverInstant : Date.parse(r.originalEventAt);
         c._tuple = rt;
       }
       controlByTarget.set(target, { ctl: c, list });
@@ -559,13 +579,15 @@ function buildBuybackExport(input) {
   for (const [target, held] of controlByTarget) {
     if (held.ctl.type !== 'replacement') continue;
     const r = held.ctl.row;
-    economic.push({ row: r, tuple: held.ctl._tuple, rv: null, instantMs: Date.parse(r.originalEventAt), list: held.list, isControl: true });
+    // W44-R5 (Codex-3): the replacement's window instant is the SERVER-bound instant (submit step for a
+    // transfer-linked target), not the editable supplied originalEventAt.
+    economic.push({ row: r, tuple: held.ctl._tuple, rv: null, instantMs: held.ctl._instantMs, list: held.list, isControl: true });
   }
 
   // H) valuation + aggregation (P6/P7 — the invoice parity core, S-285).
   const productById = new Map(products.map(p => [p.id, p]));
   const finalBlockers = [];
-  const surfaced = { pendingValuations: [], notSet: [], lineErrors: [], unclassified: [] };
+  const surfaced = { pendingValuations: [], notSet: [], lineErrors: [], unclassified: [], unverifiableQty: [] };
   const costLines = [];
   const usage = {};              // productId -> { category -> qty }
   const claimedHO = new Map();   // `${transferId}|${productId}` -> summed billed row qty (W44-R4 reconciliation)
@@ -616,7 +638,14 @@ function buildBuybackExport(input) {
     // Only STEP-BACKED rows (a genesis projection exists) participate; a genuine PRE-epoch legacy transfer
     // has no server line to bind to (its authenticity rests on the validated pre-epoch provenance id,
     // SR-129 — a flagged residual: pre-Chunk-4 rows carry no server-side quantity).
-    if (t.transferId && !e.isControl) { const pj = projections.get(t.transferId); if (pj && pj.hasGenesis) claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty); }
+    let stepBacked = false;
+    if (t.transferId && !e.isControl) { const pj = projections.get(t.transferId); if (pj && pj.hasGenesis) { stepBacked = true; claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty); } }
+    // W44-R5 (AGY-2/3): a billed HO row whose QUANTITY has NO server step to bind to — a transferless
+    // direct-log HO row, or a pre-epoch legacy transfer (no projection) — is UNVERIFIABLE by the engine:
+    // the reconciliation cannot check its qty/date. Such a row is still valued (invoice parity holds), but
+    // the settlement is held for MANUAL REVIEW rather than certified FINAL over an unverifiable quantity.
+    // (The robust server-side fix is a qty attestation at push-v2 ingest — a staging-apply item.)
+    const unverifiableQty = !e.isControl && !stepBacked;
     const p = productById.get(t.productId);
     let sell = (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
     let disc = null, lineErr = null, source = null, paid = true;
@@ -685,7 +714,13 @@ function buildBuybackExport(input) {
     else if (lineErr) surfaced.lineErrors.push(t.id + ':' + lineErr);
     const full = paid ? sell * t.qty : 0;
     const discAmt = paid ? full * (disc / 100) : 0;
-    costLines.push({ transactionId: t.id, productId: t.productId, date: t.date || null, qty: t.qty, sell: paid ? sell : null, discPct: paid ? disc : null, full, discAmt, owed: full - discAmt, source, lineErr, control: !!e.isControl });
+    // W44-R5 (AGY-2/3): a PAID row whose quantity has NO server step to bind to (transferless direct-log,
+    // or pre-epoch legacy transfer) is SURFACED as unverifiable so no settlement silently rests on it. It
+    // is NOT hard-blocked: within the app boundary an existing row cannot be edited (push-v2 is idempotent
+    // on TransactionId — P-13; SharePoint-direct tamper is out of scope), and the robust fix is a
+    // server-side qty attestation at push-v2 ingest (a staging-apply item, flagged in the wave doc).
+    if (paid && unverifiableQty) surfaced.unverifiableQty.push(t.id);
+    costLines.push({ transactionId: t.id, productId: t.productId, date: t.date || null, qty: t.qty, sell: paid ? sell : null, discPct: paid ? disc : null, full, discAmt, owed: full - discAmt, source, lineErr, control: !!e.isControl, unverifiableQty: unverifiableQty && paid });
   }
 
   // W44-R4 (Codex/AGY-2,3): RECONCILE the claimed HO rows against the authoritative line set. Every HO
@@ -696,13 +731,12 @@ function buildBuybackExport(input) {
   // A DELETION/REPLACEMENT control legitimately removes a supplied row from ordinary billing (the
   // replacement bills via the control path, a deletion writes it off), so its quantity is netted OUT of
   // the line's expected ordinary claim — else a Director correction would trip the reconciliation.
+  // W44-R5 (AGY-1): the offset comes from the SERVER-DECLARED `targetLine`, NEVER the client-editable
+  // target row — a mutated row could otherwise redirect the offset onto a high-value line and drop it.
   const controlledLineQty = new Map();
-  for (const target of controlByTarget.keys()) {
-    const te = byId.get(target);
-    if (te && te.row.transferId && Number.isFinite(te.row.qty)) {
-      const k = te.row.transferId + '|' + te.row.productId;
-      controlledLineQty.set(k, (controlledLineQty.get(k) || 0) + te.row.qty);
-    }
+  for (const { ctl } of controlByTarget.values()) {
+    const tl = ctl._targetLine;
+    if (tl) { const k = tl.transferId + '|' + tl.productId; controlledLineQty.set(k, (controlledLineQty.get(k) || 0) + tl.qty); }
   }
   for (const [key, line] of hoLines) {
     const expected = line.qty - (controlledLineQty.get(key) || 0);
@@ -736,11 +770,15 @@ function buildBuybackExport(input) {
       }
       // SR-94/171: every PRESENTED identity must be ACCOUNTED — PRESENT in the (deduped) rows, COVERED
       // by a validated same-list control head, or QUEUED in badVersionEvidence. None => refuse FINAL.
-      for (const id of (g.presentedIds || [])) {
+      const presentedSet = new Set(g.presentedIds);
+      for (const id of g.presentedIds) {
         if (!(byId.has(id) || coveredSet.has(id) || queuedIds.has(id))) block('UNACCOUNTED_IDENTITY', id);
       }
-      for (const id of (g.writtenIds || [])) {
+      for (const id of g.writtenIds) {
         if (!(byId.has(id) || coveredSet.has(id))) block('WRITTEN_ROW_MISSING', id);   // SR-94 containment proof
+        // W44-R5 (Codex-4): a WRITTEN row necessarily came from the PRESENTED payload — a written id absent
+        // from presentedIds is a self-contradictory (incomplete) manifest and cannot be the full presented set.
+        if (!presentedSet.has(id)) block('WRITTEN_NOT_PRESENTED', id);
       }
     }
   }
@@ -783,6 +821,7 @@ function buildBuybackExport(input) {
         notSet: surfaced.notSet,
         lineErrors: surfaced.lineErrors,
         unclassified: surfaced.unclassified,
+        unverifiableQty: surfaced.unverifiableQty,
         coverage: { leaseId: lease, runVersion: coverage.live.runVersion },
       },
     },
