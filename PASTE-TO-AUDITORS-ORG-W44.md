@@ -32,8 +32,14 @@
 >   `MANUAL_REVIEW_UNVERIFIABLE_QTY` + surfaced. TWO STAGING-APPLY CONTRACTS follow: push-v2 qty
 >   attestation; the correction route must populate `control.targetLine`.
 >
-> The base proof fixture is now clean/step-backed (bills 375); the unverifiable classes have their own
-> section. This is the FIFTH round — the engine has changed materially. Review the current code.
+> - **R6 (6 fixes):** the qty reconciliation now binds each billed row to the transfer's authoritative
+>   ledger identities (a foreign/relabelled row can't hijack a transfer's aggregate); a $0
+>   VALUATION_PENDING line now holds FINAL; quantities must be whole numbers; the exported line date is
+>   the server submit day, not the editable row date; retail-profit is flagged client-recorded /
+>   informational (it never affected the payable). Both auditors confirmed R5's targetLine + hard-block.
+>
+> The base proof fixture is clean/step-backed (bills 375); the unverifiable classes have their own
+> section. This is the SIXTH round — the engine has changed materially. Review the current code.
 > - **Current gate numbers are in "Required checks" below** — they supersede any earlier pack.
 > A FRESH reviewer can ignore this banner and read the whole pack normally.
 
@@ -89,7 +95,7 @@ Branch `azure-phase-5-8-server`; review the LATEST commit. Work in your own copy
 - **NO client-file changes this wave** (index.html/sync.js/records.js/phase2.js/db.js untouched).
 
 ## Required checks (run them, don't just read) — CURRENT gate numbers
-- `node test/buyback-export-proof.js` → **158/158** expected (this wave's core gate).
+- `node test/buyback-export-proof.js` → **166/166** expected (this wave's core gate).
 - `node test/topology-proof.js` → **256/256** expected (proves the additive export changed nothing).
 - `cd test && node smoke-test.js` → **277/277** expected (S-283..S-286 are this wave's parity sentinels).
 - Scoped mutation testing:
