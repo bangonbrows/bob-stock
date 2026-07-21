@@ -17,6 +17,12 @@
 >   store or for a product not in its transfer, and a row skipped via a mutated `type` are all now held.
 >   Only CUSTOMER returns net revenue. A "corrected" bad-version row must actually be present to
 >   finalize. An in-build regression (pre-epoch legacy transfers) was caught by the proof suite + fixed.
+> - **R4 (4 fixes):** the ledger row is now a POINTER; the server step is the authority for a row's
+>   QUANTITY, product-line, and valuation date. Every HO line dispatched to the store is reconciled
+>   against the billed rows (must sum to the server quantity), so editing a row's qty, flipping its
+>   type out of the cost filter, swapping its product within a transfer, repointing its transferId, or
+>   shifting its window/rate date all fail closed. Two residuals are FLAGGED (see notes): pre-epoch
+>   legacy transfers (no server-side qty/date) and direct-log transferless rows (qty is HO's own entry).
 > - **Current gate numbers are in "Required checks" below** — they supersede any earlier pack.
 > A FRESH reviewer can ignore this banner and read the whole pack normally.
 
@@ -72,7 +78,7 @@ Branch `azure-phase-5-8-server`; review the LATEST commit. Work in your own copy
 - **NO client-file changes this wave** (index.html/sync.js/records.js/phase2.js/db.js untouched).
 
 ## Required checks (run them, don't just read) — CURRENT gate numbers
-- `node test/buyback-export-proof.js` → **142/142** expected (this wave's core gate; 122 build + 4 R1 + 7 R2 + 2 N9 + 7 R3).
+- `node test/buyback-export-proof.js` → **148/148** expected (this wave's core gate; 122 build + 4 R1 + 7 R2 + 2 N9 + 7 R3 + 6 R4).
 - `node test/topology-proof.js` → **256/256** expected (proves the additive export changed nothing).
 - `cd test && node smoke-test.js` → **277/277** expected (S-283..S-286 are this wave's parity sentinels).
 - Scoped mutation testing:
