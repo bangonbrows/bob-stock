@@ -52,7 +52,10 @@
 const { app } = require('@azure/functions');
 const crypto = require('crypto');
 
-const MAX_ROWS = 500; // comfortably above the client's push batch size
+const MAX_ROWS = 5000; // the client pushes its WHOLE unsynced backlog in ONE request (sync.js:1575,
+                       // no chunking) — a cap below a long-offline flush would fail-closed FOREVER
+                       // (every retry over-cap). 5000 ≫ any realistic backlog; HMAC cost is trivial;
+                       // the SP insert loop, not signing, is the real per-run ceiling.
 
 const COVERED_FIELDS = [
   'TransactionId', 'StoreId', 'Date', 'Timestamp', 'ProductId', 'Type', 'Qty', 'Reason',
