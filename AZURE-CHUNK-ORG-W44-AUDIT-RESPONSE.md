@@ -1,5 +1,30 @@
 # OS-W4.4 BUILD — wave record + audit response ledger
 
+> ## 🧊 ENGINE FROZEN 2026-07-22 (Kunal's decision) — PENDING SERVER-SIDE, THEN A RETURN RE-AUDIT
+> The pure engine is FROZEN at commit `2c28393` after **7 parallel audit rounds (29 real bugs fixed,
+> every finding REAL; both auditors re-confirm each prior fix holds)**. Final gates ALL GREEN: proof
+> **170/170**, smoke 277/277, topology 256/256, anchors 322/322, scoped saboteur 4 CAUGHT / 0 BLIND.
+>
+> **WHY FROZEN (the root cause, banked):** rounds R5/R6/R7 all reduce to ONE thing — the engine verifies
+> a **fully client-editable row set with NO server-side row-level signature**. Each round binds one more
+> field to Head Office's server records; the next finds an adjacent field/path not yet bound. This class
+> is **NOT closable in a pure engine** — it needs the server to sign each row at sync time. Continuing the
+> loop = diminishing returns.
+>
+> **THE STRUCTURAL FIX = TWO SERVER-SIDE (STAGING-APPLY) CONTRACTS — do these NEXT** (spec: the
+> "Server-side contracts W4.4 engine depends on" section below + `AZURE-CHUNK-ORG-LA-CHANGES.md §6`):
+> 1. **push-v2 ROW-LEVEL attestation signature** — a server-set, tamper-evident signature over each ledger
+>    row's economic identity `{qty, productId, source(stockFromStoreId), type, transferId}`, covering
+>    direct-log rows too. The engine already SURFACES/holds unverifiable rows (`meta.unverifiableQty`) and
+>    is built to trust the attestation once present.
+> 2. **correction route populates `control.targetLine {transferId, productId, qty}`** — server-captured at
+>    Director approval (the engine already CONSUMES it; the route must WRITE it).
+>
+> **⏭ RETURN MARKER (Kunal, explicit):** AFTER the server-side contracts ship, COME BACK to W4.4 — do a
+> full re-audit of engine + server together to confirm every case is now closed and nothing is ambiguous.
+> The engine's `meta.unverifiableQty` list + the hold-for-review behaviour should DISAPPEAR for signed
+> rows once (1) lands. Until then, W4.4 is engine-complete-but-not-shippable.
+
 **Wave:** OS-W4.4 — the buy-back settlement EXPORT ENGINE (`azure-functions/src/functions/buybackExport.js`).
 **Spec:** `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` — FROZEN at R25 (W4-SR-1..171 closed; "the ledger is
 mathematically sealed"). The engine + proof suite are the W4 build; the HTTP route + LA wiring are
