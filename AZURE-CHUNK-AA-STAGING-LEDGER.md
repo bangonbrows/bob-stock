@@ -58,7 +58,18 @@ the write LA at apply time.
 10. **user-verify** (§9) — new `op:'pin'` → `validatePin` grant mint.
 11. **Chunk-8 archive LA** (§10) — sudo map honour (no structural change).
 
-## BLOCKER for the E2E proof: staging test credentials
+## ✅ Staging DEVICE keys REGENERATED 2026-07-22 (partial unblock)
+All six `StoreCredentials_Staging` rows re-keyed in place (ardross / karrinyup / whitford / head_office /
+`__director` / franchtest — Version 1→2, fresh salt+HMAC per the validateKeys scheme, Active, no grace).
+Done via a temporary SP passthru LA `bob-stock-tmp-rekey` (DELETED after use); runner
+`audit-artifacts/rekey-staging.js` (Kunal executed; secrets never in chat). **Every new key verified
+against the DEPLOYED validateKeys route (storeOk/directorOk true ×5) + negative control rejected.**
+Plaintext keys: `audit-artifacts/.staging-keys-2026-07-22.txt` (gitignored; rotate + delete at cutover).
+**Still pending:** the throwaway test DIRECTOR ACCOUNT (`srvaudit_` UserCredentials row) — needed for the
+Director-sudo-gated routes (AA credentialled E2E + the W4.4 Contract-2 correction route), not for W4.4
+Contract 1 (push-v2 row attestation), which only needs the device keys above.
+
+## BLOCKER for the E2E proof: staging test credentials (historical — device-key half cleared 2026-07-22)
 The full end-to-end proof (seed a `__director` StoreCredentials row + a test director UserCredentials row →
 publish the default policy via the new write LA → confirm `access_policy`/`access_policy_version` written and
 `access_policy_secure` withheld from config delivery → confirm pull echoes the new version → drive a scoped
