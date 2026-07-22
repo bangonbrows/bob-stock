@@ -164,6 +164,12 @@ ok('numeric Qty and its string form canonicalise together (SharePoint number rou
   const b = ROW(); b.Qty = '25';
   return A.signRow(KR, a) === A.signRow(KR, b);
 })());
+ok('Date day-part normalisation: \'2025-07-04\' ≡ \'2025-07-04T00:00:00Z\' (SP DateTime echo), different DAY still breaks', (() => {
+  const plain = signed(ROW());                       // signed with '2025-07-04'
+  const echoed = J(plain); echoed.Date = '2025-07-04T00:00:00Z';
+  const otherDay = J(plain); otherDay.Date = '2025-07-05T00:00:00Z';
+  return A.verifyRow(KR, echoed) && !A.verifyRow(KR, otherDay);
+})());
 
 // ── Malformed seals never verify ─────────────────────────────────────────────────────────────────────
 for (const [name, sig] of [

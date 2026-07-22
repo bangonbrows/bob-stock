@@ -73,7 +73,13 @@ function canonical(row) {
   for (const f of COVERED_FIELDS) {
     let v = r[f];
     if (f === 'IdempotencyKey') v = v == null || v === '' ? r.TransactionId : v; // mirror the LA coalesce
-    parts.push(v == null ? '' : String(v));
+    let s = v == null ? '' : String(v);
+    // Date round-trip normalisation (staging-apply P1/P4 ground truth): the client signs '2026-07-22'
+    // but SharePoint's Date column echoes '2026-07-22T00:00:00Z' — a REPRESENTATION change, not an
+    // edit. Canonicalise Date to its day part so sign-at-ingest and verify-from-store agree; a tamper
+    // to a DIFFERENT day still breaks the seal (time-of-day carries no meaning in a date-only column).
+    if (f === 'Date' && /^\d{4}-\d{2}-\d{2}T/.test(s)) s = s.slice(0, 10);
+    parts.push(s);
   }
   // JSON-encode the ordered parts: unambiguous field boundaries. A plain join(separator) would let a
   // crafted value containing the separator make two DIFFERENT rows canonicalise identically — an
