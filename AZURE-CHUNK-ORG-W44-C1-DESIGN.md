@@ -1,8 +1,10 @@
 # OS-W4.4 Contract 1 — row-level economic attestation: CONCRETE DESIGN
 
-**Status: R1 SPEC REVIEW FOLDED 2026-07-22 — awaiting R2 re-verify from BOTH auditors before any
-staging deploy.** R1 verdicts: AGY BLOCK×2 + Codex BLOCK×1 (one CONVERGED pair) — **all ground-truthed
-REAL and folded** (table below). Parent contract: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md`
+**Status: ✅ SPEC CONVERGED 2026-07-22 @ `bfb3469` — R2 BOTH PASS.** AGY PASS (explicitly confirmed
+the Q4 composition amendment kills the splice; verified keyring fail-closed + 57/57) · Codex PASS
+("No findings"; fresh isolated copy, 57/57 local proof, Q1–Q5 re-verified clean). Review arc:
+R1 AGY BLOCK×2 + Codex BLOCK×1 (one CONVERGED pair, all ground-truthed REAL, table below) → R2 both
+PASS. BUILD-READY: staging apply per §7. Parent contract: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md`
 (Contract 1). The pure engine is FROZEN @ `131ccec`; this is the server-side deliverable that clears
 its `MANUAL_REVIEW_UNVERIFIABLE_QTY` holds. DRAFT implementation in-repo (§6); Logic App half and all
 staging deploys NOT started.
