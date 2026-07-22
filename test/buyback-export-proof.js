@@ -500,9 +500,9 @@ ok('W44-R2 Codex-1: a transfer-linked row with SUPPRESSED steps + stripped label
   const r = run(v => { v.rows.live.push({ id: 'row_hidden', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-02', createdAt: '2025-07-02T04:00:00Z', transferId: 'trGhost', idempotencyKey: 'row_hidden', _spId: 520 }); });
   return r.ok && !line(r, 'row_hidden') && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'POST_EPOCH_NO_STEPS:row_hidden');
 })());
-ok('a genuine PRE-epoch peer transfer (no steps, pre-epoch id) does NOT falsely block (no over-block)', (() => {
+ok('W44-R7: a STEPLESS incoming transfer row (pre-epoch peer, no steps) is held for manual review (source unverifiable)', (() => {
   const r = run(v => { v.rows.live.push({ id: 'row_peer_old', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 2, date: '2025-07-02', createdAt: '2025-07-02T04:00:00Z', transferId: 'trOldPeer', idempotencyKey: 'row_peer_old', stockFromStoreId: 'karr', _spId: 40 }); });
-  return r.ok && !line(r, 'row_peer_old') && r.settlement.status === 'FINAL';
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.meta.unverifiableQty.includes('row_peer_old');
 })());
 // W44-R3 (Codex-2 / AGY-2): the SERVER steps projection binds product + endpoints + HO-source; a
 // mutated row field can't route past the integrity gate. Base has tr1 (genesis head_office->boor, prodA).
@@ -634,14 +634,14 @@ ok('W44-R6 Codex-1: a FOREIGN row (repointed direct-log) claiming a real transfe
     v.rows.live[0] = Object.assign({ id: 'row_dl', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'tr1', idempotencyKey: 'kdl', stockFromStoreId: 'head_office', _spId: 220 }, TUP_A);
     v.drain.graceRecords[0].presentedIds = ['row_dl', 'row_sale1']; v.drain.graceRecords[0].writtenIds = [];
   });
-  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('ROW_NOT_IN_TRANSFER_LEDGER:row_dl'));
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('UNBOUND_TRANSFER_CLAIM:row_dl'));
 })());
 ok('W44-R6 AGY-1: converting a SALE row into a transfer_in to satisfy the aggregate is rejected (identity + qty)', (() => {
   const r = run(v => {
     v.rows.live[0].qty = 3;
     Object.assign(v.rows.live[1], { type: 'transfer_in', qty: 2, transferId: 'tr1', stockFromStoreId: 'head_office', ...TUP_A }); delete v.rows.live[1].stockTo; delete v.rows.live[1].unitPriceAtTime;
   });
-  return r.ok && r.settlement.status === 'PROVISIONAL' && (r.settlement.provisionalReasons.some(x => x.startsWith('ROW_NOT_IN_TRANSFER_LEDGER:row_sale1')) || r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH')));
+  return r.ok && r.settlement.status === 'PROVISIONAL' && (r.settlement.provisionalReasons.some(x => x.startsWith('UNBOUND_TRANSFER_CLAIM:row_sale1')) || r.settlement.provisionalReasons.some(x => x.startsWith('HO_LINE_QTY_MISMATCH')));
 })());
 ok('a genuine receive-keyed row IS accepted (identity binding does not break the happy path)', base.ok && base.settlement.status === 'FINAL' && line(base, 'row_t1').owed === 375);
 ok('W44-R6 AGY-3: a fractional row quantity is refused (whole units only)', run(v => { v.rows.live[0].qty = 1.5; }).reason === 'MALFORMED_ROW');
@@ -654,6 +654,27 @@ ok('W44-R6 AGY-4: the exported line date is the SUBMIT-step day, not the editabl
   const r = run(v => { v.rows.live[0].date = '2025-10-20'; });   // submit is 2025-07-01
   const l = line(r, 'row_t1');
   return r.ok && l && l.date === '2025-07-01';
+})());
+ok('W44-R7 finding 1: identity binding CANNOT fall open — a submit-only (un-received) transfer claim fails closed', (() => {
+  const r = run(v => { v.steps = [v.steps[0]]; v.drain.graceRecords[0].expectedStepIds = ['st1']; });   // drop the receive step
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('UNBOUND_TRANSFER_CLAIM:row_t1'));
+})());
+ok('W44-R7 finding 1: a receive step with STRIPPED expectedLedgerKeys fails closed', (() => {
+  const r = run(v => { delete v.steps[1].payload.expectedLedgerKeys; });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x.startsWith('UNBOUND_TRANSFER_CLAIM:row_t1'));
+})());
+ok('W44-R7 finding 2: a PRODUCT SWAP within a transfer (ids unchanged) fails closed on the receive-key binding', (() => {
+  const r = run(v => {
+    v.steps[0].payload.items.push({ productId: 'prodB', sentQty: 2, basis: 'submit-stamped', sellAtSupply: 30, discAtSupply: 25, pricingVersion: 3, catalogueVersion: 7 });
+    v.steps[1].payload = { lines: [{ productId: 'prodA', receivedQty: 5 }, { productId: 'prodB', receivedQty: 2 }], expectedLedgerKeys: ['row_t1', 'row_b'] };
+    v.rows.live[0].productId = 'prodB'; v.rows.live[0].qty = 2; v.rows.live[0].sellAtSupply = 30;   // key still ...:prodA
+    v.rows.live.push({ id: 'row_b', type: 'transfer_in', productId: 'prodA', storeId: 'boor', qty: 5, date: '2025-07-01', createdAt: '2025-07-01T03:00:00Z', transferId: 'tr1', idempotencyKey: 'transfer:tr1:receive:boor:prodB', stockFromStoreId: 'head_office', _spId: 201, ...TUP_A });
+  });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.provisionalReasons.some(x => x === 'RECEIVE_KEY_MISMATCH:row_t1');
+})());
+ok('W44-R7 Codex-2: a stepless HO row relabelled to a peer store is STILL held (source unverifiable), not silently dropped', (() => {
+  const r = run(v => { v.rows.live.push({ id: 'row_relabel', type: 'in', productId: 'prodA', storeId: 'boor', qty: 1000, date: '2025-07-01', createdAt: '2025-07-01T04:00:00Z', idempotencyKey: 'krl', stockFromStoreId: 'store_999', stockFrom: 'Another Store — peer', _attested: true, _spId: 260, ...TUP_A }); });
+  return r.ok && r.settlement.status === 'PROVISIONAL' && r.settlement.meta.unverifiableQty.includes('row_relabel');
 })());
 ok('W44-R6 Codex-2: retailProfit is flagged client-recorded + informational; the PAYABLE is unaffected', (() => {
   const r = run(v => { v.rows.live[1].unitPriceAtTime = 1000000; });

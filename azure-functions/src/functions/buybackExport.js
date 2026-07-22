@@ -626,6 +626,17 @@ function buildBuybackExport(input) {
     const cat = category(t);
     if (cls.direction === 'none') { if (cat !== 'deleted') surfaced.unclassified.push(t.id); continue; }
     if (cat === 'unknown' || cat === 'other_out') surfaced.unclassified.push(t.id);
+    // W44-R7: a row is STEP-BACKED only if its transfer has a genesis projection (server steps exist).
+    const proj0 = (t.transferId && !e.isControl) ? projections.get(t.transferId) : null;
+    const stepBacked = !!(proj0 && proj0.hasGenesis);
+    // W44-R7 (Codex-2): a STEPLESS incoming delivery/transfer row (transferless direct-log, or a
+    // transfer-linked row with no genesis) is unverifiable at its SOURCE as well as its qty — isHOSupply
+    // falls back to the client stockFromStoreId, so a relabel-to-peer would silently skip the row at the
+    // HO filter BEFORE the manual-review block ever ran. Hold ANY such candidate row for review here,
+    // BEFORE the filter, regardless of its (client-editable) label — the client can't self-certify origin.
+    if (!e.isControl && isIn(t) && (cat === 'delivery' || cat === 'transfer') && !stepBacked) {
+      surfaced.unverifiableQty.push(t.id); block('MANUAL_REVIEW_UNVERIFIABLE_QTY', t.id);
+    }
     // usage tally (every effective economic in-window row)
     const u = usage[t.productId] || (usage[t.productId] = {});
     u[cat] = (u[cat] || 0) + t.qty;
@@ -652,26 +663,31 @@ function buildBuybackExport(input) {
     // Only STEP-BACKED rows (a genesis projection exists) participate; a genuine PRE-epoch legacy transfer
     // has no server line to bind to (its authenticity rests on the validated pre-epoch provenance id,
     // SR-129 — a flagged residual: pre-Chunk-4 rows carry no server-side quantity).
-    let stepBacked = false;
-    if (t.transferId && !e.isControl) {
-      const pj = projections.get(t.transferId);
-      if (pj && pj.hasGenesis) {
-        stepBacked = true;
-        // W44-R6 (Codex-1/AGY-1): IDENTITY binding — a billed transfer-linked row must BE one of the
-        // transfer's authoritative ledger keys (the receive/resolve step's expectedLedgerKeys). A foreign
-        // row (a repointed direct-log row, or a sale relabelled to claim this transfer) has an id that is
-        // NOT in the set, so it can't satisfy the aggregate quantity for a transfer it doesn't belong to.
-        // A transfer with a real receive carries keys (phase2.js:542); one without (pure backfill) values
-        // its rows via untrusted/server-resolved paths, so it never reaches a trusted aggregate here.
-        if (pj.hasLedgerKeys && !pj.ledgerKeys.has(t.id)) block('ROW_NOT_IN_TRANSFER_LEDGER', t.id + '->' + t.transferId);
-        claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty);
+    if (stepBacked && !e.isControl) {
+      const pj = proj0;
+      // W44-R6/R7 (Codex-1/AGY-1): IDENTITY binding — a billed transfer-linked row must BE one of the
+      // transfer's authoritative ledger keys (the receive/resolve step's expectedLedgerKeys, phase2.js:542).
+      // W44-R7 fix: the binding CANNOT fall open — a SUBMIT-origin transfer that reaches billing must carry
+      // its receive keys (a submit-only/in-transit transfer or a client that stripped the keys ⇒ fail
+      // closed, `UNBOUND_TRANSFER_CLAIM`). A BACKFILL-origin transfer legitimately has no keys and values
+      // its rows via the untrusted/server-resolved path (never a trusted aggregate), so it is exempt.
+      if (pj.originType !== 'backfill') {
+        if (!pj.hasLedgerKeys || !pj.ledgerKeys.has(t.id)) block('UNBOUND_TRANSFER_CLAIM', t.id + '->' + t.transferId);
+        // W44-R7 (AGY finding 2): keys are a transfer-wide SET, so id-membership alone lets a PRODUCT SWAP
+        // (two rows exchange productId/qty, ids unchanged) pass — the per-product aggregate still reconciles.
+        // The receive-key IdempotencyKey encodes (transfer, store, product) (phase2.js:64); bind the row's
+        // claimed product to it. A swap without changing the key ⇒ product mismatch; a swap WITH the key ⇒
+        // the shared key collides at dedup (SR-96). Top-up rows (unique-id keys) don't match the pattern.
+        if (typeof t.idempotencyKey === 'string') {
+          const m = /^transfer:(.+):receive:([^:]+):(.+)$/.exec(t.idempotencyKey);
+          if (m && (m[1] !== t.transferId || m[2] !== storeId || m[3] !== t.productId)) block('RECEIVE_KEY_MISMATCH', t.id);
+        }
       }
+      claimedHO.set(t.transferId + '|' + t.productId, (claimedHO.get(t.transferId + '|' + t.productId) || 0) + t.qty);
     }
-    // W44-R5 (AGY-2/3): a billed HO row whose QUANTITY has NO server step to bind to — a transferless
-    // direct-log HO row, or a pre-epoch legacy transfer (no projection) — is UNVERIFIABLE by the engine:
-    // the reconciliation cannot check its qty/date. Such a row is still valued (invoice parity holds), but
-    // the settlement is held for MANUAL REVIEW rather than certified FINAL over an unverifiable quantity.
-    // (The robust server-side fix is a qty attestation at push-v2 ingest — a staging-apply item.)
+    // W44-R5/R7: a row whose QUANTITY has no server step to bind to (transferless direct-log / pre-epoch
+    // legacy / stepless) is UNVERIFIABLE — already surfaced + held above (before the HO filter). The flag
+    // rides the cost line for the reviewer.
     const unverifiableQty = !e.isControl && !stepBacked;
     const p = productById.get(t.productId);
     let sell = (p && typeof p.price === 'number' && isFinite(p.price)) ? p.price : 0;
@@ -745,13 +761,8 @@ function buildBuybackExport(input) {
     else if (lineErr) surfaced.lineErrors.push(t.id + ':' + lineErr);
     const full = paid ? sell * t.qty : 0;
     const discAmt = paid ? full * (disc / 100) : 0;
-    // W44-R5 (AGY-2/3) + Kunal 2026-07-21: a PAID row whose quantity has NO server step to bind to
-    // (transferless direct-log, or pre-epoch legacy transfer) is UNVERIFIABLE by the engine — it is still
-    // VALUED (invoice parity holds) but HELD FOR MANUAL REVIEW: a buy-back settlement is a rare, high-stakes
-    // ex-franchisee document, so an unverifiable quantity must not auto-finalize. Fails safe (PROVISIONAL is
-    // regenerable): once the push-v2 qty attestation ships (staging-apply), these become verifiable and
-    // finalize automatically. Surfaced either way so the Director sees exactly which lines need eyes.
-    if (paid && unverifiableQty) { surfaced.unverifiableQty.push(t.id); block('MANUAL_REVIEW_UNVERIFIABLE_QTY', t.id); }
+    // W44-R7: the unverifiable hold (Kunal 2026-07-21) is applied BEFORE the HO filter (above) so a
+    // relabelled row can't skip it; here the per-line flag just rides the cost line for the reviewer.
     // W44-R6 (AGY-4): the exported line date is the AUTHORITATIVE instant, not the editable row `date` —
     // the submit-step day for a transfer-linked row (server truth), the bound instant for a control row,
     // else the row's own date (transferless / unverifiable).
