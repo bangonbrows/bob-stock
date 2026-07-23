@@ -31,13 +31,33 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : NaN; }
 function idOf(r) { return Number(r.Id != null ? r.Id : r.ID); }
 function typeOf(r) { return String(r.TxnType != null ? r.TxnType : (r.Type != null ? r.Type : '')); }
 function tsOf(r) { return String(r.TxnTimestamp != null ? r.TxnTimestamp : (r.Timestamp != null ? r.Timestamp : '')); }
+// OS-W4.4 C1 archive-carry: the live Date vs archive TxnDate, day-part normalised (SharePoint echoes
+// 'YYYY-MM-DDT00:00:00Z' for a signed 'YYYY-MM-DD' — representation, not content; same rule as
+// attestRows.canonical, a DIFFERENT day still diverges).
+function dateOf(r) {
+  let s = String(r.TxnDate != null ? r.TxnDate : (r.Date != null ? r.Date : ''));
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) s = s.slice(0, 10);
+  return s;
+}
+const optNum = (v) => (v == null || v === '' ? '' : String(num(v)));
 function hashRows(rows) {
   // GPT P2: order-independent hash of canonical row CONTENT (not just {Id,TransactionId}) so it proves the
   // archived rows carry the SAME content as the source - a copy/mapping corruption of StoreId/ProductId/type/
-  // Qty now changes the hash and is caught before publish. Field-name agnostic (typeOf/tsOf read the live
-  // Type/Timestamp OR the archive TxnType/TxnTimestamp), so source rows and their archive copies hash equal.
-  const canon = r => [String(r.TransactionId || ''), String(r.StoreId || ''), String(r.ProductId || ''),
-    typeOf(r), String(num(r.Qty)), tsOf(r), String(r.TransferId || ''), String(r.TargetTransactionId || '')].join('|');
+  // Qty now changes the hash and is caught before publish. Field-name agnostic (typeOf/tsOf/dateOf read the
+  // live Type/Timestamp/Date OR the archive TxnType/TxnTimestamp/TxnDate), so source rows and their archive
+  // copies hash equal.
+  // OS-W4.4 C1 archive-carry extension (mirror-the-guard): the carried set joins the canon — EconSig,
+  // IdempotencyKey, Date, the four stamp-authority fields, UnitPriceAtTime, and the source/dest ids +
+  // labels — so a copy defect in ANY carried field aborts BEFORE publish/delete, same as the original set.
+  // Framing switched join('|') -> JSON.stringify: the labels are free-ish text, and a '|' inside a value
+  // could make two DIFFERENT rows canonicalise identically (the same field-boundary-injection class the
+  // EconSig canonical closed). Symmetric on both sides of the compare, so equality semantics are preserved.
+  const canon = r => JSON.stringify([String(r.TransactionId || ''), String(r.StoreId || ''), String(r.ProductId || ''),
+    typeOf(r), String(num(r.Qty)), tsOf(r), String(r.TransferId || ''), String(r.TargetTransactionId || ''),
+    dateOf(r), String(r.Reason || ''), String(r.IdempotencyKey || ''), String(r.EconSig || ''),
+    optNum(r.SellAtSupply), optNum(r.DiscAtSupply), optNum(r.PricingVersion), optNum(r.CatalogueVersion),
+    optNum(r.UnitPriceAtTime), String(r.StockFromStoreId || ''), String(r.StockToStoreId || ''),
+    String(r.StockFrom || ''), String(r.StockTo || '')]);
   const parts = rows.map(canon).sort();
   return crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 }

@@ -64,11 +64,23 @@ agy residue rows (the probe + its tombstone) — CLEAN at the next apply run (it
 read-only Graph credential (app 0ccf2a39) expires 2026-07-29 — let lapse, mint fresh at the return
 re-audit.
 
-## Open items before the W4.4 return re-audit
-1. **Archive-move carry (`bob-stock-archive-staging`)** — the archive LA does not yet copy
-   `EconSig` + the 9 new columns when moving rows to `StockTransactions_Archive`. An archived row
-   would LOSE its seal → engine holds it. Must be applied + probed before the re-audit.
-   (+ clean the two agy_ residue rows while in there.)
+## ✅ ARCHIVE-CARRY APPLIED 2026-07-23 (run-probe pending the test director)
+The archive-move now preserves seals. Applied: (a) `bob-stock-archive-staging` Insert_archive mapping
++11 carried fields (EconSig, **IdempotencyKey — ground truth: it was NEVER carried to archive**, a gap
+that would break archived receive-row seals AND the CHUNK8 item-5 dual-identity dedup; the 4 stamp
+fields; UnitPriceAtTime; source/dest ids + labels) + BOTH `$select` reads extended (Read_live +
+Reread_archive incl. TxnDate/Reason — the reread previously wouldn't fetch the new fields, which would
+have false-failed the fidelity gate every run); (b) `snapshotCompute.hashRows` canon extended to the
+full carried set (+Reason, +Date day-part via `dateOf`, field-name agnostic live↔archive) AND framing
+switched join('|')→JSON.stringify (labels are free-ish text — the same field-boundary-injection class
+the EconSig canonical closed; symmetric both sides so equality semantics preserved. ⚠ Scoped amendment
+to Chunk-8-audited code — flag at the return re-audit); (c) Function App redeployed; new proof suite
+`test/archive-carry-proof.js` **28/28** (rename-equivalence, whole-population copy-defect matrix,
+injection dead); attest proof still 58/58. Finishing run `audit-artifacts/finish-c1-carry.js`
+(Kunal-executed): IdempotencyKey column on the archive list + agy_ residue sweep.
+**PENDING: the live archive-RUN probe** (seed sealed rows → drive a real archive run → archived rows
+re-verify) — the run gate requires a Director USER sudo proof (purpose 'archive'), i.e. the
+`srvaudit_` test director. Folds into the Contract-2 phase.
 2. **Contract 2** — correction route writes `control.targetLine` + server `originalEventAt`
    (LA-CHANGES §6; route not yet built). Needs the throwaway `srvaudit_` test director (Kunal mints).
 3. **Stamp semantic validation (SR-155 recompute)** rides the AA LA-CHANGES §3-4 ingest work — until
