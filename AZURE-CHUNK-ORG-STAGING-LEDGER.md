@@ -94,6 +94,17 @@ never cleaned per house rules. All 21 deleted; TIDEM_* and franchtest fixtures u
    `ECON_SIG_INVALID` + the sealed-row-pre-epoch contradiction rule) — deliberately deferred to the
    return re-audit per the parent contract.
 
+## ✅ TEST DIRECTOR MINTED 2026-07-23 (10/10)
+`srvaudit_director` (Role director, Active=1, TokenVersion 1) in `UserCredentials_Staging` item 25 —
+exactly ONE row (dedupe swept clean). Minted via the DEPLOYED `mintUserCredential` route (server-side
+salt+hash; runner `audit-artifacts/mint-test-director.js`, Kunal-executed). **Proven against the
+deployed verifier:** real login mints an `archive` sudo proof → `verifyProof` accepts (ok + director);
+wrong password rejected; proof rejected for any other purpose (single-purpose sudo). Password in the
+gitignored local keys file only. Gotcha banked: `Active` is an SP NUMBER column — write 1, not `true`
+(a boolean leaves the row unusable → anti-enumeration `userOk:false`). **⚠ CUTOVER CHECKLIST: DELETE
+this account (and rotate the staging keys file) before go-live.** Unblocks: the archive-RUN probe +
+Contract 2 + the AA credentialled E2E (AA ledger's blocker section now fully cleared).
+
 ## Safety notes
 - All changes on `*-staging` resources + the shared Function App (additive routes). Live LAs and the
   live app untouched. Nothing on `main`.
