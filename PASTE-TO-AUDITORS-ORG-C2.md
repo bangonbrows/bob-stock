@@ -1,28 +1,30 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R3
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R4
 
-> ## ROUND 3 — re-review after the round-2 folds
-> Round-2 verdicts: BOTH reviewers BLOCK — 10 distinct REAL findings (1 converged pair: the
-> never-promoted device pending) + 1 REAL note + 1 note REFUTED with evidence (the transient-export
-> window cannot exist: `export_lease` is acquirable only from `idle`, so no export runs while a
-> correction holds the state — adjudication recorded in §7b, challenge it if the reasoning is
-> wrong). Every fold is in the design doc's **R2 fold record table** (finding → ground truth →
-> fold). Headline changes this round: a RE-SEIZE rule for stalled recoverers + the pinned
-> staleness-exit invariant on all five states (§3/3a); the ctl-v1 replacement covered set is now the
-> FULL ENGINE ROW FORM, derived not hand-picked (adds TransferId/UnitPriceAtTime/IdempotencyKey —
-> two of those were engine-read and unsealed, §7a); §7b(5) seal verification split BY ORIGIN
-> (Director rows: ctl-v1; adopted device tombstones: their C1 row-v1 seal + head-bound adoption
-> fields, §7b); the device-claim lifecycle hardened (pre-insert ownership fence, foreign-CAS
-> compensation, TWO-WAY TTL scrub incl. roll-forward promotion, OpId-or-ControlId retry match —
-> §8/§4/§6); registry committed-phase schema fixed (OpId retained for device items,
-> PublicationVersion null-until-adopted + adoption's P7 CAS-fill, supersede/withdraw on an unadopted
-> tombstone refuses `TOMBSTONE_PENDING_ADOPTION` — §4); recovery decides on a CANDIDATE HEAD-SET
-> with per-entry hasOwnProperty semantics (adopt's N heads + withdraw's explicit null now decidable
-> — §6); the P4 delta law generalized (supersede was arithmetically WRONG — the six-cell mode table
-> in §5 P4); the no-journal seize rule re-keyed to OpId (journals discoverable from the P5.1 crash
-> window — §3a); the target-seal check is a THREE-WAY contract closing the seal-strip demotion
-> (§5 P3.2); and the INVARIANT_BROKEN blast radius honestly re-stated as GLOBAL (H9). This round:
-> re-review the revised design end-to-end and answer the NEW questions Q1v3-Q7v3 (§14) — the
-> three-party seize chain and the delta-law chains especially.
+> ## ROUND 4 — re-review after the round-3 folds
+> Round-3 verdicts: one reviewer PASS, one BLOCK×5 — all 5 ground-truthed REAL against the frozen
+> engine and client code, all folded (the design doc's **R3 fold record table** has finding →
+> ground truth → fold; convergence requires BOTH reviewers to pass the SAME revision, so this
+> round goes to both). The R2 transient-export adjudication was independently ACCEPTED by both
+> reviewers and is closed. Headline changes this round: (1) ONE CANONICAL HEAD SHAPE
+> `{controlId, revision, bornPublicationVersion}` everywhere — the adopted-head `born` field name
+> would have tripped the frozen engine's exact comparison (:519) and bricked every adopted
+> tombstone (§5b/§7b); (2) STAGED VISIBILITY for device tombstones — inserted
+> `ControlState='pending'` (excluded from device pulls and fail-closed for exports), flipped
+> visible only AFTER the registry commit CAS; a tombstone that loses a race against a correction
+> is quarantined while still invisible, so peer devices can never durably delete an original that
+> a correction was protecting (§8 v3, N7/N13; the check-to-insert race and the
+> durable-row/no-registry crash are both closed by scrub rules); (3) ADOPTION DELTA BY
+> SNAPSHOT-REPRESENTATION — zero-delta adoption was arithmetically wrong for archived targets
+> whose effect is baked into snapshot balances; decided via a NEW archive-run input-horizon marker
+> (N10), recorded once as `TargetInSnapshot` on the registry item, consulted by all later chain
+> cells (§5b, §4, §5 P4 qualifier); (4) the SEAL-EPOCH ARTIFACT (N16) — the previously-undefined
+> C1 epoch boundary is now a concrete immutable config item with an `EPOCH_UNDEFINED` fail-closed
+> lane (§5 P3.2); (5) EMPTY HEAD-SET publications are unreachable — zero-eligible adopt is a
+> terminal no-op before any write; an empty-CandidateHeads journal is invalid by construction
+> (§5b/§6); plus two note folds: §7b(4) blocker rescoped so an adjudicated target's stale headless
+> rows never block forever, and the §3 staleness-exit invariant is an N10 build acceptance item.
+> This round: re-review the revised design end-to-end and answer the NEW questions Q1v4-Q6v4 (§14)
+> — the staged-visibility interleavings and the adoption-delta chains especially.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -35,7 +37,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H9, the R1+R2 fold records, and questions Q1v3-Q7v3).
+   honest notes H1-H10, the R1+R2+R3 fold records, and questions Q1v4-Q6v4).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -45,8 +47,9 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v3-Q7v3 explicitly. If a decision contradicts a frozen SR
-pin, cite the pin.
+and the push-path tombstone claim. Answer Q1v4-Q6v4 explicitly. If a decision contradicts a frozen SR
+pin, cite the pin. Useful grounding for this round's folds: `sync.js` pull tombstone application
+(~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (:79-93 tombstone exclusion).
 
 **Verdict format:** PASS / PASS-with-notes / BLOCK, numbered findings with concrete failure sequences
 (interleavings welcome). The engineer ground-truths every finding before acting; findings only —

@@ -1,9 +1,11 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R3 (R2 verdicts: BOTH BLOCK — Codex 1-7 + AGY 1-4 + 2 AGY notes; 10
-distinct REAL findings (1 converged pair Codex-4a≡AGY-3), Note B REAL, Note A REFUTED with evidence
-(mutual exclusion — adjudication recorded in §7b). All folded below. R1: 12 distinct findings all
-REAL, folded. Nothing built, nothing deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
+**Status: 🔍 SCOPE REVIEW R4 (R3 verdicts: AGY PASS ("state machines airtight") · Codex BLOCK×5 —
+ALL 5 ground-truthed REAL (engine :519 field name; sync.js:2099 pull-applied deletions;
+snapshotCompute.js:87-89 archived-target residual; undefined epoch; empty-set vacuous truth) + 2
+note-level refinements folded. Codex ACCEPTED the R2 Note-A refutation independently. R2: 10 REAL
+folded. R1: 12 REAL folded. Nothing built, nothing deployed. D-C2-1..3 LOCKED by Kunal
+2026-07-23 — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -70,6 +72,27 @@ false (→ C2-R2-8).
 
 ---
 
+## R3 fold record (2026-07-23) — AGY PASS · Codex BLOCK×5, all REAL, all folded
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R3-1 | Adopted heads named `born` but the frozen engine compares `head.bornPublicationVersion` (buybackExport.js:519, SR-151) — every adopted tombstone would refuse `CONTROL_HEAD_MISMATCH` (Codex 1) | REAL — engine field name confirmed at :517-519 | THE CANONICAL HEAD SHAPE is pinned ONCE: `{controlId, revision, bornPublicationVersion}` — every head everywhere (Director, adopted, CandidateHeads journal entries, §5b/§7b/§4) uses EXACTLY the engine's field names; a shape-parity probe in N12 asserts the published manifest heads satisfy the engine's own comparison verbatim |
+| C2-R3-2 | The §8 pre-insert fence is check-then-act across two lists — a claim can be TTL-scrubbed + the target correction-claimed between the check and the insert; the losing tombstone then lands PULL-VISIBLE and peer devices durably delete the original (sync.js:2099) before compensation runs; a related crash leaves a durable row with NO registry item (Codex 2) | REAL — no cross-list atomicity exists; pull applies every visible `deleted` row as a durable removal | STAGED VISIBILITY (§8 v3): device tombstone rows are inserted with `ControlState='pending'` — INVISIBLE to devices (the N13 pull filter excludes pending) and fail-closed for exports (§7b(4) v2 below). The registry `pending → committed` CAS is the COMMIT POINT; only then does the route MERGE the row `ControlState='committed'` (visible). Foreign CAS ⇒ the never-visible row moves to Quarantine — nothing to un-deliver, the R3-repro's peer-device deletion cannot happen. Crash between CAS and the visibility MERGE ⇒ the two-way scrub completes the MERGE (roll-forward, idempotent). Durable row with NO registry item (scrub-then-insert crash) ⇒ reconcile REGISTERS it (target unclaimed: run the claim lifecycle to committed) or QUARANTINES it (target foreign-committed). The pre-insert fence also RE-STAMPS TtlAt (narrows the window; the staged visibility is what CLOSES it) |
+| C2-R3-3 | Adoption's unconditional "zero balance delta" is arithmetically wrong for an ARCHIVED target whose effect is baked into `stock_snapshot.balances` (snapshotCompute.js:87-89 residual: a tombstone landing AFTER its target's archive run cannot retroactively adjust) — settlement excludes the target but device stock counts stay overstated, and supersede/withdraw chains compound the error (Codex 3) | REAL — the design already distinguished live/archived for Director modes (P4 "live-target corrections adjust NO balances") but pinned adoption at zero unconditionally | ADOPTION DELTA BY SNAPSHOT-REPRESENTATION (§5b): per adopted tombstone, query both lists for the target — LIVE target ⇒ delta 0 (it was never in balances); ARCHIVED target ⇒ the deciding question is whether the tombstone was in that archive run's input (if so, snapshotCompute already excluded the target). Decidable via a NEW ARCHIVE-RUN INPUT-HORIZON marker (N10 v2: each archive run records the max live-list item id of its input universe; tombstone `_spId` ≤ horizon(target's ArchiveRunId) ⇒ already excluded ⇒ delta 0; > horizon ⇒ target in balances ⇒ delta `− effect(target)`); runs predating the marker ⇒ `ADOPTION_DELTA_UNDECIDABLE` fail-closed manual lane (D-C2-2: trial-data wipe makes the legacy case vanish at go-live). The determination is RECORDED on the registry item (`TargetInSnapshot`, §4) at first publication; every later chain cell (supersede/withdraw of an adopted deletion) consults the RECORDED flag — history is decided once, never re-derived. Director create modes need NO flag: reaching create proves no tombstone existed, so an archived target is always in balances (the existing `− effect(target)` is unconditionally correct) |
+| C2-R3-4 | The three-way seal rule referenced "the C1 seal epoch" — no artifact, column, or derivation defines it; the seal-strip closure was unenforceable as written (Codex 4) | REAL — engineer's R2 fold named a boundary that didn't exist | THE SEAL-EPOCH ARTIFACT (N16): ONE `AppConfig_Staging` item `ConfigType='seal_epoch'`, `{validateEpochId, archiveEpochId, recordedAt}` — the first-sealed item id per ledger list, written ONCE by the C1 apply runner (Director-gated; the C1 staging apply already happened, so the runner backfills it from the staging ledger's recorded ids), IMMUTABLE thereafter (the route treats any rewrite as tampering: fail closed). P3.2 v2: unsealed target + provenance id ≥ the list's epoch ⇒ `TARGET_SEAL_BROKEN`; unsealed + provenance < epoch ⇒ the legitimate pre-C1 lane; epoch item ABSENT ⇒ `EPOCH_UNDEFINED` — corrections on UNSEALED targets refuse until the artifact exists (sealed targets unaffected). Mirrors the engine's `coverage.stepsEpochId` precedent (buybackExport.js:738) |
+| C2-R3-5 | An EMPTY `CandidateHeads` map makes recovery's first arm vacuously true — a zero-eligible adopt journal that crashes pre-P6 rolls FORWARD to a `complete` journal at CandidateVersion V+1 while the snapshot sits at V (Codex 5) | REAL — classic empty-set logic hole; "all discovered tombstones seal-skipped" reaches it too | ZERO ELIGIBLE HEADS = TERMINAL NO-OP BEFORE ANY WRITE (§5b): adopt (explicit or opportunistic fold contributing zero) with no eligible tombstones returns `ok: NO_PENDING_ADOPTIONS` (+ the surfaced skip list) — NO journal, NO reservation, NO publication, state released. A journal with empty `CandidateHeads` is INVALID BY CONSTRUCTION (P5.1 refuses to create one); recovery encountering one ⇒ `INVARIANT_BROKEN` (loud — it proves an out-of-protocol writer) |
+| C2-R3-N1 | Pre-C1 unsealed tombstones are permanently seal-skipped by adoption ⇒ their headless rows would trip the export blocker forever (Codex Q5v3 note) | REAL residual under the R2 wording | §7b(4) v2 SCOPING: the fail-closed blocker is a durable tombstone/control row lacking a head **whose TARGET has no active head** — once the target is adjudicated by ANY active control (e.g. the Director remedy: a create-delete correction on the same target), the stale headless row is COVERED and stops blocking. Plus the widening from C2-R3-2: the blocker now catches ANY durable headless tombstone (registry-committed or not — a pending/unregistered one is exactly a deletion question not yet adjudicated) |
+| C2-R3-N2 | N10 must carry the PARENT archive-run staleness rule into the build, not just the correction states' (Codex Q1v3 note) | Fair build-checklist pin | N10 line amended: the staleness-exit invariant (§3) is an N10 ACCEPTANCE ITEM — all five states' takeover rules proven at the staging E2E crash drill |
+
+**Q1v3-Q7v3 outcomes:** Q1v3 YES both reviewers (seize/re-seize chain safe; → C2-R3-N2 build pin);
+Q2v3 YES both (covered-set derivation complete; ignored-field sealing harmless); Q3v3 YES-with-fix
+(per-origin split sound; → C2-R3-1 field name); Q4v3 NO (→ C2-R3-2 staged visibility); Q5v3 NO
+(→ C2-R3-2 unmodelled state + C2-R3-N1); Q6v3 correct for non-empty sets (→ C2-R3-5); Q7v3 Director
+cells correct, adoption chains broken (→ C2-R3-3). **R2 Note-A adjudication ACCEPTED by BOTH
+reviewers independently — closed.**
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -125,15 +148,16 @@ all client UI (runner scripts prove the route, as C1 did).
 | N4 | List `CorrectionJournal_Staging` | NEW — correction journals; doubles as the idempotency store (`OpId` Enforce-Unique); carries heartbeat + the candidate HEAD |
 | N5 | Coordination record v2 | EXTEND `archive_state` to the FIVE-state machine + request flags (§3) |
 | N6 | Snapshot payload v2 | EXTEND `stock_snapshot.ConfigData` with `controlManifest` + `fence` (§7) |
-| N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a) |
+| N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text), `ControlState` (device-tombstone staged visibility, §8 — C2-R3-2). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a) |
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
-| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2) — ⚠ amendments to Chunk-8-audited surfaces, flagged for the return re-audit |
+| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces, flagged for the return re-audit |
 | N11 | attestRows `ctl-v1` frame | EXTEND the C1 route with the control-seal canonical (§7a) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
-| N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — ⚠ flagged scoped amendment |
+| N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS excludes `ControlState='pending'` tombstones (staged visibility, §8/C2-R3-2; OData null/`ne` semantics = a build-proof item) — ⚠ flagged scoped amendment |
 | N14 | buybackExport.js additive export | `foldProjection` exported (exports-only change to the frozen engine file, `reqId` precedent) — ⚠ flagged for the return re-audit |
 | N15 | LA-CHANGES §1 amendment note | Topology snapshot writes join the coordination discipline (C2-R1-7) — ⚠ flagged scoped spec amendment |
+| N16 | Seal-epoch artifact | ONE `AppConfig_Staging` item `ConfigType='seal_epoch'` `{validateEpochId, archiveEpochId, recordedAt}` — first-sealed item id per ledger list, written ONCE by the C1 apply runner (backfilled from the staging ledger's recorded ids), immutable; the P3.2 seal-strip decider (C2-R3-4) |
 
 ## 3. The coordination record — five-state machine (SR-137/140 + C2-R1-1/-9)
 
@@ -209,6 +233,11 @@ ControlId, Revision (int), PublicationVersion (int|null) ← committed-phase fie
                                                          ADOPTED" (device lane only)
 PriorCommitted (JSON text)                             ← pending_supersede: the saved committed lock
 Origin       'director' | 'device' | 'device-adopted'
+TargetInSnapshot (bool|null)                           ← recorded ONCE at the target's first control
+                                                         publication (C2-R3-3): whether the target's
+                                                         effect is represented in stock_snapshot
+                                                         balances; every later chain cell consults
+                                                         this flag, never re-derives history
 ```
 
 - Claim = item CREATE (Enforce-Unique makes the race atomic); transitions = ETag CAS.
@@ -270,12 +299,15 @@ Terminal-opId replay returns the stored result; digest mismatch under a reused o
   1. Target row: query BOTH ledger lists. Absent ⇒ `TARGET_NOT_FOUND`; in both ⇒
      `TARGET_DUPLICATED` (fail closed); target is a control row or tombstone with `ControlId` head ⇒
      `TARGET_IS_CONTROL` (a tombstone target is legal only via the adopted-head supersede lane, §4).
-  2. Target seal — the THREE-WAY caller-side contract (C2-R2-N2; `verifyRow` returns booleans
-     only, so the ROUTE makes the distinction): stored `EconSig` present + verify ok ⇒ sealed-valid;
-     present + verify FAIL ⇒ `TARGET_SEAL_BROKEN` (fail closed); ABSENT ⇒ the unsealed lane —
-     UNLESS the row's provenance id (live `_spId` / archived `SourceId`) postdates the C1 seal
-     epoch, in which case a missing seal is itself tampering (post-C1 ingest always seals; the
-     seal-STRIP attack) ⇒ `TARGET_SEAL_BROKEN`. Mirrors the C1 sealed-pre-epoch contradiction rule.
+  2. Target seal — the THREE-WAY caller-side contract (C2-R2-N2 + C2-R3-4; `verifyRow` returns
+     booleans only, so the ROUTE makes the distinction): stored `EconSig` present + verify ok ⇒
+     sealed-valid; present + verify FAIL ⇒ `TARGET_SEAL_BROKEN` (fail closed); ABSENT ⇒ compare
+     the row's provenance id (live `_spId` / archived `SourceId`) against THE SEAL-EPOCH ARTIFACT
+     (N16): ≥ the owning list's epoch id ⇒ post-C1 ingest must have sealed it, so absence IS
+     tampering (the seal-STRIP attack) ⇒ `TARGET_SEAL_BROKEN`; < epoch ⇒ the legitimate pre-C1
+     unsealed lane; epoch artifact ABSENT ⇒ `EPOCH_UNDEFINED` — corrections on unsealed targets
+     refuse until it exists (sealed targets unaffected). Mirrors the C1 sealed-pre-epoch
+     contradiction rule and the engine's `coverage.stepsEpochId` precedent (buybackExport.js:738).
   3. Steps: if the target has a `TransferId`, page `RecordSteps_Staging` for that RecordId until
      exhausted (enumeration proof = completed walk + last-page continuity re-read, recorded in the
      journal) and compute the canonical STEP-SET DIGEST (C2-R1-12).
@@ -306,7 +338,14 @@ Terminal-opId replay returns the stored result; digest mismatch under a reused o
     `PriorCommitted` head's control row, SEAL-VERIFIED before use. (The R1 text's
     `− effect(target)` applied to supersede would back the original out TWICE — AGY R2-2's worked
     example: +10 target replaced by +8 then superseded to +5 must land at 95, not 93.) Unaffected
-    pairs bit-unchanged. Live-target corrections adjust NO balances (manifest-only publication).
+    pairs bit-unchanged. **Snapshot-representation qualifier (C2-R3-3):** balance terms apply only
+    where the referenced effect is REPRESENTED in `stock_snapshot.balances` — live-target
+    corrections adjust NO balances (manifest-only publication; the target was never in balances);
+    archived-target Director creates apply the table unconditionally (reaching create proves no
+    prior tombstone existed, so an archived target is always in balances); chains descending from
+    an ADOPTED deletion consult the registry's RECORDED `TargetInSnapshot` flag (§4) for every
+    `effect(target)` / `effect(originalTarget)` term — decided once at first publication, never
+    re-derived.
   - **Deterministic ids:** `controlId = 'ctl:' + opId (+ ':' + revision beyond 0)`; replacement
     output `TransactionId = 'corr:' + opId + ':' + revision`; collisions checked against BOTH lists.
   - Assembles the CANDIDATE HEAD-SET (C2-R1-7 + C2-R2-7): `CandidateHeads = {target: head-or-null,
@@ -343,13 +382,28 @@ Terminal-opId replay returns the stored result; digest mismatch under a reused o
 ### 5b. Supersede / withdraw / adopt
 Supersede/withdraw as R1 design (expected-revision CAS; append-only revisions; withdraw = no new row,
 head → null, balances restore the target's effect; rollback restores `PriorCommitted`). **Adopt
-(C2-R1-8):** Director-gated like every mode; no target, no reservation interplay; P4 builds a
-manifest-only candidate folding ALL registry-committed unheaded device tombstones into heads
-`{controlId: tombstoneId, revision: 0, born: CandidateVersion}` after verifying each tombstone row
-exists in-list with a VALID seal (an unsealed/broken claimed tombstone is surfaced + skipped, fail
-closed); zero balance delta; same journal/fence/publish-LAST discipline. Every OTHER mode's P4 folds
-pending adoptions opportunistically, so adopt is rarely needed explicitly (it exists so a settlement
-blocked on `TOMBSTONE_PENDING_ADOPTION` has a Director remedy).
+(C2-R1-8 + C2-R3-1/-3/-5):** Director-gated like every mode; no target argument, no reservation
+interplay; P4 builds a candidate folding ALL registry-committed unheaded device tombstones into
+heads of THE CANONICAL SHAPE `{controlId: tombstoneId, revision: 0, bornPublicationVersion:
+CandidateVersion}` (C2-R3-1 — the engine's exact field names, buybackExport.js:519; NO other head
+shape exists anywhere in this design) after verifying each tombstone row exists in-list with a
+VALID seal (an unsealed/broken claimed tombstone is surfaced + skipped, fail closed — its target
+remains correctable via the Director create-delete remedy, §7b(4) v2). **Balance delta PER
+TOMBSTONE by snapshot-representation (C2-R3-3):** LIVE target ⇒ 0 (never in balances); ARCHIVED
+target ⇒ decided by the archive-run INPUT-HORIZON marker (N10 v2): tombstone `_spId` ≤ the target's
+run horizon ⇒ snapshotCompute already excluded the target ⇒ 0; > horizon (the
+snapshotCompute.js:87-89 residual) ⇒ the target is in balances ⇒ `− effect(target)`; target's run
+predates the marker ⇒ `ADOPTION_DELTA_UNDECIDABLE` fail-closed (surfaced manual lane; vanishes at
+the D-C2-2 go-live wipe). The determination is RECORDED as `TargetInSnapshot` on the registry item
+at publication (§4) — later supersede/withdraw chain cells consult the RECORDED flag, never
+re-derive history. **Zero eligible tombstones ⇒ terminal no-op BEFORE ANY WRITE (C2-R3-5):**
+`ok: NO_PENDING_ADOPTIONS` + the surfaced skip list — no journal, no publication, state released;
+a journal with empty `CandidateHeads` is invalid by construction (P5.1 refuses; recovery meeting
+one ⇒ `INVARIANT_BROKEN`). Same journal/fence/publish-LAST discipline otherwise. Every OTHER
+mode's P4 folds pending adoptions opportunistically (contributing zero ⇒ simply no adopted
+entries — the host mode's own head still makes CandidateHeads non-empty), so adopt is rarely
+needed explicitly (it exists so a settlement blocked on `TOMBSTONE_PENDING_ADOPTION` has a
+Director remedy).
 
 ## 6. Reconcile / recovery (SR-139/143 + C2-R1-1/-7/-9/-10)
 
@@ -375,12 +429,15 @@ mutating act = the FENCE write):
   (N10/N15); the explicit state exists so a violation is LOUD, never a silent rollback.
 - Freshness: recovery only ever engages STALE owners (§3a seize); fresh ⇒ 409 busy. A stale
   RECOVERER is itself re-seizable (§3a re-seize, C2-R2-1).
-- Orphan scrubs (TWO-WAY for device claims, C2-R2-4): registry pendings past TTL with no live
-  journal (Director) ⇒ released/restored per lifecycle; device pendings past TTL with NO ledger row
-  ⇒ deleted, WITH a durable ledger row ⇒ rolled FORWARD (`pending → committed` executed by the
-  scrub); a durable tombstone row whose target's registry item is committed to a DIFFERENT
-  ControlId ⇒ the row is quarantined — it lost the race (C2-R2-5 belt); stale no-journal states per
-  §3a (OpId-keyed, C2-R2-9).
+- Orphan scrubs (TWO-WAY for device claims, C2-R2-4 + C2-R3-2): registry pendings past TTL with no
+  live journal (Director) ⇒ released/restored per lifecycle; device pendings past TTL with NO
+  ledger row ⇒ deleted, WITH a durable ledger row ⇒ rolled FORWARD (the scrub executes the commit
+  CAS + the `ControlState` visibility MERGE, §8); a committed registry item whose row is still
+  `pending`-marked ⇒ complete the visibility MERGE; a durable tombstone row whose target's registry
+  item is committed to a DIFFERENT ControlId ⇒ the row is quarantined — it lost the race (C2-R2-5
+  belt); a durable `pending`-marked tombstone with NO registry item (the scrub-then-insert crash)
+  ⇒ run its claim lifecycle: target unclaimed ⇒ register to committed + visibility MERGE, target
+  foreign ⇒ quarantine (C2-R3-2); stale no-journal states per §3a (OpId-keyed, C2-R2-9).
 
 ## 7. Control storage, seals, manifest, and the export assembly contract
 
@@ -406,16 +463,22 @@ Under its lease, the export route: (1) queries BOTH lists for control-typed rows
 targeting supplied identities (completeness-attested); (2) supplies to the engine ONLY the control
 matching each ACTIVE manifest head (Director controls: the head revision's row; device tombstones:
 a synthesized `{controlId: tombstoneId, type:'deletion', targetTransactionId, revision: 0,
-bornPublicationVersion: head.born}` from the manifest + the seal-verified tombstone row) — historical
-revisions and withdrawn targets' rows are NEVER supplied; (3) EXCLUDES rows carrying `ControlId` from
-the `rows` arrays (a control's row reaches the engine only inside its ctl); (4) surfaces any
-registry-committed tombstone or published control LACKING a manifest head as the fail-closed
-PROVISIONAL blocker `TOMBSTONE_PENDING_ADOPTION` (Director remedy: `mode:'adopt'`); (5) verifies
+bornPublicationVersion: head.bornPublicationVersion}` from the manifest + the seal-verified
+tombstone row (C2-R3-1: the head already carries the engine's exact field names — the assembly
+copies, never renames) — historical revisions and withdrawn targets' rows are NEVER supplied; (3)
+EXCLUDES rows carrying `ControlId` from the `rows` arrays (a control's row reaches the engine only
+inside its ctl); (4) surfaces ANY durable tombstone or published control row LACKING a manifest
+head — registry-committed, registry-pending, or unregistered alike (C2-R3-2: a pending/unregistered
+tombstone is exactly a deletion question not yet adjudicated) — as the fail-closed PROVISIONAL
+blocker `TOMBSTONE_PENDING_ADOPTION` (Director remedy: `mode:'adopt'`), **UNLESS the row's TARGET
+already has an ACTIVE head (C2-R3-N1) — an adjudicated target's stale headless rows (e.g. a
+seal-skipped pre-C1 tombstone remedied by a Director create-delete) are COVERED, never permanent
+blockers**; (5) verifies
 every supplied control's seal **BY ORIGIN (C2-R2-3): a Director control row ⇒ its ctl-v1 seal; a
 synthesized device-tombstone control ⇒ the tombstone ROW's C1 v1 seal (which covers Type +
 TargetTransactionId — the deletion's whole economic content); the adoption-time fields (revision 0,
-born) come from the server-owned manifest head, which IS their authority — no row seal can or need
-attest fields that did not exist at push time.** Candidate-row visibility (C2-R2-N1 adjudication,
+bornPublicationVersion) come from the server-owned manifest head, which IS their authority — no row
+seal can or need attest fields that did not exist at push time.** Candidate-row visibility (C2-R2-N1 adjudication,
 recorded): the export can NEVER observe a P5.3 candidate lacking its head — `export_lease` is
 acquirable only from `idle`, so no export runs while a correction holds `correction_active`/
 `correction_recovering`; rollback deletes candidates and a crashed correction HOLDS the state until
@@ -433,25 +496,37 @@ balances (D8-7).
 
 ## 8. push-v2-validate amendment — the SR-143-conformant tombstone claim (C2-R1-5)
 
-For each validated `Type='deleted'` row: (1) registry CREATE `pending(owner=deviceId,
-opId=<tombstone TransactionId>, TtlAt)`; on conflict, read the item — `OpId` OR `ControlId` equal
-to this tombstone's id ⇒ OWN claim (C2-R2-6 belt: committed items retain OpId, §4), re-enter
-(proceed; if already committed, the row is a duplicate push and the normal dedup path answers);
-foreign ⇒ divert the row to `StockTransactions_Quarantine` (`CONTROL_TARGET_RESERVED`, surfaced in
-the push response, never silently dropped). (2) **Pre-insert ownership fence (C2-R2-5):**
-IMMEDIATELY before attest+insert, re-read the registry item and assert it is still THIS tombstone's
-own live pending claim (own OpId, unexpired). Absent / foreign / expired ⇒ quarantine divert, never
-insert (the claim may have been TTL-scrubbed and the target claimed by a correction while this
-worker was stalled). Then the row proceeds through the normal attest+insert pipeline. (3) After the
-row is durable, CAS the registry `pending → committed(ControlId=row id, Revision 0,
-PublicationVersion null, OpId retained)`. **CAS lands on a FOREIGN state ⇒ COMPENSATE (C2-R2-5):
-the just-inserted row is moved to Quarantine (it was never acked to the device) + surfaced.** A
-crash at any point is recovered by: retry (idempotent re-entry), or the TWO-WAY reconcile scrub
-(C2-R2-4: pending past TTL with no ledger row ⇒ deleted; WITH a durable ledger row ⇒ the scrub
-executes `pending → committed` itself), plus the §6 belt (durable tombstone vs foreign-committed
-registry ⇒ row quarantined). Registry unreachable ⇒ that tombstone (only) fails retryable — the C1
-fail-closed posture. Non-tombstone rows: pipeline untouched. ⚠ Scoped amendment to the C1-audited
-push LA (N9), flagged.
+For each validated `Type='deleted'` row (STAGED VISIBILITY protocol, C2-R2-4/-5/-6 + C2-R3-2):
+(1) registry CREATE `pending(owner=deviceId, opId=<tombstone TransactionId>, TtlAt)`; on conflict,
+read the item — `OpId` OR `ControlId` equal to this tombstone's id ⇒ OWN claim (C2-R2-6 belt:
+committed items retain OpId, §4), re-enter (proceed; if already committed, the row is a duplicate
+push and the normal dedup path answers); foreign ⇒ divert the row to
+`StockTransactions_Quarantine` (`CONTROL_TARGET_RESERVED`, surfaced in the push response, never
+silently dropped). (2) **Pre-insert ownership fence (C2-R2-5):** IMMEDIATELY before attest+insert,
+re-read the registry item, assert it is still THIS tombstone's own live pending claim (own OpId,
+unexpired), and RE-STAMP `TtlAt` (ETag CAS — a fresh TTL so the scrub cannot expire the claim
+under a normally-paced insert). Absent / foreign / expired ⇒ quarantine divert, never insert. Then
+the row is inserted through the normal attest pipeline **WITH `ControlState='pending'` — INVISIBLE
+to devices (the N13 pull filter excludes pending rows) and fail-closed for exports (§7b(4): a
+headless durable tombstone blocks settlement, never mis-counts).** (3) After the row is durable,
+CAS the registry `pending → committed(ControlId=row id, Revision 0, PublicationVersion null, OpId
+retained)` — **this CAS is the COMMIT POINT** — then MERGE the row `ControlState='committed'`
+(now pull-visible). **The commit CAS lands on a FOREIGN state ⇒ COMPENSATE (C2-R2-5/C2-R3-2): the
+still-`pending`-marked row — which NO device has ever received — moves to Quarantine + surfaced;
+there is nothing to un-deliver, so a losing tombstone can never delete the original on peer
+devices.** Crash recovery: retry (idempotent re-entry at any step); the TWO-WAY reconcile scrub
+(C2-R2-4: registry pending past TTL with no ledger row ⇒ deleted; WITH a durable ledger row ⇒ the
+scrub executes the commit CAS + the visibility MERGE itself — roll-forward, idempotent; a
+committed registry item whose row is still `pending`-marked ⇒ complete the visibility MERGE); the
+§6 belts (durable tombstone vs FOREIGN-committed registry ⇒ row quarantined; durable
+`pending`-marked tombstone with NO registry item — the scrub-then-insert crash, C2-R3-2 — ⇒
+reconcile RUNS the claim lifecycle for it: target unclaimed ⇒ register to committed + visibility
+MERGE; target foreign ⇒ quarantine). Registry unreachable ⇒ that tombstone (only) fails
+retryable — the C1 fail-closed posture. Non-tombstone rows: pipeline untouched. ⚠ Scoped
+amendments: the C1-audited push LA (N9) + the pull filter (N13 — OData null/`ne` semantics on
+`ControlState` are a BUILD-PROOF item: prove the filter delivers legacy null-state rows and
+committed tombstones, excludes pending, on the real staging list). Devices receive peer deletions
+only after commit — a visibility LATENCY of one push round-trip, never a correctness change (H10).
 
 ## 9. Auth additions
 
@@ -489,7 +564,16 @@ foreign-CAS compensation matrix (C2-R2-4/-5); committed-item OpId retention + th
 unadopted-supersede refusal (C2-R2-6); adopt/withdraw recovery via the head-SET incl. explicit-null
 hasOwnProperty semantics (C2-R2-7); the AGY R2-2 supersede arithmetic repro verbatim (+10→+8→+5 ⇒
 95, C2-R2-10); the P5.1-crash journal-by-OpId recovery repro (C2-R2-9); and the seal-strip probe
-(EconSig deleted on a post-C1 row ⇒ TARGET_SEAL_BROKEN, C2-R2-N2).
+(EconSig deleted on a post-C1 row ⇒ TARGET_SEAL_BROKEN, C2-R2-N2). R3 additions: a HEAD-SHAPE
+PARITY probe (published adopted heads pass the FROZEN engine's :517-519 comparison verbatim,
+C2-R3-1); the Codex-R3-2 race repro against the staged-visibility protocol (stalled writer +
+scrubbed claim + correction claim + resumed insert ⇒ the row stays invisible and lands in
+Quarantine; plus the scrub-then-insert no-registry crash ⇒ registered-or-quarantined); the
+adoption-delta matrix (live / archived-pre-horizon / archived-post-horizon / undecidable ×
+subsequent supersede/withdraw chains against the RECORDED flag, C2-R3-3 — the Codex B+10 repro
+verbatim); the seal-epoch three-way + EPOCH_UNDEFINED refusal (C2-R3-4); and the empty-head-set
+no-op (explicit adopt with zero eligible + the all-seal-skipped variant ⇒ NO journal exists,
+C2-R3-5).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -526,39 +610,41 @@ hasOwnProperty semantics (C2-R2-7); the AGY R2-2 supersede arithmetic repro verb
   record + one snapshot means the blast radius is global by construction; the loud full stop is
   deliberate — a quiet partial continuation over a broken invariant is how money silently goes
   wrong.
+- **H10 (Kunal-visible, C2-R3-2):** a device deletion now reaches OTHER devices only after the
+  server commits its claim — in practice one push round-trip later than today (seconds-to-minutes;
+  the deleting device itself sees it instantly). The delay is what guarantees a deletion that
+  LOSES a race against a Director correction can never reach peer devices at all — before this
+  fix, a losing deletion could permanently remove the original on every peer with no way back.
 
-## 14. Review questions (R3)
+## 14. Review questions (R4)
 
-- **Q1v3 (seize chain):** §3a now has seize AND re-seize. Walk the three-party matrix — owner O
-  stalls, recoverer R1 seizes and stalls at each recovery step, recoverer R2 re-seizes, then O
-  and/or R1 resume at each later point. Is every interleaving safe (no double-terminalization, no
-  fence regression, no release of a state a live party still needs)? Is the staleness-exit
-  INVARIANT (§3) actually satisfied by all five states?
-- **Q2v3 (covered-set derivation):** §7a now derives the replacement covered set from the engine
-  row form. Diff the two enumerations yourself — is ANY engine-read field still missing? Is sealing
-  fields the engine ignores (e.g. IdempotencyKey for controls) harmless in every canonical/absence
-  case?
-- **Q3v3 (per-origin seals):** §7b(5)'s split — does the device-tombstone arm leave ANY
-  adoption-time field an attacker can forge (given the manifest is server-owned but
-  SharePoint-direct-editable at the same trust level as the snapshot itself)? Is binding revision-0/
-  born to the head alone sound?
-- **Q4v3 (device lifecycle v2):** re-run the full §8 crash/retry matrix against the NEW pieces —
-  pre-insert fence, foreign-CAS compensation, two-way scrub, OpId-or-ControlId match, the §6
-  foreign-committed belt. Any remaining path that quarantines a legitimate tombstone, lands two
-  control decisions on one target, loses a durable tombstone from adoption, or permanently locks a
-  target?
-- **Q5v3 (registry schema):** §4's committed-phase amendments (OpId retained, PublicationVersion
-  null-until-adopted, adoption's P7 CAS-fill, the unadopted-supersede refusal) — does every
-  registry state now map to exactly one defined behaviour in every mode gate, and is the
-  adoption-crash window (head published, registry fill pending) fully healed by roll-forward?
-- **Q6v3 (recovery decision v2):** the per-entry CandidateHeads test with hasOwnProperty semantics
-  (§6) — enumerate adopt (N heads), withdraw (explicit null), create, supersede × {published,
-  not-published, carried-forward-by-archive-run} — does each land in the correct arm? Is the
-  partial-match ⇒ INVARIANT_BROKEN rule right given the single-MERGE publish?
-- **Q7v3 (delta law):** the general delta law + six-cell mode table (§5 P4) — verify the arithmetic
-  for every mode chain (create→supersede→supersede→withdraw; create-delete→supersede-to-replace;
-  adoption chains) against the SR-142 invariant. Any chain where balances drift from
-  base + Σ contributions?
+- **Q1v4 (staged visibility):** the §8 v3 protocol — walk the full interleaving space (stalled
+  writer × TTL scrub × concurrent correction claim × resumed insert × crash at every step ×
+  device pulls at every point). Can a `pending`-marked tombstone EVER reach a device, or a losing
+  tombstone ever become visible? Can a legitimate tombstone get stuck invisible forever (scrub
+  coverage of every crash window)? Is the commit-point ordering (registry CAS before visibility
+  MERGE) right in both crash orders?
+- **Q2v4 (adoption delta):** the snapshot-representation rule (§5b + §4 `TargetInSnapshot` + the
+  N10 input-horizon marker) — is "tombstone `_spId` ≤ run horizon ⇒ already excluded" EXACTLY
+  snapshotCompute's inclusion rule (check snapshotCompute.js:79-93 against the archive LA's input
+  assembly)? Chains: adopted-deletion → supersede → withdraw with the RECORDED flag — any cell
+  where balances drift? Archived tombstone rows (tombstone itself archived with its target) —
+  does the horizon comparison still decide correctly with `SourceId` provenance?
+- **Q3v4 (seal epoch):** N16 + P3.2 v2 — is the first-sealed-item-id boundary sound for BOTH lists
+  (archive rows carry `SourceId` from the LIVE list — which epoch applies to an archived row)? Is
+  immutability of the artifact adequately protected (rewrite = tampering, fail closed)? Any lane
+  where `EPOCH_UNDEFINED` blocks a correction it shouldn't?
+- **Q4v4 (empty/edge head-sets):** C2-R3-5's no-op — are ALL zero-content publications now
+  unreachable (explicit adopt, opportunistic fold contributing zero on every mode, all-seal-skipped)?
+  Does the host mode's own head always make CandidateHeads non-empty, including withdraw's explicit
+  null entry?
+- **Q5v4 (head shape):** sweep the revised doc for ANY remaining head/manifest field-name or shape
+  divergence from the frozen engine's reads (buybackExport.js:515-520, 563-565) — including the
+  journal's CandidateHeads entries and the §7b synthesized control.
+- **Q6v4 (whole-design re-check):** with all R1+R2+R3 folds in place, re-answer your R3 questions
+  end-to-end. Any fold that broke a previously-cleared property, and any remaining path to: a
+  silently uncounted deletion, a mis-billed control, a permanently locked target, a stranded
+  coordination state, or a balances/settlement divergence?
 
 ## 15. Sequencing after convergence
 
