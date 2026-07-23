@@ -1,29 +1,28 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R6
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R7
 
-> ## ROUND 6 — re-review after the round-5 folds
-> Round-5 verdicts: BOTH BLOCK — 4 distinct REAL findings (2 CONVERGED pairs), ALL confined to
-> the two mechanisms round 4 introduced; both are REDESIGNED this round (the design doc's **R5
-> fold record table** has finding → ground truth → fold). Confirmed-closed at R5 by both
-> reviewers: the normalization law + six-cell table (all standard publications), the CommitSig
-> authority chain, the ID-coordinate sweep (count zero), the signed epoch artifact, head shape,
-> empty-set, retry healing, and the export adjudication. The two redesigns:
-> (1) **`retire_claim` v2 is a TRUE PUBLICATION** — round 4's version corrupted balances
-> (retirement didn't normalize — the converged repro: excluded +10 → retire → create-replace +8
-> landed at −2), couldn't ride the journal machinery (empty CandidateHeads), and destroyed its
-> own gate evidence on a mid-crash. Now it publishes an explicit-null head (the withdraw form —
-> non-empty decision key, standard §6 recovery), applies the normalizing delta via the same
-> horizon rule (journaled), transitions the registry to the withdrawn form (rollback restores),
-> and quarantines the tombstone ONLY in P7 — after the commit point — so every pre-commit crash
-> leaves the evidence intact. Post-retirement corrections ride the supersede lane (§5b).
-> (2) **CONTROL-AWARE PAIRED ARCHIVAL replaces the permanent archive exclusion** — round 4's pin
-> broke the client scalar-cutoff contract (clients treat `_spId ≤ cutoffId` as snapshot-covered
-> and skip/prune; a permanently-excluded row below the cutoff diverged client stock from
-> settlement, plus unbounded retention). Now snapshotCompute receives the active controlManifest
-> and folds EFFECTIVE values, and the run's cutoff is CLAMPED so a controlled ensemble (target +
-> its control rows) always archives TOGETHER — no excluded row ever sits below a published
-> cutoff, the covering invariant holds exactly, retention is bounded (N10, H12). This round:
-> re-review end-to-end and answer the NEW questions Q1v6-Q5v6 (§14) — the retire crash matrix
-> and the paired-archival invariants especially. Q5v6 is the explicit convergence gate.
+> ## ROUND 7 — re-review after the round-6 folds
+> Round-6 verdicts: one reviewer PASS ("ready for implementation"; its one fidelity-hash note was
+> REFUTED with evidence — no stored hash field exists, hashes are per-run transient values
+> compared before publish/delete; the real adjacent requirement folded via the other reviewer's
+> finding 5) · one reviewer BLOCK×5, ALL REAL, all folded (the design doc's **R6 fold record
+> table**). Convergence requires both passing the same revision, so this round goes to both.
+> The R6 folds: (1) retirement gains a PRE-P6 VISIBILITY WITHDRAWAL (the tombstone row is marked
+> `retiring` and excluded from pulls before anything commits — reversible, evidence-preserving)
+> AND a P7 HEALING TOUCH (a no-op Modified bump on the restored target row: pulls are
+> modified-since cursors, so every device that ever applied the deletion re-receives and
+> re-merges the target — closing the P6→P7 crash window AND all pre-existing device divergence);
+> (2) the NULL-HEAD lane is now fully normative: two new delta cells (null→replace, null→delete —
+> the converged +10→+8 repro is now DERIVED from the table), the explicit-null expected tuple,
+> and the registry WITHDRAWN FORM with pending_supersede restore (§4/§5 P4/request contract);
+> (3) UNIT-MOVE archival (E1 v3): an ensemble archives as a unit keyed on the TARGET alone
+> passing the FULL archive predicate (id + retention); its control/tombstone rows move in the
+> same run regardless of their own ids/timestamps (they are never client-covering-relevant) — the
+> cutoff clamp is DELETED, which closes BOTH the retainAfterTs pair-split repro and the
+> unbounded-retention-under-repeated-supersedes repro; (4) the archive SELECT/copy/re-read/
+> fidelity-hash canonical carries the FULL N7 control form (versioned, fails closed BEFORE the
+> live delete); (5) the stale R4 permanent-exclusion sentence in §5 P4 is gone. This round:
+> re-review end-to-end and answer Q1v7-Q5v7 (§14) — the healing-touch delivery semantics and the
+> unit-move consumer sweep especially. Q5v7 is the explicit convergence gate.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -36,7 +35,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H12, the R1-R5 fold records, and questions Q1v6-Q5v6).
+   honest notes H1-H13, the R1-R6 fold records, and questions Q1v7-Q5v7).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -46,7 +45,7 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v6-Q5v6 explicitly. If a decision contradicts a frozen SR
+and the push-path tombstone claim. Answer Q1v7-Q5v7 explicitly. If a decision contradicts a frozen SR
 pin, cite the pin. Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734

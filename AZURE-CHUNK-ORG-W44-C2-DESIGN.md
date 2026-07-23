@@ -1,12 +1,14 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R6 (R5 verdicts: BOTH BLOCK — AGY×3 + Codex×3 = 4 distinct REAL (2
-CONVERGED pairs), ALL confined to the two R4-introduced mechanisms: `retire_claim` (redesigned as
-a TRUE PUBLICATION below) and the E1 archive-exclusion pin (redesigned as CONTROL-AWARE PAIRED
-ARCHIVAL below). CONFIRMED CLOSED at R5 by both: the normalization law + six-cell table, the
-CommitSig authority chain, the ID-coordinate sweep (zero remaining), the signed epoch artifact,
-head shape, empty-set, own-committed retry healing, the export adjudication. R4: 8 REAL folded.
-R3: AGY PASS · Codex×5 REAL, folded. R2: 10 REAL folded. R1: 12 REAL folded. Nothing built,
+**Status: 🔍 SCOPE REVIEW R7 (R6 verdicts: AGY PASS ("ready for implementation") + 1 note
+REFUTED with evidence (no stored fidelity-hash field exists — hashes are per-run transient,
+snapshotCompute.js:153 / archive-def:467) · Codex BLOCK×5 ALL REAL + 1 stale-sentence note. Folds
+below: retirement gains a pre-P6 VISIBILITY WITHDRAWAL + a P7 target-row TOUCH that heals ALL
+divergent devices; the null-head→new-control cells + expected tuple + registry withdrawn form
+PINNED; paired archival v3 = UNIT-MOVE keyed on the TARGET's own full eligibility (kills both the
+retainAfterTs pair-split AND the unbounded-retention-under-repeated-corrections finding); the
+archive copy/reread/hash canonical extended to the full N7 control form. R5: 4 REAL folded (both
+R4 mechanisms redesigned). R4: 8 REAL. R3: AGY PASS · Codex×5. R2: 10. R1: 12. Nothing built,
 nothing deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
@@ -137,6 +139,28 @@ mechanisms.
 
 ---
 
+## R6 fold record (2026-07-24) — AGY PASS (+1 note refuted) · Codex BLOCK×5 all REAL + 1 note
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R6-1 | A retired LIVE tombstone stays pull-deliverable between P6 and P7 (legacy lane needs no CommitSig; pulls aren't excluded by correction states) — a device pulling in the crash window applies the deletion AFTER the server restored the target, permanently divergent; worse, devices that pulled it BEFORE retirement are divergent already (Codex 1) | REAL — and the pre-existing-application half is the deeper problem | TWO-PART FIX (§5b): (a) VISIBILITY WITHDRAWAL — a pre-P6 step MERGEs the tombstone `ControlState='retiring'` (excluded by the N13 filter; REVERSIBLE — rollback restores; the seal/provenance gate evidence is untouched, preserving C2-R5-3); (b) THE HEALING TOUCH — P7, post-commit, TOUCHES the restored TARGET row (a no-op Modified bump): pulls are modified-since cursors, so EVERY device re-receives the target on its next pull — devices that had applied the deletion (whenever) re-merge it (sync merges rows absent from local ids). Heals the crash-window device AND all pre-existing divergence. Idempotent, roll-forward-completed |
+| C2-R6-2 | The null-head state retirement/withdraw mandates as the re-correction baseline has NO arithmetic cells (six-cell table lacks null→replace / null→delete), NO expected-tuple form (request requires `activeControlId`), and NO pinned registry representation — the +10→+8 result was asserted, not derivable (Codex 2) | REAL — the lane was named but not normatively defined | PINNED (§5 P4 + §5 request + §4): TWO new cells — null→replace `− effect(originalTarget) + effect(new)`; null→delete `− effect(originalTarget)` (a null head means the target is the current effective value — the table now derives the converged repro: retire restores +10, supersede-to-+8 = −10+8 ⇒ +8). Expected tuple for a null-head target: `{activeControlId: null, revision, publicationVersion}`. Registry WITHDRAWN FORM: `committed(ControlId: null, Revision: advanced, PublicationVersion: the withdrawing/retiring publication, OpId retained for device-origin)`; supersede-from-null = `pending_supersede(PriorCommitted = the null-head form)`, rollback restores it — identical mechanics for withdraw-then-recorrect and retire-then-correct |
+| C2-R6-3 | Pair eligibility ignored `retainAfterTs` (snapshotCompute.js:108-115 requires Id ≤ cutoff AND Timestamp < retainAfterTs) — a fresh control row splits its ensemble across lists ⇒ `CROSS_LIST_CONTROL_CONFLICT` (Codex 3); AND the R5 cutoff clamp made retention UNBOUNDED under repeated corrections — every new revision resets the youngest member, the clamp pins the global cutoff below the target forever, backlog grows into the 5000-row guard (Codex 4) | BOTH REAL — one root cause: keying pair-atomicity on EVERY member's eligibility | **UNIT-MOVE PAIRED ARCHIVAL (E1 v3, N10):** an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition, C2-R6-3's demand); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps. Sound because those members are never client-covering-relevant: control rows are never delivered to devices (N13), and a tombstone's effect rides balances via input-presence (D8-7 — the unit-move guarantees it is in the run input, strictly stronger than the retain-window pairing it replaces). The R5 cutoff CLAMP IS DELETED — the global cutoff advances normally, so retention is bounded by the TARGET's own eligibility exactly like any uncorrected row (repeated supersedes only add same-run members, never defer the move). Corrections landing AFTER the unit-move use the SR-135 direct-to-archive lane as before. SR-70 same-list preserved by construction |
+| C2-R6-4 | Control rows now archive, but the run's copy mapping, re-read compare, and fidelity-hash canonical don't carry the N7 control fields (archive-def:103-106/213-220; snapshotCompute:43-60) — an archive move could silently strip ControlId/Revision/Born/TargetLine/seals and the hash would still pass; the live delete then destroys the only complete copy ⇒ export refuses forever (Codex 5) | REAL — the C1 carry covered the economic set, not the new control form | N10: the archive SELECT/copy mapping, the re-read field-for-field compare, AND the fidelity-hash canonical are EXTENDED to the FULL N7 control form (`ControlId, ControlType, ControlRevision, BornPublicationVersion, TargetLine, OriginalEventAt, ControlState, CommitSig` + the ctl-v1 `EconSig` already carried) — versioned hash extension, JSON-framed, the C1 archive-carry precedent; a copy dropping ANY control field now breaks the hash BEFORE the live delete (fail-closed, run aborts, live ledger untouched) |
+| C2-R6-N1 | Direct-to-archive control rows bypass snapshotCompute's incremental fidelity hashes, so P6 must commutatively update `stock_snapshot.fidelityHashes` (AGY note) | **REFUTED with evidence** — NO stored fidelity-hash field exists: `stock_snapshot.ConfigData` is `{version, cutoffId, stepCutoffTs, runId, balances}` (§1); hashes are PER-RUN TRANSIENT values (snapshotCompute.js:153 returns them; the archive LA compares re-read vs computed BEFORE publish/delete, archive-def:467-468) and are never persisted — a directly-written archive row is outside every run's moved set and cannot perturb any comparison. The REAL adjacent requirement is C2-R6-4's canonical extension, folded there | — |
+| C2-R6-N2 | §5 P4 still contained the DELETED R4 permanent-exclusion sentence ("controlled rows live forever"), contradicting the N10 redesign (Codex note) | REAL — stale normative text | Sentence rewritten to the unit-move rule (§5 P4) |
+
+**Q1v6-Q5v6 outcomes:** Q1v6 AGY yes / Codex no (→ C2-R6-1/-2); Q2v6 retirement's own arithmetic
+CONFIRMED correct in all three branches by both — the induction gap was the missing null-head cells
+(→ C2-R6-2); Q3v6 effective-fold cases CONFIRMED matching engine economics by both; pairing/
+retention/round-trip → C2-R6-3/-4; mid-correction publication confirmed excluded by coordination;
+direct-to-archive lane confirmed correct by both; Q4v6 → C2-R6-1 composition; adoption × export
+exclusion otherwise sound; Q5v6 AGY explicit all-clear / Codex no (findings above). STANDING
+CLOSED (both, multiple rounds): CommitSig chain, signed epoch, ID coordinates, head shape,
+empty-set, retry healing, transient-export adjudication.
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -195,7 +219,7 @@ all client UI (runner scripts prove the route, as C1 did).
 | N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text), `ControlState` (device-tombstone staged visibility, §8 — C2-R3-2), `CommitSig` (the ctlcommit-v1 visibility AUTHORITY — C2-R4-5). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a) |
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
-| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); CONTROL-AWARE PAIRED ARCHIVAL (C2-R4-E1 v2, revised by C2-R5-4): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally), and the run's `cutoffId` is CLAMPED below any controlled ensemble not wholly ≤ the natural cutoff — pairs archive TOGETHER (SR-70 preserved), NO excluded row ever sits ≤ a published cutoff, so the client covering invariant holds exactly and retention is bounded; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
+| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed, the C1 carry precedent — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
 | N11 | attestRows new frames | EXTEND the C1 route with THREE canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
 | N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS excludes `ControlState='pending'` tombstones (staged visibility, §8/C2-R3-2; OData null/`ne` semantics = a build-proof item) — PLUS delivers `Type='deleted'` rows only after BATCH-VERIFYING their `CommitSig` via attestRows (invalid/absent ⇒ withheld + surfaced; legacy lane: provenance < `tombstoneCommitEpochId` delivers seal-free — C2-R4-5) — ⚠ flagged scoped amendment |
@@ -284,6 +308,14 @@ the in-snapshot decision a first-publication-only input, journaled in `AdoptionD
 by nothing afterwards. A committed-unadopted claim whose tombstone row fails seal validation with
 pre-epoch provenance is retirable via `mode:'retire_claim'` — C2-R4-8, §5b.)
 
+**The WITHDRAWN FORM (C2-R6-2)** — the registry state after withdraw OR retirement:
+`committed(ControlId: null, Revision: advanced, PublicationVersion: the withdrawing/retiring
+publication, OpId retained for device-origin)`. The manifest carries the explicit-null head; the
+target is the current effective value. Re-correction = supersede with
+`expected {activeControlId: null, revision, publicationVersion}`, transitioning through
+`pending_supersede(PriorCommitted = the null-head form)` — rollback restores it. Identical
+mechanics for withdraw-then-recorrect and retire-then-correct.
+
 - Claim = item CREATE (Enforce-Unique makes the race atomic); transitions = ETag CAS.
 - Director lifecycle (SR-143/147/149) unchanged from R1 design: `pending → committed` at publication;
   initial-create rollback deletes; supersede via `pending_supersede(PriorCommitted)` whose rollback
@@ -317,7 +349,9 @@ pre-epoch provenance is retirable via `mode:'retire_claim'` — C2-R4-8, §5b.)
     mode: 'create' | 'supersede' | 'withdraw' | 'adopt' | 'retire_claim' | 'reconcile',
     opId,                                            // client-minted stable id (idempotency)
     targetTransactionId?,                            // absent for adopt/reconcile
-    expected?: { activeControlId, revision, publicationVersion },   // supersede/withdraw
+    expected?: { activeControlId, revision, publicationVersion },   // supersede/withdraw;
+                                                       // null-head baseline (post-withdraw/retire):
+                                                       // activeControlId is EXPLICIT null (C2-R6-2)
     control?: { type: 'deletion' }
             | { type: 'replacement',
                 row: { productId, qty, type, reason?, stockFrom?, stockTo?,
@@ -381,8 +415,12 @@ Terminal-opId replay returns the stored result; digest mismatch under a reused o
     nothing. Full mode table: create-replace `− effect(target) + effect(new)`; create-delete
     `− effect(target)`; supersede replace→replace `− effect(prevOutput) + effect(new)`; supersede
     replace→delete `− effect(prevOutput)`; supersede delete→replace `+ effect(new)`; withdraw
-    `− effect(previousEffective) + effect(originalTarget)`. `prevOutput` is read from the
-    `PriorCommitted` head's control row, SEAL-VERIFIED before use. (The R1 text's
+    `− effect(previousEffective) + effect(originalTarget)`; **null-head cells (C2-R6-2 — the
+    re-correction baseline after withdraw OR retirement, where the TARGET ITSELF is the current
+    effective value): null→replace `− effect(originalTarget) + effect(new)`; null→delete
+    `− effect(originalTarget)`** (these derive the converged R5/R6 repro from the table: retire
+    restores +10, supersede to +8 ⇒ −10+8 ⇒ +8 — no longer asserted, derived). `prevOutput` is
+    read from the `PriorCommitted` head's control row, SEAL-VERIFIED before use. (The R1 text's
     `− effect(target)` applied to supersede would back the original out TWICE — AGY R2-2's worked
     example: +10 target replaced by +8 then superseded to +5 must land at 95, not 93.) Unaffected
     pairs bit-unchanged. **THE NORMALIZATION LAW (C2-R3-3 revised by C2-R4-1/-6):** the
@@ -399,9 +437,10 @@ Terminal-opId replay returns the stored result; digest mismatch under a reused o
     gated later terms by current representation dropped the withdraw restore term — AGY R4-1's
     +10-excluded/adopt/withdraw repro must end at +10, and now does in both branches).
     Live-target ensembles adjust NO balances in ANY cell (manifest-only publications; live rows
-    are never in balances, and the N10 archive-exclusion pin keeps controlled rows live forever —
-    C2-R4-E1). The per-target adoption decisions are journaled pre-P6 (`AdoptionDecisions`, P4/P5.1
-    — crash-reproducible for the P6 candidate) and consulted by NOTHING after publication.
+    are never in balances, until the ensemble UNIT-MOVES to the archive — N10 v3 folds it at its
+    EFFECTIVE value in that run, C2-R4-E1/C2-R6-3). The per-target adoption decisions are
+    journaled pre-P6 (`AdoptionDecisions`, P4/P5.1 — crash-reproducible for the P6 candidate) and
+    consulted by NOTHING after publication.
   - **Deterministic ids:** `controlId = 'ctl:' + opId (+ ':' + revision beyond 0)`; replacement
     output `TransactionId = 'corr:' + opId + ':' + revision`; collisions checked against BOTH lists.
   - Assembles the CANDIDATE HEAD-SET (C2-R1-7 + C2-R2-7): `CandidateHeads = {target: head-or-null,
@@ -467,10 +506,16 @@ unchanged, C2-R5-2) plus the NORMALIZING delta via the same horizon rule applied
 tombstone (journaled in `AdoptionDecisions`): archived target whose tombstone was in the archive
 input ⇒ `+ effect(target)` (the exclusion is being adjudicated away — restore); not-in-input or
 live ⇒ 0; undecidable ⇒ `RETIRE_DELTA_UNDECIDABLE` fail-closed manual (C2-R5-1). P5: journal +
-registry → the WITHDRAWN form (Revision advanced, prior state saved; rollback restores). P6
+registry → the WITHDRAWN form (§4; Revision advanced, prior state saved; rollback restores) +
+**VISIBILITY WITHDRAWAL (C2-R6-1a): MERGE the tombstone row `ControlState='retiring'` — the N13
+filter stops delivering it from this moment; REVERSIBLE (rollback restores the prior value) and
+evidence-preserving (seal/provenance fields untouched — the C2-R5-3 property holds)**. P6
 publishes manifest null head + normalized balances — THE COMMIT POINT. P7 QUARANTINES the
-tombstone row (identity + list recorded in the journal; idempotent; completed by roll-forward) and
-terminalizes. Retirement is a FIRST PUBLICATION under the §5 P4 law — the ensemble leaves it
+tombstone row (identity + list recorded in the journal; idempotent; completed by roll-forward),
+**TOUCHES the restored target row (C2-R6-1b — a no-op Modified bump: pulls are modified-since
+cursors, so every device re-receives the target on its next pull and re-merges it if it had
+applied the deletion, WHENEVER that happened — the healing touch closes both the P6→P7 crash
+window and all pre-existing device divergence)**, and terminalizes. Retirement is a FIRST PUBLICATION under the §5 P4 law — the ensemble leaves it
 normalized; the subsequent correction lane is SUPERSEDE against the null-head state
 (expected-revision CAS, identical to re-correcting any withdrawn target — create still rejects on
 the existing registry item). **Zero eligible tombstones ⇒ terminal no-op
@@ -677,7 +722,17 @@ a cutoff; snapshotCompute's effective fold = the engine's assembly for every hea
 null-head/withdrawn; the client covering invariant `_spId ≤ cutoffId ⇒ effect in balances` holds
 across archive cycles containing corrections — the Codex R5-3 client-divergence repro verbatim,
 C2-R5-4); and the N9-ordering acceptance probe (tombstoneCommitEpochId installed before the first
-protocol row).
+protocol row). R6 additions: the visibility-withdrawal matrix (retiring tombstone excluded from
+pull from P5 on; rollback restores delivery; the Codex R6-1 crash-window repro ⇒ no device can
+apply a retired deletion post-P6, C2-R6-1a); the HEALING-TOUCH probe (a device that applied the
+deletion re-receives the target after P7 via the modified-since cursor and re-merges it,
+C2-R6-1b); null-head cell derivations (the R5/R6 converged repro DERIVED from the table; withdraw-
+then-recorrect and retire-then-correct through the pinned expected tuple + pending_supersede
+restore, C2-R6-2); unit-move probes (a fresh control row moves with its old target in one run —
+the retainAfterTs split repro; REPEATED supersedes never defer the move — the unbounded-retention
+repro; cutoff advances normally, C2-R6-3); and the archive round-trip control-form probe (every N7
+field carried + re-read + hashed; a copy dropping any one ⇒ hash break BEFORE live delete,
+C2-R6-4).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -723,41 +778,44 @@ protocol row).
   method and Kunal's attestation — trustworthy only under the assumption that staging wasn't
   already tampered at backfill time. Acceptable because staging holds trial data (D-C2-2); the
   PRODUCTION epoch is exact by construction (recorded at cutover on fresh lists).
-- **H12 (C2-R4-E1 v2, revised C2-R5-4):** Director-corrected rows archive slightly LATER than
-  their neighbours — the archive cutoff waits until a corrected row and all its control rows can
-  move together (roughly one archive cycle after the correction). In exchange, snapshot balances,
-  client stock counts, and settlements can never disagree about a corrected row: the archiver
-  folds the corrected (effective) value, and no row below a published cutoff is ever excluded
-  from it.
+- **H12 (C2-R4-E1 v3, revised C2-R6-3):** a corrected row archives on exactly the same schedule
+  as any other row (its own age decides) — its correction rows simply travel with it in the same
+  run. Snapshot balances, client stock counts, and settlements can never disagree about a
+  corrected row: the archiver folds the corrected (effective) value, and no row below a published
+  cutoff is ever excluded from it.
+- **H13 (C2-R6-1):** when a Director retires a legacy deletion, every device that had applied
+  that deletion automatically re-receives the restored row on its next sync (the healing touch).
+  Between the retirement and that next sync, such a device briefly understates that one product —
+  self-healing, no action needed. Separately, a device that never pulled a committed deletion
+  before its target archived keeps a display-level ghost of the deleted row in old lists (stock
+  totals and settlements are correct via the snapshot); the banked device re-delivery lane (H7)
+  cleans this up when it ships.
 
-## 14. Review questions (R6)
+## 14. Review questions (R7)
 
-- **Q1v6 (retire-as-publication):** `retire_claim` v2 (§5b) — walk its full crash matrix on the
-  shared machinery (crash at every phase boundary × retry × recovery × re-seize). Does the
-  P7-only quarantine ordering hold in every interleaving (no path mutates ledger rows pre-P6)?
-  Does the null-head publication compose correctly with §6 recovery, the §7b assembly, and the
-  frozen engine's withdrawn-target semantics? Is the retire→supersede chain the right lane, and
-  is its expected-revision form well-defined against the retired registry state?
-- **Q2v6 (retirement arithmetic):** the retirement normalization delta — verify the induction
-  extension: retirement as a first publication in BOTH horizon branches, followed by
-  supersede/withdraw chains. The converged R5-1 repro must end at +8. Any cell where the retired
-  tombstone's historical exclusion leaks into a later term?
-- **Q3v6 (paired archival):** E1 v2 (N10) — does the effective fold EXACTLY mirror the engine's
-  §7b assembly for every head state (active deletion, active replacement, superseded history,
-  null head, pending adoption)? Does cutoff clamping preserve every Chunk-8 invariant (neutrality,
-  fidelity hashes, retain-window, tombstone pairing) AND the client covering invariant at every
-  point in time — including MID-correction (a correction publishing between two archive runs) and
-  a correction on a row already below the previous cutoff (reachable? if so, what happens)? Is
-  retention genuinely bounded under repeated corrections?
-- **Q4v6 (interaction sweep):** the two redesigned mechanisms against each other and the rest:
-  retire_claim × opportunistic adoption × the §8 device lifecycle × paired archival × the
-  TOMBSTONE_PENDING_ADOPTION blocker — any composition that strands a target, splits a pair
-  across lists, or lets a quarantined tombstone's target be mis-stated in any consumer?
-- **Q5v6 (whole-design closure):** with all R1-R5 folds in place: any remaining path to a
-  silently uncounted deletion, a mis-billed control, a permanently locked target, a stranded
-  coordination state, an invisible-forever legitimate deletion, a client/server stock divergence,
-  or a balances/settlement divergence? If your answer is no on all, say so explicitly — this is
-  the convergence gate.
+- **Q1v7 (retirement visibility + healing):** C2-R6-1's two parts — (a) the P5 visibility
+  withdrawal: any interleaving where a device still receives the retiring tombstone after P6
+  commits, or where a ROLLED-BACK retirement leaves the tombstone permanently undelivered? (b)
+  the P7 healing touch: does the modified-since re-delivery re-merge the target on every divergent
+  device state (applied-then-removed, never-received, mid-sync)? Does the touch interact safely
+  with the seal (Modified uncovered), dedup, and the pull overlap logic?
+- **Q2v7 (null-head lane):** C2-R6-2's pins — are the two null-head cells consistent with the
+  general law? Is the withdrawn registry form + explicit-null expected tuple + pending_supersede
+  restore complete for every crash split of a supersede-from-null? Any consumer still assuming
+  `activeControlId` is non-null?
+- **Q3v7 (unit-move):** E1 v3 — verify the key claim: control/tombstone rows moving REGARDLESS of
+  their own ids/timestamps is safe for every consumer (client covering, D8-7 input-presence,
+  device dedup/lookback, the 5000-row archive query, provenance checks on SourceId > cutoff, the
+  engine's both-list reads). Repeated supersedes: genuinely bounded now? The retainAfterTs repro:
+  genuinely closed? Any NEW hole opened by deleting the cutoff clamp?
+- **Q4v7 (archive round-trip):** C2-R6-4 — is the full N7 control form in the SELECT, the copy
+  mapping, the re-read compare, AND the hash canonical, with a versioned extension that cannot
+  false-pass on a dropped field? Does the extension stay compatible with pre-C2 archived rows
+  (no control fields) — absence canonicalized, not conflated?
+- **Q5v7 (whole-design closure — the convergence gate):** with all R1-R6 folds in place: any
+  remaining path to a silently uncounted deletion, a mis-billed control, a permanently locked
+  target, a stranded coordination state, an invisible-forever legitimate deletion, a client/server
+  stock divergence, or a balances/settlement divergence? If no on all, say so explicitly.
 
 ## 15. Sequencing after convergence
 
