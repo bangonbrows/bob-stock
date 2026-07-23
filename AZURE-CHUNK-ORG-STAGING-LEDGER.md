@@ -81,6 +81,10 @@ injection dead); attest proof still 58/58. Finishing run `audit-artifacts/finish
 **PENDING: the live archive-RUN probe** (seed sealed rows → drive a real archive run → archived rows
 re-verify) — the run gate requires a Director USER sudo proof (purpose 'archive'), i.e. the
 `srvaudit_` test director. Folds into the Contract-2 phase.
+**Finish run 2026-07-23: 4/4 OK.** IdempotencyKey column already existed on the archive list. BONUS
+CLEANUP: the agy_ sweep found **21** residue rows — not just the 2 from this build audit but 19 OLD
+agy_ probe rows accumulated from the Chunk-4/5/9/10 audits (agy_3242/6819/7918/8455/txn_*) that were
+never cleaned per house rules. All 21 deleted; TIDEM_* and franchtest fixtures untouched.
 2. **Contract 2** — correction route writes `control.targetLine` + server `originalEventAt`
    (LA-CHANGES §6; route not yet built). Needs the throwaway `srvaudit_` test director (Kunal mints).
 3. **Stamp semantic validation (SR-155 recompute)** rides the AA LA-CHANGES §3-4 ingest work — until
