@@ -1,6 +1,7 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 DRAFT — SCOPE REVIEW R1 (nothing built, nothing deployed).** Parent contracts:
+**Status: 🔍 SCOPE REVIEW R1 IN FLIGHT (nothing built, nothing deployed; D-C2-1..3 LOCKED by Kunal
+2026-07-23 — see §12).** Parent contracts:
 `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and `AZURE-CHUNK-ORG-LA-CHANGES.md` §6
 (correction-approval bullet). Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The parent spec is CONVERGED but
@@ -335,18 +336,19 @@ validation (`buybackExport.js` MALFORMED_CONTROL / CONTROL_INSTANT_MISMATCH / CO
 CONTROL_OUTPUT_COLLISION / head checks) — the route and engine are proven against each other, not
 against copies.
 
-## 12. Kunal decisions needed (D-C2)
+## 12. Kunal decisions — LOCKED 2026-07-23
 
-- **D-C2-1 (business-visible):** until the server-side pricing history ships, a correction whose
-  replacement stamps cannot be minted from the target row or the transfer's own item stamps is
-  REJECTED (`STAMPS_UNRESOLVABLE`) rather than approved with lens-derived values. Fail closed;
-  such corrections wait. RECOMMENDED: yes. (The alternative — approving with client-suggested values —
-  violates SR-134 and is not on the table.)
-- **D-C2-2 (business-visible):** corrections targeting PRE-EPOCH transfer rows (no server steps
-  exist) are rejected by this route (`TARGET_PRE_EPOCH`) and stay in the manual-review lane. Rare
-  (legacy rows only). RECOMMENDED: yes — the engine can't verify them either way.
-- **D-C2-3:** deletion-type controls through this route (the archived-target/cross-list arm) are IN
-  scope now — same machinery, closes the CHUNK8 item-5 gap in one build. RECOMMENDED: yes.
+- **D-C2-1 (business-visible): APPROVED.** Until the server-side pricing history ships, a correction
+  whose replacement stamps cannot be minted from the target row or the transfer's own item stamps is
+  REJECTED (`STAMPS_UNRESOLVABLE`) rather than approved with lens-derived or client-suggested values.
+  Fail closed; such corrections wait.
+- **D-C2-2 (business-visible): APPROVED, with an owner ground-truth that de-risks the lane.** Kunal:
+  all data predating the server phase is TRIAL data, not real — at go-live the app starts with fresh
+  real data. So `TARGET_PRE_EPOCH` rejections are a correctness formality: production will contain no
+  pre-epoch rows. The fail-closed design stands unchanged (the engine's conservative pre-epoch
+  handling too); reviewers may treat the pre-epoch lane as defence-in-depth, not a live business path.
+- **D-C2-3: APPROVED.** Deletion-type controls run through this route (the archived-target/cross-list
+  arm) — same machinery, closes the CHUNK8 item-5 gap in one build.
 
 ## 13. Honest notes (engineer-flagged, for reviewers)
 
