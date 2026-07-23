@@ -72,6 +72,12 @@ Trigger `POST {auth, proof, intent}`.
      queues (the client push-before-purge, OS-W3).
    - snapshot (if requested): capture the store's opening-balance server-side sum AT the cutoff (OS-SR-7),
      stamp it into `stock_snapshot` scoped to the new owner, atomic with the era boundary.
+     **⚠ SCOPED AMENDMENT (C2-R1-7, 2026-07-24 — flagged, from the W4.4 Contract-2 design review):** any
+     `stock_snapshot` write by this LA must ACQUIRE the shared coordination record (the C2 five-state
+     machine), REFUSE while any correction journal is non-terminal, PRESERVE the `controlManifest` and
+     `fence` fields, and bump the shared publication version — `stock_snapshot` has exactly three writer
+     classes (archive run, correction/adopt publication, this step), all under the one coordination
+     discipline. See `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` §3/§6/§7c.
    - write `store_eras` (close old era `to`, open new), `pricing_history` (append/close interval).
    - apply the fanout: for each `{id, action}` — `setStoreIds` (new StoreIds + `active`) or `bump`
      (scopeVersion++). ALWAYS bump scopeVersion on every touched credential (D-OS-F6) so the client

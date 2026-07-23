@@ -1,4 +1,22 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R1
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R2
+
+> ## ROUND 2 — re-review after the round-1 folds
+> Round-1 verdicts: BOTH reviewers BLOCK — 12 distinct findings (2 converged pairs), ALL
+> ground-truthed REAL against the frozen engine code and the §1 topology spec, zero refuted; plus one
+> engineer family-inventory find (control rows leaking into the export's row queries and into device
+> pulls). Every fold is recorded in the design doc's **R1 fold record table** (finding → ground truth
+> → fold), and the design is revised throughout. Headline changes: a PUBLISH FENCE + SEIZE ownership
+> protocol (five-state coordination record, `correction_recovering`, acquire-time-ETag publishes,
+> conditional releases everywhere); ctl-v1 CONTROL SEALS with route-side verification; recovery
+> decisions by MANIFEST CONTENT with an explicit fail-closed `INVARIANT_BROKEN`; device tombstones
+> gain manifest heads via journaled ADOPT publications (fail-closed `TOMBSTONE_PENDING_ADOPTION`
+> meanwhile); the SR-143-conformant pending→insert→committed device claim with idempotent re-entry;
+> lazy registry adoption for pre-existing tombstones; targetLine minted via the engine's OWN exported
+> `foldProjection` + a step-set digest re-check at verify; SR-145 full product+store+classification
+> identity; outcome-by-read publication; and a pinned export ASSEMBLY CONTRACT (§7b). Five ⚠-flagged
+> scoped amendments to previously-audited surfaces are inventoried (N9/N10/N11/N14/N15). This round:
+> re-review the revised design end-to-end and answer the NEW questions Q1v2-Q6v2 (§14) — the crash
+> matrices especially.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
