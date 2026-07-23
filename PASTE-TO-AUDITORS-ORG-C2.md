@@ -1,30 +1,33 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R4
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R5
 
-> ## ROUND 4 — re-review after the round-3 folds
-> Round-3 verdicts: one reviewer PASS, one BLOCK×5 — all 5 ground-truthed REAL against the frozen
-> engine and client code, all folded (the design doc's **R3 fold record table** has finding →
-> ground truth → fold; convergence requires BOTH reviewers to pass the SAME revision, so this
-> round goes to both). The R2 transient-export adjudication was independently ACCEPTED by both
-> reviewers and is closed. Headline changes this round: (1) ONE CANONICAL HEAD SHAPE
-> `{controlId, revision, bornPublicationVersion}` everywhere — the adopted-head `born` field name
-> would have tripped the frozen engine's exact comparison (:519) and bricked every adopted
-> tombstone (§5b/§7b); (2) STAGED VISIBILITY for device tombstones — inserted
-> `ControlState='pending'` (excluded from device pulls and fail-closed for exports), flipped
-> visible only AFTER the registry commit CAS; a tombstone that loses a race against a correction
-> is quarantined while still invisible, so peer devices can never durably delete an original that
-> a correction was protecting (§8 v3, N7/N13; the check-to-insert race and the
-> durable-row/no-registry crash are both closed by scrub rules); (3) ADOPTION DELTA BY
-> SNAPSHOT-REPRESENTATION — zero-delta adoption was arithmetically wrong for archived targets
-> whose effect is baked into snapshot balances; decided via a NEW archive-run input-horizon marker
-> (N10), recorded once as `TargetInSnapshot` on the registry item, consulted by all later chain
-> cells (§5b, §4, §5 P4 qualifier); (4) the SEAL-EPOCH ARTIFACT (N16) — the previously-undefined
-> C1 epoch boundary is now a concrete immutable config item with an `EPOCH_UNDEFINED` fail-closed
-> lane (§5 P3.2); (5) EMPTY HEAD-SET publications are unreachable — zero-eligible adopt is a
-> terminal no-op before any write; an empty-CandidateHeads journal is invalid by construction
-> (§5b/§6); plus two note folds: §7b(4) blocker rescoped so an adjudicated target's stale headless
-> rows never block forever, and the §3 staleness-exit invariant is an N10 build acceptance item.
-> This round: re-review the revised design end-to-end and answer the NEW questions Q1v4-Q6v4 (§14)
-> — the staged-visibility interleavings and the adoption-delta chains especially.
+> ## ROUND 5 — re-review after the round-4 folds
+> Round-4 verdicts: BOTH BLOCK — 8 distinct REAL findings (2 CONVERGED pairs: both reviewers
+> independently caught the two archived-row ID-coordinate mistakes) + 1 engineer family find
+> banked while ground-truthing. All folded (the design doc's **R4 fold record table** has finding
+> → ground truth → fold). Confirmed-closed at R4 by both: empty-set unreachability, head-shape
+> parity, the commit-point ordering, and the transient-export adjudication (re-affirmed). Headline
+> changes this round: (1) THE NORMALIZATION LAW replaces the R3 representation qualifier — the
+> in-snapshot decision gates ONLY the first publication on an archived ensemble; after it the
+> plain six-cell table is provably exact (the R3 wording dropped the withdraw restore term); the
+> registry `TargetInSnapshot` column is DELETED — the decisions live in the journal's
+> `AdoptionDecisions` (pre-P6, crash-reproducible) and nothing consults them after publication,
+> which also dissolves the P6→P7 recoverability finding (§5 P4, §5b, §4, P5.1); (2) ALL
+> list-boundary comparisons now use LIVE-COORDINATE provenance (live `_spId` / archived
+> `SourceId`) — the adoption horizon AND the seal epoch; `archiveEpochId` is deleted (N16 has ONE
+> `epochId`); (3) COMMIT SEALS — `ControlState` was an unsealed visibility authority; the commit
+> point now mints a `ctlcommit-v1` `CommitSig` and the pull LA batch-verifies it before delivering
+> any tombstone (SP-direct flips are withheld + surfaced; legacy lane bounded by
+> `tombstoneCommitEpochId`); the own-committed retry now COMPLETES the mint+MERGE itself, closing
+> the invisible-forever crash window (§8, N7, N13); (4) the seal-epoch artifact is now derivable
+> (production: exact at cutover; staging: attested best-effort, H11) and DETECTABLY immutable
+> (`EpochSig`, verify-on-read, `EPOCH_TAMPERED`) (N16); (5) NEW mode `retire_claim` — the R3
+> remedy for a seal-skipped pre-epoch tombstone was unreachable (every lane blocked by the claim
+> itself); a Director-sudo journaled op retires the claim and opens the normal lanes; post-epoch
+> unsealed claims stay locked loudly (§5b, N1); (6) engineer find: ARCHIVE EXCLUSION — archive
+> runs now exclude control rows and head-named rows entirely (they stay live forever), so a later
+> run can never fold a corrected-away effect back into balances (N10, H12). This round: re-review
+> end-to-end and answer the NEW questions Q1v5-Q6v5 (§14) — the normalization-law induction and
+> the CommitSig authority chain especially.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -37,7 +40,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H10, the R1+R2+R3 fold records, and questions Q1v4-Q6v4).
+   honest notes H1-H12, the R1-R4 fold records, and questions Q1v5-Q6v5).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -47,9 +50,10 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v4-Q6v4 explicitly. If a decision contradicts a frozen SR
+and the push-path tombstone claim. Answer Q1v5-Q6v5 explicitly. If a decision contradicts a frozen SR
 pin, cite the pin. Useful grounding for this round's folds: `sync.js` pull tombstone application
-(~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (:79-93 tombstone exclusion).
+(~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (:79-93 tombstone exclusion),
+`azure-functions/src/functions/attestRows.js` (the frame/keyring machinery the new seals extend).
 
 **Verdict format:** PASS / PASS-with-notes / BLOCK, numbered findings with concrete failure sequences
 (interleavings welcome). The engineer ground-truths every finding before acting; findings only —
