@@ -1,22 +1,28 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R2
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R3
 
-> ## ROUND 2 — re-review after the round-1 folds
-> Round-1 verdicts: BOTH reviewers BLOCK — 12 distinct findings (2 converged pairs), ALL
-> ground-truthed REAL against the frozen engine code and the §1 topology spec, zero refuted; plus one
-> engineer family-inventory find (control rows leaking into the export's row queries and into device
-> pulls). Every fold is recorded in the design doc's **R1 fold record table** (finding → ground truth
-> → fold), and the design is revised throughout. Headline changes: a PUBLISH FENCE + SEIZE ownership
-> protocol (five-state coordination record, `correction_recovering`, acquire-time-ETag publishes,
-> conditional releases everywhere); ctl-v1 CONTROL SEALS with route-side verification; recovery
-> decisions by MANIFEST CONTENT with an explicit fail-closed `INVARIANT_BROKEN`; device tombstones
-> gain manifest heads via journaled ADOPT publications (fail-closed `TOMBSTONE_PENDING_ADOPTION`
-> meanwhile); the SR-143-conformant pending→insert→committed device claim with idempotent re-entry;
-> lazy registry adoption for pre-existing tombstones; targetLine minted via the engine's OWN exported
-> `foldProjection` + a step-set digest re-check at verify; SR-145 full product+store+classification
-> identity; outcome-by-read publication; and a pinned export ASSEMBLY CONTRACT (§7b). Five ⚠-flagged
-> scoped amendments to previously-audited surfaces are inventoried (N9/N10/N11/N14/N15). This round:
-> re-review the revised design end-to-end and answer the NEW questions Q1v2-Q6v2 (§14) — the crash
-> matrices especially.
+> ## ROUND 3 — re-review after the round-2 folds
+> Round-2 verdicts: BOTH reviewers BLOCK — 10 distinct REAL findings (1 converged pair: the
+> never-promoted device pending) + 1 REAL note + 1 note REFUTED with evidence (the transient-export
+> window cannot exist: `export_lease` is acquirable only from `idle`, so no export runs while a
+> correction holds the state — adjudication recorded in §7b, challenge it if the reasoning is
+> wrong). Every fold is in the design doc's **R2 fold record table** (finding → ground truth →
+> fold). Headline changes this round: a RE-SEIZE rule for stalled recoverers + the pinned
+> staleness-exit invariant on all five states (§3/3a); the ctl-v1 replacement covered set is now the
+> FULL ENGINE ROW FORM, derived not hand-picked (adds TransferId/UnitPriceAtTime/IdempotencyKey —
+> two of those were engine-read and unsealed, §7a); §7b(5) seal verification split BY ORIGIN
+> (Director rows: ctl-v1; adopted device tombstones: their C1 row-v1 seal + head-bound adoption
+> fields, §7b); the device-claim lifecycle hardened (pre-insert ownership fence, foreign-CAS
+> compensation, TWO-WAY TTL scrub incl. roll-forward promotion, OpId-or-ControlId retry match —
+> §8/§4/§6); registry committed-phase schema fixed (OpId retained for device items,
+> PublicationVersion null-until-adopted + adoption's P7 CAS-fill, supersede/withdraw on an unadopted
+> tombstone refuses `TOMBSTONE_PENDING_ADOPTION` — §4); recovery decides on a CANDIDATE HEAD-SET
+> with per-entry hasOwnProperty semantics (adopt's N heads + withdraw's explicit null now decidable
+> — §6); the P4 delta law generalized (supersede was arithmetically WRONG — the six-cell mode table
+> in §5 P4); the no-journal seize rule re-keyed to OpId (journals discoverable from the P5.1 crash
+> window — §3a); the target-seal check is a THREE-WAY contract closing the seal-strip demotion
+> (§5 P3.2); and the INVARIANT_BROKEN blast radius honestly re-stated as GLOBAL (H9). This round:
+> re-review the revised design end-to-end and answer the NEW questions Q1v3-Q7v3 (§14) — the
+> three-party seize chain and the delta-law chains especially.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -29,7 +35,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H5, and questions Q1-Q6).
+   honest notes H1-H9, the R1+R2 fold records, and questions Q1v3-Q7v3).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -39,8 +45,8 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1-Q6 explicitly. If a decision contradicts a frozen SR pin,
-cite the pin.
+and the push-path tombstone claim. Answer Q1v3-Q7v3 explicitly. If a decision contradicts a frozen SR
+pin, cite the pin.
 
 **Verdict format:** PASS / PASS-with-notes / BLOCK, numbered findings with concrete failure sequences
 (interleavings welcome). The engineer ground-truths every finding before acting; findings only —
