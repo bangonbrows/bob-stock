@@ -1,11 +1,13 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R5 (R4 verdicts: BOTH BLOCK — AGY×3 + Codex×7, 8 distinct REAL findings
-(2 CONVERGED pairs: the two archived-row ID-coordinate mistakes) + 1 engineer family find
-(archive-time balance coherence for controlled live rows). All folded below — the AGY-1/Codex-4
-pair resolved by the NORMALIZATION LAW, which DELETES the registry TargetInSnapshot flag rather
-than patching it. R3: AGY PASS · Codex×5 REAL, folded. R2: 10 REAL folded. R1: 12 REAL folded.
-Nothing built, nothing deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
+**Status: 🔍 SCOPE REVIEW R6 (R5 verdicts: BOTH BLOCK — AGY×3 + Codex×3 = 4 distinct REAL (2
+CONVERGED pairs), ALL confined to the two R4-introduced mechanisms: `retire_claim` (redesigned as
+a TRUE PUBLICATION below) and the E1 archive-exclusion pin (redesigned as CONTROL-AWARE PAIRED
+ARCHIVAL below). CONFIRMED CLOSED at R5 by both: the normalization law + six-cell table, the
+CommitSig authority chain, the ID-coordinate sweep (zero remaining), the signed epoch artifact,
+head shape, empty-set, own-committed retry healing, the export adjudication. R4: 8 REAL folded.
+R3: AGY PASS · Codex×5 REAL, folded. R2: 10 REAL folded. R1: 12 REAL folded. Nothing built,
+nothing deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -116,6 +118,25 @@ proofs (already N10/N13 acceptance items).
 
 ---
 
+## R5 fold record (2026-07-24) — BOTH BLOCK; 4 distinct REAL (2 converged pairs), both R4 mechanisms redesigned
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R5-1 | `retire_claim` → create corrupts balances: retirement removed the tombstone WITHOUT normalizing — if that tombstone had excluded its archived target from snapshot balances, the later correction's "archived target is in balances" assumption is FALSE ⇒ double-subtraction (repro: excluded +10, retire, create-replace +8 ⇒ −2 instead of +8) (AGY 1 ≡ Codex 1, CONVERGED) | REAL — retirement changed ensemble state outside the publication discipline that the normalization law depends on | **`retire_claim` v2 = A TRUE PUBLICATION (§5b):** it publishes `CandidateHeads = {target: explicit null}` (the withdraw form — adjudicated, no active control, target PRESENT) with a NORMALIZING balance delta decided by the SAME horizon rule applied to the retired tombstone (journaled in `AdoptionDecisions`): archived target + tombstone-was-in-input ⇒ `+ effect(target)` (restore); else 0; live ⇒ 0; undecidable ⇒ `RETIRE_DELTA_UNDECIDABLE` fail-closed. Retirement IS a first publication under the §5 P4 law — the ensemble leaves it normalized; the AGY repro now runs 0 → retire(+10) → supersede-to-replacement(−10+8) ⇒ +8 ✓ |
+| C2-R5-2 | `retire_claim` was incompatible with the journal machinery it claimed to ride: empty CandidateHeads (P5.1 refuses by construction), no recovery decision key, no commit point, no mutation order — every crash split unrecoverable or out-of-spec (AGY 2 ≡ Codex 2, CONVERGED) | REAL — the R4 design asserted "same machinery" without satisfying its invariants | v2 rides the machinery FOR REAL: non-empty CandidateHeads (the explicit-null entry) ⇒ P5.1 valid, §6's per-entry hasOwnProperty decision works unchanged; P6 (manifest null head + normalized balances, one MERGE) = THE COMMIT POINT; registry transition = the withdrawn form (Revision advanced, prior state saved for rollback restore); pre-P6 rollback touches NO ledger rows |
+| C2-R5-3 | A crash mid-retirement destroyed its own gate evidence: quarantine-then-crash removed the row from the ledger lists, so the retry's mode gate could never re-validate `fails-seal AND pre-epoch` ⇒ claim stuck committed, target locked forever (AGY 3) | REAL — mutation-before-commit-point destroyed the predicate's input | v2 ORDERING: the tombstone row is quarantined ONLY in P7 — AFTER the P6 commit point — recorded in the journal (row identity + list) and completed by roll-forward recovery, idempotent. Every pre-P6 crash leaves the row in place: the retry's gate re-validates on intact evidence; post-P6 crashes never re-run the gate (P1 → reconcile → roll forward) |
+| C2-R5-4 | The E1 permanent archive exclusion broke the CLIENT scalar-cutoff contract: clients treat every row with `_spId ≤ cutoffId` as snapshot-covered (skip at index.html:1427-1476, prune at db.js:721-734) — a permanently-live controlled row below an advanced cutoff is skipped client-side while EXCLUDED from balances ⇒ client stock diverges from settlement; also unbounded retention vs the 5000-row archive query, and null-head exclusion was broader than necessary (Codex 3) | REAL — the exclusion preserved server arithmetic in isolation but punched holes in the cutoff's covering invariant | **CONTROL-AWARE PAIRED ARCHIVAL (E1 v2, N10/snapshotCompute):** (a) snapshotCompute gains the active `controlManifest` as an input and folds EFFECTIVE values: a target with an ACTIVE head ⇒ excluded (like tombstoned); a control row ⇒ folded at raw effect IFF its head is active; historical/superseded control rows ⇒ excluded; null-head (withdrawn/retired) targets ⇒ folded normally (present). (b) PAIR-ATOMIC CUTOFF: a run's `cutoffId` is CLAMPED below any controlled ensemble whose members (target + all its control rows) are not all ≤ the natural cutoff — pairs archive TOGETHER in one run (SR-70 same-list preserved), and NO excluded row ever sits at-or-below a published cutoff ⇒ the client covering invariant (`_spId ≤ cutoffId` ⇒ effect in balances) holds EXACTLY again; pruning is safe; retention is BOUNDED (a pair archives once the natural cutoff passes its youngest member — roughly one archive cycle after the correction). Permanent exclusion is DELETED |
+
+**Q1v5-Q6v5 outcomes:** Q1v5 induction CONFIRMED for all standard publications by both — fails only
+at retire→create (→ C2-R5-1; retirement is now itself a normalizing first publication); Q2v5 YES
+both (CommitSig chain closed; Codex build pin: `tombstoneCommitEpochId` must be installed BEFORE N9
+accepts protocol rows — added to N9/N16 acceptance); Q3v5 NO (→ C2-R5-1/-2/-3, redesigned); Q4v5
+split — AGY yes, Codex found the client contract break (→ C2-R5-4, redesigned); Q5v5 YES both
+(ID-coordinate count ZERO — closed); Q6v5 all remaining paths confined to the two redesigned
+mechanisms.
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -174,13 +195,13 @@ all client UI (runner scripts prove the route, as C1 did).
 | N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text), `ControlState` (device-tombstone staged visibility, §8 — C2-R3-2), `CommitSig` (the ctlcommit-v1 visibility AUTHORITY — C2-R4-5). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a) |
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
-| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); ARCHIVE EXCLUSION PIN (C2-R4-E1): runs EXCLUDE control rows and every row named in `controlHeads` (any state) — controlled live rows stay live PERMANENTLY, so balances never re-absorb a corrected-away effect and snapshotCompute stays head-unaware; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces, flagged for the return re-audit |
+| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); CONTROL-AWARE PAIRED ARCHIVAL (C2-R4-E1 v2, revised by C2-R5-4): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally), and the run's `cutoffId` is CLAMPED below any controlled ensemble not wholly ≤ the natural cutoff — pairs archive TOGETHER (SR-70 preserved), NO excluded row ever sits ≤ a published cutoff, so the client covering invariant holds exactly and retention is bounded; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
 | N11 | attestRows new frames | EXTEND the C1 route with THREE canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
 | N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS excludes `ControlState='pending'` tombstones (staged visibility, §8/C2-R3-2; OData null/`ne` semantics = a build-proof item) — PLUS delivers `Type='deleted'` rows only after BATCH-VERIFYING their `CommitSig` via attestRows (invalid/absent ⇒ withheld + surfaced; legacy lane: provenance < `tombstoneCommitEpochId` delivers seal-free — C2-R4-5) — ⚠ flagged scoped amendment |
 | N14 | buybackExport.js additive export | `foldProjection` exported (exports-only change to the frozen engine file, `reqId` precedent) — ⚠ flagged for the return re-audit |
 | N15 | LA-CHANGES §1 amendment note | Topology snapshot writes join the coordination discipline (C2-R1-7) — ⚠ flagged scoped spec amendment |
-| N16 | Seal-epoch artifact | ONE `AppConfig_Staging` item `ConfigType='seal_epoch'` `{epochId, tombstoneCommitEpochId, recordedAt, EpochSig}` (C2-R3-4 revised by C2-R4-3/-5/-7): `epochId` = the LIVE list's first-sealed item id (the ONLY epoch — all provenance is live-coordinate; the R3 `archiveEpochId` is deleted); `tombstoneCommitEpochId` recorded at the N9 apply (the CommitSig legacy boundary); `EpochSig` = an `epoch-v1` attestRows seal over the values, verified on EVERY read (fail ⇒ `EPOCH_TAMPERED`). Derivation: PRODUCTION — recorded exactly at the D-C2-2 cutover (fresh lists, epoch = first item id); STAGING — backfill runner derives best-effort, recorded with method + Kunal attestation (H11) |
+| N16 | Seal-epoch artifact | ONE `AppConfig_Staging` item `ConfigType='seal_epoch'` `{epochId, tombstoneCommitEpochId, recordedAt, EpochSig}` (C2-R3-4 revised by C2-R4-3/-5/-7): `epochId` = the LIVE list's first-sealed item id (the ONLY epoch — all provenance is live-coordinate; the R3 `archiveEpochId` is deleted); `tombstoneCommitEpochId` recorded at the N9 apply (the CommitSig legacy boundary); `EpochSig` = an `epoch-v1` attestRows seal over the values, verified on EVERY read (fail ⇒ `EPOCH_TAMPERED`). Derivation: PRODUCTION — recorded exactly at the D-C2-2 cutover (fresh lists, epoch = first item id); STAGING — backfill runner derives best-effort, recorded with method + Kunal attestation (H11). ACCEPTANCE (Codex Q2v5): `tombstoneCommitEpochId` must be INSTALLED BEFORE the N9 push amendment accepts its first protocol row — ordering build-proven |
 
 ## 3. The coordination record — five-state machine (SR-137/140 + C2-R1-1/-9)
 
@@ -366,10 +387,13 @@ Terminal-opId replay returns the stored result; digest mismatch under a reused o
     example: +10 target replaced by +8 then superseded to +5 must land at 95, not 93.) Unaffected
     pairs bit-unchanged. **THE NORMALIZATION LAW (C2-R3-3 revised by C2-R4-1/-6):** the
     in-snapshot decision applies ONLY at the FIRST publication on an archived ensemble — it gates
-    the single question "does the target's effect need backing out of balances": Director creates
-    ⇒ always yes (reaching create proves no prior tombstone, so an archived target is in
-    balances); adoption ⇒ decided by the horizon rule (§5b), and an already-excluded target's
-    `− effect(target)` term is 0. The first publication NORMALIZES the ensemble — after it, the
+    the single question "does the target's effect need backing out of (or restoring to) balances":
+    Director creates ⇒ always yes (reaching create proves no prior tombstone AND no prior
+    retirement — a retired target's registry item persists, so its lane is supersede — hence an
+    archived create target is in balances); adoption ⇒ decided by the horizon rule (§5b), an
+    already-excluded target's `− effect(target)` term is 0; retirement (`retire_claim` v2) ⇒ the
+    horizon rule on the RETIRED tombstone, restoring `+ effect(target)` where it had been excluded
+    (C2-R5-1). The first publication NORMALIZES the ensemble — after it, the
     represented value ALWAYS equals the effective value — so EVERY subsequent chain cell applies
     the plain six-cell table UNGATED (each cell is exactly E_new − E_old; the R3 wording that
     gated later terms by current representation dropped the withdraw restore term — AGY R4-1's
@@ -432,11 +456,24 @@ snapshotCompute already excluded the target ⇒ 0; > horizon (the snapshotComput
 `ADOPTION_DELTA_UNDECIDABLE` fail-closed (surfaced manual lane; vanishes at the D-C2-2 go-live
 wipe). The per-target decisions are stored in the journal's `AdoptionDecisions` (P5.1) so the P6
 candidate is crash-reproducible; after publication the NORMALIZATION LAW (§5 P4) makes every later
-chain cell independent of them. **`retire_claim` (C2-R4-8):** Director-sudo mode on the same
-journal/idempotency/exclusive-state machinery; legal ONLY against a committed-unadopted registry
-claim whose tombstone row FAILS seal validation AND has live-coordinate provenance < `epochId`
-(genuine pre-C1 legacy); it QUARANTINES the unsealed tombstone row and retires the registry claim
-(journaled evidence), leaving the target unclaimed. **Zero eligible tombstones ⇒ terminal no-op
+chain cell independent of them. **`retire_claim` v2 (C2-R4-8 redesigned by C2-R5-1/-2/-3 — A TRUE
+PUBLICATION):** Director-sudo; legal ONLY against a committed-unadopted registry claim whose
+tombstone row FAILS seal validation AND has live-coordinate provenance < `epochId` (genuine pre-C1
+legacy; post-epoch unsealed = tampering, stays locked loudly). Mode gate + evidence validation at
+P3 (NO mutation before P6, so every pre-commit crash leaves the gate's evidence intact — C2-R5-3).
+P4 builds `CandidateHeads = {target: explicit null}` (the withdraw form: adjudicated, no active
+control, target PRESENT — non-empty, so P5.1 and the §6 per-entry recovery decision work
+unchanged, C2-R5-2) plus the NORMALIZING delta via the same horizon rule applied to the RETIRED
+tombstone (journaled in `AdoptionDecisions`): archived target whose tombstone was in the archive
+input ⇒ `+ effect(target)` (the exclusion is being adjudicated away — restore); not-in-input or
+live ⇒ 0; undecidable ⇒ `RETIRE_DELTA_UNDECIDABLE` fail-closed manual (C2-R5-1). P5: journal +
+registry → the WITHDRAWN form (Revision advanced, prior state saved; rollback restores). P6
+publishes manifest null head + normalized balances — THE COMMIT POINT. P7 QUARANTINES the
+tombstone row (identity + list recorded in the journal; idempotent; completed by roll-forward) and
+terminalizes. Retirement is a FIRST PUBLICATION under the §5 P4 law — the ensemble leaves it
+normalized; the subsequent correction lane is SUPERSEDE against the null-head state
+(expected-revision CAS, identical to re-correcting any withdrawn target — create still rejects on
+the existing registry item). **Zero eligible tombstones ⇒ terminal no-op
 BEFORE ANY WRITE (C2-R3-5):**
 `ok: NO_PENDING_ADOPTIONS` + the surfaced skip list — no journal, no publication, state released;
 a journal with empty `CandidateHeads` is invalid by construction (P5.1 refuses; recovery meeting
@@ -515,7 +552,8 @@ tombstone is exactly a deletion question not yet adjudicated) — as the fail-cl
 blocker `TOMBSTONE_PENDING_ADOPTION` (Director remedy: `mode:'adopt'`), **UNLESS the row's TARGET
 already has an ACTIVE head (C2-R3-N1) — an adjudicated target's stale headless rows are COVERED,
 never permanent blockers (the seal-skipped pre-C1 case reaches adjudication via
-`mode:'retire_claim'` → then create/adopt, C2-R4-8)**; (5) verifies
+`mode:'retire_claim'` — itself a null-head publication — then the supersede lane, C2-R4-8/C2-R5)**;
+(5) verifies
 every supplied control's seal **BY ORIGIN (C2-R2-3): a Director control row ⇒ its ctl-v1 seal; a
 synthesized device-tombstone control ⇒ the tombstone ROW's C1 v1 seal (which covers Type +
 TargetTransactionId — the deletion's whole economic content); the adoption-time fields (revision 0,
@@ -629,9 +667,17 @@ retry completes mint+MERGE, C2-R4-4); the CommitSig matrix (SP-direct `ControlSt
 withheld; valid commit ⇒ delivered; legacy pre-`tombstoneCommitEpochId` ⇒ delivered seal-free,
 C2-R4-5); AdoptionDecisions crash-reproducibility (P6 candidate rebuilt from the journal alone,
 C2-R4-6); EpochSig tamper ⇒ EPOCH_TAMPERED (C2-R4-7); the retire_claim matrix (pre-epoch unsealed
-⇒ retire → create/adopt succeeds; post-epoch unsealed ⇒ refused locked, C2-R4-8); and the
-ARCHIVE-EXCLUSION probe (a controlled live row + its control row are never selected by a run;
-balances unchanged across an archive cycle containing them, C2-R4-E1).
+⇒ retire succeeds; post-epoch unsealed ⇒ refused locked, C2-R4-8). R5 additions: the FULL
+retire-as-publication crash matrix (crash at every phase × retry/recovery — pre-P6 crashes leave
+the gate evidence intact and roll back clean; post-P6 roll forward completes quarantine +
+registry; the AGY R5-3 quarantine-evidence repro verbatim, C2-R5-3); the retire→supersede chain
+arithmetic (the converged R5-1 repro verbatim: excluded +10 → retire(+10) → supersede(+8) ⇒ +8,
+both horizon branches, C2-R5-1); paired-archival probes (a controlled ensemble is never split by
+a cutoff; snapshotCompute's effective fold = the engine's assembly for every head state incl.
+null-head/withdrawn; the client covering invariant `_spId ≤ cutoffId ⇒ effect in balances` holds
+across archive cycles containing corrections — the Codex R5-3 client-divergence repro verbatim,
+C2-R5-4); and the N9-ordering acceptance probe (tombstoneCommitEpochId installed before the first
+protocol row).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -677,37 +723,41 @@ balances unchanged across an archive cycle containing them, C2-R4-E1).
   method and Kunal's attestation — trustworthy only under the assumption that staging wasn't
   already tampered at backfill time. Acceptable because staging holds trial data (D-C2-2); the
   PRODUCTION epoch is exact by construction (recorded at cutover on fresh lists).
-- **H12 (C2-R4-E1):** Director-corrected live rows and their control rows never archive — they
-  stay in the live list permanently (rare rows, negligible cost). This is what keeps snapshot
-  balances and settlements coherent without teaching the archiver about control heads.
+- **H12 (C2-R4-E1 v2, revised C2-R5-4):** Director-corrected rows archive slightly LATER than
+  their neighbours — the archive cutoff waits until a corrected row and all its control rows can
+  move together (roughly one archive cycle after the correction). In exchange, snapshot balances,
+  client stock counts, and settlements can never disagree about a corrected row: the archiver
+  folds the corrected (effective) value, and no row below a published cutoff is ever excluded
+  from it.
 
-## 14. Review questions (R5)
+## 14. Review questions (R6)
 
-- **Q1v5 (normalization law):** §5 P4 v3 — verify the induction yourself: does EVERY
-  first-publication mode leave the archived ensemble's represented value equal to its effective
-  value, and does every subsequent plain-table cell then preserve it? Include the AGY R4-1 repro
-  both ways, supersede-of-adopted-deletion in both in-snapshot branches, and a
-  retire_claim → create chain. Any cell that still needs a representation gate?
-- **Q2v5 (commit seals):** the CommitSig authority chain (§8/N13/N16) — can an uncommitted or
-  losing tombstone reach a device under ANY combination of SharePoint-direct edits (ControlState,
-  CommitSig transplant from another tombstone, TargetTransactionId swap)? Is the covered tuple
-  `{TransactionId, TargetTransactionId, 'committed'}` sufficient, and is the legacy
-  `tombstoneCommitEpochId` lane sound (no post-epoch tombstone can ride it)?
-- **Q3v5 (retire_claim):** the C2-R4-8 lane — is it reachable EXACTLY when intended (pre-epoch
-  unsealed claimed tombstone) and unreachable otherwise? Walk its crash matrix on the shared
-  journal machinery (quarantine-then-crash, retire-then-crash, replay). Can it ever retire a claim
-  whose tombstone is legitimate, or race a concurrent adopt folding the same claim?
-- **Q4v5 (archive exclusion):** the C2-R4-E1 pin (N10) — does excluding control rows +
-  head-named rows from archive selection preserve EVERY Chunk-8 invariant (neutrality, fidelity
-  hashes, cutoff continuity, retain-window pairing)? Any consumer that assumes all old rows
-  eventually archive? Is "any state incl. null/historical heads" the right exclusion breadth?
-- **Q5v5 (ID coordinates):** sweep the revised doc for ANY remaining comparison mixing list-ID
-  coordinates (live `_spId` / archive item id / `SourceId` / `epochId` / horizon markers /
-  `tombstoneCommitEpochId`). The R4 round found two; is the count now zero?
-- **Q6v5 (whole-design re-check):** with all R1-R4 folds in place, re-answer the standing
-  closure question: any remaining path to a silently uncounted deletion, a mis-billed control, a
-  permanently locked target, a stranded coordination state, an invisible-forever legitimate
-  deletion, or a balances/settlement divergence?
+- **Q1v6 (retire-as-publication):** `retire_claim` v2 (§5b) — walk its full crash matrix on the
+  shared machinery (crash at every phase boundary × retry × recovery × re-seize). Does the
+  P7-only quarantine ordering hold in every interleaving (no path mutates ledger rows pre-P6)?
+  Does the null-head publication compose correctly with §6 recovery, the §7b assembly, and the
+  frozen engine's withdrawn-target semantics? Is the retire→supersede chain the right lane, and
+  is its expected-revision form well-defined against the retired registry state?
+- **Q2v6 (retirement arithmetic):** the retirement normalization delta — verify the induction
+  extension: retirement as a first publication in BOTH horizon branches, followed by
+  supersede/withdraw chains. The converged R5-1 repro must end at +8. Any cell where the retired
+  tombstone's historical exclusion leaks into a later term?
+- **Q3v6 (paired archival):** E1 v2 (N10) — does the effective fold EXACTLY mirror the engine's
+  §7b assembly for every head state (active deletion, active replacement, superseded history,
+  null head, pending adoption)? Does cutoff clamping preserve every Chunk-8 invariant (neutrality,
+  fidelity hashes, retain-window, tombstone pairing) AND the client covering invariant at every
+  point in time — including MID-correction (a correction publishing between two archive runs) and
+  a correction on a row already below the previous cutoff (reachable? if so, what happens)? Is
+  retention genuinely bounded under repeated corrections?
+- **Q4v6 (interaction sweep):** the two redesigned mechanisms against each other and the rest:
+  retire_claim × opportunistic adoption × the §8 device lifecycle × paired archival × the
+  TOMBSTONE_PENDING_ADOPTION blocker — any composition that strands a target, splits a pair
+  across lists, or lets a quarantined tombstone's target be mis-stated in any consumer?
+- **Q5v6 (whole-design closure):** with all R1-R5 folds in place: any remaining path to a
+  silently uncounted deletion, a mis-billed control, a permanently locked target, a stranded
+  coordination state, an invisible-forever legitimate deletion, a client/server stock divergence,
+  or a balances/settlement divergence? If your answer is no on all, say so explicitly — this is
+  the convergence gate.
 
 ## 15. Sequencing after convergence
 
