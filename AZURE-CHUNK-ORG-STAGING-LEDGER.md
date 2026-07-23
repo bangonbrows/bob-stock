@@ -51,19 +51,30 @@ Spec: `AZURE-CHUNK-ORG-W44-C1-DESIGN.md` (converged R2 both-PASS @ `bfb3469`). A
 - MAX_ROWS 500→5000 (`3c35f27`): unchunked client backlog + a low cap = permanent retry loop.
 - The push LA trigger is named `When_an_HTTP_request_is_received` (not `manual`) for listCallbackUrl.
 
+## ✅ C1 BUILD AUDIT CONVERGED 2026-07-23 — BOTH PASS FIRST ROUND (rare)
+AGY PASS (58/58 local; real push `agy_probe_txn_1784746957800` sealed+verified; SP-direct Qty edit →
+verify false via its read-only Graph credential; dup → duplicates[]; confirmed the 5 open items are
+the right residual set) · Codex PASS ("Numbered findings: none"; probe item 140 sealed/verified/
+tamper-detected/deduped, row deleted; audited DETACHED at the exact SHA `c30e8aa` — its method note
+about origin tip `ba7c560` is EXPECTED: that is the last-pushed Chunk-9 commit, the server phase is
+local-only until cutover, ground-truthed an ancestor of HEAD). Post-audit hygiene: the temporary
+`auditors` function key DELETED (only `default` remains). NOTE: AGY's credential could not delete its
+probe row — it pushed a `deleted`-type tombstone instead, so `StockTransactions_Validate` holds TWO
+agy residue rows (the probe + its tombstone) — CLEAN at the next apply run (item 1 below). Auditor
+read-only Graph credential (app 0ccf2a39) expires 2026-07-29 — let lapse, mint fresh at the return
+re-audit.
+
 ## Open items before the W4.4 return re-audit
 1. **Archive-move carry (`bob-stock-archive-staging`)** — the archive LA does not yet copy
    `EconSig` + the 9 new columns when moving rows to `StockTransactions_Archive`. An archived row
    would LOSE its seal → engine holds it. Must be applied + probed before the re-audit.
-2. **C1 BUILD AUDIT (external)** — the spec converged on paper; the DEPLOYED behaviour needs the
-   scoped credentialled audit round (Codex + AGY drive the staging endpoint + tamper probes
-   themselves). Pack: `PASTE-TO-AUDITORS-ORG-W44-C1-BUILD.md`.
-3. **Contract 2** — correction route writes `control.targetLine` + server `originalEventAt`
+   (+ clean the two agy_ residue rows while in there.)
+2. **Contract 2** — correction route writes `control.targetLine` + server `originalEventAt`
    (LA-CHANGES §6; route not yet built). Needs the throwaway `srvaudit_` test director (Kunal mints).
-4. **Stamp semantic validation (SR-155 recompute)** rides the AA LA-CHANGES §3-4 ingest work — until
+3. **Stamp semantic validation (SR-155 recompute)** rides the AA LA-CHANGES §3-4 ingest work — until
    it ships, a seal binds stamp VALUES to the row but does NOT vouch for their correctness; the
    engine's tier-1 stamp-authority rules are unchanged. (The seal clears IDENTITY holds only.)
-5. **Engine predicate change** (`unverifiableQty` → "no valid economic signature" +
+4. **Engine predicate change** (`unverifiableQty` → "no valid economic signature" +
    `ECON_SIG_INVALID` + the sealed-row-pre-epoch contradiction rule) — deliberately deferred to the
    return re-audit per the parent contract.
 
