@@ -78,9 +78,25 @@ to Chunk-8-audited code — flag at the return re-audit); (c) Function App redep
 `test/archive-carry-proof.js` **28/28** (rename-equivalence, whole-population copy-defect matrix,
 injection dead); attest proof still 58/58. Finishing run `audit-artifacts/finish-c1-carry.js`
 (Kunal-executed): IdempotencyKey column on the archive list + agy_ residue sweep.
-**PENDING: the live archive-RUN probe** (seed sealed rows → drive a real archive run → archived rows
-re-verify) — the run gate requires a Director USER sudo proof (purpose 'archive'), i.e. the
-`srvaudit_` test director. Folds into the Contract-2 phase.
+**✅ LIVE ARCHIVE-RUN PROBE: 17/17 OK 2026-07-23** (`audit-artifacts/probe-c1-archive-run.js`,
+Kunal-executed, driven as `srvaudit_director` w/ a real archive sudo proof + the Director device key,
+against a DEDICATED probe source list `StockTransactions_ArchProbe` created+deleted by the run —
+NOT the archiver's default `StockTransactions_Staging`, which holds the SEED_* pull-probe dataset the
+run would have swept; the probe's empty-list guard caught that on attempt 1). Proven end-to-end:
+3 sealed rows → real run 200 (counts 3/3/0; source and archive fidelity hashes IDENTICAL over the
+extended canon) → all 3 archived rows re-verify `ok:true` after the TxnType/TxnDate/TxnTimestamp
+remap (incl. the receive-key row) → tampering an ARCHIVED row breaks its seal → source rows deleted
+post-publish → snapshot state restored, lock idle. **LATENT CHUNK-8 BUG found + fixed (KUNAL-VISIBLE):**
+the archive list's `TxnTimestamp` column is TEXT while the source `Timestamp` is a NUMBER — the LA's
+insert rejected every row (`Cannot convert a primitive value to Edm.String`, 502 + lock stuck
+`running`); C8's proofs ran from a text-timestamp test list so it never showed, and a REAL archive run
+from `StockTransactions_Validate` (Number Timestamp) would have hit it in production. Fix: the copy
+mapping now `string()`-wraps TxnTimestamp (hash unaffected — `tsOf` stringifies both sides). Diag
+trail: secured LA inputs → mapping replicated outside the LA (`audit-artifacts/diag-c1-insert.js`) →
+archive column-type dump exposed the Text/Number mismatch. Residue note: the 11 C1 columns added to
+`StockTransactions_Staging` on attempt 1 remain (empty, harmless, and needed if that list is ever a
+real archive source). Flag for the return re-audit: archive LA changes = carry mapping + both
+`$select` extensions + the TxnTimestamp `string()` wrap.
 **Finish run 2026-07-23: 4/4 OK.** IdempotencyKey column already existed on the archive list. BONUS
 CLEANUP: the agy_ sweep found **21** residue rows — not just the 2 from this build audit but 19 OLD
 agy_ probe rows accumulated from the Chunk-4/5/9/10 audits (agy_3242/6819/7918/8455/txn_*) that were
