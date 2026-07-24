@@ -1,10 +1,26 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R17
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R18
 
-> ## ROUND 17 — re-review after the round-16 folds
-> Round-16 verdicts: BOTH BLOCK — 4 distinct REAL findings (3 CONVERGED pairs), all folded (the
-> design doc's **R16 fold record table**). Q2v16 (promote release-only) was CONFIRMED closed by
-> both — the third sub-question to fully converge. Two findings were completions of the R15 folds,
-> one was a sharp attack. The folds: (1) [CONVERGED] the R15 archive-cleanup could be weaponized —
+> ## ROUND 18 — re-review after the round-17 folds
+> Round-17 verdicts: BOTH BLOCK — 4 distinct REAL findings (3 CONVERGED pairs) + a proof-suite
+> cleanup, all folded (the design doc's **R17 fold record table**). The headline: the archive
+> cleanup is resolved at the ROOT with an ARCHIVE-C2-EPOCH cutover boundary (riding the seal-epoch
+> artifact) — three rounds of trying to tell legit old history from crashed-run junk via the
+> per-run marker failed because both can end up marker-less (Codex asked for a cutover marker back
+> in R15). Now: a row BELOW the epoch is definitively pre-Contract-2 legacy (always read AND
+> spared), a row ABOVE it is a C2 run's row needing a valid signed publication proof (else residue
+> ⇒ inert to readers AND physically swept so it can't jam a later archive move); the publication
+> proof is the SIGNATURE's existence, not the editable boolean (`Published:false` + valid sig =
+> tamper contradiction ⇒ HALT); production's fresh archive ⇒ epoch 0 ⇒ no legacy at all. Also:
+> (2) the two-list pre-commit check gains the source-first Live→Archive order (stable against a
+> concurrent archive move); (3) the crash-recovery scrub now establishes a main row is genuinely
+> OURS by content before acting, so a foreign colliding row can't cause a legit pending deletion
+> to be silently deleted; (4) a contradictory line saying the collision state "stops the scrub"
+> is corrected — it stops only the retry, the scrub recovers a crashed collision. This round:
+> re-review end-to-end and answer Q1v18-Q5v18 (§14) — the archive-epoch sweep especially. Q5v18
+> is the explicit convergence gate.
+>
+> [Superseded R17 summary retained below for reference:]
+> Round-16 folds: (1) [CONVERGED] the R15 archive-cleanup could be weaponized —
 > corrupting an OLD published run's marker made the sweep purge its legit history, and deleting a
 > crashed run's marker made its residue look like legacy and survive; the sweep is now
 > NON-DESTRUCTIVE-ON-AMBIGUITY (it deletes only on a positive signed crashed-run proof and HALTS +
@@ -32,7 +48,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R16 fold records, and questions Q1v17-Q5v17).
+   honest notes H1-H14, the R1-R17 fold records, and questions Q1v18-Q5v18).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -42,10 +58,9 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v17-Q5v17 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the sweep tamper-safety + reader-filter (N10), the
-two-list pre-commit check vs the frozen Director P4 domain (§8/EXPORT-SCOPE:149), and the collision
-lifecycle (§4/§6/§8). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v18-Q5v18 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the ARCHIVE-C2-EPOCH cutover (N16/N10), the
+archive-item-id as an immutable classifier, and D-C2-2 (fresh production archive ⇒ no legacy). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
