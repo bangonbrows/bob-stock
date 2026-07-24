@@ -1,26 +1,24 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R8
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R9
 
-> ## ROUND 8 — re-review after the round-7 folds
-> Round-7 verdicts: one reviewer PASS (explicit all-clear on the closure gate) · one reviewer
-> BLOCK×4, ALL REAL, all folded (the design doc's **R7 fold record table**) + 1 typed-canonical
-> build pin. Both reviewers must pass the same revision, so this round goes to both. The
-> heaviest R7 correction is an ENGINEER-PREMISE REFUTATION: the R6 "healing touch" claimed pulls
-> are modified-since — they are an immutable SharePoint-ID cursor (sync.js:1823), so the touch
-> could never re-deliver an old-ID or archived row. It is DELETED, not patched: retirement now
-> honestly restores SERVER truth only, device-side restoration is explicitly deferred to the
-> banked H7 re-delivery lane, and the response surfaces `deviceRestorationPending` to the
-> Director (§5b, H13 — trial-data lane per D-C2-2). The other R7 folds: (1) the N13 tombstone
-> filter is now an explicit ALLOWLIST (null-legacy + committed-with-valid-CommitSig delivered;
-> pending/retiring/unknown excluded BY CONSTRUCTION — the §5b/N13 spec drift both halves closed);
-> (2) the §8 device retry gains a TERMINAL ADJUDICATED branch — a lost-ack retry against a
-> retired/withdrawn claim (ControlId null) answers `superseded_by_adjudication` terminally,
-> never inserts or loops; (3) the archive run gains a TOMBSTONE AUTHORITY GATE — it refuses
-> (transiently) while any pending/retiring tombstone is in its input and batch-verifies committed
-> CommitSigs before compute, so D8-7 economics only ever see adjudicated tombstones (closing the
-> losing-tombstone balance-divergence repro); (4) the versioned hash canonical uses TYPED values
-> (0 vs null vs absent distinct). This round: re-review end-to-end and answer Q1v8-Q5v8 (§14) —
-> the allowlist matrix and the authority-gate interleavings especially. Q5v8 is the explicit
-> convergence gate.
+> ## ROUND 9 — re-review after the round-8 folds
+> Round-8 verdicts: one reviewer PASS (second consecutive explicit all-clear on the closure
+> gate) · one reviewer BLOCK×4, ALL REAL, all folded (the design doc's **R8 fold record
+> table**). Both must pass the same revision, so this round goes to both. The R8 folds:
+> (1) `deviceRestorationPending` + `affectedTarget` now live IN the normative response contract —
+> on retirement success, in the journal's stored result, and on terminal-opId replay, so the
+> Director warning survives lost responses; (2) the §8 own-claim dispatch gains the
+> OWN-PENDING_SUPERSEDE branch — a lost-ack device retry arriving while a Director
+> withdraw/supersede is in flight answers by READ (`ok`, already-applied; never inserts,
+> quarantines, or heal-MERGEs mid-Director-op; correct under both the Director op's rollback and
+> roll-forward); (3) the archive-run authority gate is now the SAME explicit allowlist as N13
+> (unknown/future ControlState values refuse + surface instead of falling through to D8-7); and
+> (4) the scalar INPUT-HORIZON marker is REPLACED by the INPUT TOMBSTONE-SET RECORD — each run
+> persists the exact set of tombstone live-coordinate ids its input actually contained, and the
+> adoption/retirement membership test is set-membership, not an id comparison (a scalar max
+> cannot prove prefix completeness under SharePoint's out-of-order ID visibility, which the
+> client code itself records at sync.js:1837). This round: re-review end-to-end and answer
+> Q1v9-Q5v9 (§14) — the own-claim state-space cover and the membership record's authority
+> especially. Q5v9 is the explicit convergence gate.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -33,7 +31,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H13, the R1-R7 fold records, and questions Q1v8-Q5v8).
+   honest notes H1-H13, the R1-R8 fold records, and questions Q1v9-Q5v9).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -43,7 +41,7 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v8-Q5v8 explicitly. If a decision contradicts a frozen SR
+and the push-path tombstone claim. Answer Q1v9-Q5v9 explicitly. If a decision contradicts a frozen SR
 pin, cite the pin. Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
