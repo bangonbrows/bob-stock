@@ -1,18 +1,15 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R16 (R15 verdicts: BOTH BLOCK — AGY×2 + Codex×8 = 4 distinct REAL (2
-CONVERGED pairs); Q2v15/Q3v15 stale-rule + PublishedSig CONFIRMED closed. Folds below: the VERSION
-FLOOR is DROPPED — replaced by "write N17 BEFORE copying rows ⇒ ABSENT N17 = legacy = always
-spared; PRESENT+not-verifiably-Published = residue" (the floor was wrong BOTH ways — deleted the
-last legacy run at V==published, spared residue outpaced by 2 corrections — converged); the R14
-N18-mismatch promote rule is REVERSED — a target mismatch means the N18 row belongs to the
-unique-key WINNER, so ONLY release the stranded claim, NEVER delete the N18 row (my R14 fix created
-an attacker cross-target deletion path — converged); the collision lifecycle is redesigned around a
-PRE-COMMIT id check (a colliding tombstone is forged ⇒ rejected before the irrevocable commit) +
-a durable `collision` registry state that self-resolves to RELEASE (no membership, no balance
-delta); and the retry/collision completion VERIFIES CommitSig (own-verified row + bad sig ⇒ re-mint
-the sig; never delete N18 until the committed row fully verifies). R14: 8 folded. R13-R1: 75 folded.
-Nothing built, nothing deployed. D-C2-1..3 LOCKED — §12).**
+**Status: 🔍 SCOPE REVIEW R17 (R16 verdicts: BOTH BLOCK — AGY×3 + Codex×5 = 4 distinct REAL (3
+CONVERGED pairs); Q2v16 promote-release-only CONFIRMED closed (3rd sub-question). Folds below: the
+orphan-sweep is made NON-DESTRUCTIVE-ON-AMBIGUITY (never delete real history on a deleted/corrupted
+marker — HALT+surface) and residue is rendered INERT via a reader-filter to verifiably-Published
+runs (marker deletion by a list-access actor = the P-13 threat, banked for server enforcement); the
+PRE-COMMIT collision check now queries BOTH ledger lists (an archived-id reuse was a delayed
+archive-bricking time-bomb — converged); the `collision` state gets a crash-safe lifecycle + DELETES
+N18 (it was leaking the row into an infinite re-register loop — converged); and the SCRUB matrix
+cells now VERIFY CommitSig before deleting N18 (the retry branch did, the scrub didn't). R15: 4
+folded. R14-R1: 83 folded. Nothing built, nothing deployed. D-C2-1..3 LOCKED — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -344,6 +341,25 @@ version-floor replacement + the collision lifecycle.
 
 ---
 
+## R16 fold record (2026-07-24) — BOTH BLOCK; 4 distinct REAL (3 converged pairs). Q2v16 promote CONFIRMED closed both.
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R16-1 | The R15 N17-marker sweep is unsafe BOTH ways: (a) a legit PUBLISHED old run whose `PublishedSig` is corrupted/stripped reads as "present + not-verifiably-Published" and — since the HALT only guards the CURRENT run — its ENTIRE archive history is silently PURGED (AGY 1 ≡ Codex 2); (b) a crashed run whose N17 record is DELETED reads as "absent ⇒ legacy" and its residue is SPARED forever (Codex 1). Any list-access actor can weaponize the sweep into a history-reaper | REAL — inferring residue-vs-legacy from a mutable/deletable per-run marker is unsafe in both directions; matches the P-13 threat (list-access tampering is NOT defended by convenience controls) | TWO-PART: (a) RESIDUE IS RENDERED INERT — ALL archive READERS (membership §5b, export §7b, snapshotCompute input, the unit-move copy) filter to rows whose ArchiveRunId's N17 is PRESENT with a VALID `Published`+`PublishedSig`; an unpublished/unverifiable run's rows are NEVER read/billed/re-copied (so unswept residue is harmless — closes Codex-1 without any deletion); (b) the SWEEP IS NON-DESTRUCTIVE-ON-AMBIGUITY — it deletes ONLY rows whose N17 shows `Published:false` with a VALID `RecordSig` AND the run is stale AND not-current; ABSENT record, unreadable `RecordSig`, or a present-but-unverifiable `PublishedSig` on rows-that-exist ⇒ HALT + surface a TAMPER ALARM, NEVER delete and NEVER silently exclude (a reader hitting the same ⇒ HALT too). Marker DELETION/corruption by a list-access actor = the P-13 threat class, banked for server-side enforcement; acceptable for the trusted alpha under D-C2-2 (trial data, wiped at go-live) — Kunal-visible H14 |
+| C2-R16-2 | The R15 PRE-COMMIT collision check queries ONLY the MAIN ledger, but TransactionId identity is GLOBAL across Live+Archive (the Director's own P4 collision check queries BOTH, frozen EXPORT-SCOPE:149). An attacker reuses an ARCHIVED TransactionId: the main-only check passes, the tombstone commits + inserts into Live, and MONTHS later when it becomes archive-eligible the unit-move's copy 409s on the archive unique key ⇒ the archive LA fails-closed forever ⇒ a DELAYED ARCHIVE-BRICKING TIME-BOMB; also export sees differing X across lists ⇒ DUPLICATE_ID_CONFLICT (AGY 2 ≡ Codex 3, CONVERGED) | REAL — the check must mirror the global two-list identity domain | §8: the PRE-COMMIT collision check queries BOTH `StockTransactions_Validate` AND `StockTransactions_Archive` for the TransactionId (exactly the Director P4 mirror); PRESENT in EITHER ⇒ the tombstone is forged/malformed ⇒ REJECT before the commit CAS (release claim, delete N18, quarantine, target present) |
+| C2-R16-3 | The `collision` state LEAKS the N18 row and has no crash-safe lifecycle: self-resolve "releases the claim" but never deletes N18 ⇒ the no-registry-N18 scrub cell re-registers it to committed and re-mints ⇒ 409 ⇒ collision ⇒ release ⇒ INFINITE LOOP; and a crash after CAS-to-collision-before-release leaves the target permanently reserved (no recovery actor/TTL/CAS/N18-ordering defined; the scrub matrix has no collision cell) (AGY 3 ≡ Codex 4, CONVERGED) | REAL — the R15 collision state was a terminal label without a lifecycle | §4/§6/§8: entering `collision` DELETES the N18 row FIRST (eradicate the forged tombstone), THEN releases/marks the claim — order pinned. The scrub matrix gains the `collision` cell: a `collision`-state registry item ⇒ ensure N18 deleted + release (idempotent; crash-safe — re-entrant); a `collision` claim past TTL ⇒ released to idle. The no-registry-N18 scrub cell gains a guard: an N18 row whose TransactionId collides with an existing Live/Archive row ⇒ DELETE the N18 (forged), NEVER re-register (closes the loop) |
+| C2-R16-4 | The SCRUB matrix cells "committed + BOTH main-ledger row and N18 ⇒ delete N18" still delete N18 WITHOUT verifying the main row's CommitSig — the retry branch was fixed (R15-4) but the two scrub copies weren't; a crash leaving main+N18 then a corrupted main CommitSig ⇒ scrub deletes N18, N13 withholds the invalid row ⇒ invisible-forever deletion, no staged copy left (Codex 5) | REAL — R15-4 fixed the retry path only | §6/§8 scrub: the "BOTH main+N18 ⇒ delete N18" cells now VERIFY the main row's CommitSig FIRST (invalid on a provably-own row ⇒ RE-MINT before deleting N18; never delete N18 until the committed row fully verifies — canonical + EconSig + CommitSig), mirroring the retry branch (C2-R15-4) |
+| C2-R16-N1 | §11 still describes the retired R14 "version floor" probe (Codex reservation) | Fair — stale probe text | §11: the version-floor probe wording is redirected to the R16 record-before-copy / reader-filter sweep probes |
+
+**Q1v16-Q5v16 outcomes:** Q1v16 the record-before-copy direction was right but the marker-tamper +
+deleted-record edges were open (→ C2-R16-1); Q2v16 promote-release-only CONFIRMED CLOSED by BOTH
+(3rd sub-question closed); Q3v16 the pre-commit check + collision lifecycle → C2-R16-2/-3; Q4v16 the
+retry branch's CommitSig verify CONFIRMED sound by both — the scrub cells lagged (→ C2-R16-4); Q5v16
+both not-yet — both again affirm the core is solid; the residue is the sweep tamper-safety + the
+collision lifecycle completion.
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -402,7 +418,7 @@ all client UI (runner scripts prove the route, as C1 did).
 | N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text), `ControlState` (on a MAIN-LEDGER tombstone: `'committed'` or `'retiring'` only — `'pending'` is no longer a ledger value, it means "present in N18"; C2-R3-2 revised by C2-R11-1), `CommitSig` (the ctlcommit-v1 visibility AUTHORITY — C2-R4-5). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a); N18 pending rows carry the same columns but live off-ledger |
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
-| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); runIds SERVER-MINTED per `idle → run_active` acquisition (a GUID, never caller-supplied — C2-R10-2); STARTUP ORPHAN-SWEEP (C2-R11-4, predicate corrected by C2-R12-6 then C2-R13-2): a run publishes by stamping its N17 record `Published:true` immediately after the snapshot-CAS (outcome-by-read, still under the lock); the next run's FIRST acts after acquiring the lock are (a) RECONCILE a publish-then-crash — if `stock_snapshot.runId` names an N17 record that is not `Published`, stamp it (the live snapshot IS proof that run published) — then (b) DELETE every archive row whose `ArchiveRunId`'s N17 record is PRESENT AND not-verifiably-`Published`, verified complete BEFORE it copies anything. The VERSION FLOOR IS DROPPED (C2-R15-1 — it deleted the last legacy run at `SnapshotVersion == published` and spared residue outpaced by ≥2 later publications). Instead, every C2 archive run writes its N17 record FIRST (Published:false, before copying ANY rows — see N17), so ALL C2 rows carry an N17 record: an ABSENT N17 record now DEFINITIVELY marks a pre-Contract-2 LEGACY row ⇒ ALWAYS SPARED; a PRESENT, not-verifiably-Published record ⇒ pre-publication residue ⇒ deleted. An N17 record present but UNREADABLE (RecordSig fails) on a run that `stock_snapshot.runId` names as current ⇒ HALT the sweep and reconcile first — never infer non-publication from unreadability (Codex R15-1c); persist each run's INPUT TOMBSTONE-SET RECORD to N17 (the EXACT set of tombstone TransactionIds present in the run's input universe — the adoption/retirement membership decider, C2-R3-3 revised by C2-R8-4 + C2-R10-3: the scalar max-id horizon could not prove prefix completeness under SharePoint's out-of-order ID visibility, sync.js:1837, and numeric coordinates are unknowable for absent rows); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5 — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); the TOMBSTONE AUTHORITY GATE — an ALLOWLIST like N13 (C2-R7-4 + C2-R8-3): ONLY qualifying legacy-null (provenance < `tombstoneCommitEpochId`) or committed-with-valid-CommitSig tombstones ENTER compute (committed sigs batch-verified via attestRows pre-compute); EVERY other value — `pending`, `retiring`, unknown/future states, invalid sigs, post-epoch nulls — ⇒ the run REFUSES + surfaces (409, transient for pending/retiring — TTL scrubs drive them terminal; permanent + loud for tampering) — D8-7 economics only ever see ADJUDICATED tombstones; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
+| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); runIds SERVER-MINTED per `idle → run_active` acquisition (a GUID, never caller-supplied — C2-R10-2); STARTUP ORPHAN-SWEEP (C2-R11-4, predicate corrected by C2-R12-6 then C2-R13-2): a run publishes by stamping its N17 record `Published:true` immediately after the snapshot-CAS (outcome-by-read, still under the lock); the next run's FIRST acts after acquiring the lock are (a) RECONCILE a publish-then-crash — if `stock_snapshot.runId` names an N17 record that is not `Published`, stamp it (the live snapshot IS proof that run published) — then (b) run the NON-DESTRUCTIVE-ON-AMBIGUITY sweep (C2-R16-1, replacing the R15 marker-inference sweep which a list-access actor could weaponize into a history-reaper): DELETE a row ONLY when its `ArchiveRunId`'s N17 record shows `Published:false` with a VALID `RecordSig` AND the run is stale AND not-current (positive residue proof). An ABSENT N17 record, an UNREADABLE `RecordSig`, or a present-but-unverifiable `PublishedSig` on rows-that-exist ⇒ HALT + surface a TAMPER ALARM — NEVER delete real history on ambiguity (both the version floor AND the R15 "absent ⇒ legacy / unverifiable ⇒ residue" inferences were unsafe: a deleted marker spared residue, a corrupted marker on an old published run purged its history). Unswept residue is HARMLESS because it is INERT — see the READER-FILTER below. Marker deletion/corruption by a list-access actor is the P-13 threat class (banked for server-side enforcement; acceptable for the trusted alpha under D-C2-2, H14). **READER-FILTER (C2-R16-1a): every archive READER — membership (§5b), the export (§7b), the snapshotCompute input, and the unit-move copy — reads ONLY rows whose ArchiveRunId's N17 record is PRESENT with a VALID `Published`+`PublishedSig`; a row under an unpublished/unverifiable run is INERT (never read, billed, or re-copied), so residue can never pollute economics; a reader hitting rows whose run is present-but-UNVERIFIABLE ⇒ HALT + surface (never silently exclude legit history).** The reconcile (snapshot.runId names an unPublished record ⇒ stamp) runs BEFORE the sweep as before; persist each run's INPUT TOMBSTONE-SET RECORD to N17 (the EXACT set of tombstone TransactionIds present in the run's input universe — the adoption/retirement membership decider, C2-R3-3 revised by C2-R8-4 + C2-R10-3: the scalar max-id horizon could not prove prefix completeness under SharePoint's out-of-order ID visibility, sync.js:1837, and numeric coordinates are unknowable for absent rows); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5 — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); the TOMBSTONE AUTHORITY GATE — an ALLOWLIST like N13 (C2-R7-4 + C2-R8-3): ONLY qualifying legacy-null (provenance < `tombstoneCommitEpochId`) or committed-with-valid-CommitSig tombstones ENTER compute (committed sigs batch-verified via attestRows pre-compute); EVERY other value — `pending`, `retiring`, unknown/future states, invalid sigs, post-epoch nulls — ⇒ the run REFUSES + surfaces (409, transient for pending/retiring — TTL scrubs drive them terminal; permanent + loud for tampering) — D8-7 economics only ever see ADJUDICATED tombstones; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
 | N11 | attestRows new frames | EXTEND the C1 route with FIVE canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7), `runrec-v1` (archive run records' immutable fields, N17/C2-R9-1), `runrec-pub-v1` (the N17 `Published` marker, N17/C2-R14-3) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
 | N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS the tombstone ALLOWLIST (C2-R7-1, replacing the R3 pending-blocklist): `Type='deleted'` rows are delivered ONLY when ControlState is null-legacy (AND live-coordinate provenance < `tombstoneCommitEpochId`) or `'committed'` (AND CommitSig batch-verifies via attestRows); `pending`, `retiring`, and every unknown/future value are EXCLUDED BY CONSTRUCTION (invalid/absent sig ⇒ withheld + surfaced — C2-R4-5). Build proof: real-list OData null semantics + the full allowlist matrix — ⚠ flagged scoped amendment |
@@ -775,10 +791,14 @@ mutating act = the FENCE write):
   match ⇒ run the commit CAS then the re-mint (C2-R12-2); registry COMMITTED with a NON-NULL ControlId and only the N18 row ⇒ rolled FORWARD
   (the scrub RUNS THE RE-MINT: insert the committed main-ledger row at a fresh id, then delete the
   N18 item — §8; NEVER an in-place flip); with BOTH the committed ledger row and a leftover N18 row
-  ⇒ delete the N18 item; the WITHDRAWN form `committed(ControlId:null)` with a leftover N18 row ⇒
+  ⇒ VERIFY the main row's CommitSig (invalid on a provably-own row ⇒ RE-MINT first, C2-R16-4) then
+  delete the N18 item; registry in the `collision` state ⇒ ensure N18 DELETED then release, TTL ⇒
+  idle (C2-R16-3); the WITHDRAWN form `committed(ControlId:null)` with a leftover N18 row ⇒
   DELETE the N18 row, NEVER re-mint (resurrection guard, C2-R13-1); an N18 row whose target's
   registry is committed to a DIFFERENT ControlId or whose own claim is absent ⇒ DELETE the N18 row
-  (lost race / crashed foreign-compensation, C2-R13-5b); a committed main-ledger row lacking
+  (lost race / crashed foreign-compensation, C2-R13-5b); an N18 row with NO registry item whose
+  TransactionId COLLIDES with an existing Live/Archive row ⇒ DELETE the N18 (forged), NEVER
+  re-register (loop guard, C2-R16-3); a committed main-ledger row lacking
   CommitSig ⇒ VERIFIED as a collision anomaly, never auto-signed (C2-R13-5a/C2-R14-7); **(the R2
   rule "a committed main-ledger tombstone whose registry ControlId DIFFERS ⇒ quarantine as a race
   loser" is DELETED — C2-R14-2: a main-ledger tombstone is always a legitimate commit winner since
@@ -919,11 +939,14 @@ owner reusing `TransactionId` X against the same target but with changed StoreId
 OR a different target entirely — ⇒ REJECT + CONDITIONALLY RELEASE the pending registry claim this
 request just created (own-ETag, C2-R14-6a) + quarantine + surface; never idempotent, never leaves a
 stranded claim.** (3) After the pending-list
-row is durable, **PRE-COMMIT COLLISION CHECK (C2-R15-3): query the MAIN ledger for this tombstone's
-TransactionId; PRESENT ⇒ the id collides with an existing row ⇒ the tombstone is FORGED/malformed
-(a legitimate device tombstone's TransactionId is globally unique per movement) ⇒ REJECT BEFORE the
-irrevocable commit: release the pending claim, delete N18, quarantine the push + surface, the target
-STAYS PRESENT (no committed-uninstantiable state ever forms).** Then CAS the registry
+row is durable, **PRE-COMMIT COLLISION CHECK (C2-R15-3 + C2-R16-2): query BOTH `StockTransactions_Validate` AND
+`StockTransactions_Archive` for this tombstone's TransactionId (the GLOBAL two-list identity domain
+— exactly the Director's P4 collision check, frozen EXPORT-SCOPE:149; a MAIN-only check let an
+attacker reuse an ARCHIVED id, commit, and plant a time-bomb that bricks the archive LA's unit-move
+copy months later). PRESENT in EITHER list ⇒ the id collides with an existing row ⇒ the tombstone is
+FORGED/malformed (a legitimate device tombstone's TransactionId is globally unique per movement) ⇒
+REJECT BEFORE the irrevocable commit: release the pending claim, delete N18, quarantine the push +
+surface, the target STAYS PRESENT (no committed-uninstantiable state ever forms).** Then CAS the registry
 `pending → committed(ControlId=<tombstone TransactionId>, Revision 0, PublicationVersion null, OpId
 retained)` — **this CAS is the COMMIT POINT** — then the **COMMIT-TIME RE-MINT (C2-R10-4 as
 corrected by C2-R11-1 — the ledger's unique key forbids a same-id duplicate, so the tombstone
@@ -941,10 +964,14 @@ TargetTransactionId + byte-equal canonical + verifying EconSig) the prior attemp
 VERIFY its `CommitSig` (ctlcommit-v1, C2-R15-4) — valid ⇒ just delete N18; INVALID/corrupt on this
 provably-own row ⇒ RE-MINT the CommitSig (safe: we own it) and only delete N18 once the committed
 row FULLY verifies (canonical + EconSig + CommitSig); if the colliding row is a DIFFERENT row ⇒ the
-durable registry `collision` state (C2-R15-3, §4): STOP all re-mint/retry/scrub re-attempts (no
-infinite 409), surface, and SELF-RESOLVE by RELEASING the claim — a forged deletion never had
-economic effect, so the target simply STAYS PRESENT (no membership lookup, no balance delta; the
-R14-8 retire_claim extension is WITHDRAWN — §5b reverts).** **The commit CAS lands on a FOREIGN state ⇒ COMPENSATE
+durable registry `collision` state (C2-R15-3 + C2-R16-3, §4): STOP all re-mint/retry/scrub
+re-attempts (no infinite 409), surface, and SELF-RESOLVE in a PINNED ORDER — **DELETE the N18 row
+FIRST (eradicate the forged tombstone so the no-registry-N18 scrub cannot re-register it into an
+infinite loop), THEN release the claim** — a forged deletion never had economic effect, so the
+target STAYS PRESENT (no membership lookup, no balance delta; the R14-8 retire_claim extension is
+WITHDRAWN — §5b reverts). Crash-safe: a `collision`-state item is re-entrant (re-running the
+delete-N18-then-release is idempotent); a `collision` claim past TTL ⇒ released to idle by the
+scrub (§6 collision cell, C2-R16-3).** **The commit CAS lands on a FOREIGN state ⇒ COMPENSATE
 (C2-R2-5/C2-R3-2): the pending-LIST row — which NO device has ever received (it was never in the
 main ledger) — is deleted from N18 + surfaced; there is nothing to un-deliver, so a losing
 tombstone can never delete the original on peer devices.** Crash recovery: retry (idempotent
@@ -960,7 +987,10 @@ cross-target deletion path); the N18 row is cleaned solely by ITS OWN claim's li
 match ⇒ run the commit CAS `pending → committed` THEN the re-mint (C2-R12-2); registry COMMITTED with a NON-NULL
 ControlId and only the N18 row ⇒ run the re-mint (insert the committed main-ledger row, then delete
 the N18 item) — roll-forward, idempotent; registry COMMITTED (non-null) with BOTH the main-ledger
-row and a leftover N18 row ⇒ delete the N18 item; **registry in the WITHDRAWN form
+row and a leftover N18 row ⇒ VERIFY the main row's CommitSig (invalid on a provably-own row ⇒
+RE-MINT first, C2-R16-4) then delete the N18 item; registry in the `collision` state ⇒ ensure the
+N18 row is DELETED then release the claim (idempotent), a `collision` claim past TTL ⇒ released to
+idle (C2-R16-3); **registry in the WITHDRAWN form
 `committed(ControlId:null)` [a Director retired/withdrew this claim] with a leftover N18 row ⇒
 DELETE the N18 row — NEVER re-mint (re-minting would resurrect an aborted deletion, C2-R13-1); an
 N18 row whose target's registry item is committed to a DIFFERENT ControlId, or whose own claim is
@@ -968,8 +998,10 @@ absent [a lost race or a crashed foreign-compensation delete] ⇒ DELETE the N18
 committed main-ledger row lacking its CommitSig ⇒ a COLLISION/integrity anomaly, VERIFIED never
 auto-signed (§8 collision adjudication, C2-R13-5a/C2-R14-7); the
 §6 belts (a durable PENDING-LIST row with NO registry item — the scrub-then-insert crash,
-C2-R3-2 — ⇒ reconcile RUNS the claim lifecycle for it: target unclaimed ⇒ register to committed +
-re-mint; target foreign ⇒ delete the pending-list row). **(The obsolete R2 rule "a committed
+C2-R3-2 — ⇒ reconcile RUNS the claim lifecycle for it: target unclaimed ⇒ [collision loop guard,
+C2-R16-3: if the N18 TransactionId COLLIDES with an existing Live/Archive row ⇒ DELETE the N18,
+NEVER re-register] else register to committed + re-mint; target foreign ⇒ delete the pending-list
+row). **(The obsolete R2 rule "a committed
 main-ledger tombstone whose registry ControlId DIFFERS ⇒ quarantine as a race loser" is DELETED —
 C2-R14-2: since R11 a main-ledger tombstone is ALWAYS a legitimate commit winner [losers live only
 in N18], and a differing registry ControlId now means the tombstone was legitimately SUPERSEDED;
@@ -1139,7 +1171,15 @@ B claim and A's legitimate X→A tombstone SURVIVES, C2-R15-2); the PRE-COMMIT c
 forged colliding id ⇒ rejected before the commit CAS, target present, C2-R15-3) + the impossible-
 race `collision` state self-resolving to release; and the CommitSig-corruption repro (a
 SharePoint-edited CommitSig on a provably-own committed row ⇒ RE-MINTED, N18 not deleted until the
-row fully verifies, C2-R15-4).
+row fully verifies, C2-R15-4). R16 additions: the SWEEP TAMPER-SAFETY matrix (an old published
+run's PublishedSig corrupted ⇒ HALT+alarm NOT delete; a crashed run's N17 deleted ⇒ residue stays
+INERT via the reader-filter, never billed; only a valid-RecordSig Published:false+stale+non-current
+run's rows deleted — C2-R16-1); the ARCHIVED-ID pre-commit reject (a forged tombstone reusing an
+ARCHIVED TransactionId ⇒ rejected by the two-list check, no archive-brick time-bomb, C2-R16-2); the
+collision LOOP repro (post-commit collision ⇒ N18 deleted FIRST then claim released ⇒ the
+no-registry scrub never re-registers ⇒ no infinite loop; crash-after-collision-CAS ⇒ scrub
+collision cell completes it, C2-R16-3); and the SCRUB CommitSig-verify parity (the scrub's BOTH-cell
+now re-mints a corrupt sig like the retry branch, C2-R16-4).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -1189,6 +1229,13 @@ row fully verifies, C2-R15-4).
   method and Kunal's attestation — trustworthy only under the assumption that staging wasn't
   already tampered at backfill time. Acceptable because staging holds trial data (D-C2-2); the
   PRODUCTION epoch is exact by construction (recorded at cutover on fresh lists).
+- **H14 (Kunal-visible, C2-R16-1):** the archive-cleanup job never auto-deletes archived history
+  when the evidence is ambiguous (a missing or tampered "published" marker) — it STOPS and raises
+  an alarm instead, and any stray un-cleaned data from a crashed run is simply ignored by every
+  reader, so it can never corrupt a settlement. A person with direct list access could still
+  delete or corrupt those markers by hand (the same class of risk as editing the raw database) —
+  that's covered by the planned server-side enforcement and is acceptable for the trusted-staff
+  alpha, especially since all pre-go-live data is trial data (D-C2-2).
 - **H12 (C2-R4-E1 v3, revised C2-R6-3):** a corrected row archives on exactly the same schedule
   as any other row (its own age decides) — its correction rows simply travel with it in the same
   run. Snapshot balances, client stock counts, and settlements can never disagree about a
@@ -1206,26 +1253,26 @@ row fully verifies, C2-R15-4).
   display-level ghost of the deleted row in old lists (stock totals and settlements are correct
   via the snapshot); the same H7 lane cleans this up.
 
-## 14. Review questions (R16)
+## 14. Review questions (R17)
 
-- **Q1v16 (record-before-copy sweep):** C2-R15-1 — with the version floor DROPPED and N17 written
-  before any row copy, is "absent N17 ⇒ legacy ⇒ spared; present + not-verifiably-Published ⇒
-  residue ⇒ deleted; unreadable current-run record ⇒ halt" now exact under EVERY crash edge
-  (record-written-then-crash-before-copy; copy-then-crash-before-publish; the very first C2 run;
-  a deleted/corrupted N17 item on a published run)? Any legit row deleted, any residue spared?
-- **Q2v16 (promote release-only):** C2-R15-2 — with the mismatch rule reversed to release-claim-
-  only, walk the cross-target attack + every stranded-claim interleave: is a legitimate N18 row
-  EVER deleted by another claim's scrub? Is the stranded loser claim always cleaned, and the
-  winner's row always cleaned by its own lifecycle?
-- **Q3v16 (collision lifecycle):** C2-R15-3 — the PRE-COMMIT id check + the `collision` state:
-  is the pre-commit check sufficient to prevent a committed-uninstantiable claim in every
-  practical case, and is the post-commit `collision` self-resolve-to-release sound (a forged
-  deletion ⇒ target present, no delta, no membership)? Any interleave where a LEGITIMATE deletion
-  is mistaken for a collision, or a collision locks a target?
-- **Q4v16 (CommitSig verify):** C2-R15-4 — the retry/collision completion now verifies CommitSig
-  and re-mints it on a provably-own row: can a foreign/unverified row ever be signed, and is N18
-  never deleted before the committed row fully verifies (canonical + EconSig + CommitSig)?
-- **Q5v16 (whole-design closure — the convergence gate):** with all R1-R15 folds in place: any
+- **Q1v17 (sweep tamper-safety):** C2-R16-1 — with the sweep now non-destructive-on-ambiguity and
+  residue rendered inert by the reader-filter, is there ANY path where (a) a list-access edit of an
+  N17 marker causes legit archived history to be deleted OR silently excluded from a settlement,
+  or (b) residue is READ/billed/re-copied? Is HALT+surface the right posture at every ambiguity,
+  and is the reader-filter applied at EVERY archive reader (membership, export, snapshotCompute,
+  unit-move)?
+- **Q2v17 (two-list pre-commit):** C2-R16-2 — does querying BOTH lists fully close the archived-id
+  reuse time-bomb, and does it mirror the frozen Director P4 collision domain exactly? Any residual
+  window (an id archived BETWEEN the check and the commit)?
+- **Q3v17 (collision lifecycle):** C2-R16-3 — the delete-N18-first ordering, the `collision` scrub
+  cell, and the no-registry-N18 collision loop-guard: walk every crash point (crash after
+  collision-CAS before N18-delete; crash after N18-delete before release; a scrub racing the
+  route). Any infinite loop, stranded reservation, or leaked N18 left? Is the target always
+  correctly PRESENT after a forged-collision resolves?
+- **Q4v17 (scrub CommitSig parity):** C2-R16-4 — with the scrub's BOTH-cell now verifying +
+  re-minting CommitSig like the retry branch, is there ANY recovery path that deletes N18 while the
+  committed main row is not fully verified?
+- **Q5v17 (whole-design closure — the convergence gate):** with all R1-R16 folds in place: any
   remaining path to a silently uncounted deletion, a mis-billed control, a permanently locked
   target, a stranded coordination state, an invisible-forever legitimate deletion, an UNSURFACED
   client/server stock divergence, or a balances/settlement divergence? If no on all, say so
