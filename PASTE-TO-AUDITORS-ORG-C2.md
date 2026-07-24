@@ -1,27 +1,27 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R15
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R16
 
-> ## ROUND 15 — re-review after the round-14 folds
-> Round-14 verdicts: BOTH BLOCK — 8 distinct REAL findings (1 CONVERGED pair), all folded (the
-> design doc's **R14 fold record table**). One reviewer ESCALATED the withdrawn-discriminator
-> question to PASS (closed by both). Most findings were completions of the R13 folds themselves +
-> two stale-rule deletions; both reviewers again affirm the N18 protocol + coordination
-> architecture is rock solid. The folds: (1) [CONVERGED] the orphan-sweep would have deleted ALL
-> pre-Contract-2 legacy archive history (N17 is new, so legacy runs have absent records) — fixed
-> with a VERSION FLOOR (`SnapshotVersion >= published version AND N17 not-Published/absent`):
-> legacy rows sit below the published version and are spared, residue sits at/above it and is
-> caught; (2) an obsolete R2 rule that quarantined "a main-ledger tombstone whose registry
-> ControlId differs" is DELETED — since R11 losers never reach the main ledger, so that rule now
-> only fired on legitimately SUPERSEDED history; (3) N17.`Published` gets a SEPARATE tamper-evident
-> `PublishedSig` (a bare SharePoint flip is ignored); (4) the export's committed-registry read
-> becomes a DOUBLE-COLLECT-until-stable (a paginated walk can miss an in-place commit on an
-> already-passed page); (5) the N18 409 check now requires CANONICAL BYTE-EQUALITY, not just a
-> valid seal on the existing row (a mutated resubmission under a reused id is rejected); (6) the
-> foreign-409 path releases its own pending claim and the promote cell re-checks N18 target
-> identity; (7) the "mint missing CommitSig" auto-sign is DELETED (it contradicted the collision
-> adjudication); (8) CONTROL_ID_COLLISION gets a terminal Director-recovery lane (retire_claim
-> extended) so a colliding claim can't lock its target forever. This round: re-review end-to-end
-> and answer Q1v15-Q5v15 (§14) — the sweep-safety predicate and the stale-rule sweep especially.
-> Q5v15 is the explicit convergence gate.
+> ## ROUND 16 — re-review after the round-15 folds
+> Round-15 verdicts: BOTH BLOCK — 4 distinct REAL findings (2 CONVERGED pairs), all folded (the
+> design doc's **R15 fold record table**). Q2v15 (stale-rule deletions) and Q3v15 (PublishedSig
+> integrity) were CONFIRMED closed. Two of the four were flaws in the R14 folds themselves,
+> including one where the R14 fix was actively harmful; both reviewers converged on both. The
+> folds: (1) [CONVERGED] the R14 VERSION FLOOR was wrong BOTH ways — it deleted the last legacy
+> run (whose version equals the current published version on the first C2 run) AND spared residue
+> outpaced by two later publications; DROPPED entirely in favour of writing the N17 record BEFORE
+> copying any rows, so an ABSENT N17 record now definitively means "pre-Contract-2 legacy ⇒
+> spare", a PRESENT-but-unpublished record means "residue ⇒ delete", and an unreadable current-run
+> record HALTS the sweep; (2) [CONVERGED] the R14 N18-mismatch promote rule was REVERSED-DANGEROUS
+> — a target mismatch means the N18 row belongs to the unique-key WINNER, so my "delete it" rule
+> let an attacker delete peers' legitimate deletions by forging a colliding ID and abandoning it;
+> now the scrub ONLY releases the stranded claim and NEVER touches the N18 row; (3) the
+> CONTROL_ID_COLLISION lifecycle is redesigned around a PRE-COMMIT id check (a forged colliding
+> tombstone is rejected before the irrevocable commit, target stays present) plus a durable
+> `collision` registry state that self-resolves to release (no membership, no balance delta — the
+> R14 retire_claim extension is withdrawn); (4) the retry/collision completion now VERIFIES
+> CommitSig (a corrupted CommitSig on a provably-own row is re-minted; N18 is never deleted until
+> the committed row fully verifies). This round: re-review end-to-end and answer Q1v16-Q5v16
+> (§14) — the record-before-copy sweep and the collision lifecycle especially. Q5v16 is the
+> explicit convergence gate.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -34,7 +34,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H13, the R1-R14 fold records, and questions Q1v15-Q5v15).
+   honest notes H1-H13, the R1-R15 fold records, and questions Q1v16-Q5v16).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -44,10 +44,9 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v15-Q5v15 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the N17 sweep/version-floor + PublishedSig
-(N17/N10), the deleted R2 main-ledger race-loser rule (§8/§6), and the archive row `SnapshotVersion`
-carried since C1 (§1). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v16-Q5v16 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the N17 record-before-copy sweep (N17/N10), the
+N18 unique-key ownership (§8/§6), and the registry `collision` state + pre-commit check (§4/§8). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
