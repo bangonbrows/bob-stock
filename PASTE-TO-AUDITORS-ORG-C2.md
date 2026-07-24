@@ -1,28 +1,26 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R7
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R8
 
-> ## ROUND 7 — re-review after the round-6 folds
-> Round-6 verdicts: one reviewer PASS ("ready for implementation"; its one fidelity-hash note was
-> REFUTED with evidence — no stored hash field exists, hashes are per-run transient values
-> compared before publish/delete; the real adjacent requirement folded via the other reviewer's
-> finding 5) · one reviewer BLOCK×5, ALL REAL, all folded (the design doc's **R6 fold record
-> table**). Convergence requires both passing the same revision, so this round goes to both.
-> The R6 folds: (1) retirement gains a PRE-P6 VISIBILITY WITHDRAWAL (the tombstone row is marked
-> `retiring` and excluded from pulls before anything commits — reversible, evidence-preserving)
-> AND a P7 HEALING TOUCH (a no-op Modified bump on the restored target row: pulls are
-> modified-since cursors, so every device that ever applied the deletion re-receives and
-> re-merges the target — closing the P6→P7 crash window AND all pre-existing device divergence);
-> (2) the NULL-HEAD lane is now fully normative: two new delta cells (null→replace, null→delete —
-> the converged +10→+8 repro is now DERIVED from the table), the explicit-null expected tuple,
-> and the registry WITHDRAWN FORM with pending_supersede restore (§4/§5 P4/request contract);
-> (3) UNIT-MOVE archival (E1 v3): an ensemble archives as a unit keyed on the TARGET alone
-> passing the FULL archive predicate (id + retention); its control/tombstone rows move in the
-> same run regardless of their own ids/timestamps (they are never client-covering-relevant) — the
-> cutoff clamp is DELETED, which closes BOTH the retainAfterTs pair-split repro and the
-> unbounded-retention-under-repeated-supersedes repro; (4) the archive SELECT/copy/re-read/
-> fidelity-hash canonical carries the FULL N7 control form (versioned, fails closed BEFORE the
-> live delete); (5) the stale R4 permanent-exclusion sentence in §5 P4 is gone. This round:
-> re-review end-to-end and answer Q1v7-Q5v7 (§14) — the healing-touch delivery semantics and the
-> unit-move consumer sweep especially. Q5v7 is the explicit convergence gate.
+> ## ROUND 8 — re-review after the round-7 folds
+> Round-7 verdicts: one reviewer PASS (explicit all-clear on the closure gate) · one reviewer
+> BLOCK×4, ALL REAL, all folded (the design doc's **R7 fold record table**) + 1 typed-canonical
+> build pin. Both reviewers must pass the same revision, so this round goes to both. The
+> heaviest R7 correction is an ENGINEER-PREMISE REFUTATION: the R6 "healing touch" claimed pulls
+> are modified-since — they are an immutable SharePoint-ID cursor (sync.js:1823), so the touch
+> could never re-deliver an old-ID or archived row. It is DELETED, not patched: retirement now
+> honestly restores SERVER truth only, device-side restoration is explicitly deferred to the
+> banked H7 re-delivery lane, and the response surfaces `deviceRestorationPending` to the
+> Director (§5b, H13 — trial-data lane per D-C2-2). The other R7 folds: (1) the N13 tombstone
+> filter is now an explicit ALLOWLIST (null-legacy + committed-with-valid-CommitSig delivered;
+> pending/retiring/unknown excluded BY CONSTRUCTION — the §5b/N13 spec drift both halves closed);
+> (2) the §8 device retry gains a TERMINAL ADJUDICATED branch — a lost-ack retry against a
+> retired/withdrawn claim (ControlId null) answers `superseded_by_adjudication` terminally,
+> never inserts or loops; (3) the archive run gains a TOMBSTONE AUTHORITY GATE — it refuses
+> (transiently) while any pending/retiring tombstone is in its input and batch-verifies committed
+> CommitSigs before compute, so D8-7 economics only ever see adjudicated tombstones (closing the
+> losing-tombstone balance-divergence repro); (4) the versioned hash canonical uses TYPED values
+> (0 vs null vs absent distinct). This round: re-review end-to-end and answer Q1v8-Q5v8 (§14) —
+> the allowlist matrix and the authority-gate interleavings especially. Q5v8 is the explicit
+> convergence gate.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -35,7 +33,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H13, the R1-R6 fold records, and questions Q1v7-Q5v7).
+   honest notes H1-H13, the R1-R7 fold records, and questions Q1v8-Q5v8).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -45,7 +43,7 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v7-Q5v7 explicitly. If a decision contradicts a frozen SR
+and the push-path tombstone claim. Answer Q1v8-Q5v8 explicitly. If a decision contradicts a frozen SR
 pin, cite the pin. Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734

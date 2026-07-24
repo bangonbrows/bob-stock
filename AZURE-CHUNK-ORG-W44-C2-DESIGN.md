@@ -1,15 +1,16 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R7 (R6 verdicts: AGY PASS ("ready for implementation") + 1 note
-REFUTED with evidence (no stored fidelity-hash field exists — hashes are per-run transient,
-snapshotCompute.js:153 / archive-def:467) · Codex BLOCK×5 ALL REAL + 1 stale-sentence note. Folds
-below: retirement gains a pre-P6 VISIBILITY WITHDRAWAL + a P7 target-row TOUCH that heals ALL
-divergent devices; the null-head→new-control cells + expected tuple + registry withdrawn form
-PINNED; paired archival v3 = UNIT-MOVE keyed on the TARGET's own full eligibility (kills both the
-retainAfterTs pair-split AND the unbounded-retention-under-repeated-corrections finding); the
-archive copy/reread/hash canonical extended to the full N7 control form. R5: 4 REAL folded (both
-R4 mechanisms redesigned). R4: 8 REAL. R3: AGY PASS · Codex×5. R2: 10. R1: 12. Nothing built,
-nothing deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
+**Status: 🔍 SCOPE REVIEW R8 (R7 verdicts: AGY PASS (clean, explicit all-clear on Q5v7) · Codex
+BLOCK×4 ALL REAL + 1 typed-canonical build pin. The R6 HEALING TOUCH is DELETED — its premise was
+factually wrong (pulls are an immutable SharePoint-ID cursor, sync.js:1823 `ID gt lastId`, NOT
+modified-since; archived targets unreachable regardless): device-side restoration after a
+retirement is now HONESTLY DEFERRED to the banked H7 re-delivery lane, surfaced in the response.
+Other folds: the N13 tombstone ALLOWLIST (legacy-null + committed only — pending/retiring/unknown
+excluded by construction); the §8 terminal ADJUDICATED branch for device retries against a
+retired claim; the archive-run TOMBSTONE AUTHORITY GATE (refuse while any non-adjudicated
+tombstone is in the input; committed ones batch-verified). R6: Codex×5 folded, AGY note refuted.
+R5: 4 folded. R4: 8. R3: Codex×5. R2: 10. R1: 12. Nothing built, nothing deployed. D-C2-1..3
+LOCKED by Kunal 2026-07-23 — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -161,6 +162,25 @@ empty-set, retry healing, transient-export adjudication.
 
 ---
 
+## R7 fold record (2026-07-24) — AGY PASS (explicit all-clear) · Codex BLOCK×4 all REAL + 1 build pin
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R7-1 | §5b ASSUMED the N13 filter excludes `retiring`, but N13's normative row excluded only `pending` — an implementation following its own inventory would keep delivering a retiring tombstone (valid CommitSig!) after P6 restored the target (Codex 1) | REAL — spec drift between §5b and N13 | N13 v3 = an explicit ALLOWLIST, not a blocklist: `Type='deleted'` rows are delivered ONLY when ControlState is null-legacy (AND live-coordinate provenance < `tombstoneCommitEpochId`) or `'committed'` (AND batch CommitSig verifies). `pending`, `retiring`, and EVERY unknown/future value are excluded BY CONSTRUCTION. Real-list OData null semantics + the full allowlist matrix = the N13 build proof |
+| C2-R7-2 | The R6 HEALING TOUCH cannot work: pulls are an immutable SharePoint-ID cursor (`ID gt lastId` — sync.js:1823/1881, pull-v2 props :107), NOT modified-since — a Modified bump on an old-ID row is NEVER re-delivered; and an ARCHIVED restored target is outside the live-list pull entirely (Codex 2) | REAL — engineer's R6 premise refuted by the client code; verified sync.js:1823 | THE HEALING TOUCH IS DELETED. Honest scope pin (§5b + H13): retirement restores SERVER truth (settlement, balances, manifest — all correct and coherent); DEVICE-side restoration is explicitly DEFERRED to the banked H7 re-delivery lane — a device that had applied the retired deletion understates that product locally until that lane ships (or a fresh re-sync). The retirement response carries `deviceRestorationPending: true` + the affected target so the Director KNOWS. Consistent with D-C2-2: legacy tombstones are trial-data lanes; at go-live the case vanishes |
+| C2-R7-3 | The withdrawn registry form breaks the §8 own-committed device retry: a lost-ack device retries its tombstone AFTER a Director retires it — the retained OpId classifies it as OWN, but ControlId is null and the row is quarantined, so the mandatory row-exists+CommitSig check can never pass ⇒ infinite retry (or worse, an implementation recreates the retired deletion) (Codex 3) | REAL — the R6 withdrawn form and the R4 retry-healer rule compose into a dead end | §8 gains the TERMINAL ADJUDICATED BRANCH: own-claim match (OpId) whose registry item is in the WITHDRAWN form (ControlId null) ⇒ the operation was adjudicated by a Director — answer the push TERMINALLY (`ok`, status `superseded_by_adjudication`, surfaced in the response); NEVER insert, recreate, or re-mark the tombstone. The device's queue drains; nothing resurfaces |
+| C2-R7-4 | Unit-move can fold a LOSING/PROVISIONAL tombstone into balances: snapshotCompute's D8-7 treats EVERY `Type='deleted'` input row as effective regardless of ControlState — a stalled writer's pending tombstone (crashed before foreign-CAS compensation) in an archive run's input excludes its target from balances while the manifest says the target is PRESENT ⇒ permanent balances/settlement divergence after the scrub quarantines it (Codex 4) | REAL — snapshotCompute.js:79 collects tombstones with no authority check | THE TOMBSTONE AUTHORITY GATE (N10): the archive run REFUSES to proceed (409, retry later) while ANY tombstone in its input universe is in a NON-ADJUDICATED state (`pending`/`retiring`) — the TTL scrubs drive those terminal quickly, so the refusal is transient; `committed` tombstones are BATCH-VERIFIED via attestRows before compute (an invalid CommitSig ⇒ refuse + surface, tampering); legacy-null ones pass by the epoch rule. D8-7 economics therefore only ever see ADJUDICATED tombstones. Mirrors the existing refuse-while-journal-non-terminal posture |
+| C2-R7-5 | (Codex Q4v7 build reservation) the extended hash canonical must distinguish numeric `ControlRevision: 0` from missing/null — JSON framing alone doesn't guarantee it | Fair — typed-encoding pin | N10/N11: the versioned canonical encodes TYPED values (JSON-typed number/null/absent distinct — `0`, `null`, and field-absent are three different canonical encodings); the N12 drop-each-field proof gains 0-vs-null-vs-absent cases |
+
+**Q1v7-Q5v7 outcomes:** Q1v7 NO (→ C2-R7-1/-2); Q2v7 arithmetic + crash mechanics CONFIRMED
+consistent by both — the device-retry consumer was the gap (→ C2-R7-3); Q3v7 target-keyed
+retention + boundedness + SourceId>cutoff covering CONFIRMED sound by both (→ C2-R7-4 for the
+provisional-tombstone economics); Q4v7 YES at design level (→ C2-R7-5 typed-canonical pin); Q5v7
+AGY explicit NO-on-all-paths / Codex not yet (findings above). Codex re-affirmed the R6
+fidelity-hash refutation.
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -219,10 +239,10 @@ all client UI (runner scripts prove the route, as C1 did).
 | N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text), `ControlState` (device-tombstone staged visibility, §8 — C2-R3-2), `CommitSig` (the ctlcommit-v1 visibility AUTHORITY — C2-R4-5). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a) |
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
-| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed, the C1 carry precedent — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
+| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); record each run's INPUT-HORIZON marker (max live-list item id of the input universe — the C2-R3-3 adoption-delta decider); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5 — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); the TOMBSTONE AUTHORITY GATE (C2-R7-4): the run REFUSES (409, transient — TTL scrubs drive states terminal) while ANY tombstone in its input universe is `pending`/`retiring`, and BATCH-VERIFIES committed tombstones' CommitSigs via attestRows before compute (invalid ⇒ refuse + surface) — D8-7 economics only ever see ADJUDICATED tombstones; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
 | N11 | attestRows new frames | EXTEND the C1 route with THREE canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
-| N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS excludes `ControlState='pending'` tombstones (staged visibility, §8/C2-R3-2; OData null/`ne` semantics = a build-proof item) — PLUS delivers `Type='deleted'` rows only after BATCH-VERIFYING their `CommitSig` via attestRows (invalid/absent ⇒ withheld + surfaced; legacy lane: provenance < `tombstoneCommitEpochId` delivers seal-free — C2-R4-5) — ⚠ flagged scoped amendment |
+| N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS the tombstone ALLOWLIST (C2-R7-1, replacing the R3 pending-blocklist): `Type='deleted'` rows are delivered ONLY when ControlState is null-legacy (AND live-coordinate provenance < `tombstoneCommitEpochId`) or `'committed'` (AND CommitSig batch-verifies via attestRows); `pending`, `retiring`, and every unknown/future value are EXCLUDED BY CONSTRUCTION (invalid/absent sig ⇒ withheld + surfaced — C2-R4-5). Build proof: real-list OData null semantics + the full allowlist matrix — ⚠ flagged scoped amendment |
 | N14 | buybackExport.js additive export | `foldProjection` exported (exports-only change to the frozen engine file, `reqId` precedent) — ⚠ flagged for the return re-audit |
 | N15 | LA-CHANGES §1 amendment note | Topology snapshot writes join the coordination discipline (C2-R1-7) — ⚠ flagged scoped spec amendment |
 | N16 | Seal-epoch artifact | ONE `AppConfig_Staging` item `ConfigType='seal_epoch'` `{epochId, tombstoneCommitEpochId, recordedAt, EpochSig}` (C2-R3-4 revised by C2-R4-3/-5/-7): `epochId` = the LIVE list's first-sealed item id (the ONLY epoch — all provenance is live-coordinate; the R3 `archiveEpochId` is deleted); `tombstoneCommitEpochId` recorded at the N9 apply (the CommitSig legacy boundary); `EpochSig` = an `epoch-v1` attestRows seal over the values, verified on EVERY read (fail ⇒ `EPOCH_TAMPERED`). Derivation: PRODUCTION — recorded exactly at the D-C2-2 cutover (fresh lists, epoch = first item id); STAGING — backfill runner derives best-effort, recorded with method + Kunal attestation (H11). ACCEPTANCE (Codex Q2v5): `tombstoneCommitEpochId` must be INSTALLED BEFORE the N9 push amendment accepts its first protocol row — ordering build-proven |
@@ -511,11 +531,14 @@ registry → the WITHDRAWN form (§4; Revision advanced, prior state saved; roll
 filter stops delivering it from this moment; REVERSIBLE (rollback restores the prior value) and
 evidence-preserving (seal/provenance fields untouched — the C2-R5-3 property holds)**. P6
 publishes manifest null head + normalized balances — THE COMMIT POINT. P7 QUARANTINES the
-tombstone row (identity + list recorded in the journal; idempotent; completed by roll-forward),
-**TOUCHES the restored target row (C2-R6-1b — a no-op Modified bump: pulls are modified-since
-cursors, so every device re-receives the target on its next pull and re-merges it if it had
-applied the deletion, WHENEVER that happened — the healing touch closes both the P6→P7 crash
-window and all pre-existing device divergence)**, and terminalizes. Retirement is a FIRST PUBLICATION under the §5 P4 law — the ensemble leaves it
+tombstone row (identity + list recorded in the journal; idempotent; completed by roll-forward)
+and terminalizes. **Device-side scope (C2-R7-2 — the R6 "healing touch" is DELETED; its premise
+was wrong: pulls are an immutable ID cursor, sync.js:1823, so no touch can re-deliver an old-ID
+or archived row):** retirement restores SERVER truth — settlement, balances, and manifest are
+correct and coherent; a device that had APPLIED the retired deletion locally understates that
+product until the banked H7 re-delivery lane ships (or it re-syncs fresh). The retirement
+response carries `deviceRestorationPending: true` + the affected target id so the Director knows
+(H13). Per D-C2-2 this is a trial-data defence-in-depth lane; it vanishes at go-live. Retirement is a FIRST PUBLICATION under the §5 P4 law — the ensemble leaves it
 normalized; the subsequent correction lane is SUPERSEDE against the null-head state
 (expected-revision CAS, identical to re-correcting any withdrawn target — create still rejects on
 the existing registry item). **Zero eligible tombstones ⇒ terminal no-op
@@ -624,12 +647,16 @@ balances (D8-7).
 For each validated `Type='deleted'` row (STAGED VISIBILITY protocol, C2-R2-4/-5/-6 + C2-R3-2):
 (1) registry CREATE `pending(owner=deviceId, opId=<tombstone TransactionId>, TtlAt)`; on conflict,
 read the item — `OpId` OR `ControlId` equal to this tombstone's id ⇒ OWN claim (C2-R2-6 belt:
-committed items retain OpId, §4), re-enter: if still pending, proceed; **if already committed, the
-re-entry FIRST verifies the ledger row exists with `ControlState='committed'` + a valid
-`CommitSig`, completing the visibility MERGE + seal mint itself if the prior attempt crashed
-mid-way (C2-R4-4 — the retry is the primary healer, the scrub is the belt), and only then answers
-via the normal dedup path**; foreign ⇒ divert the row to `StockTransactions_Quarantine`
-(`CONTROL_TARGET_RESERVED`, surfaced in the push response, never silently dropped). (2) **Pre-insert ownership fence (C2-R2-5):** IMMEDIATELY before attest+insert,
+committed items retain OpId, §4), re-enter: if still pending, proceed; **if committed with a
+non-null ControlId, the re-entry FIRST verifies the ledger row exists with
+`ControlState='committed'` + a valid `CommitSig`, completing the visibility MERGE + seal mint
+itself if the prior attempt crashed mid-way (C2-R4-4 — the retry is the primary healer, the scrub
+is the belt), and only then answers via the normal dedup path; if the item is in the WITHDRAWN
+form (ControlId NULL — a Director retired/withdrew this claim, §4) ⇒ the TERMINAL ADJUDICATED
+BRANCH (C2-R7-3): answer `ok` with status `superseded_by_adjudication`, surfaced — NEVER insert,
+recreate, or re-mark the tombstone; the device's queue drains**; foreign ⇒ divert the row to
+`StockTransactions_Quarantine` (`CONTROL_TARGET_RESERVED`, surfaced in the push response, never
+silently dropped). (2) **Pre-insert ownership fence (C2-R2-5):** IMMEDIATELY before attest+insert,
 re-read the registry item, assert it is still THIS tombstone's own live pending claim (own OpId,
 unexpired), and RE-STAMP `TtlAt` (ETag CAS — a fresh TTL so the scrub cannot expire the claim
 under a normally-paced insert). Absent / foreign / expired ⇒ quarantine divert, never insert. Then
@@ -724,15 +751,20 @@ across archive cycles containing corrections — the Codex R5-3 client-divergenc
 C2-R5-4); and the N9-ordering acceptance probe (tombstoneCommitEpochId installed before the first
 protocol row). R6 additions: the visibility-withdrawal matrix (retiring tombstone excluded from
 pull from P5 on; rollback restores delivery; the Codex R6-1 crash-window repro ⇒ no device can
-apply a retired deletion post-P6, C2-R6-1a); the HEALING-TOUCH probe (a device that applied the
-deletion re-receives the target after P7 via the modified-since cursor and re-merges it,
-C2-R6-1b); null-head cell derivations (the R5/R6 converged repro DERIVED from the table; withdraw-
+apply a retired deletion post-P6, C2-R6-1a; the R6 healing-touch probe is DELETED with its
+mechanism — C2-R7-2); null-head cell derivations (the R5/R6 converged repro DERIVED from the table; withdraw-
 then-recorrect and retire-then-correct through the pinned expected tuple + pending_supersede
 restore, C2-R6-2); unit-move probes (a fresh control row moves with its old target in one run —
 the retainAfterTs split repro; REPEATED supersedes never defer the move — the unbounded-retention
 repro; cutoff advances normally, C2-R6-3); and the archive round-trip control-form probe (every N7
 field carried + re-read + hashed; a copy dropping any one ⇒ hash break BEFORE live delete,
-C2-R6-4).
+C2-R6-4). R7 additions: the N13 ALLOWLIST matrix (null-legacy delivered; committed+valid-sig
+delivered; pending/retiring/unknown/invalid-sig withheld — every cell, on the real staging list,
+C2-R7-1); the lost-ack-then-retired device retry ⇒ terminal `superseded_by_adjudication`, no
+insert/recreate (C2-R7-3); the AUTHORITY-GATE matrix (run refuses on pending/retiring input
+tombstones; resumes after scrub; invalid committed sig ⇒ refuse+surface; the Codex R7-4
+losing-tombstone repro verbatim ⇒ balances never diverge, C2-R7-4); and the typed-canonical
+0-vs-null-vs-absent cases (C2-R7-5).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -783,39 +815,42 @@ C2-R6-4).
   run. Snapshot balances, client stock counts, and settlements can never disagree about a
   corrected row: the archiver folds the corrected (effective) value, and no row below a published
   cutoff is ever excluded from it.
-- **H13 (C2-R6-1):** when a Director retires a legacy deletion, every device that had applied
-  that deletion automatically re-receives the restored row on its next sync (the healing touch).
-  Between the retirement and that next sync, such a device briefly understates that one product —
-  self-healing, no action needed. Separately, a device that never pulled a committed deletion
-  before its target archived keeps a display-level ghost of the deleted row in old lists (stock
-  totals and settlements are correct via the snapshot); the banked device re-delivery lane (H7)
-  cleans this up when it ships.
+- **H13 (Kunal-visible, C2-R6-1 revised by C2-R7-2):** when a Director retires a legacy deletion,
+  the SERVER is immediately correct everywhere (settlements, balances, exports). But any device
+  that had already applied that deletion keeps understating that one product locally until the
+  banked device re-delivery lane (H7) ships or the device re-syncs fresh — the sync protocol's
+  ID-cursor cannot re-deliver an old row, so there is no honest quick fix. The retirement
+  response tells the Director exactly this (`deviceRestorationPending`). Per D-C2-2 the whole
+  lane is trial-data defence-in-depth and vanishes at go-live. Separately, a device that never
+  pulled a committed deletion before its target archived keeps a display-level ghost of the
+  deleted row in old lists (stock totals and settlements are correct via the snapshot); the same
+  H7 lane cleans this up.
 
-## 14. Review questions (R7)
+## 14. Review questions (R8)
 
-- **Q1v7 (retirement visibility + healing):** C2-R6-1's two parts — (a) the P5 visibility
-  withdrawal: any interleaving where a device still receives the retiring tombstone after P6
-  commits, or where a ROLLED-BACK retirement leaves the tombstone permanently undelivered? (b)
-  the P7 healing touch: does the modified-since re-delivery re-merge the target on every divergent
-  device state (applied-then-removed, never-received, mid-sync)? Does the touch interact safely
-  with the seal (Modified uncovered), dedup, and the pull overlap logic?
-- **Q2v7 (null-head lane):** C2-R6-2's pins — are the two null-head cells consistent with the
-  general law? Is the withdrawn registry form + explicit-null expected tuple + pending_supersede
-  restore complete for every crash split of a supersede-from-null? Any consumer still assuming
-  `activeControlId` is non-null?
-- **Q3v7 (unit-move):** E1 v3 — verify the key claim: control/tombstone rows moving REGARDLESS of
-  their own ids/timestamps is safe for every consumer (client covering, D8-7 input-presence,
-  device dedup/lookback, the 5000-row archive query, provenance checks on SourceId > cutoff, the
-  engine's both-list reads). Repeated supersedes: genuinely bounded now? The retainAfterTs repro:
-  genuinely closed? Any NEW hole opened by deleting the cutoff clamp?
-- **Q4v7 (archive round-trip):** C2-R6-4 — is the full N7 control form in the SELECT, the copy
-  mapping, the re-read compare, AND the hash canonical, with a versioned extension that cannot
-  false-pass on a dropped field? Does the extension stay compatible with pre-C2 archived rows
-  (no control fields) — absence canonicalized, not conflated?
-- **Q5v7 (whole-design closure — the convergence gate):** with all R1-R6 folds in place: any
+- **Q1v8 (allowlist):** N13 v3 — walk the delivery matrix cell by cell against the real filter
+  semantics (null-legacy, committed+valid, committed+invalid, pending, retiring, unknown value,
+  legacy-null with provenance ≥ tombstoneCommitEpochId). Every non-adjudicated or non-authorized
+  state withheld? Any legitimate deletion a device can now never receive?
+- **Q2v8 (deferred device restoration):** the honest scope pin (§5b/H13) — given the ID-cursor
+  ground truth, is deferral to the H7 lane the correct posture (vs any mechanism we've missed
+  that could re-deliver an old-ID/archived row within the frozen client contract)? Is
+  `deviceRestorationPending` surfacing sufficient for the Director? Any INTEGRITY (not
+  display/local-count) consequence of the interim device understatement?
+- **Q3v8 (adjudicated retry):** C2-R7-3's terminal branch — walk lost-ack × retire/withdraw ×
+  retry orderings (retry before P6, between P6 and P7, after P7; multiple retries; a retry racing
+  the retirement's own state machine). Always exactly one terminal outcome, never an insert,
+  never an infinite loop?
+- **Q4v8 (authority gate):** C2-R7-4 — can any non-adjudicated or forged tombstone reach D8-7
+  economics under any interleaving (gate check → scrub → new push landing mid-run — is the input
+  universe re-checked under the run's own state)? Is the transient refusal genuinely bounded
+  (every pending/retiring state has a TTL-driven exit)? Does the gate compose with the
+  refuse-while-journal-non-terminal rule without deadlock?
+- **Q5v8 (whole-design closure — the convergence gate):** with all R1-R7 folds in place: any
   remaining path to a silently uncounted deletion, a mis-billed control, a permanently locked
-  target, a stranded coordination state, an invisible-forever legitimate deletion, a client/server
-  stock divergence, or a balances/settlement divergence? If no on all, say so explicitly.
+  target, a stranded coordination state, an invisible-forever legitimate deletion, an
+  UNSURFACED client/server stock divergence, or a balances/settlement divergence? If no on all,
+  say so explicitly.
 
 ## 15. Sequencing after convergence
 
