@@ -1,14 +1,15 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R9 (R8 verdicts: AGY PASS (second consecutive clean all-clear) · Codex
-BLOCK×4 ALL REAL. Folds below: `deviceRestorationPending` joins the NORMATIVE response contract
-(incl. stored-result replay); the §8 own-`pending_supersede` retry branch pinned (decide-by-read,
-never insert/quarantine); the N10 authority gate is now an ALLOWLIST like N13 (unknown states
-refuse + surface); and the INPUT-HORIZON marker is REPLACED by the INPUT TOMBSTONE-SET RECORD —
-a scalar max cannot prove prefix completeness under SharePoint's out-of-order ID visibility
-(sync.js:1837), so membership is now recorded directly per run. R7: Codex×4 folded (healing
-touch deleted). R6: Codex×5, AGY note refuted. R5: 4. R4: 8. R3: Codex×5. R2: 10. R1: 12.
-Nothing built, nothing deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
+**Status: 🔍 SCOPE REVIEW R10 (R9 verdicts: AGY PASS (THIRD consecutive all-clear) · Codex
+BLOCK×4 ALL REAL. Folds below: the tombstone-set record gets its DURABLE ARTIFACT (N17
+`archive_run_record`, sealed, same-input construction, record-before-publish, empty≠absent); the
+`committed × row-absent` dispatch cell pinned fail-closed (`CONTROL_ROW_MISSING`, terminal,
+surfaced + a retire_claim absent-row evidence lane); own-identity RETENTION during
+`pending_supersede` pinned (top-level + PriorCommitted belt); and the device-divergence warning
+GENERALIZED — `deviceConvergencePending` rides EVERY mode whose effective result devices cannot
+reconstruct (not just retirement). R8: Codex×4 folded. R7: Codex×4 (healing touch deleted).
+R6: Codex×5, AGY note refuted. R5: 4. R4: 8. R3: Codex×5. R2: 10. R1: 12. Nothing built, nothing
+deployed. D-C2-1..3 LOCKED by Kunal 2026-07-23 — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -197,6 +198,25 @@ NO-on-all-paths (2nd consecutive) / Codex not yet (findings above).
 
 ---
 
+## R9 fold record (2026-07-24) — AGY PASS (3rd consecutive) · Codex BLOCK×4 all REAL
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R9-1 | The tombstone-set record was required conceptually but had NO durable artifact: no schema, no immutable run key, no digest, no write-ordering vs publication, no empty-vs-absent semantics — and the existing archive contract persists only a transient runId (Codex 1) | REAL — same class as the R4 seal-epoch finding: a named mechanism with no defined home | **N17 `archive_run_record`:** one `AppConfig_Staging` item PER archive run — `{ConfigType:'archive_run_record', RunId (immutable key), SnapshotVersion, TombstoneIds:[live-coordinate ids], RecordSig}`; `RecordSig` = a `runrec-v1` attestRows seal over the values (N11 frame #4), verified on every read (fail ⇒ the membership decision is `..._UNDECIDABLE`, fail-closed). CONSTRUCTION: built from the EXACT `rows` array passed to snapshotCompute — the same input the fold evaluated, never a re-read (the late-visibility gap Codex named cannot open). ORDERING: record written + durable BEFORE the snapshot publication (record-then-publish); a published snapshot whose run record is absent ⇒ membership UNDECIDABLE (fail-closed manual); a record for a run that never published is a harmless orphan (membership is keyed by the TARGET's `ArchiveRunId`, which only a published run's rows carry). `TombstoneIds: []` is a VALID empty set; an ABSENT record (pre-C2 runs) is UNDECIDABLE — never conflated. Retention indefinite (tiny, rare) |
+| C2-R9-2 | `committed(non-null)` × ledger row ABSENT had no dispatch outcome — implementations could return false success, loop forever, or RECREATE a row whose disappearance was quarantine/tampering (Codex 2) | REAL — the one uncovered cell in the own-claim matrix | §8: own-committed with the ledger row absent from BOTH lists AND quarantine (full enumeration) ⇒ **`CONTROL_ROW_MISSING`** — fail-closed, TERMINAL for the device (stop retrying), loudly surfaced for Director investigation; NEVER reconstruct (no evidence a resurrection is legitimate). Reconcile gains the matching anomaly sweep (same surfacing). Director remedy: retire_claim's gate gains the ABSENT-ROW EVIDENCE LANE — legal against a committed claim whose row is provably absent everywhere (the journaled enumeration IS the evidence; the membership rule still decides the balance delta; undecidable ⇒ manual) |
+| C2-R9-3 | The R8 own-pending_supersede branch may be UNREACHABLE: supersede stores the prior identity in `PriorCommitted`, and nothing required the top-level `OpId`/`ControlId` to survive — a legitimate retry could fail the own test and be QUARANTINED (Codex 3) | REAL — identity retention was assumed, not pinned | §4: during `pending_supersede` over a device-origin claim, the TOP-LEVEL `OpId` and `ControlId` RETAIN the prior committed identity (the Director op's identity lives in `Owner`/`JournalId`); §8's own matcher ALSO inspects `PriorCommitted.OpId/ControlId` (belt — reachability holds even against a nonconforming write) |
+| C2-R9-4 | The divergence warning was retirement-only, but withdraw and supersede of an ADOPTED device deletion create the SAME unsurfaced divergence (server restores/replaces the target; devices keep the applied deletion) — and Director corrections generally change effective stock devices never see (Codex 4) | REAL — the R8 fix covered one member of the family | GENERALIZED (§5 response + H13): **`deviceConvergencePending: true` + `affectedTarget`** ride EVERY mode whose published effective result devices cannot locally reconstruct: retire_claim, withdraw-of-adopted-deletion, supersede-of-adopted-deletion, and ALL Director create/supersede corrections (H7: devices never receive control rows). Stored in the journal result, carried on terminal replay, set by any recovering worker. ADOPT alone is exempt WITH PINNED REASONING: the adopted tombstone was already device-delivered and applied — adoption changes no device-visible state and introduces no NEW divergence. `deviceRestorationPending` is renamed into this one field (one vocabulary, no per-mode drift) |
+
+**Q1v9-Q5v9 outcomes:** Q1v9 retire-path warning CONFIRMED on all four delivery paths by both —
+the mode-family generalization was the gap (→ C2-R9-4); Q2v9 → C2-R9-2/-3 (the two uncovered
+cells); Q3v9 the set-membership CONCEPT confirmed correct by both (incl. all three repro variants)
+— the artifact contract was the gap (→ C2-R9-1); Q4v9 YES both: N10/N13 allowlist parity
+CONFIRMED, no blocklist consumers remain — closed; Q5v9 AGY explicit NO-on-all-paths (3rd
+consecutive) / Codex not yet (findings above). Codex confirmed: the scalar-horizon replacement is
+sound once the record is properly defined.
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -256,11 +276,12 @@ all client UI (runner scripts prove the route, as C1 did).
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
 | N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); persist each run's INPUT TOMBSTONE-SET RECORD (the EXACT set of tombstone live-coordinate ids present in the run's input universe, small JSON under the run's integrity machinery — the adoption/retirement membership decider, C2-R3-3 revised by C2-R8-4: the R3 scalar max-id horizon could not prove prefix completeness under SharePoint's out-of-order ID visibility, sync.js:1837); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5 — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); the TOMBSTONE AUTHORITY GATE — an ALLOWLIST like N13 (C2-R7-4 + C2-R8-3): ONLY qualifying legacy-null (provenance < `tombstoneCommitEpochId`) or committed-with-valid-CommitSig tombstones ENTER compute (committed sigs batch-verified via attestRows pre-compute); EVERY other value — `pending`, `retiring`, unknown/future states, invalid sigs, post-epoch nulls — ⇒ the run REFUSES + surfaces (409, transient for pending/retiring — TTL scrubs drive them terminal; permanent + loud for tampering) — D8-7 economics only ever see ADJUDICATED tombstones; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
-| N11 | attestRows new frames | EXTEND the C1 route with THREE canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7) — ⚠ scoped amendment to the C1-audited function, flagged |
+| N11 | attestRows new frames | EXTEND the C1 route with FOUR canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7), `runrec-v1` (archive run records, N17/C2-R9-1) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
 | N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS the tombstone ALLOWLIST (C2-R7-1, replacing the R3 pending-blocklist): `Type='deleted'` rows are delivered ONLY when ControlState is null-legacy (AND live-coordinate provenance < `tombstoneCommitEpochId`) or `'committed'` (AND CommitSig batch-verifies via attestRows); `pending`, `retiring`, and every unknown/future value are EXCLUDED BY CONSTRUCTION (invalid/absent sig ⇒ withheld + surfaced — C2-R4-5). Build proof: real-list OData null semantics + the full allowlist matrix — ⚠ flagged scoped amendment |
 | N14 | buybackExport.js additive export | `foldProjection` exported (exports-only change to the frozen engine file, `reqId` precedent) — ⚠ flagged for the return re-audit |
 | N15 | LA-CHANGES §1 amendment note | Topology snapshot writes join the coordination discipline (C2-R1-7) — ⚠ flagged scoped spec amendment |
+| N17 | Archive run records | ONE `AppConfig_Staging` item PER archive run: `{ConfigType:'archive_run_record', RunId (immutable key), SnapshotVersion, TombstoneIds (live-coordinate ids, [] = valid empty set), RecordSig ('runrec-v1')}` — built from the EXACT snapshotCompute input array (never a re-read), written + durable BEFORE snapshot publication, verified on every read (sig fail / absent ⇒ membership UNDECIDABLE fail-closed; orphan records from unpublished runs harmless — membership keys on the target's ArchiveRunId), retention indefinite (C2-R9-1) |
 | N16 | Seal-epoch artifact | ONE `AppConfig_Staging` item `ConfigType='seal_epoch'` `{epochId, tombstoneCommitEpochId, recordedAt, EpochSig}` (C2-R3-4 revised by C2-R4-3/-5/-7): `epochId` = the LIVE list's first-sealed item id (the ONLY epoch — all provenance is live-coordinate; the R3 `archiveEpochId` is deleted); `tombstoneCommitEpochId` recorded at the N9 apply (the CommitSig legacy boundary); `EpochSig` = an `epoch-v1` attestRows seal over the values, verified on EVERY read (fail ⇒ `EPOCH_TAMPERED`). Derivation: PRODUCTION — recorded exactly at the D-C2-2 cutover (fresh lists, epoch = first item id); STAGING — backfill runner derives best-effort, recorded with method + Kunal attestation (H11). ACCEPTANCE (Codex Q2v5): `tombstoneCommitEpochId` must be INSTALLED BEFORE the N9 push amendment accepts its first protocol row — ordering build-proven |
 
 ## 3. The coordination record — five-state machine (SR-137/140 + C2-R1-1/-9)
@@ -344,6 +365,11 @@ the in-snapshot decision a first-publication-only input, journaled in `AdoptionD
 by nothing afterwards. A committed-unadopted claim whose tombstone row fails seal validation with
 pre-epoch provenance is retirable via `mode:'retire_claim'` — C2-R4-8, §5b.)
 
+**Identity retention during `pending_supersede` (C2-R9-3):** over a device-origin claim, the
+TOP-LEVEL `OpId` and `ControlId` RETAIN the prior committed identity (the Director op's identity
+lives in `Owner`/`JournalId`); §8's own matcher ALSO inspects `PriorCommitted.OpId/ControlId` as
+a belt, so the own-pending_supersede branch is reachable even against a nonconforming write.
+
 **The WITHDRAWN FORM (C2-R6-2)** — the registry state after withdraw OR retirement:
 `committed(ControlId: null, Revision: advanced, PublicationVersion: the withdrawing/retiring
 publication, OpId retained for device-origin)`. The manifest carries the explicit-null head; the
@@ -395,10 +421,15 @@ mechanics for withdraw-then-recorrect and retire-then-correct.
   } }                                                               // stamps/instants NEVER accepted
 ```
 
-Response: `{ ok:true, controlId, revision, publicationVersion, deviceRestorationPending?: true,
-affectedTarget?: <targetTransactionId> }` | `{ ok:false, reason, detail? }` — the retirement
-fields (C2-R8-1) are set on `retire_claim` success, stored in the journal's result, and carried
-by terminal-opId REPLAY, so the Director warning survives lost responses.
+Response: `{ ok:true, controlId, revision, publicationVersion, deviceConvergencePending?: true,
+affectedTarget?: <targetTransactionId> }` | `{ ok:false, reason, detail? }` — the convergence
+fields (C2-R8-1, GENERALIZED by C2-R9-4) are set on EVERY mode whose published effective result
+devices cannot locally reconstruct: retire_claim, withdraw-of-adopted-deletion,
+supersede-of-adopted-deletion, and all Director create/supersede corrections (H7: devices never
+receive control rows). ADOPT alone is exempt — the adopted tombstone was already device-delivered
+and applied, so adoption changes no device-visible state. Stored in the journal's result, carried
+by terminal-opId REPLAY, set identically by any recovering worker — the warning survives lost
+responses and foreign-worker recovery.
 Terminal-opId replay returns the stored result; digest mismatch under a reused opId ⇒ `OPID_REUSED`
 (digest = JSON-array-framed canonical of mode + target + expected + control payload + actorUsername).
 
@@ -526,7 +557,7 @@ VALID seal (an unsealed/broken claimed tombstone is surfaced + skipped, fail clo
 PRE-EPOCH one is retirable via `mode:'retire_claim'` below, after which the normal create/adopt
 lanes open; a POST-epoch one is tampering and stays locked, loudly). **Balance delta PER TOMBSTONE
 by snapshot-representation (C2-R3-3 + C2-R4-2/-6):** LIVE target ⇒ 0 (never in balances); ARCHIVED
-target ⇒ decided by THE MEMBERSHIP RULE (N10's input tombstone-set record, C2-R8-4): the
+target ⇒ decided by THE MEMBERSHIP RULE (the N17 `archive_run_record`, C2-R8-4/C2-R9-1): the
 tombstone's **LIVE-LIST provenance id** (live row ⇒ `_spId`, archived row ⇒ `SourceId` — NEVER an
 archive-list item id, the coordinate both R4 reviewers caught; absent ⇒ undecidable) **∈ the
 target's archiving run's recorded set** ⇒ snapshotCompute already excluded the target ⇒ 0; ∉ the
@@ -540,6 +571,10 @@ PUBLICATION):** Director-sudo; legal ONLY against a committed-unadopted registry
 tombstone row FAILS seal validation AND has live-coordinate provenance < `epochId` (genuine pre-C1
 legacy; post-epoch unsealed = tampering, stays locked loudly). Mode gate + evidence validation at
 P3 (NO mutation before P6, so every pre-commit crash leaves the gate's evidence intact — C2-R5-3).
+The gate accepts TWO evidence forms: (a) the tombstone row FAILS seal validation with pre-epoch
+provenance (the original lane); (b) the ABSENT-ROW EVIDENCE LANE (C2-R9-2) — a committed claim
+whose row is provably absent from both lists AND quarantine (the journaled full enumeration IS
+the evidence; the membership rule still decides the balance delta; undecidable ⇒ manual).
 P4 builds `CandidateHeads = {target: explicit null}` (the withdraw form: adjudicated, no active
 control, target PRESENT — non-empty, so P5.1 and the §6 per-entry recovery decision work
 unchanged, C2-R5-2) plus the NORMALIZING delta via the same MEMBERSHIP rule applied to the RETIRED
@@ -557,7 +592,7 @@ was wrong: pulls are an immutable ID cursor, sync.js:1823, so no touch can re-de
 or archived row):** retirement restores SERVER truth — settlement, balances, and manifest are
 correct and coherent; a device that had APPLIED the retired deletion locally understates that
 product until the banked H7 re-delivery lane ships (or it re-syncs fresh). The retirement
-response carries `deviceRestorationPending: true` + the affected target id so the Director knows
+response carries `deviceConvergencePending: true` + the affected target id so the Director knows
 (H13). Per D-C2-2 this is a trial-data defence-in-depth lane; it vanishes at go-live. Retirement is a FIRST PUBLICATION under the §5 P4 law — the ensemble leaves it
 normalized; the subsequent correction lane is SUPERSEDE against the null-head state
 (expected-revision CAS, identical to re-correcting any withdrawn target — create still rejects on
@@ -604,7 +639,10 @@ mutating act = the FENCE write):
   item is committed to a DIFFERENT ControlId ⇒ the row is quarantined — it lost the race (C2-R2-5
   belt); a durable `pending`-marked tombstone with NO registry item (the scrub-then-insert crash)
   ⇒ run its claim lifecycle: target unclaimed ⇒ register to committed + visibility MERGE, target
-  foreign ⇒ quarantine (C2-R3-2); stale no-journal states per §3a (OpId-keyed, C2-R2-9).
+  foreign ⇒ quarantine (C2-R3-2); a committed-non-null registry item whose row is absent from
+  both lists AND quarantine ⇒ the `CONTROL_ROW_MISSING` anomaly — surfaced loudly, target stays
+  locked (fail-closed) pending the Director's retire_claim absent-row lane (C2-R9-2); stale
+  no-journal states per §3a (OpId-keyed, C2-R2-9).
 
 ## 7. Control storage, seals, manifest, and the export assembly contract
 
@@ -674,7 +712,11 @@ itself if the prior attempt crashed mid-way (C2-R4-4 — the retry is the primar
 is the belt), and only then answers via the normal dedup path; if the item is in the WITHDRAWN
 form (ControlId NULL — a Director retired/withdrew this claim, §4) ⇒ the TERMINAL ADJUDICATED
 BRANCH (C2-R7-3): answer `ok` with status `superseded_by_adjudication`, surfaced — NEVER insert,
-recreate, or re-mark the tombstone; the device's queue drains; if the item is in
+recreate, or re-mark the tombstone; the device's queue drains; **own-committed with the ledger
+row ABSENT from both lists AND quarantine (full enumeration) ⇒ `CONTROL_ROW_MISSING` (C2-R9-2):
+fail-closed, TERMINAL for the device (stop retrying), loudly surfaced for Director investigation
+— NEVER reconstruct (a resurrection has no evidence of legitimacy); the Director remedy is
+retire_claim's ABSENT-ROW EVIDENCE LANE (§5b)**; if the item is in
 `pending_supersede` (a Director withdraw/supersede is IN FLIGHT over this claim) ⇒ the
 OWN-PENDING_SUPERSEDE BRANCH (C2-R8-2): never insert, quarantine, or heal-MERGE mid-Director-op —
 the device's operation had already committed (pending_supersede only wraps a PriorCommitted
@@ -798,7 +840,13 @@ never an insert, never a loop — the Codex R8-2 repro verbatim, C2-R8-2); the N
 mirroring N13's incl. an unknown-ControlState row ⇒ run refuses + surfaces (C2-R8-3); and
 MEMBERSHIP-RECORD probes (the recorded set decides adoption/retirement deltas; the Codex R8-4
 late-visible-lower-ID repro verbatim ⇒ the absent tombstone is ∉ the set and the delta is
-correctly `− effect(target)`; pre-record runs ⇒ UNDECIDABLE, C2-R8-4).
+correctly `− effect(target)`; pre-record runs ⇒ UNDECIDABLE, C2-R8-4). R9 additions: N17
+round-trip probes (record built from the exact compute input; record-before-publish ordering
+under crash at each side; empty-set vs absent-record distinguished; sig tamper ⇒ UNDECIDABLE,
+C2-R9-1); the CONTROL_ROW_MISSING terminal + the retire_claim absent-row lane end-to-end
+(C2-R9-2); own-identity retention through pending_supersede incl. the belt match against a
+nonconforming top-level write (C2-R9-3); and deviceConvergencePending on EVERY non-adopt mode ×
+fresh/replay/foreign-recovery delivery (C2-R9-4).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -849,36 +897,38 @@ correctly `− effect(target)`; pre-record runs ⇒ UNDECIDABLE, C2-R8-4).
   run. Snapshot balances, client stock counts, and settlements can never disagree about a
   corrected row: the archiver folds the corrected (effective) value, and no row below a published
   cutoff is ever excluded from it.
-- **H13 (Kunal-visible, C2-R6-1 revised by C2-R7-2):** when a Director retires a legacy deletion,
-  the SERVER is immediately correct everywhere (settlements, balances, exports). But any device
-  that had already applied that deletion keeps understating that one product locally until the
-  banked device re-delivery lane (H7) ships or the device re-syncs fresh — the sync protocol's
-  ID-cursor cannot re-deliver an old row, so there is no honest quick fix. The retirement
-  response tells the Director exactly this (`deviceRestorationPending`). Per D-C2-2 the whole
-  lane is trial-data defence-in-depth and vanishes at go-live. Separately, a device that never
-  pulled a committed deletion before its target archived keeps a display-level ghost of the
-  deleted row in old lists (stock totals and settlements are correct via the snapshot); the same
-  H7 lane cleans this up.
+- **H13 (Kunal-visible, C2-R6-1 revised by C2-R7-2 + C2-R9-4):** every Director correction is
+  immediately correct on the SERVER (settlements, balances, exports) — but devices don't receive
+  correction rows (H7), so their LOCAL view of an affected product lags until the banked
+  re-delivery lane ships or they re-sync fresh; the sync protocol's ID-cursor cannot re-deliver
+  old rows, so there is no honest quick fix. EVERY such operation's response now says so
+  (`deviceConvergencePending` + the affected target) — retirement, withdrawing or superseding an
+  adopted deletion, and ordinary Director corrections alike; the warning survives replays and
+  crashes. Per D-C2-2 the legacy lanes are trial-data defence-in-depth and vanish at go-live.
+  Separately, a device that never pulled a committed deletion before its target archived keeps a
+  display-level ghost of the deleted row in old lists (stock totals and settlements are correct
+  via the snapshot); the same H7 lane cleans this up.
 
-## 14. Review questions (R9)
+## 14. Review questions (R10)
 
-- **Q1v9 (response contract):** C2-R8-1 — does the retirement warning now survive every path to
-  the Director (fresh success, stored result, terminal replay, and a retirement recovered by a
-  DIFFERENT worker's reconcile)? Any other mode whose honest note should ride the response the
-  same way?
-- **Q2v9 (own-claim state cover):** with the own-pending_supersede branch added, enumerate the
-  registry state space one more time against the §8 own-claim dispatch (pending / committed
-  non-null / withdrawn null / pending_supersede / absent) — is every state × ledger-row
-  presence combination now covered by exactly one branch, including mid-transition reads?
-- **Q3v9 (membership record):** C2-R8-4 — is the recorded tombstone-set genuinely authoritative
-  (written from the SAME input read the run computes from, under the run's integrity machinery)?
-  Walk the late-visible-lower-ID repro and its variants (tombstone visible but target's run
-  crashed pre-record; record present but set empty; a tombstone pushed DURING the run). Any
-  path where the set disagrees with what snapshotCompute actually saw?
-- **Q4v9 (allowlist parity):** are N10's and N13's allowlists now EXACTLY the same predicate
-  (same epoch boundary, same sig verification, same unknown-state posture)? Any consumer of
-  tombstone state left on a blocklist?
-- **Q5v9 (whole-design closure — the convergence gate):** with all R1-R8 folds in place: any
+- **Q1v10 (N17 artifact):** the archive_run_record contract — is the same-input construction +
+  record-before-publish ordering airtight under every crash split (record durable, publish
+  crashed; publish durable — reachable given the ordering?; both crashed)? Is keying membership
+  on the target's ArchiveRunId immune to orphan records and re-run runIds? Empty-vs-absent and
+  sig-fail semantics — any conflation path left?
+- **Q2v10 (row-absent lanes):** CONTROL_ROW_MISSING + the retire_claim absent-row evidence lane —
+  can the enumeration ever falsely conclude absence (paging, quarantine list growth, a row
+  mid-unit-move between lists during an archive run)? Is fail-closed-locked-until-Director the
+  right posture in every variant?
+- **Q3v10 (identity retention):** C2-R9-3's pin — verify the own matcher now reaches the correct
+  branch in every pending_supersede interleaving, including a nonconforming implementation that
+  clobbers top-level identity (the belt), and that the Director op's own idempotency/recovery
+  never confuses the retained device identity for its own.
+- **Q4v10 (convergence-warning family):** is the deviceConvergencePending mode list COMPLETE
+  (every mode whose effective result devices cannot reconstruct) and is the adopt exemption's
+  reasoning sound (no NEW divergence)? Any path where the warning is set but shouldn't be, or
+  vice versa?
+- **Q5v10 (whole-design closure — the convergence gate):** with all R1-R9 folds in place: any
   remaining path to a silently uncounted deletion, a mis-billed control, a permanently locked
   target, a stranded coordination state, an invisible-forever legitimate deletion, an UNSURFACED
   client/server stock divergence, or a balances/settlement divergence? If no on all, say so
