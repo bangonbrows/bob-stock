@@ -1,5 +1,25 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R19
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R20
 
+> ## ROUND 20 — re-review after the round-19 folds
+> Round-19 verdicts: BOTH BLOCK — 4 distinct REAL findings (2 CONVERGED pairs) + a proof cleanup,
+> all folded (the design doc's **R19 fold record table**). Q4v19 (foreign-collision) PASSED with
+> both — the sixth sub-question closed. The headline is a SIMPLIFICATION both reviewers converged
+> on: my archive-cleanup still leaned on a deletable signature as "crash proof", so an attacker
+> deleting one column made published history look crashed and got it swept. Both said the same
+> thing — use ACTUAL LEDGER STATE: a crashed run's rows are still in the Live ledger (it never
+> finished), a published run's rows were already removed from Live. So the sweep now deletes an
+> archived row ONLY if a copy is still in Live (a genuine leftover duplicate — the Live copy is the
+> truth, nothing lost) and SPARES everything else. This DELETED a whole layer of fragile signature
+> machinery and closed two findings at once: the history-reaper (a deleted signature no longer
+> matters) AND the direct-to-archive corrections (a superseded/withdrawn/crashed correction is
+> simply not-in-Live, so it's kept as append-only history and never bricks the cleanup). The
+> engine's existing dual-list dedup already makes any transient duplicate economically inert, so no
+> reader-filter is needed. Also: (3) the cutover now runs that same Live-presence cleanup before
+> sealing the boundary; (4) a leftover contradictory line in §8 (it still said the collision state
+> "stops the scrub") is fixed to match §4. This round: re-review end-to-end and answer Q1v20-Q5v20
+> (§14) — the live-presence sweep especially. Q5v20 is the explicit convergence gate.
+>
+> [Superseded R19 summary retained below for reference:]
 > ## ROUND 19 — re-review after the round-18 folds
 > Round-18 verdicts: BOTH BLOCK — 5 distinct REAL findings, all folded (the design doc's **R18
 > fold record table**). Q2v18 (source-first pre-commit) and Q4v18 (collision recovery) PASSED with
@@ -49,7 +69,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R18 fold records, and questions Q1v19-Q5v19).
+   honest notes H1-H14, the R1-R19 fold records, and questions Q1v20-Q5v20).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -59,9 +79,10 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v19-Q5v19 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the positive-crash-proof sweep (N10), the SR-135
-direct-to-archive correction lane (frozen EXPORT-SCOPE + §5 P5.3), and the quiescent cutover (N16). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v20-Q5v20 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the LIVE-PRESENCE sweep (N10), the archive LA's
+delete-from-Live-after-publish ordering (Chunk-8 archive-def), and the engine's dual-list dedup
+(CHUNK8 item 5 / SR-70). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
