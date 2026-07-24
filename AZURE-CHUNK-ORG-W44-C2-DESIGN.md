@@ -1,17 +1,15 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R12 (R11 verdicts: BOTH BLOCK — AGY×2 + Codex×4, 4 distinct REAL (2
-CONVERGED pairs: §5b's stale numeric-coordinate consumer, and the retry/scrub paths still naming
-the retired in-place flip — both = R10 folds not fully propagated). HEADLINE: Codex proved the
-R10 COMMIT-TIME RE-MINT physically CANNOT insert a same-TransactionId duplicate (the ledger's
-Enforce-Unique key 409s it) — fixed by the SEPARATE PENDING LIST (N18 `StockControlPending_Staging`):
-device tombstones stage there [never the main ledger — never pull-visible, never in economics], and
-the commit INSERTS the tombstone into the main ledger for the FIRST time [unique key satisfied,
-fresh high id = cursor-deliverable] then deletes the pending-list item. Other folds: §5b membership
-consumer switched to TransactionId (the R10 schema moved, the consumer didn't); §8 retry + the
-scrub text switched from in-place MERGE to the re-mint; N10 archive startup ORPHAN-SWEEP (a crashed
-run's unpublished copies deleted before the next run copies — the changed-input-retry lane). R10:
-4 folded. R9-R1: 55 folded. Nothing built, nothing deployed. D-C2-1..3 LOCKED — §12).**
+**Status: 🔍 SCOPE REVIEW R13 (R12 verdicts: BOTH BLOCK — AGY×3 + Codex×6 = 7 distinct REAL (2
+CONVERGED pairs), ALL N18-lifecycle/observability gaps from the R11 pending-list introduction +
+the unimplementable orphan-sweep predicate + stale proof text. Folds below: the export reads the
+REGISTRY for committed claims (a committed N18-crash-window deletion now blocks, never bills as
+present); the enumeration order is N18→L→A→Q (source-first); N18 gets Enforce-Unique +
+outcome-by-read; the pending+N18-durable-pre-CAS crash gets its PROMOTE scrub outcome; the retry
+both-copies state deletes the N18 residue; the orphan-sweep predicate switches to VERSION-based
+(`SnapshotVersion > published version` — the RunId predicate was unimplementable); §11 proof suite
+purged of retired mechanisms. R11: 4 folded. R10-R1: 59 folded. Nothing built, nothing deployed.
+D-C2-1..3 LOCKED — §12).**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -258,6 +256,29 @@ complete once these propagation gaps close).
 
 ---
 
+## R12 fold record (2026-07-24) — BOTH BLOCK; 7 distinct REAL (2 converged pairs), all N18-lifecycle
+
+| # | Finding (source) | Ground truth | Fold |
+|---|------------------|--------------|------|
+| C2-R12-1 | A COMMITTED N18-crash-window tombstone is invisible to the export: §7b queried only Live+Archive, but a device commit CASes the registry BEFORE the main-ledger re-mint and does NOT hold the coordination state, so an export lease overlapping that window sees no row, doesn't block, and BILLS the committed deletion's target as present (AGY 1 ≡ Codex 1, CONVERGED) | REAL — the registry-committed-but-not-materialized window is real; export keyed on row-presence | §7b(1)/(4): the export ALSO reads `ControlRegistry_Staging` for COMMITTED claims over supplied identities; a committed claim whose control has neither a materialized main-ledger row nor an active head ⇒ the `TOMBSTONE_PENDING_ADOPTION` fail-closed blocker. The export does NOT read N18 (a PENDING claim isn't adjudicated — must never block). The registry, not row-presence, is the authority for "a deletion is committed" |
+| C2-R12-2 | The pending+N18-durable-BEFORE-CAS crash (N18 insert durable, worker dies before the commit CAS, device offline, TTL fires) had NO scrub outcome — §6/§8 covered "pending, neither row" and "committed, only N18" but not this; §4 still described the retired "durable ledger row" version (Codex 2) | REAL — the exact post-N18-insert/pre-CAS crash was unmodelled | §6/§8: registry pending past TTL WITH a durable N18 row (and no main-ledger row) ⇒ PROMOTE — the scrub runs the commit CAS (pending→committed) THEN the re-mint (insert main-ledger row, delete N18); idempotent. §4's stale "durable ledger row" text rewritten to "durable N18 row" |
+| C2-R12-3 | N18 had no Enforce-Unique/outcome-by-read contract: an own-pending retry "just proceeds" and re-inserts ⇒ two pending rows (delete-one leaves residue); or, if uniqueness is added at build, a 409 with no defined outcome-by-read stalls the commit (Codex 3) | REAL — N17 got this contract, N18 didn't | N18: `TransactionId` Enforce-Unique; the pending insert is create-if-absent + outcome-by-read (a 409 ⇒ read the item: own claim ⇒ proceed to the commit CAS, the row is already staged; foreign ⇒ impossible, the registry claim gates it first). One pending row per tombstone, ever |
+| C2-R12-4 | The terminal enumeration stayed Live→Archive→Quarantine, but the new mover writes Live then deletes N18 — a reader must inspect the SOURCE (N18) before the destination (Live), else it checks Live (empty pre-insert), the mover inserts Live + deletes N18, the reader checks N18 (empty) ⇒ false `CONTROL_ROW_MISSING` (Codex 4) | REAL — the write-before-delete reader rule (C2-R10-1) wasn't extended to the N18→Live edge | §8/§6: the enumeration order is **N18 → Live → Archive → Quarantine** (source-before-destination for every move, incl. the re-mint's N18→Live). A committed claim whose row is found in N18 ⇒ PROMOTE (not missing); genuinely absent from all FOUR ⇒ `CONTROL_ROW_MISSING`. The idle-same-ETag belt still guards the archive/quarantine moves |
+| C2-R12-5 | The device-retry both-copies state (main-ledger row AND N18 row both present, from a crash between insert and N18-delete) skipped the delete block — the retry verified the main row, answered ok, and ABANDONED the N18 residue until a background scrub (AGY 2) | REAL — the retry text only deleted "if only the pending-LIST copy exists" | §8: the own-committed retry, on finding BOTH the committed main-ledger row AND an N18 row, DELETES the N18 row before answering ok (completing the interrupted re-mint) — the retry is the primary healer, not the scrub |
+| C2-R12-6 | The orphan-sweep predicate "delete archive rows whose ArchiveRunId has NO published snapshot record" is UNIMPLEMENTABLE: `stock_snapshot` holds only the LATEST runId (checking it deletes all legitimate history), and N17 is written PRE-publication (its existence doesn't prove publication, so a post-N17/pre-publish crash's residue is spared — the bug stays open) (AGY 3 ≡ Codex 5, CONVERGED) | REAL — neither artifact proves historical publication; my R11 predicate was hand-waved | N10: the sweep predicate is VERSION-based — delete every archive row whose `SnapshotVersion` > the CURRENT published `stock_snapshot.version` (pre-publication residue by construction: a published run's rows carry SnapshotVersion ≤ the published version; a crashed run's carry a higher, never-published version). Spares all history, catches every post-N17/pre-publish crash. (Both reviewers converged on exactly this) |
+| C2-R12-7 | §11's proof suite still mandated RETIRED mechanisms — the loser "lands in Quarantine" (now delete-N18), numeric horizon/SourceId membership (now TransactionId), retry "mint+MERGE" (now re-mint) — an implementation meeting the suite could reintroduce the flipped bugs (Codex 6) | REAL — the acceptance suite is normative and lagged the folds | §11 purged: loser ⇒ N18 delete; membership ⇒ TransactionId set; visibility ⇒ re-mint (never flip). The R12 proof list (below) supersedes the stale clauses |
+
+**Q1v12-Q5v12 outcomes:** Q1v12 N13 + economics exclusion of N18 CONFIRMED right by both — export
+visibility/enumeration/§4/§11 were the unmigrated gaps (→ C2-R12-1/-2/-4/-7); Q2v12 the unique-key
+blocker CONFIRMED resolved by both — the both-copies retry + pre-CAS crash + N18 uniqueness were
+open (→ C2-R12-3/-5/-2); Q3v12 the §5b arithmetic consumer CONFIRMED on TransactionId by both — §11
+was the residue (→ C2-R12-7; seal-epoch numeric provenance is a SEPARATE, legitimate use, not
+membership); Q4v12 orphan-sweep predicate NO by both (→ C2-R12-6); Q5v12 both not-yet — both note
+the CORE ALGORITHMIC ARCHITECTURE is fully formed; the residue is N18 lifecycle text + the sweep
+predicate.
+
+---
+
 ## 0. Scope boundary
 
 IN: the correction-approval Logic App + its pure Function helper; the FIVE-state coordination record
@@ -316,13 +337,13 @@ all client UI (runner scripts prove the route, as C1 did).
 | N7 | Control columns | ADD to BOTH ledger lists: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine` (JSON text), `OriginalEventAt` (ISO text), `ControlState` (on a MAIN-LEDGER tombstone: `'committed'` or `'retiring'` only — `'pending'` is no longer a ledger value, it means "present in N18"; C2-R3-2 revised by C2-R11-1), `CommitSig` (the ctlcommit-v1 visibility AUTHORITY — C2-R4-5). Control rows are SEALED (`EconSig`, ctl-v1 frame — §7a); N18 pending rows carry the same columns but live off-ledger |
 | N8 | `'correction'` sudo purpose | ADD to `SUDO_PURPOSES` + client prompt map (client half rides the next client wave) |
 | N9 | push-v2-validate amendment | The SR-143-conformant tombstone claim + quarantine divert (§8) |
-| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); runIds SERVER-MINTED per `idle → run_active` acquisition (a GUID, never caller-supplied — C2-R10-2); STARTUP ORPHAN-SWEEP (C2-R11-4): a run's FIRST act after acquiring the lock is to delete every archive row whose `ArchiveRunId` names a run with NO published snapshot record (a crashed prior attempt's pre-publication residue), under the held lock, verified complete BEFORE it copies anything — so a changed-input retry under a fresh id never leaves the target duplicated across two ArchiveRunIds; persist each run's INPUT TOMBSTONE-SET RECORD to N17 (the EXACT set of tombstone TransactionIds present in the run's input universe — the adoption/retirement membership decider, C2-R3-3 revised by C2-R8-4 + C2-R10-3: the scalar max-id horizon could not prove prefix completeness under SharePoint's out-of-order ID visibility, sync.js:1837, and numeric coordinates are unknowable for absent rows); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5 — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); the TOMBSTONE AUTHORITY GATE — an ALLOWLIST like N13 (C2-R7-4 + C2-R8-3): ONLY qualifying legacy-null (provenance < `tombstoneCommitEpochId`) or committed-with-valid-CommitSig tombstones ENTER compute (committed sigs batch-verified via attestRows pre-compute); EVERY other value — `pending`, `retiring`, unknown/future states, invalid sigs, post-epoch nulls — ⇒ the run REFUSES + surfaces (409, transient for pending/retiring — TTL scrubs drive them terminal; permanent + loud for tampering) — D8-7 economics only ever see ADJUDICATED tombstones; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
+| N10 | Archive-LA scoped amendments | Carry `controlManifest`+`fence` forward on publish; refuse while a correction journal is non-terminal; state-vocabulary v2; CONDITIONAL releases (C2-R1-2); runIds SERVER-MINTED per `idle → run_active` acquisition (a GUID, never caller-supplied — C2-R10-2); STARTUP ORPHAN-SWEEP (C2-R11-4, predicate corrected by C2-R12-6): a run's FIRST act after acquiring the lock is to delete every archive row whose `SnapshotVersion` > the CURRENT published `stock_snapshot.version` (pre-publication residue by construction — a published run's rows carry SnapshotVersion ≤ the published version; a crashed run's carry a higher, never-published version), under the held lock, verified complete BEFORE it copies anything — so a changed-input retry under a fresh id never leaves the target duplicated. The R11 "no published snapshot record" RunId predicate was unimplementable (stock_snapshot holds only the latest runId; N17 is pre-publication) — VERSION-based is the safe authority (both R12 reviewers converged); persist each run's INPUT TOMBSTONE-SET RECORD to N17 (the EXACT set of tombstone TransactionIds present in the run's input universe — the adoption/retirement membership decider, C2-R3-3 revised by C2-R8-4 + C2-R10-3: the scalar max-id horizon could not prove prefix completeness under SharePoint's out-of-order ID visibility, sync.js:1837, and numeric coordinates are unknowable for absent rows); UNIT-MOVE PAIRED ARCHIVAL (C2-R4-E1 v3, revised by C2-R5-4 + C2-R6-3): snapshotCompute receives the active `controlManifest` and folds EFFECTIVE values (active-headed targets excluded; active-head control rows folded raw; historical control rows excluded; null-head targets folded normally); an ensemble archives AS A UNIT keyed on the TARGET alone passing the FULL archive predicate (id ≤ cutoff AND retention — the exact snapshotCompute partition); when the target qualifies, ALL its control/tombstone rows move IN THE SAME RUN regardless of their own ids/timestamps (control rows are never device-delivered; tombstone effects ride balances via guaranteed input-presence — strictly stronger than the retain-window pairing) — NO cutoff clamp, retention bounded by the target's own eligibility, SR-70 preserved by construction; the run's SELECT/copy mapping + re-read compare + fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5 — a copy dropping any control field breaks the hash BEFORE the live delete, C2-R6-4); the TOMBSTONE AUTHORITY GATE — an ALLOWLIST like N13 (C2-R7-4 + C2-R8-3): ONLY qualifying legacy-null (provenance < `tombstoneCommitEpochId`) or committed-with-valid-CommitSig tombstones ENTER compute (committed sigs batch-verified via attestRows pre-compute); EVERY other value — `pending`, `retiring`, unknown/future states, invalid sigs, post-epoch nulls — ⇒ the run REFUSES + surfaces (409, transient for pending/retiring — TTL scrubs drive them terminal; permanent + loud for tampering) — D8-7 economics only ever see ADJUDICATED tombstones; ACCEPTANCE ITEM: the §3 staleness-exit invariant proven for ALL five states at the staging crash drill (C2-R3-N2) — ⚠ amendments to Chunk-8-audited surfaces (incl. snapshotCompute), flagged for the return re-audit |
 | N11 | attestRows new frames | EXTEND the C1 route with FOUR canonicals: `ctl-v1` (control seals, §7a), `ctlcommit-v1` (tombstone commit seals, §8/C2-R4-5), `epoch-v1` (the seal-epoch artifact, N16/C2-R4-7), `runrec-v1` (archive run records, N17/C2-R9-1) — ⚠ scoped amendment to the C1-audited function, flagged |
 | N12 | Proof suite `test/correction-proof.js` + runner scripts | Pure-function probes + Kunal-executed staging apply/E2E (C1 pattern) |
 | N13 | pull-v2-validate amendment | `ControlId eq null` filter — control rows never delivered to devices (C2-R1-13) — PLUS the tombstone ALLOWLIST (C2-R7-1, replacing the R3 pending-blocklist): `Type='deleted'` rows are delivered ONLY when ControlState is null-legacy (AND live-coordinate provenance < `tombstoneCommitEpochId`) or `'committed'` (AND CommitSig batch-verifies via attestRows); `pending`, `retiring`, and every unknown/future value are EXCLUDED BY CONSTRUCTION (invalid/absent sig ⇒ withheld + surfaced — C2-R4-5). Build proof: real-list OData null semantics + the full allowlist matrix — ⚠ flagged scoped amendment |
 | N14 | buybackExport.js additive export | `foldProjection` exported (exports-only change to the frozen engine file, `reqId` precedent) — ⚠ flagged for the return re-audit |
 | N15 | LA-CHANGES §1 amendment note | Topology snapshot writes join the coordination discipline (C2-R1-7) — ⚠ flagged scoped spec amendment |
-| N18 | Device-tombstone pending list | NEW LIST `StockControlPending_Staging` (C2-R11-1): device tombstone PENDING copies stage here, NEVER the main ledger — invisible to pulls (N13 reads only the main ledger), absent from economics (snapshotCompute/D8-7 read only the main ledger), and outside the ledger's Enforce-Unique `TransactionId` key. The commit-time re-mint inserts the tombstone into the MAIN ledger for the first time, then deletes the pending-list item (§8) |
+| N18 | Device-tombstone pending list | NEW LIST `StockControlPending_Staging` (C2-R11-1): device tombstone PENDING copies stage here, NEVER the main ledger — invisible to pulls (N13 reads only the main ledger), absent from economics (snapshotCompute/D8-7 read only the main ledger), and NOT read by the export (§7b: a pending claim isn't adjudicated). `TransactionId` ENFORCE-UNIQUE; the pending insert is create-if-absent + outcome-by-read (a 409 ⇒ own claim already staged ⇒ proceed to the commit CAS — C2-R12-3). The commit-time re-mint inserts the tombstone into the MAIN ledger for the first time, then deletes the pending-list item (§8) |
 | N17 | Archive run records | NEW LIST `ArchiveRunRecords_Staging` (C2-R9-1 hardened by C2-R10-2/-3): one item per run — `{RunId (Enforce-Unique — create-if-absent + outcome-by-read on ambiguous writes), SnapshotVersion, InputDigest (canonical digest of the exact compute input; a retry with a MATCHING digest proceeds idempotently, a differing digest is REJECTED — recomputation needs a fresh server-minted RunId), TombstoneIds (STABLE TransactionIds — [] = valid empty set), RecordSig ('runrec-v1')}` — built from the EXACT snapshotCompute input array (never a re-read), written + durable BEFORE snapshot publication, verified on every read (sig fail / absent ⇒ membership UNDECIDABLE fail-closed; orphan records from unpublished runs harmless — membership keys on the target's ArchiveRunId AND checks SnapshotVersion coherence), retention indefinite |
 | N16 | Seal-epoch artifact | ONE `AppConfig_Staging` item `ConfigType='seal_epoch'` `{epochId, tombstoneCommitEpochId, recordedAt, EpochSig}` (C2-R3-4 revised by C2-R4-3/-5/-7): `epochId` = the LIVE list's first-sealed item id (the ONLY epoch — all provenance is live-coordinate; the R3 `archiveEpochId` is deleted); `tombstoneCommitEpochId` recorded at the N9 apply (the CommitSig legacy boundary); `EpochSig` = an `epoch-v1` attestRows seal over the values, verified on EVERY read (fail ⇒ `EPOCH_TAMPERED`). Derivation: PRODUCTION — recorded exactly at the D-C2-2 cutover (fresh lists, epoch = first item id); STAGING — backfill runner derives best-effort, recorded with method + Kunal attestation (H11). ACCEPTANCE (Codex Q2v5): `tombstoneCommitEpochId` must be INSTALLED BEFORE the N9 push amendment accepts its first protocol row — ordering build-proven |
 
@@ -424,14 +445,15 @@ mechanics for withdraw-then-recorrect and retire-then-correct.
 - Director lifecycle (SR-143/147/149) unchanged from R1 design: `pending → committed` at publication;
   initial-create rollback deletes; supersede via `pending_supersede(PriorCommitted)` whose rollback
   RESTORES the prior lock; expected-revision CAS re-read after acquiring the state.
-- **Device lifecycle (C2-R1-5 + C2-R2-4/-5/-6, SR-143-conformant):** see §8 — `pending(
-  owner=deviceId, opId=tombstoneId, ttl)` → row durable → `committed(ControlId=tombstoneId,
-  Revision: 0, PublicationVersion: null, OpId retained)`. A conflict with an item whose `OpId` OR
-  `ControlId` equals this tombstone's TransactionId is the device's OWN claim ⇒ idempotent re-entry
-  (finish the insert / the commit CAS), never quarantine. Orphan scrubs are TWO-WAY (C2-R2-4):
-  pending past TTL with NO ledger row ⇒ deleted; pending past TTL WITH a durable ledger row ⇒
-  ROLLED FORWARD (the scrub executes the `pending → committed` CAS itself — the same idempotent
-  transition the crashed route would have made). Adoption (§5b) later CAS-fills
+- **Device lifecycle (C2-R1-5 + C2-R2-4/-5/-6 + C2-R11-1 + C2-R12-2, SR-143-conformant):** see §8 —
+  `pending(owner=deviceId, opId=tombstoneId, ttl)` → N18 row durable → commit CAS
+  `committed(ControlId=tombstoneId, Revision: 0, PublicationVersion: null, OpId retained)` →
+  re-mint (main-ledger insert + N18 delete). A conflict with an item whose `OpId` OR `ControlId`
+  equals this tombstone's TransactionId is the device's OWN claim ⇒ idempotent re-entry (finish the
+  staged step), never quarantine. Orphan scrubs cover the full matrix (C2-R2-4 + C2-R12-2):
+  pending past TTL with NO N18 row and NO main-ledger row ⇒ deleted; pending past TTL WITH a durable
+  N18 row ⇒ PROMOTE (run the `pending → committed` CAS then the re-mint — the transitions the
+  crashed route would have made). Adoption (§5b) later CAS-fills
   `PublicationVersion`; until then, supersede/withdraw against the committed-unadopted claim ⇒
   refuse `TOMBSTONE_PENDING_ADOPTION` (remedy: `mode:'adopt'`, then retry against the then-known
   head — mirrors the export's fail-closed posture, C2-R2-6).
@@ -673,20 +695,22 @@ mutating act = the FENCE write):
   (N10/N15); the explicit state exists so a violation is LOUD, never a silent rollback.
 - Freshness: recovery only ever engages STALE owners (§3a seize); fresh ⇒ 409 busy. A stale
   RECOVERER is itself re-seizable (§3a re-seize, C2-R2-1).
-- Orphan scrubs (TWO-WAY for device claims, C2-R2-4 + C2-R3-2 + C2-R11-1/-2): registry pendings
-  past TTL with no live journal (Director) ⇒ released/restored per lifecycle; device pendings past
-  TTL with NO pending-list row and NO main-ledger row ⇒ deleted; registry committed with only the
-  pending-LIST row ⇒ rolled FORWARD (the scrub RUNS THE RE-MINT: insert the committed main-ledger
-  row at a fresh id, then delete the pending-list item — §8; NEVER an in-place flip); with BOTH the
-  committed ledger row and a leftover pending-list row ⇒ delete the pending-list item; a committed
-  main-ledger row lacking CommitSig ⇒ mint it; a durable committed main-ledger tombstone whose
-  target's registry item is committed to a DIFFERENT ControlId ⇒ the row is quarantined — it lost
-  the race (C2-R2-5 belt); a durable PENDING-LIST row with NO registry item (the scrub-then-insert
+- Orphan scrubs (device claims, C2-R2-4 + C2-R3-2 + C2-R11-1/-2 + C2-R12-2 — the FULL
+  `{registry × N18 × main-ledger}` matrix): registry pendings past TTL with no live journal
+  (Director) ⇒ released/restored per lifecycle; registry PENDING past TTL with NO N18 row and NO
+  main-ledger row ⇒ deleted; registry PENDING past TTL WITH a durable N18 row (device died after
+  the N18 insert, before the commit CAS) ⇒ PROMOTE — run the commit CAS then the re-mint
+  (C2-R12-2); registry COMMITTED with only the N18 row ⇒ rolled FORWARD (the scrub RUNS THE RE-MINT:
+  insert the committed main-ledger row at a fresh id, then delete the N18 item — §8; NEVER an
+  in-place flip); with BOTH the committed ledger row and a leftover N18 row ⇒ delete the N18 item;
+  a committed main-ledger row lacking CommitSig ⇒ mint it; a durable committed main-ledger tombstone
+  whose target's registry item is committed to a DIFFERENT ControlId ⇒ the row is quarantined — it
+  lost the race (C2-R2-5 belt); a durable N18 row with NO registry item (the scrub-then-insert
   crash) ⇒ run its claim lifecycle: target unclaimed ⇒ register to committed + re-mint, target
-  foreign ⇒ delete the pending-list row (C2-R3-2); a committed-non-null registry item whose
-  main-ledger row is absent under the enumeration contract (L→A→Q, idle-stable) ⇒ the
-  `CONTROL_ROW_MISSING` anomaly — surfaced loudly, target stays locked (fail-closed) pending the
-  Director's retire_claim absent-row lane (C2-R9-2); stale
+  foreign ⇒ delete the N18 row (C2-R3-2); a committed-non-null registry item whose main-ledger row
+  is absent under the enumeration contract (N18→L→A→Q, idle-stable — a row in N18 ⇒ PROMOTE not
+  missing) ⇒ the `CONTROL_ROW_MISSING` anomaly — surfaced loudly, target stays locked (fail-closed)
+  pending the Director's retire_claim absent-row lane (C2-R9-2); stale
   no-journal states per §3a (OpId-keyed, C2-R2-9).
 
 ## 7. Control storage, seals, manifest, and the export assembly contract
@@ -708,21 +732,28 @@ fail-closed conflict surfaced (`CONTROL_SEAL_BROKEN`). Engine-side seal enforcem
 the return re-audit (the engine is frozen; route-side enforcement + the head check hold the line
 meanwhile).
 
-### 7b. The export assembly contract (pinned HERE, built later — C2-R1-6/-8/-13)
-Under its lease, the export route: (1) queries BOTH lists for control-typed rows + `deleted` rows
-targeting supplied identities (completeness-attested); (2) supplies to the engine ONLY the control
-matching each ACTIVE manifest head (Director controls: the head revision's row; device tombstones:
-a synthesized `{controlId: tombstoneId, type:'deletion', targetTransactionId, revision: 0,
-bornPublicationVersion: head.bornPublicationVersion}` from the manifest + the seal-verified
-tombstone row (C2-R3-1: the head already carries the engine's exact field names — the assembly
-copies, never renames) — historical revisions and withdrawn targets' rows are NEVER supplied; (3)
-EXCLUDES rows carrying `ControlId` from the `rows` arrays (a control's row reaches the engine only
-inside its ctl); (4) surfaces ANY durable tombstone or published control row LACKING a manifest
-head — registry-committed, registry-pending, or unregistered alike (C2-R3-2: a pending/unregistered
-tombstone is exactly a deletion question not yet adjudicated) — as the fail-closed PROVISIONAL
-blocker `TOMBSTONE_PENDING_ADOPTION` (Director remedy: `mode:'adopt'`), **UNLESS the row's TARGET
-already has an ACTIVE head (C2-R3-N1) — an adjudicated target's stale headless rows are COVERED,
-never permanent blockers (the seal-skipped pre-C1 case reaches adjudication via
+### 7b. The export assembly contract (pinned HERE, built later — C2-R1-6/-8/-13 + C2-R12-1)
+Under its lease, the export route: (1) queries BOTH ledger lists for control-typed rows + `deleted`
+rows targeting supplied identities (completeness-attested) AND reads `ControlRegistry_Staging` for
+COMMITTED claims over those identities (the registry, not row-presence, is the authority for "a
+deletion is committed" — a device commit CASes the registry BEFORE its main-ledger re-mint and does
+NOT hold the coordination state, so an export lease can overlap the crash window where the claim is
+committed but no ledger row exists yet, C2-R12-1); the route does NOT read N18 (a PENDING registry
+claim is not yet adjudicated — it may lose a race and be deleted — so it must never block an
+export); (2) supplies to the engine ONLY the control matching each ACTIVE manifest head (Director
+controls: the head revision's row; device tombstones: a synthesized `{controlId: tombstoneId,
+type:'deletion', targetTransactionId, revision: 0, bornPublicationVersion:
+head.bornPublicationVersion}` from the manifest + the seal-verified tombstone row (C2-R3-1: the
+head already carries the engine's exact field names — the assembly copies, never renames) —
+historical revisions and withdrawn targets' rows are NEVER supplied; (3) EXCLUDES rows carrying
+`ControlId` from the `rows` arrays (a control's row reaches the engine only inside its ctl); (4)
+surfaces as the fail-closed PROVISIONAL blocker `TOMBSTONE_PENDING_ADOPTION` (Director remedy:
+`mode:'adopt'`) ANY of: a durable tombstone/published control row LACKING a manifest head, OR a
+COMMITTED registry claim over a supplied identity whose control has neither a materialized
+main-ledger row nor an active head (the crash-window deletion, C2-R12-1: committed ⇒ the deletion
+is adjudicated ⇒ it MUST NOT bill as present, even mid-materialization), **UNLESS the row's/claim's
+TARGET already has an ACTIVE head (C2-R3-N1) — an adjudicated target's stale headless rows are
+COVERED, never permanent blockers (the seal-skipped pre-C1 case reaches adjudication via
 `mode:'retire_claim'` — itself a null-head publication — then the supersede lane, C2-R4-8/C2-R5)**;
 (5) verifies
 every supplied control's seal **BY ORIGIN (C2-R2-3): a Director control row ⇒ its ctl-v1 seal; a
@@ -753,20 +784,23 @@ read the item — `OpId` OR `ControlId` equal to this tombstone's id, **OR the s
 `PriorCommitted.OpId`/`PriorCommitted.ControlId` during `pending_supersede` (the §4 identity-
 retention belt, echoed here per Codex R10-Q3v10)** ⇒ OWN claim (C2-R2-6 belt: committed items
 retain OpId, §4), re-enter: if still pending, proceed; **if committed with a
-non-null ControlId, the re-entry FIRST verifies the COMMITTED MAIN-LEDGER row exists with a valid
-`CommitSig`, and if only the pending-LIST copy exists (the prior attempt crashed before the
-re-mint) it RUNS THE RE-MINT ITSELF — insert the committed main-ledger row at a fresh id, then
-delete the pending-list item (C2-R4-4 + C2-R11-2 — NEVER an in-place flip; the retry is the
-primary healer, the scrub is the belt), and only then answers via the normal dedup path; if the
-item is in the WITHDRAWN
+non-null ControlId, the re-entry heals whatever the prior attempt left (C2-R4-4 + C2-R11-2 +
+C2-R12-5 — NEVER an in-place flip; the retry is the primary healer, the scrub is the belt): only
+the N18 copy exists ⇒ RUN THE RE-MINT (insert the committed main-ledger row at a fresh id, then
+delete the N18 item); BOTH the committed main-ledger row AND an N18 row exist (crash between insert
+and delete) ⇒ DELETE the N18 row; only the committed main-ledger row exists ⇒ nothing to heal; a
+committed main-ledger row lacking its CommitSig ⇒ mint it; then answer via the normal dedup path;
+if the item is in the WITHDRAWN
 form (ControlId NULL — a Director retired/withdrew this claim, §4) ⇒ the TERMINAL ADJUDICATED
 BRANCH (C2-R7-3): answer `ok` with status `superseded_by_adjudication`, surfaced — NEVER insert,
 recreate, or re-mark the tombstone; the device's queue drains; **own-committed with the ledger
-row ABSENT under the ENUMERATION CONTRACT (C2-R9-2 + C2-R10-1: STRICT SEQUENTIAL Live → Archive
-→ Quarantine — every mover writes its destination before deleting its source, so this order
+row ABSENT under the ENUMERATION CONTRACT (C2-R9-2 + C2-R10-1 + C2-R12-4: STRICT SEQUENTIAL
+**N18 → Live → Archive → Quarantine** — every mover writes its destination before deleting its
+source [the re-mint N18→Live, unit-move Live→Archive, quarantine →Q], so a SOURCE-first walk
 cannot miss a mid-move row — AND the coordination record reads `idle` with the SAME ETag before
 and after the complete paged walk; any non-idle state or ETag change ⇒ transient retryable,
-never terminal) ⇒ `CONTROL_ROW_MISSING`: fail-closed, TERMINAL for the device (stop retrying),
+never terminal; a row found in N18 ⇒ PROMOTE, not missing) ⇒ `CONTROL_ROW_MISSING`: fail-closed,
+TERMINAL for the device (stop retrying),
 loudly surfaced for Director investigation — NEVER reconstruct (a resurrection has no evidence
 of legitimacy); the Director remedy is retire_claim's ABSENT-ROW EVIDENCE LANE (§5b)**; if the
 item is in
@@ -798,12 +832,14 @@ and just finishes the delete). **The commit CAS lands on a FOREIGN state ⇒ COM
 (C2-R2-5/C2-R3-2): the pending-LIST row — which NO device has ever received (it was never in the
 main ledger) — is deleted from N18 + surfaced; there is nothing to un-deliver, so a losing
 tombstone can never delete the original on peer devices.** Crash recovery: retry (idempotent
-re-entry at any step); the TWO-WAY reconcile scrub (C2-R2-4 + C2-R11-2: registry pending past TTL
-with no pending-list row AND no main-ledger row ⇒ deleted; registry committed with only the
-pending-list row ⇒ the scrub RUNS THE RE-MINT [insert the committed main-ledger row, then delete
-the pending-list item] — roll-forward, idempotent; with BOTH the committed ledger row and a
-leftover pending-list row [crash between insert and delete] ⇒ delete the pending-list item; a
-committed main-ledger row lacking its CommitSig ⇒ mint it); the
+re-entry at any step); the reconcile scrub (C2-R2-4 + C2-R11-2 + C2-R12-2 — the FULL matrix by
+`{registry state × N18 row × main-ledger row}`): registry PENDING past TTL with no N18 row and no
+main-ledger row ⇒ deleted; registry PENDING past TTL WITH a durable N18 row (device died after the
+N18 insert, before the commit CAS) ⇒ PROMOTE — run the commit CAS `pending → committed` THEN the
+re-mint (C2-R12-2); registry COMMITTED with only the N18 row ⇒ run the re-mint (insert the
+committed main-ledger row, then delete the N18 item) — roll-forward, idempotent; registry COMMITTED
+with BOTH the main-ledger row and a leftover N18 row ⇒ delete the N18 item; a committed main-ledger
+row lacking its CommitSig ⇒ mint it; the
 §6 belts (a durable committed main-ledger tombstone vs a FOREIGN-committed registry ⇒ row
 quarantined; a durable PENDING-LIST row with NO registry item — the scrub-then-insert crash,
 C2-R3-2 — ⇒ reconcile RUNS the claim lifecycle for it: target unclaimed ⇒ register to committed +
@@ -831,7 +867,17 @@ the purpose swapped.
 | T-4 steps page size | 200 | matches existing pull paging |
 | T-5 journal Payload cap | 60 KB | mirrors MAX_PAYLOAD_BYTES (records.js:73) |
 
-## 11. Draft artifacts (attack surface — build after R2 convergence unless reviewers ask sooner)
+## 11. Draft artifacts (attack surface — build after convergence unless reviewers ask sooner)
+
+**⚠ SUPERSESSION NOTE (C2-R12-7): the round-by-round additions below are a HISTORICAL log of what
+each round's probes exercised. Where an early description names a mechanism later RETIRED, the
+CURRENT normative form governs and the probe is re-pointed at it: (a) a losing/foreign device
+tombstone ⇒ its N18 pending row is DELETED (never "lands in Quarantine" — it was never in the
+ledger); (b) archive-run membership ⇒ TransactionId ∈ the N17 recorded set (never a numeric
+`SourceId`/`_spId` "horizon" comparison — that class is gone); (c) device-tombstone visibility ⇒
+the COMMIT-TIME RE-MINT into the main ledger (never an in-place `ControlState` MERGE/flip). An
+implementation MUST meet the current forms; a probe still asserting a retired mechanism is itself
+a defect (the R12 saboteur set re-anchors them).**
 
 `correctionCompute` + `test/correction-proof.js` covering, minimum: digest/idempotency matrix; mode
 gates incl. lazy adoption; targetLine via the REAL exported foldProjection (resolve-pinned case
@@ -926,7 +972,14 @@ flip — the converged R11-2 repro that a peer past the old id still receives th
 the §5b TransactionId-membership consumer (the converged R11-3 repro: a numeric id never matched
 the string-id set ⇒ double-subtraction — now the TransactionId matches, delta 0); and the archive
 ORPHAN-SWEEP (a crashed run's ArchiveRunId=R copies are deleted before the fresh run copies ⇒ no
-target under two run ids, the Codex R11-4 repro).
+target under two run ids, the Codex R11-4 repro). R12 additions: the EXPORT-vs-committed-N18-window
+probe (export lease overlaps a device commit CAS whose main-ledger re-mint hasn't run ⇒ the
+registry read surfaces `TOMBSTONE_PENDING_ADOPTION`, target never billed present, C2-R12-1); the
+FULL `{registry × N18 × main-ledger}` scrub/retry matrix incl. the pending+N18-durable PROMOTE and
+the both-copies N18-delete (C2-R12-2/-5); N18 Enforce-Unique + own-retry-409 outcome-by-read
+(C2-R12-3); the N18→L→A→Q source-first enumeration repro (reader mid re-mint never false-missings,
+C2-R12-4); and the version-based ORPHAN-SWEEP (post-N17/pre-publish crash residue [SnapshotVersion
+> published] deleted, all history [≤ published] spared, C2-R12-6).
 
 ## 12. Kunal decisions — LOCKED 2026-07-23
 
@@ -993,28 +1046,27 @@ target under two run ids, the Codex R11-4 repro).
   display-level ghost of the deleted row in old lists (stock totals and settlements are correct
   via the snapshot); the same H7 lane cleans this up.
 
-## 14. Review questions (R12)
+## 14. Review questions (R13)
 
-- **Q1v12 (separate pending list):** N18 + §8 — does staging pending tombstones off-ledger fully
-  replace the retired `ControlState='pending'` ledger state in EVERY consumer (N13 pull filter,
-  §7b export assembly, snapshotCompute/D8-7 economics, the authority gate, the enumeration
-  contract)? Is the commit's insert-main-then-delete-N18 write-before-delete, and is the N18 list
-  correctly OUTSIDE every reader that must not see a pending tombstone? Any consumer that still
-  reads N18, or still expects a pending main-ledger row?
-- **Q2v12 (re-mint via N18):** with the unique-key blocker resolved — walk the full crash/retry/
-  scrub matrix again (commit CAS then crash; retry before scrub; scrub with only-N18, both-copies,
-  committed-no-sig; a device retry racing the pending-delete). Every path lands on exactly the
-  committed main-ledger row + no N18 residue, never an in-place flip, never a lost deletion?
-- **Q3v12 (membership consumer):** §5b now reads TransactionId — is EVERY membership/delta
-  consumer (adopt, retire_claim, the normalization first-publication decision, AdoptionDecisions
-  journaling) reading TransactionId, with zero numeric `_spId`/`SourceId` comparisons left
-  anywhere in the normative text?
-- **Q4v12 (orphan sweep):** C2-R11-4 — does the startup orphan-sweep (delete archive rows whose
-  ArchiveRunId has no published snapshot, before copying) fully close the changed-input-retry
-  duplication, and does it preserve every Chunk-8 invariant (it must not delete a LEGITIMATE
-  published run's rows — is "no published snapshot record" the exact right predicate under a
-  concurrent-crash edge)?
-- **Q5v12 (whole-design closure — the convergence gate):** with all R1-R11 folds in place: any
+- **Q1v13 (export registry read):** C2-R12-1 — does reading `ControlRegistry_Staging` for
+  committed claims fully close the export's blindness to a committed-but-not-materialized
+  deletion, across EVERY overlap of an export lease with a device commit (before the CAS, between
+  CAS and re-mint, after re-mint)? Is "committed claim, no active head, no materialized row ⇒
+  block" the exact right predicate, and does a PENDING (N18) claim correctly NOT block? Any
+  double-block or missed-block edge?
+- **Q2v13 (full crash matrix):** the `{registry state × N18 × main-ledger}` scrub+retry matrix
+  (§6/§8) — enumerate ALL nine cells (pending/committed/withdrawn × the three row states) × device
+  online/offline × the enumeration order. Every cell exactly one outcome (promote / re-mint /
+  delete-N18 / CONTROL_ROW_MISSING / terminal-adjudicated), no unmodelled crash point, no residue?
+- **Q3v13 (N18 identity + enumeration):** N18 Enforce-Unique + outcome-by-read, and the
+  N18→L→A→Q source-first order — is the order correct for EVERY mover now (re-mint N18→Live,
+  unit-move Live→Archive, quarantine →Q, retire P7 quarantine), and does the idle-ETag belt still
+  cover the archive/quarantine moves that device pushes don't coordinate on?
+- **Q4v13 (version orphan-sweep):** C2-R12-6 — is `SnapshotVersion > published version` the exact
+  safe predicate under every crash edge (a run that published then crashed before releasing; two
+  crashed runs at different versions; a version-CAS race)? Does it preserve every Chunk-8 invariant
+  (neutrality, fidelity hashes, retain-window) and never delete a legitimately published row?
+- **Q5v13 (whole-design closure — the convergence gate):** with all R1-R12 folds in place: any
   remaining path to a silently uncounted deletion, a mis-billed control, a permanently locked
   target, a stranded coordination state, an invisible-forever legitimate deletion, an UNSURFACED
   client/server stock divergence, or a balances/settlement divergence? If no on all, say so
