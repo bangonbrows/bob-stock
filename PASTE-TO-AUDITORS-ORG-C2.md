@@ -1,28 +1,25 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R11
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R12
 
-> ## ROUND 11 — re-review after the round-10 folds
-> Round-10 verdicts: BOTH BLOCK — 4 distinct REAL findings (1 CONVERGED pair), all folded (the
-> design doc's **R10 fold record table**). The headline is a SECOND engineer-mechanism
-> refutation, and it retires a design element that had survived since round 3: the STAGED
-> VISIBILITY FLIP (insert a tombstone `pending`, later MERGE it to `committed`) is incompatible
-> with the client's immutable ID cursor — the row keeps its original id, so any peer whose
-> cursor had already passed it would NEVER receive the deletion. Replaced by the COMMIT-TIME
-> RE-MINT: at the commit point the route inserts a FRESH committed copy at a NEW id (ahead of
-> every cursor, delivered like any ordinary row) and then deletes the pending copy
-> (write-before-delete); the scrub completes either half. This restores H10's one-round-trip
-> claim and the adopt exemption's premise. The other folds: (1) the ENUMERATION CONTRACT —
-> absence is now proven by a STRICT SEQUENTIAL Live → Archive → Quarantine walk (every mover
-> writes its destination before deleting its source, so this order cannot miss a row mid-move)
-> PLUS an idle-with-same-ETag stability interval around the complete paged walk; anything else
-> is transient, never terminal; (2) N17 hardened into its own list with an Enforce-Unique
-> RunId, an InputDigest (a crashed run's retry with a differing input is REJECTED — recompute
-> needs a fresh id), create-if-absent + outcome-by-read, and server-minted run ids; (3)
-> TombstoneIds switch from numeric row ids to STABLE TransactionIds — this deletes the entire
-> ID-coordinate class from the design AND restores the membership coordinate for rows that have
-> vanished (the absent-row retirement lane decides its delta with no extra machinery). This
-> round: re-review end-to-end and answer Q1v11-Q5v11 (§14) — the re-mint's cursor-delivery and
-> duplicate-transient consequences, and the enumeration contract's coverage of every mover,
-> especially. Q5v11 is the explicit convergence gate.
+> ## ROUND 12 — re-review after the round-11 folds
+> Round-11 verdicts: BOTH BLOCK — 4 distinct REAL findings (2 CONVERGED pairs), all folded (the
+> design doc's **R11 fold record table**). Two of the four were round-10 folds not fully
+> propagated (both reviewers converged): §5b's membership consumer still compared the OLD numeric
+> ids against the new TransactionId set (⇒ double-subtraction), and two recovery paths still
+> named the RETIRED in-place visibility flip. The deepest was a physical flaw in the round-10
+> re-mint itself (Codex): the ledger enforces a UNIQUE TransactionId, so the re-mint's
+> same-id INSERT would 409 — a fresh committed copy alongside the pending one cannot exist. The
+> fix is the SEPARATE PENDING LIST (N18 `StockControlPending_Staging`): a device tombstone's
+> pending copy stages off-ledger — never pull-visible, never in economics, never occupying the
+> ledger's unique key — and the commit inserts the tombstone into the MAIN ledger for the FIRST
+> and ONLY time (unique key satisfied; fresh high id ⇒ cursor-deliverable, the R10 goal intact),
+> then deletes the N18 row (write-before-delete). `ControlState='pending'` is no longer a
+> main-ledger value (pending = "present in N18"), which SIMPLIFIES the N13 allowlist and the
+> authority gate. The other folds: the §5b consumer now reads TransactionId (numeric-coordinate
+> language deleted design-wide); every recovery path (success, own-committed retry, both scrubs)
+> now cites the ONE re-mint procedure, never a flip; and N10 gains a startup ORPHAN-SWEEP so a
+> changed-input archive retry under a fresh id can't leave a target duplicated across two run
+> ids. This round: re-review end-to-end and answer Q1v12-Q5v12 (§14) — the separate-pending-list
+> consumer sweep and the re-mint crash matrix especially. Q5v12 is the explicit convergence gate.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -35,7 +32,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H13, the R1-R10 fold records, and questions Q1v11-Q5v11).
+   honest notes H1-H13, the R1-R11 fold records, and questions Q1v12-Q5v12).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -45,9 +42,10 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v11-Q5v11 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the client sync contract — `sync.js` pull cursor
-(~:1819-1900, the ID cursor + frozen ceiling + lookback) and tombstone application (~:2030-2110). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v12-Q5v12 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the ledger's Enforce-Unique `TransactionId`
+constraint (AZURE-CHUNK2-SCOPE.md) and the archive LA copy/publish ordering
+(audit-artifacts/archive-def-current.json). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
