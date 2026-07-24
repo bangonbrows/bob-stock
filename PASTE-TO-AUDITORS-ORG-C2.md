@@ -1,5 +1,23 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R21
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R22
 
+> ## ROUND 22 — re-review after the round-21 folds
+> Round-21 verdicts: BOTH BLOCK — 4 distinct REAL findings (1 CONVERGED pair), all folded (the
+> design doc's **R21 fold record table**). Q2v21 (one retention lifecycle) confirmed. AGY had just
+> ONE finding; the design is "extremely close." The folds: (1) [CONVERGED] the cleanup deleted live
+> rows by an age cutoff, but the unit-move archives a target's correction rows regardless of age —
+> so a recent correction row was stranded in live and then destroyed by the sweep; the cleanup now
+> deletes the EXACT set of rows a run archived (identified by the run itself), not by an age cutoff;
+> (2) the original-row identity the sweep matches on is now cryptographically sealed into the run's
+> integrity hash, so a hand-edit of that field breaks the hash and halts rather than misdirecting a
+> deletion; (3) a replayed transaction that used to create a phantom live row is now caught by
+> checking both the live and archive lists on push (so it's acknowledged without a duplicate), which
+> also fixes a later archive-ID collision; (4) a withdrawn correction no longer trips the
+> "unadjudicated deletion" export blocker (an explicit-null head is adjudicated history). Two folds
+> are flagged as scoped amendments to existing surfaces (the push validator and the archive
+> fidelity hash) for the return re-audit. This round: re-review end-to-end and answer Q1v22-Q5v22
+> (§14) — the exact per-run deletion set especially. Q5v22 is the explicit convergence gate.
+>
+> [Superseded R21 summary retained below for reference:]
 > ## ROUND 21 — re-review after the round-20 folds
 > Round-20 verdicts: BOTH BLOCK — 4 distinct REAL findings (some converged) + a note, all folded
 > (the design doc's **R20 fold record table**). Q4v20 (the §4/§8 collision-recovery text parity)
@@ -87,7 +105,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R20 fold records, and questions Q1v21-Q4v21).
+   honest notes H1-H14, the R1-R21 fold records, and questions Q1v22-Q5v22).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -97,10 +115,10 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v21-Q4v21 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the archive row's `SourceId` provenance (Chunk-8
-preserves the original Live item id), the archive LA's publish-then-Live-delete ordering
-(archive-def:266), and the reconcile-completes-Live-delete algorithm (N10). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v22-Q5v22 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the UNIT-MOVE archiving off-cutoff control rows
+(N10), the archive fidelity-hash canonical (extended to cover SourceId), and push-v2 global
+idempotency (Live+Archive). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
