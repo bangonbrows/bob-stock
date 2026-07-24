@@ -1,5 +1,23 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R20
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R21
 
+> ## ROUND 21 — re-review after the round-20 folds
+> Round-20 verdicts: BOTH BLOCK — 4 distinct REAL findings (some converged) + a note, all folded
+> (the design doc's **R20 fold record table**). Q4v20 (the §4/§8 collision-recovery text parity)
+> PASSED with both — the seventh sub-question closed. Both reviewers CONFIRMED the Live-presence
+> sweep DIRECTION is right; the problem was recovery precision. The folds: (1) the sweep now keys
+> on the archive row's durable original-row identity (`SourceId`), NOT the transaction id — a
+> device replaying an old transaction mints a NEW row id, so it no longer trips the sweep into
+> deleting the legit archived copy; (2) the recovery step now actually COMPLETES a published run's
+> leftover live-deletions before the sweep runs (a run that published then crashed mid-cleanup no
+> longer leaves published rows looking like junk); (3) a stale line in N16 that still demanded a
+> live manifest head is removed, so N10/N16/export/cutover all state ONE retention lifecycle
+> (retention by not-in-live; export-active-selection by head); (4) the cutover briefly fences the
+> push path during its scan so live-presence can't change mid-classification, and completes any
+> published legacy run's deletions first. This round: re-review end-to-end and answer Q1v21-Q4v21
+> (§14) — the SourceId sweep + reconcile completion especially. Q4v21 is the explicit convergence
+> gate.
+>
+> [Superseded R20 summary retained below for reference:]
 > ## ROUND 20 — re-review after the round-19 folds
 > Round-19 verdicts: BOTH BLOCK — 4 distinct REAL findings (2 CONVERGED pairs) + a proof cleanup,
 > all folded (the design doc's **R19 fold record table**). Q4v19 (foreign-collision) PASSED with
@@ -69,7 +87,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R19 fold records, and questions Q1v20-Q5v20).
+   honest notes H1-H14, the R1-R20 fold records, and questions Q1v21-Q4v21).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -79,10 +97,10 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v20-Q5v20 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the LIVE-PRESENCE sweep (N10), the archive LA's
-delete-from-Live-after-publish ordering (Chunk-8 archive-def), and the engine's dual-list dedup
-(CHUNK8 item 5 / SR-70). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v21-Q4v21 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the archive row's `SourceId` provenance (Chunk-8
+preserves the original Live item id), the archive LA's publish-then-Live-delete ordering
+(archive-def:266), and the reconcile-completes-Live-delete algorithm (N10). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
