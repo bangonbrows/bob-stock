@@ -1,25 +1,28 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R10
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R11
 
-> ## ROUND 10 — re-review after the round-9 folds
-> Round-9 verdicts: one reviewer PASS (THIRD consecutive explicit all-clear on the closure gate)
-> · one reviewer BLOCK×4, ALL REAL, all folded (the design doc's **R9 fold record table**). Both
-> must pass the same revision, so this round goes to both. The R9 folds: (1) the tombstone-set
-> record gets its DURABLE ARTIFACT — N17 `archive_run_record` (one sealed AppConfig item per
-> run: immutable RunId key, TombstoneIds built from the EXACT snapshotCompute input array,
-> `runrec-v1` seal verified on read, record-durable-BEFORE-publish ordering, [] a valid empty
-> set vs absent = UNDECIDABLE — closing the storage/authority gap); (2) the one uncovered
-> own-claim cell is pinned: committed × ledger-row-absent ⇒ `CONTROL_ROW_MISSING`, fail-closed
-> terminal + surfaced, NEVER reconstructed, with a retire_claim ABSENT-ROW EVIDENCE lane as the
-> Director remedy (and a matching reconcile anomaly sweep); (3) own-identity RETENTION through
-> `pending_supersede` is pinned (top-level OpId/ControlId keep the prior committed identity;
-> the own matcher also checks PriorCommitted as a belt) — the R8 branch is now provably
-> reachable; (4) the divergence warning is GENERALIZED: `deviceConvergencePending` +
-> `affectedTarget` ride EVERY mode whose effective result devices cannot reconstruct
-> (retirement, withdraw/supersede of adopted deletions, all Director corrections), stored +
-> replayed + set by recovering workers; ADOPT alone is exempt with pinned reasoning (the
-> tombstone was already device-applied — no NEW divergence). This round: re-review end-to-end
-> and answer Q1v10-Q5v10 (§14) — the N17 crash splits and the convergence-warning family
-> especially. Q5v10 is the explicit convergence gate.
+> ## ROUND 11 — re-review after the round-10 folds
+> Round-10 verdicts: BOTH BLOCK — 4 distinct REAL findings (1 CONVERGED pair), all folded (the
+> design doc's **R10 fold record table**). The headline is a SECOND engineer-mechanism
+> refutation, and it retires a design element that had survived since round 3: the STAGED
+> VISIBILITY FLIP (insert a tombstone `pending`, later MERGE it to `committed`) is incompatible
+> with the client's immutable ID cursor — the row keeps its original id, so any peer whose
+> cursor had already passed it would NEVER receive the deletion. Replaced by the COMMIT-TIME
+> RE-MINT: at the commit point the route inserts a FRESH committed copy at a NEW id (ahead of
+> every cursor, delivered like any ordinary row) and then deletes the pending copy
+> (write-before-delete); the scrub completes either half. This restores H10's one-round-trip
+> claim and the adopt exemption's premise. The other folds: (1) the ENUMERATION CONTRACT —
+> absence is now proven by a STRICT SEQUENTIAL Live → Archive → Quarantine walk (every mover
+> writes its destination before deleting its source, so this order cannot miss a row mid-move)
+> PLUS an idle-with-same-ETag stability interval around the complete paged walk; anything else
+> is transient, never terminal; (2) N17 hardened into its own list with an Enforce-Unique
+> RunId, an InputDigest (a crashed run's retry with a differing input is REJECTED — recompute
+> needs a fresh id), create-if-absent + outcome-by-read, and server-minted run ids; (3)
+> TombstoneIds switch from numeric row ids to STABLE TransactionIds — this deletes the entire
+> ID-coordinate class from the design AND restores the membership coordinate for rows that have
+> vanished (the absent-row retirement lane decides its delta with no extra machinery). This
+> round: re-review end-to-end and answer Q1v11-Q5v11 (§14) — the re-mint's cursor-delivery and
+> duplicate-transient consequences, and the enumeration contract's coverage of every mover,
+> especially. Q5v11 is the explicit convergence gate.
 
 **Context.** Routine internal design review for our own stock-management app (Bang on Brows, Perth;
 reviewers and engineer all work for the owner). This is a PAPER review of a design document — nothing
@@ -32,7 +35,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H13, the R1-R9 fold records, and questions Q1v10-Q5v10).
+   honest notes H1-H13, the R1-R10 fold records, and questions Q1v11-Q5v11).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -42,8 +45,9 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v10-Q5v10 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v11-Q5v11 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the client sync contract — `sync.js` pull cursor
+(~:1819-1900, the ID cursor + frozen ceiling + lookback) and tombstone application (~:2030-2110). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
