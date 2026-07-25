@@ -121,8 +121,89 @@ function verifyRow(keyring, row) {
   }
 }
 
+// ── OS-W4.4 CONTRACT 2 FRAMES (N11 scoped amendment — design AZURE-CHUNK-ORG-W44-C2-DESIGN.md) ──────
+// FOUR additional canonical frames beside econ-v1 (which is FROZEN above — C1-audited, untouched):
+//   ctl-v1        control seals (§7a): control-level fields + the replacement output row's FULL
+//                 ENGINE ROW FORM (C2-R2-2 class rule — derived from the buybackExport.js header
+//                 enumeration, incl. TransferId/UnitPriceAtTime/IdempotencyKey).
+//   ctlcommit-v1  device-tombstone commit seals (§8/C2-R4-5): {TransactionId, TargetTransactionId}.
+//   epoch-v1      the seal-epoch artifact (N16/C2-R4-7).
+//   runrec-v1     archive run records' immutable fields (N17/C2-R9-1/C2-R22-1/C2-R23-1).
+//   runrec-pub-v1 the N17 Published marker (C2-R14-3) — separate so stamping never invalidates
+//                 RecordSig.
+// TYPED canonical (C2-R7-5): each covered field encodes as [1, <raw JSON value>] when present or
+// [0] when ABSENT — so 0, null, '' and field-absent are FOUR distinct encodings (the econ-v1
+// String-coercion canonical is deliberately NOT reused; it collapses those). The frame name leads
+// the array ⇒ full domain separation between frames under the same pepper.
+const CTL_V1_FIELDS = [
+  // control-level immutable identity (§7a):
+  'ControlId', 'ControlType', 'TargetTransactionId', 'ControlRevision', 'BornPublicationVersion',
+  'TargetLine', 'OriginalEventAt',
+  // the replacement output row's FULL ENGINE ROW FORM (absent for deletions — [0] encodings):
+  'TransactionId', 'StoreId', 'ProductId', 'Type', 'Qty', 'Date', 'Timestamp', 'Reason',
+  'StockFrom', 'StockTo', 'StockFromStoreId', 'StockToStoreId', 'TransferId', 'IdempotencyKey',
+  'UnitPriceAtTime', 'SellAtSupply', 'DiscAtSupply', 'PricingVersion', 'CatalogueVersion'
+];
+const FRAME_FIELDS = {
+  'ctl-v1': CTL_V1_FIELDS,
+  'ctlcommit-v1': ['TransactionId', 'TargetTransactionId'],
+  'epoch-v1': ['epochId', 'tombstoneCommitEpochId', 'archiveC2EpochId', 'recordedAt'],
+  'runrec-v1': ['RunId', 'SnapshotVersion', 'InputDigest', 'TombstoneIds', 'ArchiveMemberSourceIds'],
+  'runrec-pub-v1': ['RunId']
+};
+// Fixed literals baked into a frame's canonical (state the signature attests, not a field):
+const FRAME_SUFFIX = { 'ctlcommit-v1': ['committed'], 'runrec-pub-v1': ['published'] };
+
+function canonicalFrame(frame, obj) {
+  const fields = FRAME_FIELDS[frame];
+  if (!fields) return null;
+  const o = obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+  const parts = [frame];
+  for (const f of fields) {
+    if (Object.prototype.hasOwnProperty.call(o, f)) {
+      const v = o[f];
+      // Only JSON-representable primitives/arrays are attestable; anything else fails closed at sign.
+      parts.push([1, v === undefined ? null : v]);
+    } else {
+      parts.push([0]);
+    }
+  }
+  for (const s of (FRAME_SUFFIX[frame] || [])) parts.push(s);
+  return JSON.stringify(parts);
+}
+function signFrame(keyring, frame, obj) {
+  const canon = canonicalFrame(frame, obj);
+  if (canon === null) return null;
+  const kid = keyring.active;
+  return 'v1:' + kid + ':' + crypto.createHmac('sha256', keyring.peppers[kid]).update(canon).digest('hex');
+}
+function verifyFrame(keyring, frame, obj, sig) {
+  const canon = canonicalFrame(frame, obj);
+  if (canon === null) return false;
+  const m = SIG_RE.exec(typeof sig === 'string' ? sig : '');
+  if (!m) return false;
+  const pepper = keyring.peppers[m[1].toLowerCase()];
+  if (!pepper) return false; // unknown / retired kid ⇒ fail closed
+  const expected = crypto.createHmac('sha256', pepper).update(canon).digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(m[2].toLowerCase(), 'hex'));
+  } catch (e) {
+    return false;
+  }
+}
+
 function evaluate(keyring, body) {
   const rows = body.rows;
+  // NEW FRAMES (N11): body.frame selects; absent/'econ-v1' ⇒ the FROZEN C1 row path below,
+  // byte-for-byte unchanged. New-frame items: sign ⇒ {items:[obj,...]} → {sigs:[...]};
+  // verify ⇒ {items:[{obj, sig},...]} → {results:[bool,...]}.
+  if (body.frame && body.frame !== 'econ-v1') {
+    if (!FRAME_FIELDS[body.frame]) return { error: 'unknown frame' };
+    if (body.op === 'sign') {
+      return { sigs: rows.map(r => signFrame(keyring, body.frame, r)) };
+    }
+    return { results: rows.map(r => verifyFrame(keyring, body.frame, r && r.obj, r && r.sig)) };
+  }
   if (body.op === 'sign') {
     return { sigs: rows.map(r => ({ TransactionId: r && r.TransactionId != null ? String(r.TransactionId) : '', EconSig: signRow(keyring, r) })) };
   }
@@ -150,4 +231,5 @@ app.http('attestRows', {
   }
 });
 
-module.exports = { COVERED_FIELDS, canonical, signRow, verifyRow, evaluate, keyringFromEnv }; // exported for the proof suite
+module.exports = { COVERED_FIELDS, canonical, signRow, verifyRow, evaluate, keyringFromEnv,
+  FRAME_FIELDS, CTL_V1_FIELDS, canonicalFrame, signFrame, verifyFrame }; // exported for the proof suite
