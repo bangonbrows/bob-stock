@@ -1,5 +1,22 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R24
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R25
 
+> ## ROUND 25 — re-review after the round-24 fold
+> Round-24 verdicts: ONE reviewer PASSED with an explicit convergence declaration ("unequivocally
+> SOUND... fully converged... clear to proceed"); the other BLOCKED on ONE final finding with "no
+> other high-confidence finding". The finding: the mode-split's discriminator ("published = valid
+> PublishedSig") was itself a DELETABLE marker — stripping it dropped a published run into the
+> lenient subset mode, where a MISSING archived member escapes the HALT (subset verification proves
+> observed rows were intended; it cannot see absences). The fold adopts that reviewer's own
+> correction — a LEDGER-STATE discriminator: SUBSET MODE IS PERMITTED ONLY WHEN every intended
+> SourceId in the signed member list STILL EXISTS IN LIVE (the pre-publication invariant — a
+> genuinely unpublished/mid-copy run never deleted its Live originals). Any intended member absent
+> from Live ⇒ the run cannot be unpublished ⇒ FULL-SET equality is required (a missing archived
+> member ⇒ HALT + surface). A published run's originals are gone from Live, so NO marker deletion
+> can ever downgrade it. PublishedSig remains a fast-path hint only. (Also: the H14 wording note is
+> fixed.) This round: answer Q1v25 (re-walk the matrix with the new discriminator) and Q2v25 — the
+> convergence gate.
+>
+> [Superseded R24 summary retained below for reference:]
 > ## ROUND 24 — re-review after the round-23 folds
 > Round-23 verdicts: BOTH BLOCK on ONE converged finding — the SAME one from each reviewer, and
 > one reviewer explicitly stated "no other high-confidence Contract-2 defect found". Q2v23 (legacy
@@ -143,7 +160,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R23 fold records, and questions Q1v24-Q2v24).
+   honest notes H1-H14, the R1-R24 fold records, and questions Q1v25-Q2v25).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -153,9 +170,9 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v24-Q2v24 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's fold leans on the N17 signed exact member list
-(`ArchiveMemberSourceIds`) and the mode-split published/unpublished verification (N10/N17). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v25-Q2v25 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's fold leans on the LEDGER-STATE mode discriminator (subset only
+while every intended member is still in Live — N10/N17/C2-R24-1). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
