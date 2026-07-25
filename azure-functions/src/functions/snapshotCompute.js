@@ -52,12 +52,24 @@ function hashRows(rows) {
   // Framing switched join('|') -> JSON.stringify: the labels are free-ish text, and a '|' inside a value
   // could make two DIFFERENT rows canonicalise identically (the same field-boundary-injection class the
   // EconSig canonical closed). Symmetric on both sides of the compare, so equality semantics are preserved.
+  // ⚠ OS-W4.4 C2 (C2-R6-4/C2-R7-5; interim LA review R2 finding 2 — flagged for the return
+  // re-audit): the FULL N7 CONTROL FORM joins the canon, typed. Without it a copy mapping that
+  // DROPPED ControlId (or mutated ControlState/CommitSig) hashed IDENTICAL to its source, the run
+  // passed the fidelity gate, and the live-delete then destroyed the only complete control row —
+  // leaving an archived control that can no longer be tied to its manifest head. The hash is
+  // per-run TRANSIENT (computed on the source, compared to the archive re-read inside the same
+  // run — no stored hash field exists anywhere), so extending the canon is safe by construction:
+  // both sides are always hashed by the same code. Pre-C2 rows carry none of these columns => ''
+  // on BOTH sides => equality semantics unchanged for legacy runs.
   const canon = r => JSON.stringify([String(r.TransactionId || ''), String(r.StoreId || ''), String(r.ProductId || ''),
     typeOf(r), String(num(r.Qty)), tsOf(r), String(r.TransferId || ''), String(r.TargetTransactionId || ''),
     dateOf(r), String(r.Reason || ''), String(r.IdempotencyKey || ''), String(r.EconSig || ''),
     optNum(r.SellAtSupply), optNum(r.DiscAtSupply), optNum(r.PricingVersion), optNum(r.CatalogueVersion),
     optNum(r.UnitPriceAtTime), String(r.StockFromStoreId || ''), String(r.StockToStoreId || ''),
-    String(r.StockFrom || ''), String(r.StockTo || '')]);
+    String(r.StockFrom || ''), String(r.StockTo || ''),
+    String(r.ControlId || ''), String(r.ControlType || ''), optNum(r.ControlRevision),
+    optNum(r.BornPublicationVersion), String(r.TargetLine || ''), String(r.OriginalEventAt || ''),
+    String(r.ControlState || ''), String(r.CommitSig || '')]);
   const parts = rows.map(canon).sort();
   return crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 }
@@ -87,11 +99,6 @@ function compute(body) {
   // already pruned) leaves the correct total. RESIDUAL (documented): a tombstone that arrives in a LATER
   // archival cycle for an already-archived+snapshotted original cannot retroactively adjust that snapshot -
   // mitigated operationally (C7-style: don't delete long-archived movements; retain window keeps pairs together).
-  const tombstoned = new Set();
-  for (const r of rows) {
-    if (typeOf(r) === 'deleted') { const tgt = r.TargetTransactionId; if (tgt != null && tgt !== '') tombstoned.add(String(tgt)); }
-  }
-
   // ⚠ OS-W4.4 CONTRACT 2 SCOPED AMENDMENT (C2-R4-E1 v3 / C2-R5-4 / C2-R6-3; C2-LA finding 3;
   // flagged for the return re-audit): CONTROL-AWARE EFFECTIVE-VALUE folding. When the caller
   // supplies the active control manifest (body.controlHeads — the C2 archive LA does; absent =>
@@ -102,6 +109,13 @@ function compute(body) {
   //     control for its target (historical/superseded control rows contribute nothing);
   //   - a NULL-head (withdrawn/retired) target folds normally — it is PRESENT again.
   // Applied identically to full/snap/kept, so the neutrality proof below is preserved.
+  // C2 DISCRIMINATOR (interim LA review R2 finding 5): the C2 archive LA ALWAYS supplies
+  // `controlHeads` (possibly {}); a legacy/pre-C2 caller never sends the property at all. Keying
+  // the C2 partition on PROPERTY PRESENCE — not on the map being non-empty — is what makes the
+  // absent case byte-identical to pre-C2. Without it the unit-move fired on ordinary tombstones
+  // for legacy callers too, so merely DEPLOYING this function (§D step 3) would have changed live
+  // archive behaviour before the legacy writer was disabled (§D step 4).
+  const c2Mode = Object.prototype.hasOwnProperty.call(body, 'controlHeads');
   const controlHeads = (body.controlHeads && typeof body.controlHeads === 'object' && !Array.isArray(body.controlHeads)) ? body.controlHeads : {};
   const hasHead = (t) => Object.prototype.hasOwnProperty.call(controlHeads, t);
   const controlSuppressed = (r) => {
@@ -114,6 +128,31 @@ function compute(body) {
     const head = hasHead(String(r.TransactionId)) ? controlHeads[String(r.TransactionId)] : null;
     return !!head; // ACTIVE-headed target => corrected away; null head => folds normally
   };
+
+  // Tombstone set — built AFTER the manifest is known (interim LA review R2 finding 1). The
+  // pre-C2 rule ("any Type='deleted' row suppresses its target") silently defeated the null-head
+  // lane: a device tombstone that was adopted and then WITHDRAWN/RETIRED leaves controlHeads[T]
+  // === null, meaning T is PRESENT again — but the historical tombstone row still sat in the input
+  // and excluded T from balances (repro: T=+10 folded as []). A tombstone therefore suppresses its
+  // target only while it is the ACTIVE authority for it:
+  //   - explicit NULL head on the target  => withdrawn/retired => suppresses NOTHING;
+  //   - a CONTROL tombstone that is not the active head => historical => suppresses NOTHING;
+  //   - no head recorded (incl. every legacy/pre-C2 call, where hasHead is always false)
+  //     => unchanged Chunk-8 behaviour.
+  const tombstoned = new Set();
+  for (const r of rows) {
+    if (typeOf(r) !== 'deleted') continue;
+    const tgt = r.TargetTransactionId;
+    if (tgt == null || tgt === '') continue;
+    const t = String(tgt);
+    if (hasHead(t)) {
+      const head = controlHeads[t];
+      if (!head) continue;                       // explicit null head: the target is restored
+      const cid = r.ControlId != null && r.ControlId !== '' ? String(r.ControlId) : null;
+      if (cid !== null && head.controlId !== cid) continue; // superseded control tombstone
+    }
+    tombstoned.add(t);
+  }
 
   // FULL balance per pair (all rows) - the ground truth we must preserve.
   const full = new Map();
@@ -139,9 +178,9 @@ function compute(body) {
   }
   // ⚠ C2 UNIT-MOVE (C2-R6-3, same amendment): a qualifying TARGET pulls ALL its control/tombstone
   // rows into the SAME run regardless of their own ids/timestamps (they are never client-covering-
-  // relevant; SR-70 same-list preserved by construction). No-op when controlHeads absent AND no
-  // ControlId columns are present in the input (pre-C2 calls).
-  {
+  // relevant; SR-70 same-list preserved by construction). Gated on the C2 DISCRIMINATOR — a caller
+  // that never sends `controlHeads` gets the exact pre-C2 partition (R2 finding 5).
+  if (c2Mode) {
     const archIds = new Set(toArchive.map(r => String(r.TransactionId)));
     const rides = (r) => {
       const tgt = r.TargetTransactionId != null && r.TargetTransactionId !== '' ? String(r.TargetTransactionId) : null;

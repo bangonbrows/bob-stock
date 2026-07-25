@@ -1,9 +1,10 @@
 # OS-W4.4 Contract 2 — CONCRETE STAGING ARTIFACTS (LA definitions + apply inventory)
 
-**Status: 🔍 W-B2r INTERIM LA REVIEW — ROUND 2 (confirm-folds). R1 returned AGY×2 + Codex×11 = 13
-REAL findings, ALL folded @ `bb1987e` (fold record §F, questions §G). Cadence option 2: paper
-review of these definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full
-build audit vs the DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
+**Status: 🔍 W-B2r2 INTERIM LA REVIEW — ROUND 3. R1: AGY×2 + Codex×11 = 13 REAL, folded @
+`bb1987e` (fold record §F). R2: AGY PASS + Codex BLOCK×6 — all six REAL, zero refuted, folded
+(fold record §H, questions §I); suite 127 → 144/144. Cadence option 2: paper review of these
+definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
+DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
 CONVERGED 2026-07-25 — Codex R25 PASS "No findings" + AGY PASS confirmed on the same revision).
 This document is the IMPLEMENTATION-level companion: it maps every converged design rule onto
 concrete Logic-App actions, SharePoint REST calls, and `correctionCompute`/`attestRows` ops, so
@@ -83,11 +84,20 @@ targetTransactionId?, expected?, control?}}`. Every terminal path returns via `R
 **P4 — compute (ALL decisions via `correctionCompute`):**
 13. op:`targetLine` (real foldProjection authority; `TARGET_PRE_EPOCH`/`ROW_NOT_IN_TRANSFER_LEDGER`
     refusals) → op:`stamps` (replacement modes; `STAMPS_UNRESOLVABLE` ⇒ rollback-release+Response)
-    → op:`membership` (adopt/retire: SP GET the target's ArchiveRunRecords row + attestRows
-    runrec-v1 verify feed the input) → op:`delta` (`*_DELTA_UNDECIDABLE` ⇒ rollback-release) →
+    → op:`membership` (adopt/retire) → op:`delta` (`*_DELTA_UNDECIDABLE` ⇒ rollback-release) →
     op:`candidate` (heads + AdoptionDecisions + ids; `NO_PENDING_ADOPTIONS` ⇒ terminal no-op
     Response BEFORE any write, C2-R3-5). Deterministic-id collision check: SP GET both lists for
     `corr:`/`ctl:` ids.
+13a. **op:`membership` INPUT MAPPING — PINNED (R2 finding 4).** The LA SP-GETs the run record from
+    `ArchiveRunRecords_Staging` by the TARGET ROW's `ArchiveRunId`, verifies it with attestRows
+    frame:'runrec-v1', and posts EXACTLY:
+    `{ targetLocation, tombstoneTransactionId, target: { archiveRunId: <target row ArchiveRunId>,
+    snapshotVersion: <target row SnapshotVersion> }, runRecord: { RunId, SnapshotVersion,
+    TombstoneIds, recordSigValid } }`. **Both target bindings are MANDATORY** — the op treats a
+    missing/blank binding on EITHER side as `undecidable` and never as a match (the bind test used
+    to compare two `undefined`s and pass, deciding membership on nothing). The op also reads raw
+    SharePoint casing (`ArchiveRunId`/`SnapshotVersion`) as a belt, so a normalization gap cannot
+    turn every legitimate archived adoption permanently undecidable.
 
 **P5 — journal + candidate (publish-nothing; §3a boundary re-stamps after EVERY numbered step —
 an ETag-CAS `heartbeatAt` MERGE on archive_state; failure ⇒ ABORT, self-rollback):**
@@ -168,8 +178,14 @@ ONLY releases the stranded claim (NEVER deletes the winner's N18 row, C2-R15-2).
 N17 record (RunId create-if-absent + InputDigest + TombstoneIds + ArchiveMemberSourceIds +
 RecordSig via frame:'runrec-v1') written + durable BEFORE Copy_loop (C2-R15-1/C2-R22-1/C2-R23-1);
 UNIT-MOVE selection (target-keyed full predicate; control/tombstone rows ride the same run,
-C2-R6-3 — implemented INSIDE snapshotCompute's partition, W-B2r) with the SELECT/copy/re-read/
-fidelity canonical carrying the FULL N7 control form + typed values (C2-R6-4/C2-R7-5);
+C2-R6-3 — implemented INSIDE snapshotCompute's partition, W-B2r; **gated on the C2 discriminator —
+`controlHeads` PROPERTY PRESENCE, not emptiness — so a legacy caller keeps the exact pre-C2
+partition, R2 finding 5**) with the SELECT/copy/re-read/
+fidelity canonical carrying the FULL N7 control form + typed values (C2-R6-4/C2-R7-5 — **shipped in
+`hashRows` at W-B2r2: `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`,
+`TargetLine`, `OriginalEventAt`, `ControlState`, `CommitSig` joined the canon; R2 finding 2 caught
+the claim running ahead of the code, so a copy that DROPPED ControlId hashed identical to its
+source and the live-delete then destroyed the only complete control row**);
 **`Call_compute` PASSES the active `controlManifest.controlHeads` (from the captured
 stock_snapshot) into snapshotCompute, which now folds EFFECTIVE values (Codex C2-LA finding 3 —
 the ⚠ flagged C8-surface amendment, shipped W-B2r: active-headed targets excluded, active-head
@@ -194,15 +210,28 @@ excluded BY CONSTRUCTION. Real-list OData null semantics = a staging-apply probe
 ## D. THE APPLY RUNNER `audit-artifacts/apply-c2-staging.js` (Kunal-executed; idempotent)
 
 Steps (C1 runner pattern — temp passthru LA, prints no secrets; ORDER REVISED per the interim
-review — AGY C2-LA-2 + Codex findings 1/2):
+review — R1: AGY C2-LA-2 + Codex 1/2; R2: Codex 6 moved the `archive_state` transform inside the
+quiesced window):
 (1) lists+columns per §A (create-if-missing; Enforce-Unique via field XML
     `EnforceUniqueValues="TRUE" Indexed="TRUE"`);
-(2) `archive_state` v2 TRANSFORM (preserve content, add v:2 fields);
+(2) *(nothing — `archive_state` is NOT touched here; see step (4). **R2 finding 6:** the transform
+    used to run at this point, while the legacy archive LA was still ENABLED. That LA rebuilds the
+    whole ConfigData from a fresh `json('{}')` carrying only status/runId/lockAt on BOTH acquire
+    and release (archive-def-current.json:31 and :355 — the release even writes `IF-MATCH: *`, so
+    it cannot be ETag-fenced). A single legacy run starting between steps (2) and (4) therefore
+    ERASED `state`, `v:2` and the request flags, and step (5) would then deploy N10/N1 against an
+    old-shape coordination record. The writer must be disabled AND idle before the shape changes.)*;
 (3) **REDEPLOY THE FUNCTION APP FIRST** (correctionCompute + the attestRows frames +
     validateUser 'correction') — the epoch seal in step (4) NEEDS frame:'epoch-v1' live
-    (AGY C2-LA-2: signing before deploy = 400 mid-quiescence);
+    (AGY C2-LA-2: signing before deploy = 400 mid-quiescence). SAFE to deploy this early: the
+    amended `snapshotCompute` is byte-identical to pre-C2 for any caller that does not send the
+    `controlHeads` property, and the legacy archive LA never sends it (R2 finding 5 — the C2
+    partition keys on PROPERTY PRESENCE, so deploying does not change live archive behaviour
+    during the step (3)→(6) window);
 (4) the QUIESCENT CUTOVER (C2-R18-3/C2-R19-3/C2-R20-4): DISABLE the legacy archive LA + FENCE
-    push (disable the push LA for the bounded interval) → wait idle → complete any published
+    push (disable the push LA for the bounded interval) → wait idle → **`archive_state` v2
+    TRANSFORM (preserve content, add v:2 fields) — HERE, now that the only writer of that item is
+    disabled and idle (R2 finding 6)** → complete any published
     legacy run's Live-delete by its exact set → SourceId residue cleanup (legacy AUTH BYPASS
     documented, C2-R22-1) → seal `{epochId, tombstoneCommitEpochId, archiveC2EpochId}` + EpochSig.
     **EPOCH RERUN RULE (Codex 2): strictly create-if-absent — an EXISTING seal_epoch item with a
@@ -275,3 +304,48 @@ CSP PASS. Zero client files touched.
   byte-identical to pre-C2?
 - **QG5:** Anything in the R1 round you raised that you consider NOT closed, or any remaining
   implementation-fidelity gap you did not report in R1.
+
+---
+
+## H. INTERIM LA REVIEW — ROUND 2 FOLD RECORD (`W-B2r2`)
+
+**R2 verdicts: AGY PASS (all four QL questions) · Codex BLOCK×6.** Every Codex finding was
+reproduced against the real modules before any fix, and **all six were REAL — zero refuted.** AGY
+passed QL1/QL2/QL3 on three surfaces Codex proved broken; the repros below are the ground truth.
+Codex confirmed F1, F2's epoch/re-enable ordering, and F6-F11 closed as claimed, and rated F3/F4/F5
+only PARTIALLY closed — correctly. Proof suite 127 → **144/144**.
+
+| # | Finding | Repro (run before the fix) | Fold |
+|---|---|---|---|
+| **G1** | The **null-head lane was dead**. `snapshotCompute` built the `tombstoned` set unconditionally from every `Type='deleted'` row and excluded those targets BEFORE the manifest was consulted — so a device tombstone that was adopted and then WITHDRAWN/RETIRED (`controlHeads[T] === null`, meaning T is present again) still suppressed T. Contradicted §C:172 and design:134. | T=+10 with a withdrawn tombstone folded `balances: []` instead of `+10`. **Server balances lost every restored target at archive time.** | The set is now built AFTER the manifest and a tombstone suppresses its target only while it is the ACTIVE authority: explicit-null head ⇒ suppresses nothing; a control tombstone that is not the active head ⇒ suppresses nothing; no head recorded (every legacy call) ⇒ unchanged Chunk-8 rule. `snapshotCompute.js` |
+| **G2** | The **archive fidelity hash ignored the entire N7 control form** — `hashRows` still carried only the C1 field set, while §C:169 claimed the full typed N7 set (design:153). | `hashRows(source) === hashRows(copyWithoutControlId)` returned **true**. A copy mapping that dropped `ControlId` passed the gate, and the run then deleted the complete live control row — leaving an archived control that can never be tied to its manifest head. | `ControlId`, `ControlType`, `ControlRevision`, `BornPublicationVersion`, `TargetLine`, `OriginalEventAt`, `ControlState`, `CommitSig` joined the canon, typed. The hash is per-run TRANSIENT (source vs archive re-read, same code both sides; no stored hash field exists anywhere), and legacy rows carry none of these columns ⇒ `''` on both sides ⇒ legacy equality semantics unchanged. `snapshotCompute.js` |
+| **G3** | **F4 was only half-built.** (a) `computeDelta` short-circuited on `targetLocation:'live'` BEFORE any validation. (b) `validEconRow` accepted any non-empty type, while the frozen engine classifies `deleted` and every unknown type as direction **none** — `effectOf` scored them OUTBOUND. | (a) A live-target replacement with `qty:-5` returned `{ok:true, suppressed:'live-ensemble'}` and was sealable/publishable as the active control. (b) On an archived +10 target, replacement type `deleted` **or** `unknown_type` both returned delta **−15**, which the engine would never agree with ⇒ snapshot arithmetic and settlement diverge permanently. | (a) The cell arithmetic ALWAYS runs so the consumed rows are always validated; the live suppression is applied to the RESULT. (b) `hasEconDirection` consults the frozen engine's own `classify`; a directionless row is malformed by construction and refuses `INVALID_ROW`. `correctionCompute.js` |
+| **G4** | The **membership bind test passed when both sides were missing** (`undefined !== undefined` is false), and §B never pinned the input mapping. | With both bindings omitted a `recordSigValid:true` record returned `excluded` — deciding membership on nothing. Under raw SharePoint casing (`ArchiveRunId`) a legitimate archived adoption instead became permanently `undecidable`. | Presence is now REQUIRED on both sides (missing ⇒ `undecidable`, never a decision); the reader also accepts raw SP casing as a belt so a normalization gap cannot brick every adoption; **§B step 13a pins the exact input mapping.** `correctionCompute.js` |
+| **G5** | The **"absent `controlHeads` is byte-identical" claim was false** — the unit-move keyed on `Type='deleted'` independently of whether `controlHeads` was supplied. The R1 regression probe used only an ordinary row, so it never covered this. | Legacy input (target Id 10, tombstone Id 200, cutoff 100, **no `controlHeads` property**): old compute archives `[10]`, amended compute archived `[10,200]`. **Merely deploying the function at §D step (3) would have changed live archive behaviour before the legacy writer was disabled at step (4).** | Explicit **C2 discriminator**: `Object.prototype.hasOwnProperty.call(body,'controlHeads')`. Property ABSENT ⇒ pre-C2 partition; explicitly supplied (even `{}`) ⇒ C2 partition. §C and §D step (3) now state this, which is also what makes the early Function deploy safe. `snapshotCompute.js` |
+| **G6** | **`archive_state` was transformed to v2 at §D step (2) while the legacy archive LA was still ENABLED** (disabled only at step 4). That LA rebuilds ConfigData from a fresh `json('{}')` holding only status/runId/lockAt on BOTH acquire and release (`archive-def-current.json:31`, `:355` — the release writes `IF-MATCH: *`, so it cannot even be ETag-fenced). | A single legacy run starting between steps (2) and (4) erases `state`, `v:2` and the request flags; step (5) then deploys N10/N1 against an old-shape coordination record. | The transform MOVED inside the quiesced window — §D step (4), after the legacy archive LA is disabled and idle. Step (2) is now explicitly a no-op with the reasoning recorded. |
+
+**Two probe defects this round exposed in my own suite** (both fixed, both were masking the bugs):
+the R1 null-head probe used a *replacement* control row and never a `Type='deleted'` tombstone, so
+G1 slipped through; and the outbound-sign probe asserted on type `'usage'` — **a type that exists
+nowhere in this app** and that the engine folds as nothing — so it was asserting the very defect in
+G3b. Repinned to the real `'out'` type. Three membership probes that had been passing without target
+bindings are now bound (the unbound cases get their own explicit probes).
+
+**Gates after the fold:** correction **144/144** · attest 58/58 · archive-carry 28/28 ·
+buyback-export 170/170 · topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS.
+Zero client files touched.
+
+## I. Review questions for ROUND 3
+
+- **QI1:** Does each G1-G6 fold close its finding, and did any of them introduce a new defect?
+  G1 and G3 changed evaluation ORDER; G2 widened a hash that gates a destructive delete.
+- **QI2:** G2 makes the fidelity hash a real gate on the archive copy mapping. Is any field in the
+  new canon legitimately mutable BETWEEN the source read and the archive re-read inside one run
+  (`ControlState` especially, given the authority gate)? A false HALT there stalls archival.
+- **QI3:** G5's discriminator is property presence. Enumerate the callers: is there any path — the
+  C2 archive LA, a retry, a probe, a future caller — that could omit `controlHeads` and silently
+  get the pre-C2 partition when it needed the C2 one?
+- **QI4:** G1 changed which tombstones suppress. Are there tombstone/head combinations where the new
+  rule under- or over-suppresses versus the converged §5b semantics?
+- **QI5:** With §D now transforming `archive_state` inside the quiesced window, re-walk the runner
+  as a state machine with crashes between every pair of steps and a full re-run from step (1).

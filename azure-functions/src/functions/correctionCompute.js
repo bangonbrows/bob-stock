@@ -135,9 +135,20 @@ function mintStamps(input) {
 // effect(row) per (storeId, productId): +qty inbound, −qty outbound (the engine's own classifier).
 // C2-LA finding 4: every row entering delta arithmetic is VALIDATED first — a malformed row
 // (negative/fractional qty, missing ids) must never publish a balance change.
+// Interim LA review R2 finding 3b: "any non-empty type" was too weak. The FROZEN engine classifies
+// 'deleted' and every UNKNOWN type as direction 'none' (buybackExport.js classify) — it folds them
+// as NOTHING — while effectOf's isIn()?+1:-1 scored them as OUTBOUND. An archived +10 target with a
+// 'deleted' replacement therefore published a -15 delta that the engine would never agree with, so
+// snapshot arithmetic and settlement diverged permanently. A replacement always carries a real
+// movement type (deletions use the *-delete cells, which pass no newOutput), so a directionless row
+// entering delta arithmetic is malformed BY CONSTRUCTION: refuse it, never score it.
+function hasEconDirection(type) {
+  const d = engine.classify({ type }).direction;
+  return d === 'in' || d === 'out';
+}
 function validEconRow(row) {
   return !!row && reqId(row.storeId) && reqId(row.productId) && validQty(row.qty)
-    && typeof row.type === 'string' && row.type.length > 0;
+    && typeof row.type === 'string' && row.type.length > 0 && hasEconDirection(row.type);
 }
 function effectOf(row) {
   if (!row) return null;
@@ -159,7 +170,13 @@ function computeDelta(input) {
   const add = (row, sign) => { const e = addDelta(deltas, effectOf(row), sign); if (e && !err) err = e; };
   // NORMALIZATION LAW: live-target ensembles adjust NO balances in ANY cell (they are never in
   // balances; the N10 unit-move folds them at effective value when they archive).
-  if (input.targetLocation === 'live') return { ok: true, deltas: {}, suppressed: 'live-ensemble' };
+  // Interim LA review R2 finding 3a: the live short-circuit used to sit HERE, ahead of every
+  // validation, so a live-target replacement carrying qty:-5 returned ok/suppressed and could be
+  // sealed and published as the ACTIVE control — the malformed row only surfaced later, at archive
+  // time, where the unit-move silently dropped it (target suppressed by its head, replacement
+  // skipped as invalid) and understated the balance. The cell arithmetic now ALWAYS runs, so the
+  // rows a cell consumes are ALWAYS validated; the suppression is applied to the RESULT.
+  const isLive = input.targetLocation === 'live';
   switch (cell) {
     case 'create-replace':   // first publication; archived create target is ALWAYS in balances
       add(input.target, -1); add(input.newOutput, +1); break;
@@ -192,6 +209,7 @@ function computeDelta(input) {
     default: return refuse('UNKNOWN_CELL', cell);
   }
   if (err) return refuse(err); // C2-LA finding 4: a malformed row never publishes a balance change
+  if (isLive) return { ok: true, deltas: {}, suppressed: 'live-ensemble' }; // R2 finding 3a
   return { ok: true, deltas };
 }
 
@@ -247,11 +265,22 @@ function recoveryDecision(input) {
 //          runRecord: {RunId, SnapshotVersion, TombstoneIds, recordSigValid}|null }
 // C2-LA finding 5: the record must BIND to the target — RunId must equal the target's ArchiveRunId
 // AND SnapshotVersion must cohere (C2-R10-2) — else a wrong-run record silently mis-decides.
+// Interim LA review R2 finding 4: the bind test was a bare !== comparison, so it PASSED when both
+// sides were missing (undefined === undefined) — an unbound record then decided membership and, in
+// the repro, excluded the target on nothing. Presence is now REQUIRED on both sides: a missing
+// binding is undecidable, never a decision. The reader also accepts raw SharePoint casing
+// (ArchiveRunId/SnapshotVersion) so a normalization gap in the LA cannot mis-key the comparison and
+// make every legitimate archived adoption permanently undecidable; §B pins the mapping explicitly.
+const bindStr = (o, ...keys) => { for (const k of keys) { const v = o[k]; if (v != null && v !== '') return String(v); } return null; };
+const bindNum = (o, ...keys) => { for (const k of keys) { const v = o[k]; if (v != null && v !== '' && Number.isFinite(Number(v))) return Number(v); } return null; };
 function membershipDecision(input) {
   if (input.targetLocation === 'live') return { ok: true, decision: 'live' }; // deltas suppressed anyway
   const rec = input.runRecord, t = input.target || {};
   if (!rec || rec.recordSigValid !== true || !Array.isArray(rec.TombstoneIds)) return { ok: true, decision: 'undecidable' };
-  if (rec.RunId !== t.archiveRunId || rec.SnapshotVersion !== t.snapshotVersion) return { ok: true, decision: 'undecidable' };
+  const tRun = bindStr(t, 'archiveRunId', 'ArchiveRunId'), rRun = bindStr(rec, 'RunId', 'runId');
+  const tVer = bindNum(t, 'snapshotVersion', 'SnapshotVersion'), rVer = bindNum(rec, 'SnapshotVersion', 'snapshotVersion');
+  if (tRun === null || rRun === null || tVer === null || rVer === null) return { ok: true, decision: 'undecidable' };
+  if (rRun !== tRun || rVer !== tVer) return { ok: true, decision: 'undecidable' };
   return { ok: true, decision: rec.TombstoneIds.includes(input.tombstoneTransactionId) ? 'excluded' : 'in-balances' };
 }
 

@@ -104,8 +104,12 @@ ok('C2-R5-1 retire RESTORES an excluded target (+10)',
   D(C.computeDelta({ cell: 'retire', targetLocation: 'archive', target: ROW(10), membership: { decision: 'excluded' } })) === 10);
 ok('retire of an in-balances tombstone (never folded) -> 0',
   D(C.computeDelta({ cell: 'retire', targetLocation: 'archive', target: ROW(10), membership: { decision: 'in-balances' } })) === 0);
-ok('OUTBOUND effect sign: deleting a usage(-4) row RESTORES +4',
-  D(C.computeDelta({ cell: 'create-delete', targetLocation: 'archive', target: ROW(4, 'usage') })) === 4);
+// R2 finding 3b: this probe used to pass type 'usage' — which is NOT a ledger type anywhere in the
+// app, and which the frozen engine classifies as direction 'none'. The old effectOf scored it
+// OUTBOUND anyway, so the probe was asserting the very defect Codex found. Pinned to the REAL
+// outbound type; the directionless case is now covered by its own refusal probe (G3).
+ok('OUTBOUND effect sign: deleting an out(-4) row RESTORES +4',
+  D(C.computeDelta({ cell: 'create-delete', targetLocation: 'archive', target: ROW(4, 'out') })) === 4);
 ok('NORMALIZATION INDUCTION: create-replace -> supersede -> withdraw telescopes to zero net',
   (() => {
     const a = D(C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: ROW(10), newOutput: ROW(8) }));
@@ -161,11 +165,15 @@ ok('multi-head ADOPT: all entries present -> roll_forward',
 
 // ── 7. membership — TransactionId ∈ the N17 recorded set (C2-R10-3/C2-R11-3) ───────────────────────
 console.log('\n== membership ==');
-const REC = { TombstoneIds: ['txDel1', 'txDel2'], recordSigValid: true };
+// R2 finding 4: these probes used to omit the target bindings entirely and still got a DECISION —
+// the bind test compared two undefineds and passed. The record and the target are now bound (the
+// unbound cases are probed explicitly at G4).
+const REC = { RunId: 'R7', SnapshotVersion: 5, TombstoneIds: ['txDel1', 'txDel2'], recordSigValid: true };
+const BOUND = { archiveRunId: 'R7', snapshotVersion: 5 };
 ok('tombstone ∈ recorded set -> excluded (archiver already excluded the target)',
-  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', runRecord: REC }).decision === 'excluded');
+  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', target: BOUND, runRecord: REC }).decision === 'excluded');
 ok('tombstone ∉ set -> in-balances (the residual case)',
-  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel9', runRecord: REC }).decision === 'in-balances');
+  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel9', target: BOUND, runRecord: REC }).decision === 'in-balances');
 ok('no record -> undecidable (fail-closed manual lane)',
   C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', runRecord: null }).decision === 'undecidable');
 ok('record with INVALID RecordSig -> undecidable',
@@ -173,7 +181,7 @@ ok('record with INVALID RecordSig -> undecidable',
 ok('live target -> live (deltas suppressed by the normalization law)',
   C.membershipDecision({ targetLocation: 'live', tombstoneTransactionId: 'txDel1', runRecord: null }).decision === 'live');
 ok('ABSENT-ROW retirement decides by the registry-retained TransactionId (C2-R10-3: no numeric coordinate needed)',
-  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel2', runRecord: REC }).decision === 'excluded');
+  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel2', target: BOUND, runRecord: REC }).decision === 'excluded');
 
 // ── 8. sweepClassify — the Codex R25 ten-case matrix (C2-R17-1..C2-R24-1) ──────────────────────────
 console.log('\n== archive sweep classification ==');
@@ -474,6 +482,118 @@ ok('F3: absent controlHeads = byte-identical PRE-C2 behaviour (regression guard)
     const r = SC.compute({ rows, cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
     return r.ok && r.balances[0].balance === 10;
   })());
+
+// ── 15. INTERIM LA REVIEW ROUND 2 folds (Codex findings 1-6) ──────────────────────────────────────
+// Every one reproduced against the real modules before it was fixed; these keep them dead.
+// The R1 probes above missed findings 1 and 5 because the null-head case used a REPLACEMENT control
+// row (never a Type='deleted' tombstone) and the regression guard used a lone ordinary row.
+function tombRows() {
+  return [
+    { Id: 10, TransactionId: 'txT1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 10, TxnTimestamp: 1000 },
+    { Id: 20, TransactionId: 'txDel1', StoreId: 'boor', ProductId: 'prodA', Type: 'deleted', Qty: 0, TxnTimestamp: 1100,
+      TargetTransactionId: 'txT1', ControlId: 'ctl:dev1' }
+  ];
+}
+const balOf = (r, p) => { const b = (r.balances || []).find(x => x.productId === (p || 'prodA')); return b ? b.balance : null; };
+
+ok('G1: a WITHDRAWN device tombstone (null head) no longer suppresses its target — +10 is restored',
+  (() => {
+    const r = SC.compute({ rows: tombRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlHeads: { txT1: null } });
+    return r.ok && balOf(r) === 10; // pre-fix: [] — the raw tombstoned set ran before the manifest
+  })());
+ok('G1: an ACTIVE-head device tombstone still excludes its target (the deletion stands)',
+  (() => {
+    const r = SC.compute({ rows: tombRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3,
+      controlHeads: { txT1: { controlId: 'ctl:dev1', revision: 0, bornPublicationVersion: 3 } } });
+    return r.ok && balOf(r) === null;
+  })());
+ok('G1: with a SUPERSEDED control tombstone present, the MANIFEST is the sole authority — the fold follows the active head (+6)',
+  (() => {
+    // txT1 was deleted by ctl:dev1, then that deletion was superseded by a replacement ctl:other.
+    // The target stays suppressed (it has an active head) and the ACTIVE control folds its value;
+    // the historical tombstone contributes nothing either way. (The discriminating case for the
+    // tombstone rule itself is the NULL head above — an active head suppresses regardless.)
+    const rows = tombRows();
+    rows.push({ Id: 30, TransactionId: 'corr:op2:1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in',
+      Qty: 6, TxnTimestamp: 1300, ControlId: 'ctl:other', TargetTransactionId: 'txT1' });
+    const r = SC.compute({ rows, cutoffId: 100, runId: 'R9', snapshotVersion: 3,
+      controlHeads: { txT1: { controlId: 'ctl:other', revision: 1, bornPublicationVersion: 4 } } });
+    return r.ok && balOf(r) === 6;
+  })());
+ok('G1: a LEGACY tombstone with NO manifest still suppresses its target (pre-C2 Chunk-8 rule intact)',
+  (() => {
+    const rows = tombRows(); delete rows[1].ControlId;
+    const r = SC.compute({ rows, cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    return r.ok && balOf(r) === null;
+  })());
+
+const ctlRow = () => ({ Id: 5, TransactionId: 'corr:op1:0', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in',
+  Qty: 3, TxnTimestamp: 1200, TargetTransactionId: 'txT1', ControlId: 'ctl:op1', ControlType: 'replace',
+  ControlRevision: 0, BornPublicationVersion: 7, TargetLine: '{"qty":3}', OriginalEventAt: '2026-01-01T00:00:00Z',
+  ControlState: 'committed', CommitSig: 'sig-abc' });
+const hashOf = (rows) => SC.compute({ mode: 'hash', rows }).hash;
+ok('G2: the fidelity hash CATCHES a copy that dropped ControlId (pre-fix it hashed identical)',
+  (() => {
+    const src = [ctlRow()], copy = [ctlRow()]; delete copy[0].ControlId;
+    return hashOf(src) !== hashOf(copy);
+  })());
+ok('G2: the fidelity hash catches a mutated CommitSig / ControlState / ControlRevision / TargetLine',
+  (() => {
+    const src = [ctlRow()];
+    return ['CommitSig', 'ControlState', 'ControlRevision', 'TargetLine', 'ControlType', 'OriginalEventAt', 'BornPublicationVersion']
+      .every(f => { const c = [ctlRow()]; c[0][f] = (f === 'ControlRevision' || f === 'BornPublicationVersion') ? 99 : 'CHANGED'; return hashOf(src) !== hashOf(c); });
+  })());
+ok('G2: a FAITHFUL copy still hashes equal, and legacy rows carrying no control columns are unaffected',
+  (() => {
+    const legacy = [{ Id: 1, TransactionId: 'txL', StoreId: 'boor', ProductId: 'prodA', Type: 'in', Qty: 4, TxnTimestamp: 900 }];
+    return hashOf([ctlRow()]) === hashOf([ctlRow()]) && hashOf(legacy) === hashOf(JSON.parse(JSON.stringify(legacy)));
+  })());
+
+const econ = (o) => Object.assign({ storeId: 'boor', productId: 'prodA', type: 'transfer_in', qty: 5 }, o);
+ok('G3: a LIVE-target ensemble no longer bypasses validation — qty -5 refuses INVALID_ROW',
+  (() => C.computeDelta({ cell: 'create-replace', targetLocation: 'live', target: econ({ qty: 10 }), newOutput: econ({ qty: -5 }) }).reason === 'INVALID_ROW')());
+ok('G3: a VALID live-target ensemble still suppresses (deltas {}, live-ensemble)',
+  (() => {
+    const r = C.computeDelta({ cell: 'create-replace', targetLocation: 'live', target: econ({ qty: 10 }), newOutput: econ({ qty: 8 }) });
+    return r.ok === true && r.suppressed === 'live-ensemble' && Object.keys(r.deltas).length === 0;
+  })());
+ok('G3: DIRECTION-NONE replacement types refuse — the frozen engine folds them as nothing, so -15 would have diverged',
+  (() => ['deleted', 'unknown_type', 'not_a_type'].every(t =>
+    C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: econ({ type: 'in', qty: 10 }), newOutput: econ({ type: t }) }).reason === 'INVALID_ROW'))());
+ok('G3: a genuine in/out replacement still computes the delta (-10 +5)',
+  (() => {
+    const r = C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: econ({ type: 'in', qty: 10 }), newOutput: econ({ type: 'in', qty: 5 }) });
+    return r.ok && r.deltas['boor|prodA'] === -5;
+  })());
+
+const rec = (o) => Object.assign({ RunId: 'R1', SnapshotVersion: 4, TombstoneIds: ['txDel1'], recordSigValid: true }, o);
+ok('G4: membership with BOTH bindings absent is undecidable (pre-fix: undefined===undefined decided "excluded")',
+  (() => C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', runRecord: rec() }).decision === 'undecidable')());
+ok('G4: a HALF-bound target (run id only, no snapshot version) is undecidable',
+  (() => C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', target: { archiveRunId: 'R1' }, runRecord: rec() }).decision === 'undecidable')());
+ok('G4: RAW SharePoint casing binds correctly (a normalization gap must not brick every adoption)',
+  (() => C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1',
+    target: { ArchiveRunId: 'R1', SnapshotVersion: 4 }, runRecord: rec() }).decision === 'excluded')());
+ok('G4: a WRONG-run record is still undecidable, and a bound record still decides in-balances',
+  (() => C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1',
+      target: { archiveRunId: 'R2', snapshotVersion: 4 }, runRecord: rec() }).decision === 'undecidable'
+    && C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txOther',
+      target: { archiveRunId: 'R1', snapshotVersion: 4 }, runRecord: rec() }).decision === 'in-balances')());
+
+ok('G5: a LEGACY call (no controlHeads property) keeps the exact pre-C2 partition — the tombstone stays live',
+  (() => {
+    const rows = tombRows(); rows[1].Id = 200; delete rows[1].ControlId;
+    const r = SC.compute({ rows, cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    return r.ok && JSON.stringify(r.archiveIds) === JSON.stringify([10]); // pre-fix: [10,200]
+  })());
+ok('G5: an explicit controlHeads:{} SELECTS the C2 partition — the tombstone rides its target',
+  (() => {
+    const rows = tombRows(); rows[1].Id = 200; delete rows[1].ControlId;
+    const r = SC.compute({ rows, cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlHeads: {} });
+    return r.ok && r.archiveIds.includes(10) && r.archiveIds.includes(200);
+  })());
+// G6 (archive_state transformed while the legacy writer was still enabled) is a §D SEQUENCING fix —
+// no pure-function surface to probe; its acceptance is the staging apply-runner dry run.
 
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);
