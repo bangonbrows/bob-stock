@@ -1,16 +1,18 @@
 # OS-W4.4 Contract 2 — Director correction-approval route: CONCRETE DESIGN
 
-**Status: 🔍 SCOPE REVIEW R25 (R24 verdicts: 🎉 AGY PASS — "unequivocally SOUND... fully
-CONVERGED... clear to proceed" · Codex BLOCK on ONE final finding, "no other high-confidence
-finding". The finding: the mode-split's DISCRIMINATOR ("published = valid PublishedSig") was itself
-a DELETABLE marker — strip it and a published run DOWNGRADES to lenient subset mode, where a
-MISSING archived member escapes the HALT (subset proves observed ∈ list; it can't see absences).
-Fold = Codex's own non-downgradeable discriminator: SUBSET MODE IS ALLOWED ONLY WHEN EVERY intended
-SourceId in the signed list is STILL IN LIVE (the pre-publication invariant — a genuinely
-unpublished run never deleted its Live originals); otherwise FULL-SET equality or HALT. A published
-run's originals are GONE from Live, so no marker deletion can ever drop it into subset mode. H14
-wording fixed ("signed exact member list"). R23: 1 folded. R22-R1: 108 folded. Nothing built,
-nothing deployed. D-C2-1..3 LOCKED — §12).**
+**Status: ✅ SPEC CONVERGED 2026-07-25 @ 5fd61ae — CODEX PASS R25 ("No findings"; the full
+ten-case verification matrix incl. the stripped-PublishedSig no-downgrade cell + the empty-set,
+corruption, and publish-crash cells; "the Contract 2 physical design is converged... no remaining
+path to" any of the seven closure classes) · AGY PASS R24 ("unequivocally SOUND... fully
+converged... clear to proceed to staging/E2E"). ⚠ REVISION NOTE: AGY's pass predates the single
+C2-R24-1 fold (the ledger-state discriminator — Codex's own correction, Codex-verified at R25); a
+one-question AGY confirmation of 5fd61ae is recommended for strict same-revision compliance
+(Kunal's call). CODEX'S LOAD-BEARING BUILD PROOFS (design-convergence ≠ deployed-build sign-off):
+(1) COMPLETE Live-ID enumeration in every membership/presence check; (2) INDETERMINATE reads must
+RETRY, never mean "absent"; (3) snapshot-named-run reconciliation MUST remain ordered BEFORE the
+orphan sweep — all three are N12/staging-E2E ACCEPTANCE ITEMS. 25 rounds, ~110 REAL findings
+folded, every finding ground-truthed. NEXT (§15): Kunal go → BUILD. Nothing built, nothing
+deployed yet. D-C2-1..3 LOCKED — §12.**
 Parent contracts: `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md` (Contract 2) and
 `AZURE-CHUNK-ORG-LA-CHANGES.md` §6. Frozen behavioural spec: `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2
 (SR-124/130/134/135/137/138/139/141/142/143/144/145/147/148/149/151). The engine is FROZEN @
@@ -496,6 +498,40 @@ published-with-stripped-marker downgrade was the escape (→ C2-R24-1); Q2v24 �
 CONVERGENCE ("unequivocally SOUND... fully converged... clear to proceed to staging/E2E")**; Codex:
 one finding from the gate, "no other high-confidence finding"; production-empty cutover acceptance
 CONFIRMED sufficient.
+
+---
+
+## ✅ R25 — CONVERGENCE (2026-07-25 @ 5fd61ae)
+
+**Codex R25: PASS. "No findings."** Q1v25: the ledger-state discriminator verified across a TEN-case
+matrix — genuine mid-copy crash (subset, swept, no halt); complete pre-publication copy;
+published run (full equality mandatory); publish-then-crash-mid-Live-delete (reconcile-first, exact
+delete completes); **published run with STRIPPED PublishedSig (missing Live originals prevent
+subset mode ⇒ full equality still runs ⇒ NO DOWNGRADE)**; published missing-member (HALT);
+out-of-list residue (HALT); planted row (HALT); RecordSig/list corruption (undecidable, fail
+closed); empty intended set (harmless). Plus: no in-scope writer can remove an intended Live source
+while a crashed run_active is unresolved (stale runs driven terminal first). Q2v25: **"the Contract
+2 physical design is converged"** — no remaining path to any of the seven closure classes. H14
+confirmed correct.
+
+**AGY R24: PASS** ("unequivocally SOUND... fully converged... clear to proceed"). ⚠ Predates the
+C2-R24-1 fold — one-question confirmation of 5fd61ae recommended (Kunal's call).
+
+**Codex's load-bearing BUILD PROOFS (bank into N12 + the staging E2E acceptance):** (1) complete
+Live-ID enumeration in every membership/presence check; (2) indeterminate reads RETRY, never
+"absent"; (3) the snapshot-named-run reconciliation stays ordered BEFORE the orphan sweep. Design
+convergence ≠ deployed-build sign-off — the build audit (§15) remains.
+
+**The review in numbers:** 25 rounds; ~110 distinct REAL findings folded (every single one
+ground-truthed against the frozen engine, the client code, or the deployed artifacts; a handful of
+auditor notes refuted with evidence, each adjudication recorded); 4 engineer-premise refutations
+caught by the auditors (the healing touch, the staged-visibility flip, the re-mint unique-key, the
+scalar deletion set); 2 engineer proactive family-finds; ELEVEN+ sub-questions individually
+converged along the way. Deliverables grew N1-N18 + five attestRows frames. All ⚠-flagged
+amendments to previously-audited surfaces (N9 push [global idempotency + tombstone claim], N10
+archive [reconcile/sweep/unit-move/authority-gate], N11 attestRows [5 frames], N13 pull [allowlist
++ CommitSig], N14 engine exports, N15 LA-CHANGES §1, N16 epoch artifacts + cutover, N17 run
+records, N18 pending list) are inventoried for the RETURN RE-AUDIT (Kunal's firm marker).
 
 ---
 
