@@ -595,5 +595,68 @@ ok('G5: an explicit controlHeads:{} SELECTS the C2 partition — the tombstone r
 // G6 (archive_state transformed while the legacy writer was still enabled) is a §D SEQUENCING fix —
 // no pure-function surface to probe; its acceptance is the staging apply-runner dry run.
 
+// ── 16. INTERIM LA REVIEW ROUND 3 folds (Codex findings 1-3) ──────────────────────────────────────
+// H1: the TYPED canonical the frozen design requires by name (design N10 / C2-R7-5) — 0, null, ''
+// and field-absent must be FOUR distinguishable encodings. R2 shipped the field list but kept the
+// String(v||'')/optNum coercion that collapses them.
+ok('H1: present-with-NULL and field-ABSENT hash DIFFERENTLY (Codex repro: ControlRevision null vs absent)',
+  (() => {
+    const withNull = [Object.assign(ctlRow(), { ControlRevision: null })];
+    const absent = [ctlRow()]; delete absent[0].ControlRevision;
+    return hashOf(withNull) !== hashOf(absent);
+  })());
+ok('H1: a source ControlState:null vs a copy that OMITTED ControlState is CAUGHT (the destructive-delete gate)',
+  (() => {
+    const src = [Object.assign(ctlRow(), { ControlState: null })];
+    const copy = [ctlRow()]; delete copy[0].ControlState;
+    return hashOf(src) !== hashOf(copy);
+  })());
+ok('H1: 0, null, empty-string and absent are FOUR distinct encodings on the same field',
+  (() => {
+    const mk = (v) => { const r = ctlRow(); if (v === 'ABSENT') delete r.ControlRevision; else r.ControlRevision = v; return [r]; };
+    const hs = [mk(0), mk(null), mk(''), mk('ABSENT')].map(hashOf);
+    return new Set(hs).size === 4;
+  })());
+ok('H1: a FAITHFUL copy still hashes equal under the typed canonical (no false HALT)',
+  (() => hashOf([ctlRow()]) === hashOf([JSON.parse(JSON.stringify(ctlRow()))]))());
+ok('H1: the live/archive column ALIASES still hash equal (Type/TxnType, Date/TxnDate, Timestamp/TxnTimestamp)',
+  (() => {
+    const live = [{ TransactionId: 'txA', StoreId: 'boor', ProductId: 'prodA', Type: 'in', Qty: 4, Timestamp: 900, Date: '2026-07-22' }];
+    const arch = [{ TransactionId: 'txA', StoreId: 'boor', ProductId: 'prodA', TxnType: 'in', Qty: 4, TxnTimestamp: 900, TxnDate: '2026-07-22T00:00:00Z' }];
+    return hashOf(live) === hashOf(arch); // representation, not content (the C1 archive-carry rule)
+  })());
+ok('H1 SCOPE: the C1 optional STAMPS keep their converged absent ≡ \'\' rule (0 still a value) — typing them would HALT every unstamped row',
+  (() => {
+    const a = ctlRow(); delete a.SellAtSupply;
+    const b = Object.assign(ctlRow(), { SellAtSupply: '' });
+    const c = Object.assign(ctlRow(), { SellAtSupply: 0 });
+    return hashOf([a]) === hashOf([b]) && hashOf([a]) !== hashOf([c]);
+  })());
+
+// H2: the discriminator must FAIL CLOSED on a malformed manifest, not silently publish raw balances.
+const headedRows = () => [
+  { Id: 10, TransactionId: 'txT1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 10, TxnTimestamp: 1000 },
+  { Id: 20, TransactionId: 'corr:op1:0', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 8, TxnTimestamp: 1200,
+    ControlId: 'ctl:op1', TargetTransactionId: 'txT1' }
+];
+ok('H2: a MALFORMED controlHeads (null / [] / string / number) REFUSES — pre-fix it published +10 instead of +8',
+  (() => [null, [], 'bad', 7].every(v =>
+    SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlHeads: v }).reason === 'BAD_CONTROL_MANIFEST'))());
+ok('H2: a caller ASSERTING controlProtocol:2 but omitting the manifest REFUSES (omission cannot masquerade as legacy)',
+  (() => SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlProtocol: 2 }).reason === 'CONTROL_MANIFEST_REQUIRED')());
+ok('H2: a VALID manifest still folds the effective value (+8) and reports partitionMode c2',
+  (() => {
+    const r = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3,
+      controlHeads: { txT1: { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 3 } } });
+    return r.ok && balOf(r) === 8 && r.partitionMode === 'c2';
+  })());
+ok('H2: a legacy caller still reports partitionMode legacy and keeps the pre-C2 partition',
+  (() => {
+    const r = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    return r.ok && r.partitionMode === 'legacy' && balOf(r) === 18; // raw fold, no manifest
+  })());
+// H3 (phase-aware apply-runner rerun after step 6) is a §D SEQUENCING fix — no pure-function
+// surface; its acceptance is the staging apply-runner crash drill.
+
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);

@@ -40,6 +40,24 @@ function dateOf(r) {
   return s;
 }
 const optNum = (v) => (v == null || v === '' ? '' : String(num(v)));
+
+// ── TYPED CANONICAL CELLS (C2-R7-5; interim LA review R3 finding 1) ───────────────────────────────
+// The frozen design binds the fidelity-hash canonical itself: "versioned, JSON-framed with TYPED
+// values — 0, null, and field-absent are three distinct encodings" (design N10). The R2 fold added
+// the N7 field LIST but kept the old String(v||'')/optNum coercion, which collapses null, '' and
+// absent into one byte — so a source row carrying ControlState:null hashed identical to a copy that
+// OMITTED ControlState entirely, and the destructive live-delete proceeded on an incomplete copy.
+// Each cell now encodes as [0] when the field is ABSENT from the row object, or [1, <value>] when
+// present — null stays null, '' stays '', 0 stays 0, all four distinguishable. (attestRows uses the
+// same shape for its seal frames, attestRows.js:134; econ-v1's String canonical deliberately does
+// not, which is why it could not simply be reused here.)
+const CANON_VERSION = 'archcanon-v2';
+const hasKey = (r, ...keys) => keys.some(k => Object.prototype.hasOwnProperty.call(r, k));
+// Text cell: present-with-null stays null (NOT ''), otherwise String-coerced.
+const cText = (r, f) => (hasKey(r, f) ? [1, r[f] === null ? null : String(r[f])] : [0]);
+// Numeric cell: present-with-null stays null, present-with-'' stays '', otherwise numeric.
+const cNum = (r, f) => (hasKey(r, f) ? [1, r[f] === null ? null : (r[f] === '' ? '' : num(r[f]))] : [0]);
+// (The C1 field set keeps its own encoding — see the scope note in hashRows.)
 function hashRows(rows) {
   // GPT P2: order-independent hash of canonical row CONTENT (not just {Id,TransactionId}) so it proves the
   // archived rows carry the SAME content as the source - a copy/mapping corruption of StoreId/ProductId/type/
@@ -61,15 +79,24 @@ function hashRows(rows) {
   // run — no stored hash field exists anywhere), so extending the canon is safe by construction:
   // both sides are always hashed by the same code. Pre-C2 rows carry none of these columns => ''
   // on BOTH sides => equality semantics unchanged for legacy runs.
-  const canon = r => JSON.stringify([String(r.TransactionId || ''), String(r.StoreId || ''), String(r.ProductId || ''),
+  // SCOPE OF THE TYPED RULE (R3 finding 1, read precisely): the design types the EXTENSION — "the
+  // fidelity-hash canonical EXTENDED to the FULL N7 control form ... with TYPED values". It does NOT
+  // re-type the pre-existing C1 field set, which carries its OWN converged rule in the opposite
+  // direction: for the optional numeric STAMPS, absent ≡ '' while 0 is a value (archive-carry-proof,
+  // C1) — because SharePoint renders an unstamped column as absent in one list read and '' in the
+  // other. Typing those would HALT every archive run containing an unstamped row. So: C1 fields keep
+  // their C1 encoding; the eight N7 control fields are typed.
+  const canon = r => JSON.stringify([CANON_VERSION,
+    String(r.TransactionId || ''), String(r.StoreId || ''), String(r.ProductId || ''),
     typeOf(r), String(num(r.Qty)), tsOf(r), String(r.TransferId || ''), String(r.TargetTransactionId || ''),
     dateOf(r), String(r.Reason || ''), String(r.IdempotencyKey || ''), String(r.EconSig || ''),
     optNum(r.SellAtSupply), optNum(r.DiscAtSupply), optNum(r.PricingVersion), optNum(r.CatalogueVersion),
     optNum(r.UnitPriceAtTime), String(r.StockFromStoreId || ''), String(r.StockToStoreId || ''),
     String(r.StockFrom || ''), String(r.StockTo || ''),
-    String(r.ControlId || ''), String(r.ControlType || ''), optNum(r.ControlRevision),
-    optNum(r.BornPublicationVersion), String(r.TargetLine || ''), String(r.OriginalEventAt || ''),
-    String(r.ControlState || ''), String(r.CommitSig || '')]);
+    // N7 control form — TYPED (0, null, '' and absent all distinct, C2-R7-5):
+    cText(r, 'ControlId'), cText(r, 'ControlType'), cNum(r, 'ControlRevision'),
+    cNum(r, 'BornPublicationVersion'), cText(r, 'TargetLine'), cText(r, 'OriginalEventAt'),
+    cText(r, 'ControlState'), cText(r, 'CommitSig')]);
   const parts = rows.map(canon).sort();
   return crypto.createHash('sha256').update(parts.join('\n')).digest('hex');
 }
@@ -115,10 +142,25 @@ function compute(body) {
   // absent case byte-identical to pre-C2. Without it the unit-move fired on ordinary tombstones
   // for legacy callers too, so merely DEPLOYING this function (§D step 3) would have changed live
   // archive behaviour before the legacy writer was disabled (§D step 4).
+  // R3 finding 2: presence alone FAILED OPEN. `controlHeads: null | [] | "bad"` was silently coerced
+  // to {} while c2Mode stayed true, so a malformed snapshot mapping published the RAW balance (+10)
+  // instead of the effective one (+8) — a wrong number, silently, rather than a refusal. A present
+  // manifest must now be a valid plain object or the request is REJECTED. And because omission is
+  // indistinguishable from a legacy call, a C2 caller asserts `controlProtocol: 2`, which makes an
+  // accidental omission a refusal instead of a silent legacy partition. The chosen partition is
+  // echoed back as `partitionMode` so the caller can assert what it actually got.
   const c2Mode = Object.prototype.hasOwnProperty.call(body, 'controlHeads');
-  const controlHeads = (body.controlHeads && typeof body.controlHeads === 'object' && !Array.isArray(body.controlHeads)) ? body.controlHeads : {};
+  if (c2Mode) {
+    const ch = body.controlHeads;
+    if (ch === null || typeof ch !== 'object' || Array.isArray(ch)) return { ok: false, reason: 'BAD_CONTROL_MANIFEST' };
+  } else if (Number(body.controlProtocol) === 2) {
+    return { ok: false, reason: 'CONTROL_MANIFEST_REQUIRED' }; // asserted C2 caller that omitted the manifest
+  }
+  const controlHeads = c2Mode ? body.controlHeads : {};
   const hasHead = (t) => Object.prototype.hasOwnProperty.call(controlHeads, t);
   const controlSuppressed = (r) => {
+    if (!c2Mode) return false; // legacy partition is a COMPLETE no-op (R3: it still suppressed
+    // ControlId-bearing rows, so "byte-identical pre-C2" was not strictly true for such input)
     const cid = r.ControlId != null && r.ControlId !== '' ? String(r.ControlId) : null;
     if (cid !== null) { // a control row: folds only as the ACTIVE control for its target
       const tgt = r.TargetTransactionId != null ? String(r.TargetTransactionId) : '';
@@ -222,6 +264,7 @@ function compute(body) {
   return {
     ok: true,
     cutoffId,
+    partitionMode: c2Mode ? 'c2' : 'legacy', // R3 finding 2: the caller asserts what it got
     snapshotVersion: Number(body.snapshotVersion) || 0,
     runId: String(body.runId || ''),
     stepCutoffTs,

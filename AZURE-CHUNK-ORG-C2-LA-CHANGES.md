@@ -1,8 +1,9 @@
 # OS-W4.4 Contract 2 — CONCRETE STAGING ARTIFACTS (LA definitions + apply inventory)
 
-**Status: 🔍 W-B2r2 INTERIM LA REVIEW — ROUND 3. R1: AGY×2 + Codex×11 = 13 REAL, folded @
-`bb1987e` (fold record §F). R2: AGY PASS + Codex BLOCK×6 — all six REAL, zero refuted, folded
-(fold record §H, questions §I); suite 127 → 144/144. Cadence option 2: paper review of these
+**Status: 🔍 W-B2r3 INTERIM LA REVIEW — ROUND 4. R1: AGY×2 + Codex×11 = 13 REAL, folded @
+`bb1987e` (§F). R2: AGY PASS + Codex×6 — all REAL, folded @ `aa1527a` (§H). R3: AGY PASS
+(⚠ its QI3 answer was FABRICATED — see §J) + Codex×3 — all REAL, folded (fold record §J,
+questions §K); suite 127 → 144 → 154/154. Cadence option 2: paper review of these
 definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
 DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
 CONVERGED 2026-07-25 — Codex R25 PASS "No findings" + AGY PASS confirmed on the same revision).
@@ -245,10 +246,29 @@ quiesced window):
 (7) PROBES on the real cloud (sign/verify each new frame; a correction dry-run against a probe
     row; the sweep in REPORT-ONLY mode first);
 (8) cleanup (probe rows deleted, temp LA deleted).
+**PHASE-AWARE RERUN (R3 finding 3).** The epoch rerun rule (re-observe the boundary, HALT on
+divergence) is only meaningful while the writers are quiesced. After step (6) legitimate C2 activity
+NECESSARILY advances the archive boundary, so a full rerun — say the runner crashed during step (7)
+— would re-observe item 101 against a sealed 100 and HALT under the mandatory rule, blocking its own
+probes and cleanup with no way to distinguish legitimate post-cutover growth from an unsafe
+pre-cutover change. The runner therefore establishes PHASE FIRST, and the authority is OBSERVED
+WRITER STATE, not a deletable marker (the same principle as C2-R19-1/C2-R24-1):
+- **Writers still disabled** (legacy archive LA disabled AND push fenced) ⇒ PRE-CUTOVER phase ⇒ the
+  boundary re-observation + divergence HALT applies in full: it is the anomaly gate that proves
+  nothing minted rows while the window was supposed to be quiet.
+- **C2 writers live** (push re-enabled AND the C2 archive LA enabled AND the N9/N10/N13 transforms
+  present) ⇒ POST-CUTOVER phase ⇒ the runner SKIPS the re-observation entirely, reuses the sealed
+  values byte-for-byte, and resumes at step (7). Boundary growth here is expected, not evidence.
+- The seal item also records `cutoverCompletedAt`, stamped when step (6) completes. It is a
+  FAST-PATH HINT ONLY (exactly as `PublishedSig` is for the sweep, C2-R24-1) — deleting or forging
+  it cannot flip the phase, because the observed writer state decides. A `cutoverCompletedAt`
+  present while writers are still disabled ⇒ CONTRADICTION ⇒ HALT + surface.
+
 PRODUCTION-cutover variant: VERIFIES the archive list is EMPTY before sealing (C2-R23-N1) — else
 HALT + Kunal decision. EVERY step is idempotent (create-if-missing / reuse-if-valid / halt-on-
 divergence) — a partial-failure re-run is safe at ANY boundary, including a step-(4) network
-timeout after push was fenced (the fence state is re-asserted, the seal reused, never re-sampled).
+timeout after push was fenced (the fence state is re-asserted, the seal reused, never re-sampled)
+and a step-(7) crash after the writers are live (phase-aware rerun, above).
 
 ## E. Review questions for the INTERIM LA REVIEW (both reviewers)
 
@@ -349,3 +369,46 @@ Zero client files touched.
   rule under- or over-suppresses versus the converged §5b semantics?
 - **QI5:** With §D now transforming `archive_state` inside the quiesced window, re-walk the runner
   as a state machine with crashes between every pair of steps and a full re-run from step (1).
+
+---
+
+## J. INTERIM LA REVIEW — ROUND 3 FOLD RECORD (`W-B2r3`)
+
+**R3 verdicts: AGY PASS ("100% approved") · Codex BLOCK×3.** All three Codex findings REAL and
+reproduced; folded. Codex confirmed G1, G3, G4 and the G6 race closed, and QI4 (the tombstone/head
+matrix) PASS. Proof suite 144 → **154/154**.
+
+**⚠ AGY's R3 verdict must be discounted — its QI3 "PASS" is FABRICATED.** It answered the
+controlHeads-omission question by quoting a specific N10 Logic App definition, including the ARM
+expression `@coalesce(variables('capturedSnapshot')?['controlManifest']?['controlHeads'],
+json('{}'))`. **No Logic App JSON exists in this repo.** `gen-correction-def.js` and
+`apply-c2-staging.js` are unwritten — they are the NEXT deliverable, deliberately deferred until
+this spec review converges (§15 sequencing). Verified: zero matches for `capturedSnapshot` in any
+JSON, zero matches for `controlHeads` in `audit-artifacts/*.json`, both files absent. AGY invented
+the artifact it claimed to have read, and used it to pass the exact question Codex blocked on.
+That is the third round running where AGY passed a surface Codex proved broken; treat its verdicts
+as advisory only until it cites something that verifiably exists.
+
+| # | Finding | Repro | Fold |
+|---|---|---|---|
+| **H1** | The G2 canonical **was not TYPED**. `optNum()` maps null, `''` and absent to the same byte; `String(v \|\| '')` does the same for text. The frozen design binds the fidelity canonical by name: "the fidelity-hash canonical EXTENDED to the FULL N7 control form (versioned, JSON-framed with TYPED values — `0`, `null`, and field-absent are three distinct encodings, C2-R7-5)" (design N10). | `ControlRevision:null` vs absent hashed IDENTICALLY. A source row with `ControlState:null` and a copy that OMITTED `ControlState` passed the fidelity gate — so Live could be destructively deleted against an incomplete archive copy. | Typed cells (`[0]` absent / `[1,value]` present, null and `''` and `0` all distinct) + a `CANON_VERSION` tag. **SCOPE (load-bearing):** the typed rule applies to the eight N7 control fields ONLY — the design types the EXTENSION, not the pre-existing C1 set, which carries the OPPOSITE converged rule (`absent ≡ ''` for optional numeric stamps, `0` a value). Typing the C1 stamps HALTED archive-carry immediately (28→27) because SharePoint renders an unstamped column as absent in one list read and `''` in the other; a blanket application would have bricked every run containing an unstamped row. Both rules now hold simultaneously and are probed. |
+| **H2** | G5's discriminator **failed open**. `controlHeads: null \| [] \| "bad" \| 7` was coerced to `{}` while `c2Mode` stayed true, and omission was indistinguishable from a deliberate legacy call. | With a +10 target under an active +8 replacement head, a malformed manifest returned **+10, not +8** — a silently WRONG published balance rather than a refusal. | A present manifest must be a valid plain object or the request is REJECTED (`BAD_CONTROL_MANIFEST`). A caller asserting `controlProtocol: 2` that omits the manifest is REJECTED (`CONTROL_MANIFEST_REQUIRED`), so accidental omission cannot masquerade as legacy. The chosen partition is echoed as `partitionMode` for caller assertion. **Also found while probing:** the legacy path was not a complete no-op — `controlSuppressed` still suppressed `ControlId`-bearing rows with no manifest, so "byte-identical pre-C2" was untrue for such input. Legacy now short-circuits to `false`. |
+| **H3** | The apply runner **could not restart after step (6)**. The epoch rerun rule (re-observe boundary, HALT on divergence) is mandatory, but once C2 writers are live the boundary legitimately advances. | Seal records archive epoch 100 → step (6) enables writers → a legitimate run creates item 101 → runner crashes in step (7) → a full rerun observes 101 vs sealed 100 and HALTS, blocking its own probes and cleanup, with no way to tell legitimate growth from an unsafe pre-cutover change. | **PHASE-AWARE RERUN** (§D): phase is established FIRST, and the authority is OBSERVED WRITER STATE, not a deletable marker (the C2-R19-1/C2-R24-1 principle). Writers disabled ⇒ pre-cutover ⇒ the divergence HALT applies in full. C2 writers live ⇒ post-cutover ⇒ skip re-observation, reuse the seal byte-for-byte, resume at step (7). `cutoverCompletedAt` is a fast-path HINT only; present while writers are disabled ⇒ contradiction ⇒ HALT. |
+
+**Gates:** correction **154/154** · archive-carry 28/28 · attest 58/58 · buyback-export 170/170 ·
+topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Zero client files.
+
+## K. Review questions for ROUND 4
+
+- **QK1:** Does each H1-H3 fold close its finding without introducing a new defect?
+- **QK2:** **H1's scope split is the load-bearing judgement of this round.** The N7 control fields
+  are typed (absent ≠ null ≠ `''` ≠ 0); the C1 fields keep `absent ≡ ''` for optional stamps. Is
+  that the correct reading of the design clause, and is there any control field whose live-vs-archive
+  SharePoint representation could differ benignly and now HALT a run? Name it precisely — a false
+  HALT here stalls all archival.
+- **QK3:** H2 rejects a malformed manifest and adds `controlProtocol`/`partitionMode`. Any caller
+  shape that still selects the wrong partition silently?
+- **QK4:** H3 derives phase from observed writer state. Enumerate the partial states (push enabled
+  but archive LA disabled, transforms half-applied) — does any of them resolve to the wrong phase?
+- **QK5:** Anything not closed, or newly noticed. If you cannot verify a claim against a file that
+  exists in the repo, say so explicitly rather than inferring the artifact.
