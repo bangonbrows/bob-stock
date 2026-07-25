@@ -4,10 +4,11 @@
 ten-case verification matrix incl. the stripped-PublishedSig no-downgrade cell + the empty-set,
 corruption, and publish-crash cells; "the Contract 2 physical design is converged... no remaining
 path to" any of the seven closure classes) · AGY PASS R24 ("unequivocally SOUND... fully
-converged... clear to proceed to staging/E2E"). ⚠ REVISION NOTE: AGY's pass predates the single
-C2-R24-1 fold (the ledger-state discriminator — Codex's own correction, Codex-verified at R25); a
-one-question AGY confirmation of 5fd61ae is recommended for strict same-revision compliance
-(Kunal's call). CODEX'S LOAD-BEARING BUILD PROOFS (design-convergence ≠ deployed-build sign-off):
+converged... clear to proceed to staging/E2E"; **CONFIRMED UNCONDITIONALLY on the latest commit
+2026-07-25 — "the design is airtight, converged, and ready for deployment sequencing"; AGY
+explicitly endorsed the C2-R24-1 ledger-state discriminator as "an outstanding completion"
+aligning with the C2-R19-1 principle**). STRICT SAME-REVISION CONVERGENCE: BOTH reviewers have
+passed the identical revision. CODEX'S LOAD-BEARING BUILD PROOFS (design-convergence ≠ deployed-build sign-off):
 (1) COMPLETE Live-ID enumeration in every membership/presence check; (2) INDETERMINATE reads must
 RETRY, never mean "absent"; (3) snapshot-named-run reconciliation MUST remain ordered BEFORE the
 orphan sweep — all three are N12/staging-E2E ACCEPTANCE ITEMS. 25 rounds, ~110 REAL findings
@@ -514,8 +515,12 @@ while a crashed run_active is unresolved (stale runs driven terminal first). Q2v
 2 physical design is converged"** — no remaining path to any of the seven closure classes. H14
 confirmed correct.
 
-**AGY R24: PASS** ("unequivocally SOUND... fully converged... clear to proceed"). ⚠ Predates the
-C2-R24-1 fold — one-question confirmation of 5fd61ae recommended (Kunal's call).
+**AGY: PASS, CONFIRMED UNCONDITIONALLY on the latest commit (2026-07-25):** "PASS confirmed. My
+verdict holds unconditionally... the design is airtight, converged, and ready for deployment
+sequencing" — with an explicit endorsement of the C2-R24-1 ledger-state discriminator ("an
+outstanding completion... aligns flawlessly with the established principle [C2-R19-1] that
+recovery and sweep decisions must rely on durable ledger state rather than deletable markers").
+STRICT SAME-REVISION CONVERGENCE: both reviewers passed the identical revision.
 
 **Codex's load-bearing BUILD PROOFS (bank into N12 + the staging E2E acceptance):** (1) complete
 Live-ID enumeration in every membership/presence check; (2) indeterminate reads RETRY, never
