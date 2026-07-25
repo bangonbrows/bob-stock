@@ -350,5 +350,24 @@ ok('evaluate rejects an unknown frame', A.evaluate(KR, { op: 'sign', frame: 'evi
 ok('rowsEqual: canonical byte-equality (same row true, any econ field diff false)',
   C.rowsEqual(J(PROW), J(PROW)) && !C.rowsEqual(J(PROW), { ...J(PROW), Qty: 4 }));
 
+// ── 13. targetSeal three-way + stepSetDigest (P3.2/P3.3 compute ops) ───────────────────────────────
+console.log('\n== targetSeal / stepSetDigest ==');
+const EPOK = { epochId: 1000, epochSigValid: true };
+ok('sealed + verify ok -> valid', C.targetSeal({ econSigPresent: true, verifyOk: true }).outcome === 'valid');
+ok('sealed + verify FAIL -> TARGET_SEAL_BROKEN', C.targetSeal({ econSigPresent: true, verifyOk: false }).outcome === 'TARGET_SEAL_BROKEN');
+ok('unsealed + provenance >= epoch -> TARGET_SEAL_BROKEN (the seal-STRIP attack, C2-R2-N2)',
+  C.targetSeal({ econSigPresent: false, provenanceId: 1500, epoch: EPOK }).outcome === 'TARGET_SEAL_BROKEN');
+ok('unsealed + provenance < epoch -> unsealed-legacy (the legitimate pre-C1 lane)',
+  C.targetSeal({ econSigPresent: false, provenanceId: 400, epoch: EPOK }).outcome === 'unsealed-legacy');
+ok('epoch artifact ABSENT -> EPOCH_UNDEFINED (fail closed)',
+  C.targetSeal({ econSigPresent: false, provenanceId: 400, epoch: null }).outcome === 'EPOCH_UNDEFINED');
+ok('EpochSig invalid -> EPOCH_TAMPERED (C2-R4-7)',
+  C.targetSeal({ econSigPresent: false, provenanceId: 400, epoch: { epochId: 1000, epochSigValid: false } }).outcome === 'EPOCH_TAMPERED');
+const SD = C.stepSetDigest({ steps: STEPS() });
+ok('stepSetDigest is deterministic + order-independent',
+  SD.digest === C.stepSetDigest({ steps: STEPS().reverse() }).digest && SD.count === 3);
+ok('a superseding resolve changes the digest (STEPS_CHANGED_RETRY trigger, C2-R1-12)',
+  (() => { const s = STEPS(); s.push({ stepId: 's4', stepType: 'resolve', seq: 40, timestamp: SUBMIT_MS + 9000000, payload: { resolutions: [{ productId: 'prodA', qty: 6 }] } }); return C.stepSetDigest({ steps: s }).digest !== SD.digest; })());
+
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);

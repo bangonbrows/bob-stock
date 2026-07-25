@@ -328,6 +328,29 @@ function exportBlocker(input) {
 
 function rowsEqual(a, b) { return attest.canonical(a) === attest.canonical(b); }
 
+// ── targetSeal — the P3.2 THREE-WAY caller-side contract (C2-R2-N2/C2-R3-4/C2-R4-3) ────────────────
+// input: { econSigPresent, verifyOk, provenanceId (live _spId | archived SourceId, LIVE coordinate),
+//          epoch: {epochId, epochSigValid} | null }
+function targetSeal(input) {
+  if (input.econSigPresent) return input.verifyOk ? { outcome: 'valid' } : { outcome: 'TARGET_SEAL_BROKEN' };
+  if (!input.epoch) return { outcome: 'EPOCH_UNDEFINED' };
+  if (input.epoch.epochSigValid !== true) return { outcome: 'EPOCH_TAMPERED' };
+  if (!Number.isSafeInteger(input.provenanceId)) return { outcome: 'TARGET_SEAL_BROKEN' }; // no provenance => cannot be legacy
+  return input.provenanceId >= input.epoch.epochId
+    ? { outcome: 'TARGET_SEAL_BROKEN' }        // post-C1 ingest always seals => absence IS the strip attack
+    : { outcome: 'unsealed-legacy' };
+}
+
+// ── stepSetDigest — the P3.3/P5.4 STEPS_CHANGED_RETRY comparator (C2-R1-12) ────────────────────────
+// Canonical digest over the enumerated step identities+content; order-independent (sorted by stepId).
+function stepSetDigest(input) {
+  const steps = Array.isArray(input.steps) ? input.steps : [];
+  const items = steps.map(s => [String(s.stepId), s.stepType || '', s.seq != null ? s.seq : null,
+    s.timestamp != null ? s.timestamp : null, s.payload == null ? null : s.payload])
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  return { digest: crypto.createHash('sha256').update(JSON.stringify(['c2-steps-v1', items])).digest('hex'), count: items.length };
+}
+
 // ── HTTP dispatch ───────────────────────────────────────────────────────────────────────────────────
 const OPS = {
   digest: (b) => ({ digest: opDigest(b.input) }),
@@ -341,7 +364,9 @@ const OPS = {
   claimDispatch: (b) => claimDispatch(b.input || {}),
   pushIdempotency: (b) => pushIdempotency(b.input || {}),
   exportBlocker: (b) => exportBlocker(b.input || {}),
-  rowsEqual: (b) => ({ equal: rowsEqual(b.input && b.input.a, b.input && b.input.b) })
+  rowsEqual: (b) => ({ equal: rowsEqual(b.input && b.input.a, b.input && b.input.b) }),
+  targetSeal: (b) => targetSeal(b.input || {}),
+  stepSetDigest: (b) => stepSetDigest(b.input || {})
 };
 
 app.http('correctionCompute', {
@@ -359,4 +384,4 @@ app.http('correctionCompute', {
 
 module.exports = { opDigest, computeTargetLine, mintStamps, computeDelta, assembleCandidate,
   recoveryDecision, membershipDecision, sweepClassify, claimDispatch, pushIdempotency,
-  exportBlocker, rowsEqual, effectOf, OPS };
+  exportBlocker, rowsEqual, effectOf, targetSeal, stepSetDigest, OPS };
