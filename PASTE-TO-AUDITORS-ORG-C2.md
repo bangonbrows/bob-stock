@@ -1,5 +1,24 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R22
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R23
 
+> ## ROUND 23 — re-review after the round-22 folds
+> Round-22 verdicts: BOTH BLOCK — 2 distinct REAL findings (both CONVERGED), all folded (the
+> design doc's **R22 fold record table**). Q1v22 (exact per-run deletion set), Q3v22 (global
+> idempotency concept), and Q4v22 (withdrawn-head) were confirmed, and BOTH reviewers state the
+> design is SOUND for all Contract-2 steady-state operations. The two findings were both "the R21
+> fixes were right but under-specified in the actual spec sections": (1) I said the sweep
+> authenticates the row identity via the run's integrity hash, but that hash is computed fresh each
+> run and never STORED — so there was no durable signed thing to verify against later; N17 now
+> carries a signed membership hash (written before copying, covered by the record signature) that
+> the cleanup and recovery both verify against, halting on any tamper; and because pre-launch legacy
+> data has no such hash, the one-time cutover explicitly skips the check for it (it's throwaway
+> trial data, and production cuts over on a fresh archive with no legacy at all); (2) I'd put the
+> global replay-check in the deliverable list but the normative push section still said ordinary
+> rows were untouched and didn't pin a read order — the global Live→Archive source-first check now
+> applies to every push row in the normative sequence. Both are wiring/durability completions, not
+> new mechanisms. This round: re-review end-to-end and answer Q1v23-Q4v23 (§14). Q4v23 is the
+> explicit convergence gate — both reviewers have signalled the design is at the doorstep.
+>
+> [Superseded R22 summary retained below for reference:]
 > ## ROUND 22 — re-review after the round-21 folds
 > Round-21 verdicts: BOTH BLOCK — 4 distinct REAL findings (1 CONVERGED pair), all folded (the
 > design doc's **R21 fold record table**). Q2v21 (one retention lifecycle) confirmed. AGY had just
@@ -105,7 +124,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R21 fold records, and questions Q1v22-Q5v22).
+   honest notes H1-H14, the R1-R22 fold records, and questions Q1v23-Q4v23).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -115,10 +134,10 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v22-Q5v22 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the UNIT-MOVE archiving off-cutoff control rows
-(N10), the archive fidelity-hash canonical (extended to cover SourceId), and push-v2 global
-idempotency (Live+Archive). Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v23-Q4v23 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's folds lean on the N17 durable `ArchiveMembersHash` (signed,
+RecordSig-covered), the legacy-cutover authentication bypass (D-C2-2 trial data), and the normative
+global push idempotency in §8. Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
