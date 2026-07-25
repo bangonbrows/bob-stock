@@ -92,12 +92,36 @@ function compute(body) {
     if (typeOf(r) === 'deleted') { const tgt = r.TargetTransactionId; if (tgt != null && tgt !== '') tombstoned.add(String(tgt)); }
   }
 
+  // ⚠ OS-W4.4 CONTRACT 2 SCOPED AMENDMENT (C2-R4-E1 v3 / C2-R5-4 / C2-R6-3; C2-LA finding 3;
+  // flagged for the return re-audit): CONTROL-AWARE EFFECTIVE-VALUE folding. When the caller
+  // supplies the active control manifest (body.controlHeads — the C2 archive LA does; absent =>
+  // {} => byte-identical pre-C2 behaviour):
+  //   - a TARGET row named by an ACTIVE (non-null) head contributes NOTHING (its effect was
+  //     corrected away — deletion or replacement);
+  //   - a CONTROL row (ControlId set) contributes its raw effect IFF it IS the active head's
+  //     control for its target (historical/superseded control rows contribute nothing);
+  //   - a NULL-head (withdrawn/retired) target folds normally — it is PRESENT again.
+  // Applied identically to full/snap/kept, so the neutrality proof below is preserved.
+  const controlHeads = (body.controlHeads && typeof body.controlHeads === 'object' && !Array.isArray(body.controlHeads)) ? body.controlHeads : {};
+  const hasHead = (t) => Object.prototype.hasOwnProperty.call(controlHeads, t);
+  const controlSuppressed = (r) => {
+    const cid = r.ControlId != null && r.ControlId !== '' ? String(r.ControlId) : null;
+    if (cid !== null) { // a control row: folds only as the ACTIVE control for its target
+      const tgt = r.TargetTransactionId != null ? String(r.TargetTransactionId) : '';
+      const head = hasHead(tgt) ? controlHeads[tgt] : null;
+      return !(head && head.controlId === cid);
+    }
+    const head = hasHead(String(r.TransactionId)) ? controlHeads[String(r.TransactionId)] : null;
+    return !!head; // ACTIVE-headed target => corrected away; null head => folds normally
+  };
+
   // FULL balance per pair (all rows) - the ground truth we must preserve.
   const full = new Map();
   const bump = (map, r) => {
     const t = typeOf(r);
     if (!ACTIVE.has(t)) return; // non-stock type ('deleted' tombstones included here)
     if (tombstoned.has(String(r.TransactionId))) return; // Chunk 8: a deleted movement contributes nothing
+    if (controlSuppressed(r)) return; // C2: effective-value folding (no-op when controlHeads absent)
     const q = num(r.Qty);
     if (!Number.isFinite(q) || q < 0 || !Number.isSafeInteger(q)) return; // mirror client _safeQty
     const d = IN.has(t) ? q : -q;
@@ -112,6 +136,22 @@ function compute(body) {
     const ts = r.TxnTimestamp != null ? Number(r.TxnTimestamp) : (r.Timestamp != null ? Number(r.Timestamp) : NaN);
     const recentKept = retainAfterTs != null && Number.isFinite(ts) && ts >= retainAfterTs;
     if (Number.isFinite(id) && id <= cutoffId && !recentKept) toArchive.push(r); else toKeep.push(r);
+  }
+  // ⚠ C2 UNIT-MOVE (C2-R6-3, same amendment): a qualifying TARGET pulls ALL its control/tombstone
+  // rows into the SAME run regardless of their own ids/timestamps (they are never client-covering-
+  // relevant; SR-70 same-list preserved by construction). No-op when controlHeads absent AND no
+  // ControlId columns are present in the input (pre-C2 calls).
+  {
+    const archIds = new Set(toArchive.map(r => String(r.TransactionId)));
+    const rides = (r) => {
+      const tgt = r.TargetTransactionId != null && r.TargetTransactionId !== '' ? String(r.TargetTransactionId) : null;
+      const isCtl = r.ControlId != null && r.ControlId !== '';
+      const isTomb = typeOf(r) === 'deleted';
+      return tgt !== null && (isCtl || isTomb) && archIds.has(tgt);
+    };
+    for (let i = toKeep.length - 1; i >= 0; i--) {
+      if (rides(toKeep[i])) { toArchive.push(toKeep[i]); toKeep.splice(i, 1); }
+    }
   }
 
   // Snapshot balance = the ARCHIVED rows' effect only. Compute directly so it is provably the archived set.

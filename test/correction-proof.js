@@ -369,5 +369,111 @@ ok('stepSetDigest is deterministic + order-independent',
 ok('a superseding resolve changes the digest (STEPS_CHANGED_RETRY trigger, C2-R1-12)',
   (() => { const s = STEPS(); s.push({ stepId: 's4', stepType: 'resolve', seq: 40, timestamp: SUBMIT_MS + 9000000, payload: { resolutions: [{ productId: 'prodA', qty: 6 }] } }); return C.stepSetDigest({ steps: s }).digest !== SD.digest; })());
 
+// ── 14. INTERIM LA REVIEW folds (C2-LA findings 1-11) ──────────────────────────────────────────────
+console.log('\n== interim-review folds ==');
+ok('F9: digest is key-order canonical (reordered control keys hash identically)',
+  C.opDigest({ ...DIG_IN, control: { type: 'replacement', row: { productId: 'p', qty: 1, type: 'in' } } })
+  === C.opDigest({ ...DIG_IN, control: { row: { type: 'in', qty: 1, productId: 'p' }, type: 'replacement' } }));
+ok('F4: a NEGATIVE replacement qty refuses INVALID_ROW (never publishes a corrupt delta)',
+  C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: ROW(10), newOutput: { storeId: 'boor', productId: 'prodA', qty: -5, type: 'transfer_in' } }).reason === 'INVALID_ROW');
+ok('F4: a fractional qty refuses INVALID_ROW',
+  C.computeDelta({ cell: 'create-delete', targetLocation: 'archive', target: { storeId: 'boor', productId: 'prodA', qty: 2.5, type: 'usage' } }).reason === 'INVALID_ROW');
+ok('F5: a run record NOT bound to the target (RunId mismatch) -> undecidable',
+  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', target: { archiveRunId: 'R2', snapshotVersion: 12 }, runRecord: { RunId: 'R1', SnapshotVersion: 11, TombstoneIds: ['txDel1'], recordSigValid: true } }).decision === 'undecidable');
+ok('F5: a correctly-bound record still decides',
+  C.membershipDecision({ targetLocation: 'archive', tombstoneTransactionId: 'txDel1', target: { archiveRunId: 'R1', snapshotVersion: 11 }, runRecord: { RunId: 'R1', SnapshotVersion: 11, TombstoneIds: ['txDel1'], recordSigValid: true } }).decision === 'excluded');
+ok('F6: a RAW archive-shaped row (TxnType/TxnDate/TxnTimestamp aliases) ACKs an exact replay',
+  (() => {
+    const arch = { ...J(PROW) }; arch.TxnType = arch.Type; arch.TxnDate = arch.Date; arch.TxnTimestamp = arch.Timestamp;
+    delete arch.Type; delete arch.Date; delete arch.Timestamp;
+    return C.pushIdempotency({ liveMatch: null, archiveMatch: arch, incoming: J(PROW) }).action === 'ack_archived_duplicate';
+  })());
+ok('F7: DUPLICATE SourceIds in a published run ([101,101,102] vs signed [101,102]) -> HALT (multiset equality)',
+  (() => {
+    const r = sweep([{ itemId: 201, sourceId: 101, archiveRunId: 'R1' }, { itemId: 202, sourceId: 101, archiveRunId: 'R1' }, { itemId: 203, sourceId: 102, archiveRunId: 'R1' }],
+      { R1: RUN([101, 102], true, true) }, []);
+    return r.halt.length === 1 && r.spare.length === 0;
+  })());
+ok('F8: WITHDRAWN claim + leftover N18 -> delete N18 then terminal (never left forever)',
+  (() => { const r = CD({ match: 'own', registryState: 'committed', controlIdNull: true, n18Present: true }); return r.action === 'delete_n18_then_ack_terminal' && r.status === 'superseded_by_adjudication'; })());
+ok('F10: ctlRowsEqual catches a DROPPED control field that econ-v1 rowsEqual misses',
+  (() => {
+    const intended = CTL(); const echoed = CTL(); delete echoed.ControlRevision;
+    return C.rowsEqual(intended, echoed) === true /* econ-v1 is blind to it */
+      && C.ctlRowsEqual(intended, echoed) === false /* ctl-v1 catches it */
+      && C.ctlRowsEqual(intended, CTL()) === true;
+  })());
+// F1a: assembleSnapshot — the LA does no arithmetic
+const SNAP = { version: 11, cutoffId: 100, stepCutoffTs: 0, runId: 'R1', fence: 3,
+  balances: [{ storeId: 'boor', productId: 'prodA', balance: 10 }],
+  controlManifest: { version: 11, controlHeads: { txOld: { controlId: 'ctl:z', revision: 0, bornPublicationVersion: 9 } } } };
+const ASM = C.assembleSnapshot({ snapshotConfigData: J(SNAP), candidateVersion: 12, deltas: { 'boor|prodA': -2, 'boor|prodB': 5 }, candidateHeads: { txT1: { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 12 }, txT2: null } });
+ok('F1a: assembleSnapshot bumps version, applies deltas (10-2=8, new pair 5), keeps fence, merges heads incl. explicit-null',
+  (() => {
+    if (!ASM.ok) return false;
+    const o = JSON.parse(ASM.configData);
+    const a = o.balances.find(b => b.productId === 'prodA'), bNew = o.balances.find(b => b.productId === 'prodB');
+    return o.version === 12 && o.fence === 3 && a.balance === 8 && bNew.balance === 5
+      && o.controlManifest.version === 12
+      && o.controlManifest.controlHeads.txOld.controlId === 'ctl:z'            // prior head carried
+      && o.controlManifest.controlHeads.txT1.controlId === 'ctl:op1'
+      && Object.prototype.hasOwnProperty.call(o.controlManifest.controlHeads, 'txT2')
+      && o.controlManifest.controlHeads.txT2 === null;                         // explicit-null WRITTEN
+  })());
+ok('F1a: a wrong candidateVersion refuses (must be captured version + 1)',
+  C.assembleSnapshot({ snapshotConfigData: J(SNAP), candidateVersion: 14, deltas: {}, candidateHeads: {} }).reason === 'BAD_ASSEMBLY_INPUT');
+// F1b: modeGate — no condition trees in the LA
+ok('F1b modeGate: create on an unreserved target passes; on a reserved target -> TARGET_RESERVED',
+  C.modeGate({ mode: 'create', registryItem: null }).ok === true
+  && C.modeGate({ mode: 'create', registryItem: { State: 'committed', ControlId: 'x', Revision: 0, PublicationVersion: 5 } }).reason === 'TARGET_RESERVED');
+ok('F1b modeGate: create finding an unregistered belt tombstone -> LAZY_ADOPTION_REQUIRED (C2-R1-4)',
+  C.modeGate({ mode: 'create', registryItem: null, beltTombstone: { id: 'txDel7' } }).reason === 'LAZY_ADOPTION_REQUIRED');
+ok('F1b modeGate: supersede vs committed-UNADOPTED -> TOMBSTONE_PENDING_ADOPTION (C2-R2-6)',
+  C.modeGate({ mode: 'supersede', expected: { activeControlId: 'txDel1', revision: 0, publicationVersion: null }, registryItem: { State: 'committed', ControlId: 'txDel1', Revision: 0, PublicationVersion: null, Origin: 'device' } }).reason === 'TOMBSTONE_PENDING_ADOPTION');
+ok('F1b modeGate: supersede against the NULL-head baseline needs EXPLICIT-null expected (C2-R6-2)',
+  (() => {
+    const regNull = { State: 'committed', ControlId: '', Revision: 2, PublicationVersion: 14, Origin: 'director' };
+    return C.modeGate({ mode: 'supersede', expected: { activeControlId: null, revision: 2, publicationVersion: 14 }, registryItem: regNull }).ok === true
+      && C.modeGate({ mode: 'supersede', expected: { revision: 2, publicationVersion: 14 }, registryItem: regNull }).reason === 'EXPECTED_MISMATCH'
+      && C.modeGate({ mode: 'withdraw', expected: { activeControlId: null, revision: 2, publicationVersion: 14 }, registryItem: regNull }).reason === 'ALREADY_WITHDRAWN';
+  })());
+ok('F1b modeGate: retire needs a committed-unadopted DEVICE claim + evidence; post-epoch unsealed stays LOCKED',
+  (() => {
+    const reg = { State: 'committed', ControlId: 'txDel1', Revision: 0, PublicationVersion: null, Origin: 'device' };
+    return C.modeGate({ mode: 'retire_claim', registryItem: reg, retireEvidence: { sealOutcome: 'unsealed-legacy' } }).ok === true
+      && C.modeGate({ mode: 'retire_claim', registryItem: reg, retireEvidence: { rowAbsentEverywhere: true } }).lane === 'absent-row'
+      && C.modeGate({ mode: 'retire_claim', registryItem: reg, retireEvidence: { sealOutcome: 'TARGET_SEAL_BROKEN', provenancePreEpoch: false } }).reason === 'RETIRE_EVIDENCE_INSUFFICIENT';
+  })());
+// F3: the REAL snapshotCompute, control-aware (the flagged C8-surface amendment)
+const SC = require(path.join(__dirname, '..', 'azure-functions', 'src', 'functions', 'snapshotCompute.js'));
+function scRows() {
+  return [
+    { Id: 10, TransactionId: 'txT1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 10, TxnTimestamp: 1000 },
+    { Id: 200, TransactionId: 'corr:op1:0', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 8, TxnTimestamp: 1200, ControlId: 'ctl:op1', TargetTransactionId: 'txT1' }
+  ];
+}
+ok('F3: control-aware fold — active replacement head folds +8 EFFECTIVE (not +18 raw) and the unit-move rides the control row',
+  (() => {
+    const r = SC.compute({ rows: scRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3,
+      controlHeads: { txT1: { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 3 } } });
+    if (!r.ok) return false;
+    const b = r.balances.find(x => x.productId === 'prodA');
+    return b && b.balance === 8 && r.archiveIds.includes(200); // ctl row (Id 200 > cutoff) rides the target's run
+  })());
+ok('F3: a SUPERSEDED (historical) control row folds NOTHING; a null-head target folds normally',
+  (() => {
+    const r = SC.compute({ rows: scRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3,
+      controlHeads: { txT1: null } }); // withdrawn: target PRESENT, old control historical
+    if (!r.ok) return false;
+    const b = r.balances.find(x => x.productId === 'prodA');
+    return b && b.balance === 10;
+  })());
+ok('F3: absent controlHeads = byte-identical PRE-C2 behaviour (regression guard)',
+  (() => {
+    const rows = [{ Id: 10, TransactionId: 'txT1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 10, TxnTimestamp: 1000 }];
+    const r = SC.compute({ rows, cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    return r.ok && r.balances[0].balance === 10;
+  })());
+
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);

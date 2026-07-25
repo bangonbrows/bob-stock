@@ -49,6 +49,15 @@ const refuse = (reason, detail) => (detail === undefined ? { ok: false, reason }
 
 // ── digest — the opId-reuse guard (§5 request contract) ─────────────────────────────────────────────
 // JSON-array-framed canonical (never a join — field-boundary injection class, C1 lesson).
+// stableClone: deep clone with RECURSIVELY SORTED object keys — a canonical serialization, so a
+// semantically identical retry with a different key order hashes identically (C2-LA finding 9).
+function stableClone(v) {
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map(stableClone);
+  const out = {};
+  for (const k of Object.keys(v).sort()) out[k] = stableClone(v[k]);
+  return out;
+}
 function opDigest(input) {
   const i = input || {};
   const parts = ['c2-op-v1',
@@ -60,7 +69,7 @@ function opDigest(input) {
       i.expected.revision == null ? null : i.expected.revision,
       i.expected.publicationVersion == null ? null : i.expected.publicationVersion
     ],
-    i.control == null ? null : JSON.parse(JSON.stringify(i.control)),
+    i.control == null ? null : stableClone(i.control),
     i.actorUsername == null ? null : String(i.actorUsername)
   ];
   return crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -124,50 +133,65 @@ function mintStamps(input) {
 
 // ── delta — the delta-exactness law (§5 P4: general law + all cells + the NORMALIZATION LAW) ───────
 // effect(row) per (storeId, productId): +qty inbound, −qty outbound (the engine's own classifier).
+// C2-LA finding 4: every row entering delta arithmetic is VALIDATED first — a malformed row
+// (negative/fractional qty, missing ids) must never publish a balance change.
+function validEconRow(row) {
+  return !!row && reqId(row.storeId) && reqId(row.productId) && validQty(row.qty)
+    && typeof row.type === 'string' && row.type.length > 0;
+}
 function effectOf(row) {
   if (!row) return null;
+  if (!validEconRow(row)) return { invalid: true };
   const dir = engine.isIn(row) ? 1 : -1;
   return { key: row.storeId + '|' + row.productId, amount: dir * row.qty };
 }
-function addDelta(map, eff, sign) { if (!eff) return; map[eff.key] = (map[eff.key] || 0) + sign * eff.amount; }
+function addDelta(map, eff, sign) {
+  if (!eff) return null;
+  if (eff.invalid) return 'INVALID_ROW';
+  map[eff.key] = (map[eff.key] || 0) + sign * eff.amount;
+  return null;
+}
 // input: { cell, targetLocation: 'live'|'archive', target?, newOutput?, prevOutput?, originalTarget?,
 //          membership?: {decision:'excluded'|'in-balances'|'undecidable'} (adoption/retirement only) }
 function computeDelta(input) {
   const cell = input.cell, deltas = {};
+  let err = null;
+  const add = (row, sign) => { const e = addDelta(deltas, effectOf(row), sign); if (e && !err) err = e; };
   // NORMALIZATION LAW: live-target ensembles adjust NO balances in ANY cell (they are never in
   // balances; the N10 unit-move folds them at effective value when they archive).
   if (input.targetLocation === 'live') return { ok: true, deltas: {}, suppressed: 'live-ensemble' };
   switch (cell) {
     case 'create-replace':   // first publication; archived create target is ALWAYS in balances
-      addDelta(deltas, effectOf(input.target), -1); addDelta(deltas, effectOf(input.newOutput), +1); break;
+      add(input.target, -1); add(input.newOutput, +1); break;
     case 'create-delete':
-      addDelta(deltas, effectOf(input.target), -1); break;
+      add(input.target, -1); break;
     case 'supersede-replace-replace':
-      addDelta(deltas, effectOf(input.prevOutput), -1); addDelta(deltas, effectOf(input.newOutput), +1); break;
+      add(input.prevOutput, -1); add(input.newOutput, +1); break;
     case 'supersede-replace-delete':
-      addDelta(deltas, effectOf(input.prevOutput), -1); break;
+      add(input.prevOutput, -1); break;
     case 'supersede-delete-replace':
-      addDelta(deltas, effectOf(input.newOutput), +1); break;
+      add(input.newOutput, +1); break;
     case 'withdraw':
-      addDelta(deltas, effectOf(input.prevOutput), -1); addDelta(deltas, effectOf(input.originalTarget), +1); break;
+      add(input.prevOutput, -1); add(input.originalTarget, +1); break;
     case 'null-replace':     // post-withdraw/retire baseline: the TARGET is the current effective value (C2-R6-2)
-      addDelta(deltas, effectOf(input.originalTarget), -1); addDelta(deltas, effectOf(input.newOutput), +1); break;
+      add(input.originalTarget, -1); add(input.newOutput, +1); break;
     case 'null-delete':
-      addDelta(deltas, effectOf(input.originalTarget), -1); break;
+      add(input.originalTarget, -1); break;
     case 'adopt': {          // first publication; in-snapshot gate by MEMBERSHIP (C2-R3-3/C2-R4-1)
       const m = input.membership && input.membership.decision;
       if (m === 'undecidable') return refuse('ADOPTION_DELTA_UNDECIDABLE');
-      if (m === 'in-balances') addDelta(deltas, effectOf(input.target), -1);
+      if (m === 'in-balances') add(input.target, -1);
       break;                 // 'excluded' => the archiver already excluded it => 0
     }
     case 'retire': {         // a NORMALIZING first publication (C2-R5-1): restore where the retired
       const m = input.membership && input.membership.decision; // tombstone had excluded the target
       if (m === 'undecidable') return refuse('RETIRE_DELTA_UNDECIDABLE');
-      if (m === 'excluded') addDelta(deltas, effectOf(input.target), +1);
+      if (m === 'excluded') add(input.target, +1);
       break;                 // 'in-balances' (tombstone never folded) or live => 0
     }
     default: return refuse('UNKNOWN_CELL', cell);
   }
+  if (err) return refuse(err); // C2-LA finding 4: a malformed row never publishes a balance change
   return { ok: true, deltas };
 }
 
@@ -218,11 +242,16 @@ function recoveryDecision(input) {
 }
 
 // ── membership — tombstone TransactionId ∈ the N17 recorded set (C2-R10-3/C2-R11-3) ────────────────
-// input: { targetLocation, tombstoneTransactionId, runRecord: {TombstoneIds, recordSigValid}|null }
+// input: { targetLocation, tombstoneTransactionId,
+//          target: {archiveRunId, snapshotVersion},        // the ARCHIVED target row's bindings
+//          runRecord: {RunId, SnapshotVersion, TombstoneIds, recordSigValid}|null }
+// C2-LA finding 5: the record must BIND to the target — RunId must equal the target's ArchiveRunId
+// AND SnapshotVersion must cohere (C2-R10-2) — else a wrong-run record silently mis-decides.
 function membershipDecision(input) {
   if (input.targetLocation === 'live') return { ok: true, decision: 'live' }; // deltas suppressed anyway
-  const rec = input.runRecord;
+  const rec = input.runRecord, t = input.target || {};
   if (!rec || rec.recordSigValid !== true || !Array.isArray(rec.TombstoneIds)) return { ok: true, decision: 'undecidable' };
+  if (rec.RunId !== t.archiveRunId || rec.SnapshotVersion !== t.snapshotVersion) return { ok: true, decision: 'undecidable' };
   return { ok: true, decision: rec.TombstoneIds.includes(input.tombstoneTransactionId) ? 'excluded' : 'in-balances' };
 }
 
@@ -269,10 +298,13 @@ function sweepClassify(input) {
       for (const row of rows) out.delete.push(row.itemId);
     } else {
       // Cannot be unpublished => FULL-SET equality is REQUIRED (C2-R18-1 positive proof + C2-R24-1).
-      const queried = new Set(rows.map(r => r.sourceId));
-      const equal = queried.size === intended.size && rec.memberSourceIds.every(sid => queried.has(sid));
+      // C2-LA finding 7: MULTISET equality — Set() loses duplicate SourceIds, so [101,101,102] vs
+      // signed [101,102] would false-pass; compare sorted arrays element-for-element instead.
+      const queried = rows.map(r => r.sourceId).slice().sort();
+      const wanted = rec.memberSourceIds.slice().sort();
+      const equal = queried.length === wanted.length && queried.every((v, i) => v === wanted[i]);
       if (equal) { for (const row of rows) out.spare.push(row.itemId); }             // published history
-      else out.halt.push({ runId, why: 'published-run set deviation (missing/extra member)' });
+      else out.halt.push({ runId, why: 'published-run set deviation (missing/extra/duplicate member)' });
     }
   }
   return out;
@@ -293,7 +325,13 @@ function claimDispatch(input) {
     case 'collision':
       return { action: 'resolve_collision' };  // ensure N18 deleted then release (C2-R16-3)
     case 'committed':
-      if (input.controlIdNull) return { action: 'ack_terminal', status: 'superseded_by_adjudication' }; // C2-R7-3
+      if (input.controlIdNull) {
+        // C2-LA finding 8: a leftover N18 row under a WITHDRAWN/retired claim must be CLEANED, never
+        // left forever (the §6 matrix: committed(null)+N18 => delete N18, NEVER re-mint, C2-R13-1).
+        return input.n18Present
+          ? { action: 'delete_n18_then_ack_terminal', status: 'superseded_by_adjudication' }
+          : { action: 'ack_terminal', status: 'superseded_by_adjudication' }; // C2-R7-3
+      }
       if (input.mainPresent) {
         if (!input.mainIsOurs) return { action: 'control_id_collision' };            // C2-R17-3: never touch N18 blindly...
         if (!input.mainCommitSigValid) return { action: 'remint_commitsig_then_finish' }; // ours + bad sig (C2-R15-4)
@@ -309,11 +347,27 @@ function claimDispatch(input) {
 // ── pushIdempotency — the global Live+Archive TransactionId check (N9, C2-R21-3/C2-R22-2) ──────────
 // input: { liveMatch: row|null, archiveMatch: row|null, incoming: row }  (source-first Live->Archive
 // reads gathered by the LA). Exact canonical match => ack; differing => reject; none => proceed.
+// C2-LA finding 6: the REAL archive list aliases three econ fields (TxnType/TxnDate/TxnTimestamp,
+// archive-def:106) — normalize an archive row to the live/canonical shape BEFORE comparing, else a
+// legitimate exact retry of an archived row canonicalises with blank Type/Date/Timestamp and is
+// wrongly rejected as a mutated replay.
+const ARCHIVE_ALIASES = { TxnType: 'Type', TxnDate: 'Date', TxnTimestamp: 'Timestamp' };
+function normalizeArchiveRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = { ...row };
+  for (const [a, f] of Object.entries(ARCHIVE_ALIASES)) {
+    if (Object.prototype.hasOwnProperty.call(out, a)) {
+      if (!Object.prototype.hasOwnProperty.call(out, f) || out[f] == null || out[f] === '') out[f] = out[a];
+      delete out[a];
+    }
+  }
+  return out;
+}
 function pushIdempotency(input) {
   const inc = input.incoming;
   const eq = (a, b) => a && b && attest.canonical(a) === attest.canonical(b);
   if (input.liveMatch) return eq(input.liveMatch, inc) ? { action: 'ack_duplicate' } : { action: 'reject_conflict', reason: 'DIFFERING_REPLAY' };
-  if (input.archiveMatch) return eq(input.archiveMatch, inc) ? { action: 'ack_archived_duplicate' } : { action: 'reject_conflict', reason: 'DIFFERING_REPLAY' };
+  if (input.archiveMatch) return eq(normalizeArchiveRow(input.archiveMatch), inc) ? { action: 'ack_archived_duplicate' } : { action: 'reject_conflict', reason: 'DIFFERING_REPLAY' };
   return { action: 'proceed' };
 }
 
@@ -327,6 +381,91 @@ function exportBlocker(input) {
 }
 
 function rowsEqual(a, b) { return attest.canonical(a) === attest.canonical(b); }
+
+// C2-LA finding 10: the P5.4 candidate verify must be FULL-FIELD — the econ-v1 canonical ignores the
+// C2 control columns (ControlId/Revision/Born/TargetLine/OriginalEventAt), so a dropped control
+// field would false-pass rowsEqual. ctlRowsEqual compares the ctl-v1 canonicals (control-level +
+// full engine row form, typed 0/null/absent). §B pins that the ctl-v1 seal is minted from the
+// INTENDED pre-write object and the re-read row is verified against THAT intent.
+function ctlRowsEqual(a, b) {
+  const ca = attest.canonicalFrame('ctl-v1', a), cb = attest.canonicalFrame('ctl-v1', b);
+  return ca !== null && ca === cb;
+}
+
+// ── assembleSnapshot — the P6 payload builder (C2-LA finding 1a: NO map/array arithmetic in the LA)
+// input: { snapshotConfigData (the P2-captured content, parsed), candidateVersion,
+//          deltas: {'store|product': n}, candidateHeads }
+// Returns the EXACT serialized ConfigData string for the single P6 MERGE: version bumped, balances
+// adjusted, fence UNCHANGED, controlManifest = full prior heads + this publication's entries
+// (explicit-null entries WRITTEN, never dropped — the hasOwnProperty withdraw semantics).
+function assembleSnapshot(input) {
+  const cfg = input.snapshotConfigData;
+  if (!cfg || typeof cfg !== 'object' || !Number.isSafeInteger(input.candidateVersion)) return refuse('BAD_ASSEMBLY_INPUT');
+  if (input.candidateVersion !== (cfg.version || 0) + 1) return refuse('BAD_ASSEMBLY_INPUT', 'candidateVersion must be captured version + 1');
+  const out = JSON.parse(JSON.stringify(cfg));
+  out.version = input.candidateVersion;
+  if (out.fence == null) out.fence = 0;                       // first correction-era publish seeds fence
+  const balances = Array.isArray(out.balances) ? out.balances : [];
+  const idx = new Map(balances.map((b, i) => [b.storeId + '|' + b.productId, i]));
+  for (const [key, delta] of Object.entries(input.deltas || {})) {
+    if (typeof delta !== 'number' || !Number.isFinite(delta)) return refuse('BAD_ASSEMBLY_INPUT', key);
+    if (delta === 0) continue;
+    if (idx.has(key)) balances[idx.get(key)].balance += delta;
+    else {
+      const [storeId, productId] = key.split('|');
+      balances.push({ storeId, productId, balance: delta });
+    }
+  }
+  out.balances = balances;
+  const priorHeads = (out.controlManifest && out.controlManifest.controlHeads) || {};
+  const heads = { ...priorHeads };
+  for (const [target, head] of Object.entries(input.candidateHeads || {})) heads[target] = head; // null WRITTEN
+  out.controlManifest = { version: input.candidateVersion, controlHeads: heads };
+  return { ok: true, configData: JSON.stringify(out) };
+}
+
+// ── modeGate — the P3.4 mode-legality decision (C2-LA finding 1b: no condition trees in the LA) ────
+// input: { mode, expected?, registryItem: {State, ControlId, Revision, PublicationVersion,
+//          OpId, Origin}|null, beltTombstone: row|null (an existing unregistered tombstone found by
+//          the belt query), retireEvidence?: {sealOutcome, provenancePreEpoch, rowAbsentEverywhere} }
+function modeGate(input) {
+  const reg = input.registryItem, mode = input.mode;
+  const controlIdNull = !!reg && (reg.ControlId == null || reg.ControlId === '');
+  const unadopted = !!reg && reg.State === 'committed' && (reg.PublicationVersion == null || reg.PublicationVersion === '');
+  switch (mode) {
+    case 'create':
+      if (!reg) {
+        if (input.beltTombstone) return { ok: false, reason: 'LAZY_ADOPTION_REQUIRED' }; // §4 C2-R1-4: register it, then the adopted-head lane
+        return { ok: true };
+      }
+      return { ok: false, reason: 'TARGET_RESERVED' };        // one registry item per target (SR-144)
+    case 'supersede': case 'withdraw': {
+      if (!reg || reg.State !== 'committed') return { ok: false, reason: reg ? 'TARGET_BUSY' : 'TARGET_NOT_CONTROLLED' };
+      if (unadopted && !controlIdNull) return { ok: false, reason: 'TOMBSTONE_PENDING_ADOPTION' }; // C2-R2-6
+      const e = input.expected;
+      if (!e) return { ok: false, reason: 'EXPECTED_REQUIRED' };
+      const wantNull = Object.prototype.hasOwnProperty.call(e, 'activeControlId') && e.activeControlId === null;
+      if (controlIdNull !== wantNull) return { ok: false, reason: 'EXPECTED_MISMATCH' };
+      if (!controlIdNull && e.activeControlId !== reg.ControlId) return { ok: false, reason: 'EXPECTED_MISMATCH' };
+      if (e.revision !== reg.Revision || e.publicationVersion !== reg.PublicationVersion) return { ok: false, reason: 'EXPECTED_MISMATCH' };
+      if (mode === 'withdraw' && controlIdNull) return { ok: false, reason: 'ALREADY_WITHDRAWN' };
+      return { ok: true, baseline: controlIdNull ? 'null-head' : 'active-head' };
+    }
+    case 'retire_claim': {
+      if (!reg || reg.State !== 'committed' || controlIdNull || !unadopted || reg.Origin === 'director')
+        return { ok: false, reason: 'RETIRE_NOT_APPLICABLE' }; // only a committed-UNADOPTED device claim
+      const ev = input.retireEvidence || {};
+      const laneA = ev.sealOutcome === 'unsealed-legacy' || (ev.sealOutcome === 'TARGET_SEAL_BROKEN' && ev.provenancePreEpoch === true);
+      const laneB = ev.rowAbsentEverywhere === true;           // the journaled N18→L→A→Q enumeration IS the evidence (C2-R9-2)
+      if (laneA || laneB) return { ok: true, lane: laneB ? 'absent-row' : 'pre-epoch-seal' };
+      return { ok: false, reason: 'RETIRE_EVIDENCE_INSUFFICIENT' }; // a post-epoch unsealed claim stays LOCKED, loudly
+    }
+    case 'adopt': case 'reconcile':
+      return { ok: true };                                     // no target argument; eligibility computed at P4
+    default:
+      return { ok: false, reason: 'UNKNOWN_MODE' };
+  }
+}
 
 // ── targetSeal — the P3.2 THREE-WAY caller-side contract (C2-R2-N2/C2-R3-4/C2-R4-3) ────────────────
 // input: { econSigPresent, verifyOk, provenanceId (live _spId | archived SourceId, LIVE coordinate),
@@ -365,8 +504,11 @@ const OPS = {
   pushIdempotency: (b) => pushIdempotency(b.input || {}),
   exportBlocker: (b) => exportBlocker(b.input || {}),
   rowsEqual: (b) => ({ equal: rowsEqual(b.input && b.input.a, b.input && b.input.b) }),
+  ctlRowsEqual: (b) => ({ equal: ctlRowsEqual(b.input && b.input.a, b.input && b.input.b) }),
   targetSeal: (b) => targetSeal(b.input || {}),
-  stepSetDigest: (b) => stepSetDigest(b.input || {})
+  stepSetDigest: (b) => stepSetDigest(b.input || {}),
+  assembleSnapshot: (b) => assembleSnapshot(b.input || {}),
+  modeGate: (b) => modeGate(b.input || {})
 };
 
 app.http('correctionCompute', {
@@ -384,4 +526,5 @@ app.http('correctionCompute', {
 
 module.exports = { opDigest, computeTargetLine, mintStamps, computeDelta, assembleCandidate,
   recoveryDecision, membershipDecision, sweepClassify, claimDispatch, pushIdempotency,
-  exportBlocker, rowsEqual, effectOf, targetSeal, stepSetDigest, OPS };
+  exportBlocker, rowsEqual, ctlRowsEqual, effectOf, targetSeal, stepSetDigest,
+  assembleSnapshot, modeGate, normalizeArchiveRow, stableClone, OPS };

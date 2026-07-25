@@ -23,7 +23,7 @@ committed); every branch ends in a `Response` action (no dangling runs).
 |---|---|
 | `ControlRegistry_Staging` (N3) | `TargetTransactionId` Text **Enforce-Unique + indexed**; `State` Text (pending/committed/pending_supersede/collision); `Owner`, `OpId`, `JournalId` Text; `TtlAt` Text ISO; `ControlId` Text (empty = the withdrawn null); `Revision`, `PublicationVersion` Number (empty PublicationVersion = committed-unadopted); `PriorCommitted` Note(JSON); `Origin` Text |
 | `CorrectionJournal_Staging` (N4) | `OpId` Text **Enforce-Unique + indexed**; `JournalId`, `Mode`, `Target`, `ActorUsername`, `State`, `Digest`, `StepSetDigest` Text; `CandidateVersion` Number; `CandidateHeads`, `AdoptionDecisions`, `Payload`, `StoredResult` Note(JSON); `HeartbeatAt` Text ISO |
-| `ArchiveRunRecords_Staging` (N17) | `RunId` Text **Enforce-Unique + indexed**; `SnapshotVersion` Number; `InputDigest` Text; `TombstoneIds`, `ArchiveMemberSourceIds` Note(JSON arrays); `Published` Text ('true'/''); `PublishedSig`, `RecordSig` Text |
+| `ArchiveRunRecords_Staging` (N17) | `RunId` Text **Enforce-Unique + indexed**; `SnapshotVersion` Number; `InputDigest` Text; `TombstoneIds`, `ArchiveMemberSourceIds` Note(JSON arrays); `Published` **Boolean (SP Yes/No, explicit default FALSE — per the frozen N17 schema, Codex C2-LA finding 11; OData filters use `Published eq 1`; the runrec-pub-v1 seal signs the CONSTANT not the boolean, so signing is unaffected)**; `PublishedSig`, `RecordSig` Text |
 | `StockControlPending_Staging` (N18) | `TransactionId` Text **Enforce-Unique + indexed**; the FULL econ-v1 row column set (as StockTransactions_Staging) + `TargetTransactionId`; `OwnerDeviceId` Text |
 | BOTH ledger lists gain (N7) | `ControlId`, `ControlType`, `TargetLine` (Note JSON), `OriginalEventAt`, `ControlState`, `CommitSig` Text; `ControlRevision`, `BornPublicationVersion` Number |
 | `AppConfig_Staging` items | `archive_state` ConfigData TRANSFORMED to the v2 five-state shape (§3 — existing content preserved, `v:2` + request-flag fields added); NEW `seal_epoch` item `{epochId, tombstoneCommitEpochId, archiveC2EpochId, recordedAt, EpochSig}` (N16, epoch-v1-signed); `stock_snapshot` ConfigData gains `controlManifest:{version,controlHeads:{}}` + `fence:0` on first correction-era publish (carried forward by N10) |
@@ -71,13 +71,13 @@ targetTransactionId?, expected?, control?}}`. Every terminal path returns via `R
 11. `Steps_enumerate` (target.TransferId only): paged SP GET RecordSteps_Staging by RecordId
     (`$top=200`, `Id gt lastId` walk until short page + one continuity re-read) → POST fn
     op:`stepSetDigest` → journaled later.
-12. `Mode_gate`: SP GET the registry item for the target (AFTER acquire) + the BELT query (both
-    ledger lists for existing tombstones/controls on the target). Mode legality per §4/§5b:
-    create ⇒ no item (unregistered existing tombstone ⇒ LAZY ADOPTION: CREATE committed
-    device-adopted, conflict ⇒ re-read); supersede/withdraw ⇒ committed + `expected` CAS
-    (explicit-null baseline for the withdrawn form, C2-R6-2); committed-UNADOPTED (empty
-    PublicationVersion) ⇒ `TOMBSTONE_PENDING_ADOPTION`; retire_claim ⇒ the C2-R5 gate (evidence:
-    seal-fails+pre-epoch, or the ABSENT-ROW enumeration under the N18→L→A→Q contract, C2-R9-2).
+12. `Mode_gate` (C2-LA-1b): SP GET the registry item for the target (AFTER acquire) + the BELT
+    query (both ledger lists for existing tombstones/controls on the target) → **POST fn
+    op:`modeGate` {mode, expected, registryItem, beltTombstone, retireEvidence}** — the compute op
+    returns `{ok}` or the refusal (`TARGET_RESERVED` / `TOMBSTONE_PENDING_ADOPTION` /
+    `EXPECTED_MISMATCH` / `ALREADY_WITHDRAWN` / `LAZY_ADOPTION_REQUIRED` [⇒ the LA registers the
+    tombstone then re-runs the gate] / `RETIRE_NOT_APPLICABLE` / `RETIRE_EVIDENCE_INSUFFICIENT`).
+    NO legality condition trees live in the LA.
 
 **P4 — compute (ALL decisions via `correctionCompute`):**
 13. op:`targetLine` (real foldProjection authority; `TARGET_PRE_EPOCH`/`ROW_NOT_IN_TRANSFER_LEDGER`
@@ -99,18 +99,25 @@ an ETag-CAS `heartbeatAt` MERGE on archive_state; failure ⇒ ABORT, self-rollba
 16. `Candidate_row` (create/supersede only): SP CREATE the control row INTO THE TARGET'S OWN LIST
     (SR-135) with N7 columns + minted stamps + TargetLine + OriginalEventAt → POST fn attestRows
     frame:'ctl-v1' sign → MERGE EconSig onto the row.
-17. `Verify`: SP re-read the candidate row field-for-field + op:`rowsEqual`-style compare +
-    ctl-v1 verify; re-enumerate steps → op:`stepSetDigest` compare (`STEPS_CHANGED_RETRY` ⇒
-    rollback); registry/journal coherence re-read. Any failure ⇒ FULL ROLLBACK (delete candidate,
-    release/restore reservation per mode, journal `rolled_back`, conditional release) + Response.
-    retire_claim additionally: P5 MERGE the tombstone row `ControlState='retiring'` (REVERSIBLE —
-    rollback restores; the N13 filter stops delivering it, C2-R6-1a).
+17. `Verify` (C2-LA finding 10): the ctl-v1 seal is minted FROM THE INTENDED PRE-WRITE OBJECT
+    (the P4 candidate assembly output), and the SP re-read row is verified AGAINST THAT INTENT via
+    **POST fn op:`ctlRowsEqual` {a: intendedObject, b: reReadRow}** (the ctl-v1 canonical covers
+    the control fields the econ-v1 canonical ignores — a SharePoint-dropped ControlId/Revision
+    fails equality) + ctl-v1 verify on the re-read row; re-enumerate steps → op:`stepSetDigest`
+    compare (`STEPS_CHANGED_RETRY` ⇒ rollback); registry/journal coherence re-read. Any failure ⇒
+    FULL ROLLBACK (delete candidate, release/restore reservation per mode, journal `rolled_back`,
+    conditional release) + Response. retire_claim additionally: P5 MERGE the tombstone row
+    `ControlState='retiring'` (REVERSIBLE — rollback restores; the N13 filter stops delivering it,
+    C2-R6-1a).
 
 **P6 — THE PUBLISH (irrevocable):**
-18. `Final_restamp` (§3a) → `Publish`: ONE SP MERGE of `stock_snapshot.ConfigData` =
-    captured-content + `version: CandidateVersion` + balances adjusted per op:`delta` + `fence`
-    UNCHANGED + `controlManifest: {version: CandidateVersion, controlHeads: <full new map>}` with
-    **`IF-MATCH: <the P2-captured ETag>`** — never a re-read ETag (C2-R1-1).
+18. `Final_restamp` (§3a) → `Assemble` (C2-LA-1a): **POST fn op:`assembleSnapshot`
+    {snapshotConfigData: <the P2-captured content>, candidateVersion, deltas: <op:delta output>,
+    candidateHeads}** — the compute op returns the EXACT serialized ConfigData (version bumped,
+    balances arithmetic done, fence UNCHANGED, controlManifest = full prior heads merged with this
+    publication's entries incl. explicit-nulls; NO map/array arithmetic in the LA) → `Publish`:
+    ONE SP MERGE of that string with **`IF-MATCH: <the P2-captured ETag>`** — never a re-read ETag
+    (C2-R1-1).
 19. `Outcome_by_read` (C2-R1-10): re-read the snapshot; per-entry CandidateHeads test via POST fn
     op:`recoveryDecision` — present ⇒ COMMITTED ⇒ P7; positively-absent + version unchanged +
     still-owner ⇒ retry P6 or rollback; else leave the journal pending (state HELD) for reconcile.
@@ -160,8 +167,13 @@ ONLY releases the stranded claim (NEVER deletes the winner's N18 row, C2-R15-2).
 N17 record (RunId create-if-absent + InputDigest + TombstoneIds + ArchiveMemberSourceIds +
 RecordSig via frame:'runrec-v1') written + durable BEFORE Copy_loop (C2-R15-1/C2-R22-1/C2-R23-1);
 UNIT-MOVE selection (target-keyed full predicate; control/tombstone rows ride the same run,
-C2-R6-3) with the SELECT/copy/re-read/fidelity canonical carrying the FULL N7 control form + typed
-values (C2-R6-4/C2-R7-5); the TOMBSTONE AUTHORITY GATE allowlist pre-compute (C2-R7-4/C2-R8-3);
+C2-R6-3 — implemented INSIDE snapshotCompute's partition, W-B2r) with the SELECT/copy/re-read/
+fidelity canonical carrying the FULL N7 control form + typed values (C2-R6-4/C2-R7-5);
+**`Call_compute` PASSES the active `controlManifest.controlHeads` (from the captured
+stock_snapshot) into snapshotCompute, which now folds EFFECTIVE values (Codex C2-LA finding 3 —
+the ⚠ flagged C8-surface amendment, shipped W-B2r: active-headed targets excluded, active-head
+control rows folded raw, historical control rows excluded, null-head targets normal; absent
+controlHeads ⇒ byte-identical pre-C2 behaviour, archive-carry-proof regression-gated)**; the TOMBSTONE AUTHORITY GATE allowlist pre-compute (C2-R7-4/C2-R8-3);
 `Published`+PublishedSig (frame:'runrec-pub-v1') stamped right after the snapshot-CAS; startup =
 snapshot-named-run RECONCILE COMPLETION on the run's EXACT archived SourceId set (verified vs the
 signed ArchiveMemberSourceIds, C2-R20-1/C2-R21-1/-2) THEN the SWEEP via POST fn op:`sweepClassify`
@@ -180,18 +192,33 @@ excluded BY CONSTRUCTION. Real-list OData null semantics = a staging-apply probe
 
 ## D. THE APPLY RUNNER `audit-artifacts/apply-c2-staging.js` (Kunal-executed; idempotent)
 
-Steps (C1 runner pattern — temp passthru LA, prints no secrets): (1) lists+columns per §A
-(create-if-missing; Enforce-Unique via field XML `EnforceUniqueValues="TRUE" Indexed="TRUE"`);
-(2) `archive_state` v2 TRANSFORM (preserve content, add v:2 fields); (3) the QUIESCENT CUTOVER
-(C2-R18-3/C2-R19-3/C2-R20-4): disable the archive LA + FENCE push (disable push LA for the bounded
-interval) → wait idle → complete any published legacy run's Live-delete by its exact set →
-SourceId residue cleanup (legacy AUTH BYPASS documented, C2-R22-1) → seal
-`{epochId, tombstoneCommitEpochId, archiveC2EpochId}` + EpochSig → re-enable; (4) deploy the N1
-LA from the reviewed definition + transform N9/N10/N13 per §C; (5) redeploy the Function App
-(correctionCompute + attestRows frames + validateUser 'correction'); (6) PROBES on the real cloud
-(sign/verify each new frame; a correction dry-run against a probe row; the sweep in report-only
-mode first); (7) cleanup (probe rows deleted, temp LA deleted). PRODUCTION-cutover variant:
-VERIFIES the archive list is EMPTY before sealing (C2-R23-N1) — else HALT + Kunal decision.
+Steps (C1 runner pattern — temp passthru LA, prints no secrets; ORDER REVISED per the interim
+review — AGY C2-LA-2 + Codex findings 1/2):
+(1) lists+columns per §A (create-if-missing; Enforce-Unique via field XML
+    `EnforceUniqueValues="TRUE" Indexed="TRUE"`);
+(2) `archive_state` v2 TRANSFORM (preserve content, add v:2 fields);
+(3) **REDEPLOY THE FUNCTION APP FIRST** (correctionCompute + the attestRows frames +
+    validateUser 'correction') — the epoch seal in step (4) NEEDS frame:'epoch-v1' live
+    (AGY C2-LA-2: signing before deploy = 400 mid-quiescence);
+(4) the QUIESCENT CUTOVER (C2-R18-3/C2-R19-3/C2-R20-4): DISABLE the legacy archive LA + FENCE
+    push (disable the push LA for the bounded interval) → wait idle → complete any published
+    legacy run's Live-delete by its exact set → SourceId residue cleanup (legacy AUTH BYPASS
+    documented, C2-R22-1) → seal `{epochId, tombstoneCommitEpochId, archiveC2EpochId}` + EpochSig.
+    **EPOCH RERUN RULE (Codex 2): strictly create-if-absent — an EXISTING seal_epoch item with a
+    VALID EpochSig is REUSED byte-for-byte (never re-sampled); a rerun whose freshly-observed
+    boundary DIFFERS from a valid existing seal ⇒ HALT + surface (the boundary is one-shot, never
+    a refreshable maximum).** Writers STAY DISABLED at the end of this step;
+(5) deploy the N1 LA from the reviewed definition + TRANSFORM N9/N10/N13 per §C;
+(6) **RE-ENABLE push + enable the C2 archive LA ONLY NOW** — after every C2 writer/transform is
+    live (Codex 1: re-enabling the LEGACY writers post-seal would mint above-epoch rows with no
+    N17 provenance / post-epoch tombstones with no CommitSig ⇒ sweep/allowlist halts);
+(7) PROBES on the real cloud (sign/verify each new frame; a correction dry-run against a probe
+    row; the sweep in REPORT-ONLY mode first);
+(8) cleanup (probe rows deleted, temp LA deleted).
+PRODUCTION-cutover variant: VERIFIES the archive list is EMPTY before sealing (C2-R23-N1) — else
+HALT + Kunal decision. EVERY step is idempotent (create-if-missing / reuse-if-valid / halt-on-
+divergence) — a partial-failure re-run is safe at ANY boundary, including a step-(4) network
+timeout after push was fenced (the fence state is re-asserted, the seal reused, never re-sampled).
 
 ## E. Review questions for the INTERIM LA REVIEW (both reviewers)
 
