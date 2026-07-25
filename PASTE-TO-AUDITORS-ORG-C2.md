@@ -1,5 +1,24 @@
-# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R23
+# REVIEW PACK — Org-Structure chunk, W4.4 Contract 2 (correction-approval route) — SCOPE REVIEW R24
 
+> ## ROUND 24 — re-review after the round-23 folds
+> Round-23 verdicts: BOTH BLOCK on ONE converged finding — the SAME one from each reviewer, and
+> one reviewer explicitly stated "no other high-confidence Contract-2 defect found". Q2v23 (legacy
+> bypass) and Q3v23 (normative global idempotency) PASSED with both. The final finding: the
+> whole-set membership hash treated a legitimate MID-COPY crash's partial set as tampering ⇒ a
+> routine crash permanently HALT-bricked the sweep. The fold adopts the "authenticated subsets"
+> correction both reviewers pointed at: N17 now stores the SIGNED EXACT MEMBER LIST
+> (`ArchiveMemberSourceIds`, written before copying, RecordSig-covered) and verification is
+> MODE-SPLIT — a PUBLISHED run verifies by FULL-SET equality (its set is guaranteed complete;
+> deviation = tampering ⇒ HALT); an UNPUBLISHED (crashed) run's partial residue verifies
+> PER-MEMBER (each queried row's SourceId ∈ the signed list ⇒ authenticated residue ⇒ swept by the
+> in-Live rule; ∉ ⇒ tamper ⇒ HALT). A legitimate partial copy always verifies (it is a subset of
+> its own signed intent); tampering never does; no routine crash can brick the sweep. Also folded:
+> the deployment reservation — the PRODUCTION cutover runner now VERIFIES the archive is EMPTY
+> before sealing (a non-empty production archive ⇒ HALT + owner decision, never a silent proceed
+> under the legacy bypass). This round: answer Q1v24 (the mode-split verification matrix) and
+> Q2v24 — the explicit convergence gate.
+>
+> [Superseded R23 summary retained below for reference:]
 > ## ROUND 23 — re-review after the round-22 folds
 > Round-22 verdicts: BOTH BLOCK — 2 distinct REAL findings (both CONVERGED), all folded (the
 > design doc's **R22 fold record table**). Q1v22 (exact per-run deletion set), Q3v22 (global
@@ -124,7 +143,7 @@ the same scrutiny is wanted here.
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` — THE document under review (everything is in there:
    deliverables, state machines, order of operations, recovery, pinned parameters, engineer-flagged
-   honest notes H1-H14, the R1-R22 fold records, and questions Q1v23-Q4v23).
+   honest notes H1-H14, the R1-R23 fold records, and questions Q1v24-Q2v24).
 2. For grounding only: `AZURE-CHUNK-ORG-LA-CHANGES.md` §6 (correction bullet),
    `AZURE-CHUNK-ORG-W4.4-EXPORT-SCOPE.md` P2, and the frozen engine's control validation
    (`azure-functions/src/functions/buybackExport.js` header CONTROLS FORM + lines ~500-601, 783-800 —
@@ -134,10 +153,9 @@ the same scrutiny is wanted here.
 record, the reservation registry lifecycle (create/supersede/withdraw, rollback restore), the
 journal/publication protocol and its crash matrix, the targetLine/originalEventAt capture rules, the
 stamp-minting precedence and its two fail-closed rejections (D-C2-1/2), the manifest-head publication,
-and the push-path tombstone claim. Answer Q1v23-Q4v23 explicitly. If a decision contradicts a frozen
-SR pin, cite the pin. This round's folds lean on the N17 durable `ArchiveMembersHash` (signed,
-RecordSig-covered), the legacy-cutover authentication bypass (D-C2-2 trial data), and the normative
-global push idempotency in §8. Useful grounding for this round's folds: `sync.js` pull tombstone application
+and the push-path tombstone claim. Answer Q1v24-Q2v24 explicitly. If a decision contradicts a frozen
+SR pin, cite the pin. This round's fold leans on the N17 signed exact member list
+(`ArchiveMemberSourceIds`) and the mode-split published/unpublished verification (N10/N17). Useful grounding for this round's folds: `sync.js` pull tombstone application
 (~:2030-2110), `azure-functions/src/functions/snapshotCompute.js` (the fold rules the control-aware
 amendment extends), the client cutoff consumers (index.html ~:1427-1476 skip, db.js ~:721-734
 prune), and the frozen engine's withdrawn/null-head semantics (buybackExport.js :515-520, 563-565).
