@@ -1,8 +1,9 @@
 # OS-W4.4 Contract 2 — CONCRETE STAGING ARTIFACTS (LA definitions + apply inventory)
 
-**Status: 🔍 W-B2 INTERIM LA REVIEW (Kunal chose cadence option 2: one paper review of these
-definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
-DEPLOYED system follows the E2E per §15).** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
+**Status: 🔍 W-B2r INTERIM LA REVIEW — ROUND 2 (confirm-folds). R1 returned AGY×2 + Codex×11 = 13
+REAL findings, ALL folded @ `bb1987e` (fold record §F, questions §G). Cadence option 2: paper
+review of these definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full
+build audit vs the DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
 CONVERGED 2026-07-25 — Codex R25 PASS "No findings" + AGY PASS confirmed on the same revision).
 This document is the IMPLEMENTATION-level companion: it maps every converged design rule onto
 concrete Logic-App actions, SharePoint REST calls, and `correctionCompute`/`attestRows` ops, so
@@ -231,3 +232,46 @@ timeout after push was fenced (the fence state is re-asserted, the seal reused, 
   is the runner idempotent at every step (partial-failure re-run safe)?
 - **QL4:** Are the §A schemas exactly the converged N3/N4/N7/N17/N18 shapes (Enforce-Unique keys,
   empty-vs-null encodings for ControlId/PublicationVersion)?
+
+---
+
+## F. INTERIM LA REVIEW — ROUND 1 FOLD RECORD (`bb1987e`)
+
+**R1 verdicts: AGY BLOCK×2 + Codex BLOCK×11 = 13 findings, ALL ground-truthed REAL, ALL folded.**
+Both reviewers confirmed the DESIGN itself is frozen-sound; every finding was implementation
+fidelity (the concrete artifacts drifting from the converged spec). Proof suite 108 → **127/127**.
+
+| # | Finding (reviewer) | Fold | Where | Probe |
+|---|---|---|---|---|
+| **F1** | **AGY-1** — the LA still carried DECISION LOGIC: P6 assembled the snapshot payload (version bump, balance arithmetic, manifest merge) with LA expressions, and the per-mode legality trees were LA conditions. Violates the N2-computes/LA-executes boundary. | Two NEW compute ops. `op:assembleSnapshot` returns the EXACT serialized ConfigData (version bumped, deltas applied, fence untouched, controlManifest merged incl. explicit-nulls) — the LA does one MERGE of that string. `op:modeGate` returns `{ok}` or the typed refusal for every mode. **Zero arithmetic and zero legality conditions remain in the LA.** | §B step 12 (`Mode_gate`), §B step 18 (`Assemble`); `correctionCompute.js:401` `assembleSnapshot`, `:431` `modeGate` | F1a ×2, F1b ×5 |
+| **F2** | **AGY-2 + Codex-1 + Codex-2** (three findings, one ordering fix) — (a) the epoch seal was signed BEFORE the Function App redeploy, so `frame:'epoch-v1'` was not live ⇒ 400 mid-quiescence; (b) the legacy writers were re-enabled straight after the seal, before the C2 transforms went live ⇒ above-epoch rows with no N17 provenance and post-epoch tombstones with no CommitSig ⇒ permanent sweep/allowlist halts; (c) a rerun of the apply runner would RE-SAMPLE the epoch boundary. | §D resequenced: **(3) Function App deploys FIRST**, (4) quiescent cutover + seal, (5) N1 LA + N9/N10/N13 transforms, **(6) writers re-enabled ONLY THEN**. **EPOCH RERUN RULE:** strictly create-if-absent — an existing seal with a valid EpochSig is reused BYTE-FOR-BYTE; a freshly-observed boundary that DIFFERS ⇒ HALT + surface. The boundary is one-shot, never a refreshable maximum. | §D steps 1-8 | (deployment-sequence item; §D re-review) |
+| **F3** | **Codex-3** — the converged design requires the archive fold to be CONTROL-AWARE; the shipped `snapshotCompute` was not (it folded raw values, so a corrected-away effect would fold back into balances). | `snapshotCompute` now takes optional `body.controlHeads` and folds EFFECTIVE values: active-headed targets excluded, active control rows folded raw, historical control rows excluded, null-head targets normal; the unit-move partition rides the target's run. **Absent `controlHeads` ⇒ byte-identical pre-C2 behaviour**, regression-gated by archive-carry 28/28. ⚠ This is a flagged amendment to the audited Chunk-8 surface — carry it to the return re-audit. | `snapshotCompute.js`; §C N10 `Call_compute` | F3 ×3 (incl. the byte-identical regression guard) |
+| **F4** | **Codex-4** — `computeDelta` accepted malformed rows (negative/fractional/NaN qty), so a corrupt row could publish a corrupt balance. | `validEconRow` + `addDelta` gate EVERY delta cell; any invalid row ⇒ `INVALID_ROW` refusal before publication. | `correctionCompute.js:138`, `:148` | F4 ×2 |
+| **F5** | **Codex-5** — `membershipDecision` consumed an N17 run record without checking the record actually BELONGS to the target's run (a foreign/stale record could decide membership). | The record must BIND: `RunId` + `SnapshotVersion` must match the target's `ArchiveRunId`/snapshot; mismatch ⇒ `ADOPTION_DELTA_UNDECIDABLE` (manual lane). | `correctionCompute.js:250` | F5 ×2 |
+| **F6** | **Codex-6** — `pushIdempotency` compared against the LIVE row shape, but real archive rows carry the archive column aliases (`TxnType`/`TxnDate`/`TxnTimestamp`) ⇒ an exact replay of an archived row would never match ⇒ phantom re-insert. | `normalizeArchiveRow` normalizes the archive aliases before the canonical compare. | `correctionCompute.js:355`, `:366` | F6 ×1 |
+| **F7** | **Codex-7** — the published-run full-set check used `Set()` equality, which LOSES duplicates: `[101,101,102]` compared equal to the signed `[101,102]` ⇒ a duplicated archived member escaped the HALT. | MULTISET (sorted-list) equality. Duplicate SourceIds now HALT. | `correctionCompute.js:301` | F7 ×1 |
+| **F8** | **Codex-8** — a device retry against a WITHDRAWN claim with a leftover N18 row had no terminal cell: it neither re-minted nor cleaned up ⇒ the N18 row stranded forever. | `claimDispatch` returns `delete_n18_then_ack_terminal` / `superseded_by_adjudication` — deletes the residue, never re-mints an aborted deletion. | `correctionCompute.js:332` | F8 ×1 |
+| **F9** | **Codex-9** — `opDigest` hashed `JSON.stringify` output, so the SAME operation submitted with different key ORDER produced a different digest ⇒ idempotency broken on retry from a different client serializer. | `stableClone` (recursively key-sorted) before hashing ⇒ key-order-canonical digest. | `correctionCompute.js:54`, `:61` | F9 ×1 |
+| **F10** | **Codex-10** — P5 verified the re-read row with the econ-v1 canonical, which IGNORES the control fields; a SharePoint-dropped `ControlId`/`ControlRevision` would pass verification. Also the seal was minted from the re-read row rather than the intent. | New `op:ctlRowsEqual` (full ctl-v1 field set) compares the re-read row against the INTENDED pre-write object, and the seal is minted **from the intent**, pinned in §B step 17. | `correctionCompute.js:390`; §B step 17 | F10 ×1 |
+| **F11** | **Codex-11** — §A typed N17 `Published` as Text, diverging from the frozen schema. | `Published` is an SP **Boolean** (Yes/No, explicit default FALSE); OData filters use `Published eq 1`; the `runrec-pub-v1` seal signs the CONSTANT not the boolean, so signing is unaffected. | §A N17 row | (schema item) |
+
+**Gates after the fold (all re-run at `bb1987e`):** correction 127/127 · attest 58/58 · archive-carry
+28/28 · buyback-export 170/170 · topology 256/256 · access-policy 67/67 · smoke 277/277 · static +
+CSP PASS. Zero client files touched.
+
+## G. Review questions for ROUND 2 (confirm-folds)
+
+- **QG1:** Does each F1-F11 fold ACTUALLY close the finding it claims to close — and did any fold
+  introduce a new defect or contradict a converged design rule? (Findings F1/F3/F10 changed
+  behaviour, not just wording.)
+- **QG2:** F1 claims the LA now carries ZERO decision logic. Read §B end-to-end: is there any
+  remaining condition, arithmetic, map/array manipulation, or legality choice that belongs in
+  `correctionCompute`?
+- **QG3:** F2 is the deployment-order fix. Walk §D as a state machine including CRASHES between
+  every pair of steps and a full re-run from step (1): is any interleaving able to leave writers
+  live without their transforms, or re-sample the epoch boundary?
+- **QG4:** F3 amends the audited Chunk-8 `snapshotCompute`. Is the control-aware fold + unit-move
+  partition exactly the converged §5b/N10 behaviour, and is the absent-`controlHeads` path really
+  byte-identical to pre-C2?
+- **QG5:** Anything in the R1 round you raised that you consider NOT closed, or any remaining
+  implementation-fidelity gap you did not report in R1.
