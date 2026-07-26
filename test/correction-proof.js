@@ -760,14 +760,44 @@ ok('L3: epoch-v1 SIGNS cutoverPackageDigest — tampering with it now breaks Epo
     const tampered = Object.assign({}, e, { cutoverPackageDigest: 'sha256:' + 'b'.repeat(64) });
     return !A.verifyFrame(KR, 'epoch-v1', tampered, sig); // pre-fix: the field was outside the canonical => still verified
   })());
-ok('L4: buildrec-v1 signs the UPDATEABLE approved-build record incl. its monotonic revision',
+ok('L4: buildrec-v1 detects TAMPERING with an approval record (edited revision or swapped digest)',
   (() => {
     const r1 = { packageDigest: 'sha256:' + 'c'.repeat(64), revision: 1, approvedAt: '2026-07-26T00:00:00.000Z' };
     const s1 = A.signFrame(KR, 'buildrec-v1', r1);
     if (!A.verifyFrame(KR, 'buildrec-v1', r1, s1)) return false;
-    const replayed = Object.assign({}, r1, { revision: 2 });      // replay an old record at a new revision
+    const edited = Object.assign({}, r1, { revision: 2 });         // edited revision, old signature
     const swapped = Object.assign({}, r1, { packageDigest: 'sha256:' + 'd'.repeat(64) });
-    return !A.verifyFrame(KR, 'buildrec-v1', replayed, s1) && !A.verifyFrame(KR, 'buildrec-v1', swapped, s1);
+    return !A.verifyFrame(KR, 'buildrec-v1', edited, s1) && !A.verifyFrame(KR, 'buildrec-v1', swapped, s1);
+  })());
+// R8 finding 3: the probe above was previously MISLABELLED as a replay test. It is not — editing a
+// revision while keeping the old signature is ordinary tamper detection. WHOLE-RECORD replay is a
+// different attack and signatures CANNOT stop it: the old tuple and its own signature are genuinely
+// valid together. The defence has to be structural (append-only log + highest-valid selection +
+// a retained high-water), which is why N19 stopped being an overwriteable singleton.
+ok('M3: WHOLE-RECORD replay VERIFIES — a signature alone can never reject it (this is why N19 is append-only)',
+  (() => {
+    const r1 = { packageDigest: 'sha256:' + 'a'.repeat(64), revision: 1, approvedAt: '2026-07-26T00:00:00.000Z' };
+    const r2 = { packageDigest: 'sha256:' + 'b'.repeat(64), revision: 2, approvedAt: '2026-07-26T01:00:00.000Z' };
+    const s1 = A.signFrame(KR, 'buildrec-v1', r1), s2 = A.signFrame(KR, 'buildrec-v1', r2);
+    // Restoring the COMPLETE r1+s1 over r2 passes verification — the record is authentic, just stale.
+    return A.verifyFrame(KR, 'buildrec-v1', r1, s1) && A.verifyFrame(KR, 'buildrec-v1', r2, s2);
+  })());
+ok('M3: HIGHEST-VALID selection + a retained high-water is what actually rejects the stale record',
+  (() => {
+    // The structural defence, modelled: authority = highest verifying revision in the append-only
+    // log, and never below the highest revision ever observed.
+    const rows = [
+      { packageDigest: 'sha256:' + 'a'.repeat(64), revision: 1, approvedAt: '2026-07-26T00:00:00.000Z' },
+      { packageDigest: 'sha256:' + 'b'.repeat(64), revision: 2, approvedAt: '2026-07-26T01:00:00.000Z' },
+    ].map(r => ({ r, sig: A.signFrame(KR, 'buildrec-v1', r) }));
+    const select = (log, highWater) => {
+      const valid = log.filter(x => A.verifyFrame(KR, 'buildrec-v1', x.r, x.sig)).map(x => x.r);
+      const top = valid.sort((a, b) => b.revision - a.revision)[0];
+      return !top || top.revision < highWater ? null : top; // below the high-water => REFUSE
+    };
+    const full = select(rows, 0);
+    const regressed = select([rows[0]], 2); // the newest approval row deleted; high-water remembers 2
+    return full.revision === 2 && regressed === null;
   })());
 ok('L4: buildrec-v1 and epoch-v1 are DOMAIN-SEPARATED (a build record can never pass as an epoch)',
   (() => {

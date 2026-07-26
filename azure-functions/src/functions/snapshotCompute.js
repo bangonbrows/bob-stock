@@ -60,8 +60,11 @@ const CANON_VERSION = 'archcanon-v2';
 // the first version was a HAND-MAINTAINED constant with a "remember to bump it" comment, so an
 // incompatible build could keep the same value; and it attests only what THIS module reports, never
 // which package Azure actually deployed. The AUTHORITY is the out-of-band Azure deployment/package
-// identity (the SHA-256 of the reviewed package, verified via control-plane metadata and bound into
-// the signed epoch artifact) — see §D. This stamp is now DERIVED, not declared: a digest over the
+// identity (the SHA-256 of the live package from control-plane metadata) compared against the
+// APPEND-ONLY N19 build-approval log — NOT against the epoch. (R8 finding 4 note: this comment used
+// to say the authority was "bound into the signed epoch artifact"; the epoch carries only the
+// CUTOVER-TIME digest as historical evidence — a one-shot artifact cannot be the current-build
+// authority, R7 finding 4.) See §D. This stamp is DERIVED, not declared: a digest over the
 // actual bytes of the three compute modules, so any change to the canonical, the frames or any op
 // changes it automatically and no one has to remember anything. Unreadable sources ⇒ 'UNRESOLVED',
 // which matches no pinned value ⇒ fails closed.
