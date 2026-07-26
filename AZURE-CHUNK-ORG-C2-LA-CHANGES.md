@@ -2,10 +2,12 @@
 
 **Status: 🔍 W-B2r5 INTERIM LA REVIEW — ROUND 6. R1: AGY×2 + Codex×11 = 13 REAL @ `bb1987e` (§F).
 R2: AGY PASS + Codex×6 @ `aa1527a` (§H). R3: AGY PASS (⚠ FABRICATED QI3 — §J) + Codex×3 @
-`0046224` (§J). R4: AGY PASS + Codex×3 @ `a403d5c` (§L). R5: AGY PASS + Codex×3 — all REAL, folded
-(fold record §N, questions §O); **all three were defects in the R4 fold's own state machine**.
-Suite 127 → 144 → 154 → 158 → 161/161. Codex has blocked SIX consecutive rounds (13 → 6 → 3 → 3 →
-3), every finding real, zero refuted. Cadence option 2: paper review of these
+`0046224` (§J). R4: AGY PASS + Codex×3 @ `a403d5c` (§L). R5: AGY PASS + Codex×3 @ `e60151c` (§N). R6: AGY PASS +
+Codex×4 — all REAL, folded (fold record §P, questions §Q); **THIRD consecutive round where the
+findings were in my own previous fold, and the count went UP**. Suite 127 → 144 → 154 → 158 → 161 →
+164/164. Codex has blocked SEVEN consecutive rounds (13 → 6 → 3 → 3 → 3 → 4), every finding real,
+zero refuted. **The design and the money arithmetic have been settled since R2; every round since
+has been the CUTOVER RUNBOOK.** Cadence option 2: paper review of these
 definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
 DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
 CONVERGED 2026-07-25 — Codex R25 PASS "No findings" + AGY PASS confirmed on the same revision).
@@ -304,37 +306,69 @@ it must be fenced, observed, and enabled in a pinned position (R5 finding 2). An
 must include the FUNCTION BUILD**, because writer state cannot see which build the LAs are calling
 (R5 finding 3).
 
-The runner observes SIX facts: push fenced? · legacy archive LA enabled? · C2 archive LA enabled? ·
-**N1 correction LA enabled?** · N9/N10/N13 transforms verified? · **Function `buildStamp` == the
-reviewed build?** Boundary-advancing writers = **{C2 archive LA, N1}** (not the archive LA alone —
-that R4 claim was wrong).
+**R6 CORRECTION — THE ROWS WERE NOT DISJOINT.** The R5 table claimed "every combination has exactly
+one outcome" and did not deliver it: PRE-QUIESCENCE accepted `any/any/C2-off/N1-off/any`, of which
+PRE-CUTOVER was a strict SUBSET, so the ordinary post-(5) state (push fenced, legacy off, C2 off, N1
+off, transforms verified) matched BOTH rows — "repeat (3a)" and "proceed (3b)→(5)" — two competing
+actions. The POST row was also column-shifted and never encoded the two half-(6b) tuples. The table
+below is a **disjoint partition**, made so by adding the two PROGRESS facts the R5 version lacked
+(valid seal? reviewed build deployed?) and by writing the half-(6b) tuples explicitly.
 
-| push | legacy arch | C2 arch | N1 | transforms | phase | action |
-|---|---|---|---|---|---|---|
-| any | any | disabled | disabled | any | **PRE-QUIESCENCE** (covers BOOTSTRAP + partial (3a)) | no C2 writer exists yet and no seal is relied upon ⇒ (re-)assert (3a): disable the legacy archive LA, fence push, WAIT IDLE. Idempotent; re-entrant from the virgin state and from any partial (3a) |
-| fenced | disabled | disabled | disabled | any | **PRE-CUTOVER** | full boundary re-observation + divergence HALT — the anomaly gate proving nothing minted rows while the window was meant to be quiet. Proceed (3b)→(4)→(5) |
-| enabled | disabled | disabled | disabled | verified | **MID-ENABLE** | recognised intermediate of the pinned (6a)→(6b) order. NO boundary-advancing writer is live ⇒ the boundary cannot have advanced ⇒ the seal is still exact. Resume at (6b) |
-| enabled | disabled | enabled **or** N1 enabled | verified | | **POST-CUTOVER** | skip re-observation, reuse the sealed values byte-for-byte. First ENSURE BOTH boundary-advancing writers are enabled (completes a crash inside 6b), then resume at (7). Boundary growth here is expected, not evidence |
-| **anything else** | | | | | **INCONSISTENT** | **HALT + surface, no automatic recovery** — states no legitimate prefix produces: the legacy archive LA enabled after step (4); any boundary-advancing writer live while push is still fenced; any writer enabled while the transforms are missing or half-applied |
+The runner observes EIGHT facts: push fenced? · legacy archive LA enabled? · C2 archive LA enabled? ·
+N1 correction LA enabled? · N9/N10/N13 transforms verified? · **valid sealed epoch present?** ·
+**reviewed Function build deployed?** · `cutoverCompletedAt` present?
+Boundary-advancing PRODUCTION writers = **{C2 archive LA, N1}**; see the OPERATIONAL WRITER
+INVENTORY below for the non-production paths that must also be quiet.
 
-**FUNCTION BUILD IS PART OF PHASE (R5 finding 3).** Every `snapshotCompute` response carries
-`buildStamp`. The runner PINS the reviewed value:
-- Any phase with a MATCHING stamp ⇒ proceed as above.
-- **POST-CUTOVER with a MISMATCHED stamp ⇒ `FUNCTION_BUILD_MISMATCH`** — NOT "still POST". Recovery
-  lane: quiesce every affected writer (disable the C2 archive LA and N1, fence push), wait idle,
-  forward-redeploy the reviewed build, then re-enter the pinned (6a)/(6b) enable sequence.
-- **Any Function App change — forward deploy OR ROLLBACK — obeys the same quiesce-first discipline
-  as (3a).** Quiescing only the forward deploy left a later rollback able to reopen the exact
-  mixed-canonical window that (3a) was introduced to close.
-- Belt inside the archive LA: it compares the `buildStamp` returned by `Call_compute` with the one
-  returned by `Verify_content_hash`. Unequal ⇒ the deployment changed mid-run ⇒ abort as
-  `BUILD_STRADDLE` (transient, retryable), so a straddle can never present as a bogus fidelity
-  failure on a faithful copy.
+| # | push | legacy arch | C2 arch | N1 | transforms | seal | build | phase | action |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | any | any | off | off | any | absent | any | **PRE-QUIESCENCE** (bootstrap + partial (3a)) | (re-)assert (3a): disable the legacy archive LA, fence push, WAIT IDLE. Idempotent, re-entrant from the virgin state and any partial (3a) |
+| 2 | **fenced** | off | off | off | any | absent | any | **QUIESCED-PRESEAL** | deploy the reviewed build (3b) if not already, then (4): transform `archive_state`, complete the published run's Live-delete, residue cleanup, OBSERVE the boundary and write the seal |
+| 3 | **fenced** | off | off | off | any | **valid** | reviewed | **QUIESCED-SEALED** | re-observe the boundary and HALT on divergence (the anomaly gate — nothing may mint rows while the window is quiet); proceed (5) |
+| 4 | **fenced** | off | off | off | any | valid | **not reviewed** | **QUIESCED-REBUILD** | writers already quiet ⇒ forward-deploy the reviewed build, then re-enter row 3 |
+| 5 | enabled | off | off | off | **verified** | valid | reviewed | **MID-ENABLE** | recognised intermediate of the pinned (6a)→(6b). NO boundary-advancing writer live ⇒ the boundary cannot have advanced ⇒ the seal is still exact. Resume at (6b) |
+| 6 | enabled | off | **on** | off | verified | valid | reviewed | **HALF-ENABLED (C2 only)** | crash inside (6b). Enable N1, then row 7 |
+| 7 | enabled | off | off | **on** | verified | valid | reviewed | **HALF-ENABLED (N1 only)** | crash inside (6b). Enable the C2 archive LA, then row 8 |
+| 8 | enabled | off | on | on | verified | valid | **reviewed** | **POST-CUTOVER** | skip re-observation, reuse the sealed values byte-for-byte, resume at (7)/(8). Boundary growth here is expected, not evidence |
+| 9 | enabled | off | on **or** on | on **or** on | verified | valid | **not reviewed** | **BUILD-MISMATCH** | enter REPAIR (below) — never "still POST" |
+| 10 | **fenced** | off | off | off | verified | valid | any | **REPAIR-QUIESCED** — *distinguished from rows 3/4 by `cutoverCompletedAt` PRESENT* | the post-cutover repair state. Verify/forward-deploy the reviewed build, then re-enter (6a)/(6b). Does NOT re-observe the boundary (growth already happened legitimately) |
+| — | **anything else** | | | | | | | **INCONSISTENT** | **HALT + surface, no automatic recovery** — states no legitimate prefix produces: the legacy archive LA enabled after (3a); a boundary-advancing writer live while push is fenced; any writer enabled with transforms missing/half-applied; a valid seal with `cutoverCompletedAt` present but writers never enabled |
 
-- The seal item also records `cutoverCompletedAt`, stamped when step (6b) completes. It is a
-  FAST-PATH HINT ONLY (exactly as `PublishedSig` is for the sweep, C2-R24-1) — deleting or forging
-  it cannot flip the phase, because the observed writer state decides. A `cutoverCompletedAt`
-  present in any phase other than POST-CUTOVER ⇒ CONTRADICTION ⇒ HALT + surface.
+**FUNCTION BUILD (R5 finding 3; authority corrected at R6 finding 4).**
+- **AUTHORITY = the out-of-band Azure deployment/package identity**: the runner pins the SHA-256 of
+  the exact reviewed Function package and verifies it through Azure deployment/slot metadata, and
+  that digest is **bound into the signed epoch artifact** at seal time. A self-reported constant is
+  NOT sufficient authority — the R5 version was hand-maintained with a "remember to bump it"
+  instruction, so an incompatible build could carry the expected value, and it attested only what
+  `snapshotCompute` reports rather than which package Azure deployed.
+- **BELT = the response `buildStamp`**, now DERIVED (a digest over the bytes of `attestRows.js`,
+  `correctionCompute.js`, `snapshotCompute.js`) rather than declared, and returned on **every**
+  response including every error return (R6 finding 4 — five error paths previously omitted it while
+  §D claimed "every response"). The archive LA compares the stamp from `Call_compute` against the one
+  from `Verify_content_hash`; unequal ⇒ the deployment changed mid-run ⇒ abort `BUILD_STRADDLE`
+  (transient, retryable) instead of a bogus fidelity failure on a faithful copy.
+- **Any Function App change — forward deploy OR ROLLBACK — obeys the (3a) quiesce-first discipline.**
+
+**OPERATIONAL WRITER INVENTORY (R6 finding 3).** `{C2 archive LA, N1}` is the complete set of
+*production* writers that can mint an archive-list id, but it is NOT the complete set of paths in
+this environment. Also capable of creating archive rows: the **legacy archive LA** (before (3a));
+**`audit-artifacts/diag-c1-insert.js`** (POSTs an item straight into the archive list); and
+**`audit-artifacts/probe-c1-archive-run.js`** (inserts a pre-flight archive row AND drives a
+temporary archive workflow). A crashed C1 probe after sealing leaves an above-epoch row with neither
+N17 provenance nor a valid direct-control seal, and the next sweep HALTS — while writer-state facts
+look untouched. **RULE: direct SharePoint/archive diagnostics and temporary archive workflows are
+PROHIBITED from step (3a) onward. The runner verifies none are running before it fences, and the
+operator confirms it. Any such tool used during the window must delete its rows before the sweep.**
+
+- The seal item also records `cutoverCompletedAt`, stamped when step (6b) completes. It cannot flip
+  the phase on its own — the observed writer state decides — but it IS the discriminator that
+  separates REPAIR-QUIESCED (row 10) from the pre-cutover quiesced rows 3/4, which are otherwise
+  identical in writer state. **R6 finding 2:** the R5 rule "`cutoverCompletedAt` present in any phase
+  other than POST-CUTOVER ⇒ CONTRADICTION ⇒ HALT" made the build-recovery lane deadlock itself — the
+  recovery's own first action (disable C2 + N1, fence push) moves the state OUT of POST while the
+  marker remains stamped, so the runner halted permanently before it could forward-redeploy. The
+  marker is now EXPECTED in row 10. It remains a contradiction — HALT + surface — when it is present
+  with a valid seal and the writers were never enabled at all.
 
 PRODUCTION-cutover variant: VERIFIES the archive list is EMPTY before sealing (C2-R23-N1) — else
 HALT + Kunal decision. EVERY step is idempotent (create-if-missing / reuse-if-valid / halt-on-
@@ -568,3 +602,46 @@ boundary-advancing writers enabled; a Function rollback while writers are live.
   markers (C2-R19-1/C2-R24-1)? If not, what observable would be?
 - **QO5:** Anything not closed, or newly noticed. Same artifact rule: verify against files that
   exist, and say so plainly when one does not.
+
+---
+
+## P. INTERIM LA REVIEW — ROUND 6 FOLD RECORD (`W-B2r6`)
+
+**R6 verdicts: AGY PASS · Codex BLOCK×4** (the count went UP). All four REAL, all folded. Suite
+161 → **164/164**. **Third consecutive round in which the findings were in MY OWN previous fold.**
+
+**AGY's PASS was wrong on the two questions that mattered.** Asked to re-derive the matrix
+independently (QO2), it produced a five-state derivation and pronounced the partition "mathematically
+airtight" — while rows 1 and 2 of that very table overlap, which Codex demonstrated with the ordinary
+post-(5) state. Asked whether a self-reported stamp is adequate authority (QO4), it answered YES on
+the reasoning that "a legacy rollback build cannot emit `buildStamp: 'c2-b4'`" — true of a *pre-C2*
+rollback, and irrelevant to the actual failure mode: a hand-maintained constant that nobody
+remembered to bump. Both answers confirmed my work rather than testing it.
+
+| # | Finding | Fold |
+|---|---|---|
+| **K1** | **The matrix was still not a disjoint partition** — the thing R5 explicitly claimed to fix. PRE-QUIESCENCE accepted `any/any/C2-off/N1-off/any`, of which PRE-CUTOVER was a strict SUBSET, so the ordinary post-(5) state matched BOTH rows and the runner had two competing actions ("repeat (3a)" vs "proceed (3b)→(5)"). The POST row was also column-shifted and never encoded the half-(6b) tuples. | Rebuilt as a **10-row disjoint partition** over EIGHT facts — the two missing PROGRESS facts (**valid seal?**, **reviewed build deployed?**) are what make the quiesced rows separable, and the half-(6b) tuples (C2-only, N1-only) are now explicit rows with their own forward actions. |
+| **K2** | **The build-recovery lane deadlocked itself.** POST + mismatched build correctly begins recovery by disabling C2/N1 and fencing push — which moves the state OUT of POST while `cutoverCompletedAt` is still stamped. The R5 marker rule ("present in any phase other than POST ⇒ CONTRADICTION ⇒ HALT") then fired, and the runner halted permanently BEFORE forward-redeploying. My own recovery walked into my own contradiction rule. | New **REPAIR-QUIESCED** row (10), distinguished from the pre-cutover quiesced rows by `cutoverCompletedAt` being PRESENT — which is exactly the evidence that a legitimate cutover already happened. It verifies/forward-deploys the reviewed build and re-enters (6a)/(6b), and does NOT re-observe the boundary (that growth was legitimate). The marker stays a contradiction only where no legitimate prefix produces it. |
+| **K3** | **`{C2 archive LA, N1}` is the complete PRODUCTION set but not the complete ENVIRONMENT set.** Also able to create archive rows: the legacy archive LA (before (3a)), **`audit-artifacts/diag-c1-insert.js`** (POSTs straight into the archive list), and **`audit-artifacts/probe-c1-archive-run.js`** (pre-flight archive insert + drives a temporary archive workflow). A crashed C1 probe after sealing leaves an above-epoch row with neither N17 provenance nor a valid control seal ⇒ the next sweep HALTS — while every writer-state fact looks untouched. | §D gains an **OPERATIONAL WRITER INVENTORY** naming all three paths, and a RULE: direct SharePoint/archive diagnostics and temporary archive workflows are PROHIBITED from (3a) onward; the runner verifies none are running before it fences; anything used in the window deletes its rows before the sweep. |
+| **K4** | **A hand-maintained self-reported stamp is not adequate phase AUTHORITY.** `BUILD_STAMP = 'c2-b4'` shipped with a "remember to bump it" comment — so an incompatible build could carry the expected value — and it attests only what `snapshotCompute` reports, not which package Azure deployed (`correctionCompute`/`attestRows` could change beneath it). Also, §D claimed "every response carries `buildStamp`" while **five error returns omitted it**. | **AUTHORITY moved out-of-band**: the SHA-256 of the exact reviewed Function package, verified through Azure deployment/slot metadata and **bound into the signed epoch artifact** at seal time. The response stamp is demoted to the **per-call straddle BELT** — and is now **DERIVED** (a digest over the bytes of `attestRows.js` + `correctionCompute.js` + `snapshotCompute.js`), so any change to any of the three moves it automatically with nothing to remember; unreadable sources ⇒ `UNRESOLVED` ⇒ matches no pinned value ⇒ fails closed. It now rides **every** return, errors included. |
+
+**Gates:** correction **164/164** · archive-carry 28/28 · attest 58/58 · buyback-export 170/170 ·
+topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Zero client files.
+
+**Staging crash drill — REQUIRED CASES** (grown again): virgin-state run · crash partway through
+(3a) · crash inside (6b) with only one of the pair enabled · **post-cutover Function rollback driven
+through REPAIR-QUIESCED back to POST** · **confirmation that no direct-write diagnostic is running
+before the fence**.
+
+## Q. Review questions for ROUND 7
+
+- **QQ1:** Do K1-K4 close their findings without introducing a new defect?
+- **QQ2:** **Re-derive the 10-row partition independently and prove DISJOINTNESS mechanically** —
+  for every ordered pair of rows, name a fact whose value differs, or show they overlap. This has
+  now been wrong twice; please do not check my rows, build your own and diff.
+- **QQ3:** Is the partition COMPLETE over reachable states? Name any state a legitimate prefix of §D
+  can produce that maps to no row, and any row that no legitimate prefix can produce.
+- **QQ4:** K4 moves authority to an out-of-band package digest bound into the signed epoch artifact.
+  Is that the right instrument, and is binding it at SEAL time correct given the build can change
+  after the seal? Is the derived response digest sound as a straddle belt?
+- **QQ5:** Anything not closed, or newly noticed. Same artifact rule.

@@ -1,59 +1,56 @@
-# REVIEW PACK — Contract 2 INTERIM LA REVIEW · ROUND 6
+# REVIEW PACK — Contract 2 INTERIM LA REVIEW · ROUND 7
 
 **Context.** Routine internal pre-deployment review for our own stock-management app (Bang on
 Brows, Perth; reviewers and engineer all work for the owner). The Contract 2 correction-approval
-DESIGN converged 2026-07-25. This is the interim paper review of the CONCRETE staging artifacts
-BEFORE the owner applies them to staging.
+DESIGN converged 2026-07-25 and has not been in question since. This is the interim paper review of
+the CONCRETE staging artifacts — in practice, of the CUTOVER RUNBOOK — before the owner applies them.
 
-**Round 5 outcome: Codex BLOCK×3 — all three real and fixed. AGY PASS.** Codex confirmed I2 closed,
-confirmed the conditional-canonical rejection was sound reasoning, and confirmed the pinned
-`Call_compute` body matches what the code reads.
+**Round 6 outcome: Codex BLOCK×4 (the count went UP). All four real, all fixed. AGY PASS.**
 
-**All three findings were defects in the previous round's own fix** — the "closed-world" phase
-matrix I introduced in R4 was neither closed nor complete, and its central justification was wrong:
-1. **It excluded the ordinary starting state.** A virgin system matched no row and fell through to
-   `INCONSISTENT`, so a fresh runner would HALT before it could begin. A crash partway through the
-   quiescence step did the same, permanently.
-2. **The correction LA was missing from the fence and the matrix.** It writes control rows into the
-   target's own list — direct-to-archive for archived targets — so it is a ledger writer that can
-   advance the archive boundary and, deployed enabled too early, can put a control row into Live
-   that the untransformed pull LA would deliver to devices as a phantom stock movement.
-3. **A Function rollback was invisible to phase authority**, which reads writer state only. After
-   cutover a rollback still resolved to POST while the Logic Apps called an incompatible build.
+**Third consecutive round where every finding was in my own previous fix.** The R5 fold claimed to
+deliver a disjoint phase partition and did not: two rows overlapped on the ordinary post-step-5
+state, giving the runner two competing actions. The build-recovery lane I added deadlocked itself —
+its own first action moved the state out of POST while the completion marker was still stamped,
+tripping my own contradiction rule. My "complete set of boundary-advancing writers" was complete for
+production but ignored two C1 diagnostic scripts in this repo that POST straight into the archive
+list. And the build stamp was a hand-maintained constant with a "remember to bump it" comment, which
+is not authority — and five error returns omitted it while the spec claimed "every response".
 
-Fold record: **§N**. Suite 158 → **161/161**; all regression gates green.
+Fold record: **§P**. Suite 161 → **164/164**; all regression gates green.
 
-**This is the second consecutive round where the fix, not the original design, was the defect.** So
-this round I am explicitly asking you NOT to check my table.
+**On the two questions I asked last round:** AGY answered both in a way that confirmed my work
+rather than testing it — it declared the overlapping partition "mathematically airtight", and
+defended the self-reported stamp on reasoning that addressed a *pre-C2 rollback* rather than the
+actual failure mode. Codex re-derived independently and found both. **Please derive before you
+compare.**
 
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
-1. `AZURE-CHUNK-ORG-C2-LA-CHANGES.md` — **§N is the R5 fold record; §O is this round's questions
-   QO1-QO5.** §D carries the corrected matrix, the PRE-QUIESCENCE state, the build-identity lane and
-   the pinned (6a)/(6b) order; §B step 16 is the N1 write that made it a ledger writer; §F/§H/§J/§L
-   are the earlier fold records.
-2. The amended code (161/161 local probes): `azure-functions/src/functions/snapshotCompute.js`
+1. `AZURE-CHUNK-ORG-C2-LA-CHANGES.md` — **§P is the R6 fold record; §Q is this round's questions
+   QQ1-QQ5.** §D carries the rebuilt 10-row partition, the REPAIR-QUIESCED lane, the operational
+   writer inventory, and the package-identity authority. §F/§H/§J/§L/§N are the earlier folds.
+2. The amended code (164/164 local probes): `azure-functions/src/functions/snapshotCompute.js`
    (⚠ still a flagged amendment to the audited Chunk-8 surface) ·
    `azure-functions/src/functions/correctionCompute.js` · `test/correction-proof.js` (sections
-   14-18) · `test/archive-carry-proof.js`.
-3. For grounding: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` · `audit-artifacts/archive-def-current.json`.
+   14-19) · `test/archive-carry-proof.js`.
+3. For grounding: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` · `audit-artifacts/archive-def-current.json` ·
+   `audit-artifacts/diag-c1-insert.js` and `audit-artifacts/probe-c1-archive-run.js` (the direct
+   archive writers that drove K3).
 
-**What I most want from this round:**
-- **QO2 — re-derive the matrix from scratch; do not check my rows.** Enumerate the states a
-  legitimate prefix of §D can actually reach, confirm each maps to exactly one row with a forward
-  action, and confirm everything I send to `INCONSISTENT` is genuinely unreachable legitimately.
-  Two rounds running, the state machine has been wrong in a way that checking-the-table missed.
-- **QO3 — is `{C2 archive LA, N1}` the COMPLETE set of boundary-advancing writers?** I got this set
-  wrong last round. Name any other writer, LA, or path that can create an archive-list row or mint
-  an above-epoch id.
-- **QO4 — is a self-reported `buildStamp` adequate authority for phase?** This project's own
-  principle prefers non-forgeable ledger state over markers (C2-R19-1/C2-R24-1), and I have just
-  introduced a marker. If that is the wrong instrument, say what observable would be right.
+**What I want from this round — three mechanical checks, not impressions:**
+- **QQ2 — prove DISJOINTNESS pairwise.** For every ordered pair of the 10 rows, name a fact whose
+  value differs, or show they overlap. This has been wrong twice; build your own table and diff it
+  against mine rather than reading mine.
+- **QQ3 — prove COMPLETENESS over reachable states.** Name any state a legitimate prefix of §D can
+  produce that maps to no row, and any row no legitimate prefix can produce.
+- **QQ4 — is the out-of-band package digest the right authority**, and is binding it into the signed
+  epoch artifact at SEAL time correct, given the build can change after the seal? Is the derived
+  response digest sound as a straddle belt?
 
-**Standing item neither of you can close on paper** (§N): the real live-vs-archive SharePoint echo
-for the eight N7 columns — absent vs null vs `''`. A staging probe before the first live archive
-run; if they differ, normalise at the read shape, never loosen the canonical.
+**Standing item neither of you can close on paper:** the real live-vs-archive SharePoint echo for the
+eight N7 columns (absent vs null vs `''`). Staging probe before the first live archive run; if they
+differ, normalise at the read shape, never loosen the canonical.
 
-**Judge:** do J1-J3 close their findings without introducing a new defect? Findings only — the
+**Judge:** do K1-K4 close their findings without introducing a new defect? Findings only — the
 engineer ground-truths and applies all changes. Verdict format: PASS / PASS-with-notes / BLOCK with
 numbered findings + concrete failure sequences.
 
@@ -68,6 +65,7 @@ Ordinary pre-release QA on the team's own app; no third party, no security-testi
    commit you are reading first.
 6. **Do not describe the contents of a file you have not opened.** If a needed artifact does not
    exist yet, say that — it is a legitimate finding, not something to infer around.
-7. **When a question asks you to re-derive something, derive it independently before reading my
-   version.** Confirming a table is not the same as building one.
+7. **When a question asks you to re-derive something, derive it independently BEFORE reading my
+   version.** Confirming a table is not the same as building one. If your derivation agrees with
+   mine, say what you did to test it, not just that it agrees.
 8. If interrupted, note WHERE you stopped first so the next session resumes from a checkpoint.

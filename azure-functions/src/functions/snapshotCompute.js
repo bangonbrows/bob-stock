@@ -52,16 +52,33 @@ const optNum = (v) => (v == null || v === '' ? '' : String(num(v)));
 // same shape for its seal frames, attestRows.js:134; econ-v1's String canonical deliberately does
 // not, which is why it could not simply be reused here.)
 const CANON_VERSION = 'archcanon-v2';
-// BUILD STAMP (R5 finding 3). The apply runner's phase authority reads writer state, which cannot
-// see WHICH Function build the Logic Apps are calling — so a rollback after cutover still resolved
-// POST while the LAs talked to an incompatible build. Every response now carries this stamp so:
-//   (a) the apply runner PINS it (a mismatch in POST is a recovery lane, not "still POST");
-//   (b) the archive LA compares the stamp from `Call_compute` against the one from
-//       `Verify_content_hash` — the two calls straddle the copy loop, so an unequal pair means the
-//       deployment changed mid-run and the run aborts as BUILD_STRADDLE (retryable) INSTEAD of
-//       surfacing as a bogus fidelity failure on a faithful copy (R4 finding 1's residual).
-// Bump this whenever the canonical, the frames, or any compute op changes shape.
-const BUILD_STAMP = 'c2-b4';
+// BUILD STAMP (R5 finding 3, CORRECTED at R6 finding 4). The apply runner's phase authority reads
+// writer state, which cannot see WHICH Function build the Logic Apps are calling — so a rollback
+// after cutover still resolved POST while the LAs talked to an incompatible build.
+//
+// ⚠ SCOPE — this stamp is the PER-CALL STRADDLE BELT, **NOT** the phase authority. R6 finding 4:
+// the first version was a HAND-MAINTAINED constant with a "remember to bump it" comment, so an
+// incompatible build could keep the same value; and it attests only what THIS module reports, never
+// which package Azure actually deployed. The AUTHORITY is the out-of-band Azure deployment/package
+// identity (the SHA-256 of the reviewed package, verified via control-plane metadata and bound into
+// the signed epoch artifact) — see §D. This stamp is now DERIVED, not declared: a digest over the
+// actual bytes of the three compute modules, so any change to the canonical, the frames or any op
+// changes it automatically and no one has to remember anything. Unreadable sources ⇒ 'UNRESOLVED',
+// which matches no pinned value ⇒ fails closed.
+// Its two jobs: (a) the archive LA compares the stamp from `Call_compute` against the one from
+// `Verify_content_hash` — those two calls straddle the copy loop, so an unequal pair means the
+// deployment changed mid-run ⇒ abort BUILD_STRADDLE (retryable) instead of a bogus fidelity failure
+// on a faithful copy; (b) a fast-path hint for the runner, subordinate to the package identity.
+const BUILD_STAMP = (() => {
+  try {
+    const fs = require('fs');
+    const h = crypto.createHash('sha256');
+    for (const f of ['attestRows.js', 'correctionCompute.js', 'snapshotCompute.js']) {
+      h.update(f).update(fs.readFileSync(require('path').join(__dirname, f)));
+    }
+    return 'c2-' + h.digest('hex').slice(0, 16);
+  } catch (e) { return 'c2-UNRESOLVED'; }
+})();
 const hasKey = (r, ...keys) => keys.some(k => Object.prototype.hasOwnProperty.call(r, k));
 // Text cell: present-with-null stays null (NOT ''), otherwise String-coerced.
 const cText = (r, f) => (hasKey(r, f) ? [1, r[f] === null ? null : String(r[f])] : [0]);
@@ -119,7 +136,7 @@ function compute(body) {
   if (body.mode === 'hash') return { ok: true, hash: hashRows(rows), count: rows.length, buildStamp: BUILD_STAMP };
   const cutoffId = Number(body.cutoffId);
   const retainAfterTs = body.retainAfterTs != null ? Number(body.retainAfterTs) : null; // rows with Timestamp>=this stay LIVE even if Id<=cutoff
-  if (!Number.isFinite(cutoffId) || cutoffId <= 0) return { ok: false, reason: 'BAD_CUTOFF' };
+  if (!Number.isFinite(cutoffId) || cutoffId <= 0) return { ok: false, reason: 'BAD_CUTOFF', buildStamp: BUILD_STAMP };
 
   const IN = new Set(body.inTypes || DEFAULT_IN);
   const ACTIVE = new Set([...(body.inTypes || DEFAULT_IN), ...(body.activeTypes || DEFAULT_ACTIVE_EXTRA)]);
@@ -164,13 +181,13 @@ function compute(body) {
   // not implement is now a REFUSAL, not a guess.
   const c2Mode = Object.prototype.hasOwnProperty.call(body, 'controlHeads');
   if (body.controlProtocol !== undefined && Number(body.controlProtocol) !== 2) {
-    return { ok: false, reason: 'UNSUPPORTED_CONTROL_PROTOCOL' };
+    return { ok: false, reason: 'UNSUPPORTED_CONTROL_PROTOCOL', buildStamp: BUILD_STAMP };
   }
   if (c2Mode) {
     const ch = body.controlHeads;
-    if (ch === null || typeof ch !== 'object' || Array.isArray(ch)) return { ok: false, reason: 'BAD_CONTROL_MANIFEST' };
+    if (ch === null || typeof ch !== 'object' || Array.isArray(ch)) return { ok: false, reason: 'BAD_CONTROL_MANIFEST', buildStamp: BUILD_STAMP };
   } else if (Number(body.controlProtocol) === 2) {
-    return { ok: false, reason: 'CONTROL_MANIFEST_REQUIRED' }; // asserted C2 caller that omitted the manifest
+    return { ok: false, reason: 'CONTROL_MANIFEST_REQUIRED', buildStamp: BUILD_STAMP }; // asserted C2 caller that omitted the manifest
   }
   const controlHeads = c2Mode ? body.controlHeads : {};
   const hasHead = (t) => Object.prototype.hasOwnProperty.call(controlHeads, t);
@@ -264,7 +281,7 @@ function compute(body) {
     const f = full.get(k) || 0, s = snap.get(k) || 0, kp = kept.get(k) || 0;
     if (s + kp !== f) mismatches.push({ pair: k.replace(' ', '/'), full: f, snap: s, kept: kp });
   }
-  if (mismatches.length) return { ok: false, reason: 'NOT_NEUTRAL', mismatches: mismatches.slice(0, 20) };
+  if (mismatches.length) return { ok: false, reason: 'NOT_NEUTRAL', mismatches: mismatches.slice(0, 20), buildStamp: BUILD_STAMP };
 
   // Snapshot balance = the ARCHIVED rows' effect ONLY (snap), NOT the full balance. The client seeds from this
   // snapshot then ADDS the live kept rows back - snap + kept == full (proven above). Emitting `full` here would

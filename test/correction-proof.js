@@ -705,5 +705,39 @@ ok('J3: the stamp rides alongside partitionMode on BOTH partitions',
 // crash drill, which MUST now include: a run from the virgin state, a crash partway through (3a),
 // and a crash inside (6b) with only one of the two boundary-advancing writers enabled.
 
+// ── 19. INTERIM LA REVIEW ROUND 6 folds (Codex findings 1-4) ──────────────────────────────────────
+// K4: the build stamp is now DERIVED from the module bytes (not a hand-maintained constant a
+// developer must remember to bump) and rides EVERY response including every error return — §D
+// claimed "every response" while five error paths omitted it.
+ok('K4: the build stamp RESOLVES from the real module bytes (never the fail-closed UNRESOLVED)',
+  (() => {
+    const s = SC.compute({ mode: 'hash', rows: [] }).buildStamp;
+    return typeof s === 'string' && /^c2-[0-9a-f]{16}$/.test(s);
+  })());
+ok('K4: EVERY error return carries the stamp — BAD_CUTOFF, UNSUPPORTED_CONTROL_PROTOCOL, BAD_CONTROL_MANIFEST, CONTROL_MANIFEST_REQUIRED',
+  (() => {
+    const rows = headedRows(), base = { rows, runId: 'R9', snapshotVersion: 3 };
+    const cases = [
+      SC.compute(Object.assign({ cutoffId: 0 }, base)),
+      SC.compute(Object.assign({ cutoffId: 100, controlProtocol: 1, controlHeads: {} }, base)),
+      SC.compute(Object.assign({ cutoffId: 100, controlHeads: null }, base)),
+      SC.compute(Object.assign({ cutoffId: 100, controlProtocol: 2 }, base)),
+    ];
+    const stamp = SC.compute({ mode: 'hash', rows: [] }).buildStamp;
+    return cases.every(r => r.ok === false && r.buildStamp === stamp);
+  })());
+ok('K4: the stamp is IDENTICAL across compute mode, hash mode and error returns (a straddle is the only way to see two values)',
+  (() => {
+    const a = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3 }).buildStamp;
+    const b = SC.compute({ mode: 'hash', rows: headedRows() }).buildStamp;
+    const c = SC.compute({ rows: [], cutoffId: 0 }).buildStamp;
+    return a === b && b === c;
+  })());
+// K1 (disjoint phase partition), K2 (REPAIR-QUIESCED lane) and K3 (operational writer inventory —
+// the C1 diagnostics that write straight into the archive list) are §D SEQUENCING/RUNBOOK fixes with
+// no pure-function surface. Acceptance = the staging crash drill, which now also requires: a
+// post-cutover Function rollback driven through REPAIR-QUIESCED back to POST, and a confirmation
+// that no direct-write diagnostic is running before the fence.
+
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);
