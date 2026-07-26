@@ -799,6 +799,27 @@ ok('N4: an approval signs the INDEPENDENTLY REVIEWED digest — a live-digest mi
     const gate = (live) => (live === REVIEWED ? { ok: true } : { ok: false, reason: 'PACKAGE_NOT_REVIEWED' });
     return gate(REVIEWED).ok === true && gate('sha256:' + 'f'.repeat(64)).reason === 'PACKAGE_NOT_REVIEWED';
   })());
+ok('O3: BOOTSTRAP CRASH is recoverable — approval rev 1 present, floor ABSENT => complete the bootstrap, never HALT',
+  (() => {
+    // R10 finding 3: my own fail-closed rule ("absent floor + valid log => HALT") deadlocked the
+    // bootstrap it was meant to protect, because (3c) writes the approval BEFORE the floor.
+    const decide = (highestRev, floorPresent) => {
+      if (floorPresent) return 'select';
+      if (highestRev === 1) return 'complete-bootstrap'; // forward action
+      if (highestRev > 1) return 'HALT';                 // an advanced floor cannot vanish
+      return 'bootstrap';
+    };
+    return decide(1, false) === 'complete-bootstrap' && decide(2, false) === 'HALT'
+      && decide(0, false) === 'bootstrap' && decide(2, true) === 'select';
+  })());
+ok('O5: APPEND-BEFORE-FLOOR self-heals; FLOOR-FIRST would brick (the ordering is load-bearing)',
+  (() => {
+    // Crash between the append and the floor raise.
+    const select = (log, floor) => { const t = log.filter(r => r >= floor).sort((a, b) => b - a)[0]; return t === undefined ? null : t; };
+    const appendFirst = select([1, 2], 1);  // rev 2 appended, floor still 1 => picks 2, heals
+    const floorFirst = select([1], 2);      // floor raised to 2, append never happened => nothing selectable
+    return appendFirst === 2 && floorFirst === null;
+  })());
 ok('M3: HIGHEST-VALID selection + a retained high-water is what actually rejects the stale record',
   (() => {
     // The structural defence, modelled: authority = highest verifying revision in the append-only

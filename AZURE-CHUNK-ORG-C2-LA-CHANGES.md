@@ -12,8 +12,11 @@ PROVEN BOTH DISJOINT (R8) AND COMPLETE (R9) BY BOTH REVIEWERS INDEPENDENTLY — 
 the phase model is DONE. Every R9 finding was in the RUNBOOK AROUND the table: stale prose
 contradicting it, an invariant asserted rather than enforced, an artifact described but never
 specified, and an approval step that approved whatever was deployed.**
-Suite 127 → 144 → 154 → 158 → 161 → 164 → 169 → 171 → 173/173. TEN consecutive blocked rounds
-(13 → 6 → 3 → 3 → 3 → 4 → 5 → 4 → 4), every finding real, zero refuted. **The design and the money
+R10: AGY PASS-with-notes×2 (BOTH converged with Codex) + Codex×5 — all REAL, folded (fold record §X,
+questions §Y). Suite 127 → 144 → 154 → 158 → 161 → 164 → 169 → 171 → 173 → 175/175. ELEVEN
+consecutive blocked rounds (13 → 6 → 3 → 3 → 3 → 4 → 5 → 4 → 4 → 5), every finding real, zero
+refuted. **The matrix has been proven disjoint AND complete for two rounds and was not touched in
+either; every finding since is runbook prose around it, or a claim I made about the outside world.** **The design and the money
 arithmetic have been settled since R2; every round since has been the CUTOVER RUNBOOK.**
 Cadence option 2: paper review of these
 definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
@@ -42,7 +45,7 @@ committed); every branch ends in a `Response` action (no dangling runs).
 | `BuildApprovals_Staging` (N19) | `Revision` Number **Enforce-Unique + indexed**; `PackageDigest`, `ApprovedAt`, `BuildSig` Text. **APPEND-ONLY** — authority is the HIGHEST `Revision` with a verifying `BuildSig`; never edited, never overwritten (R8 finding 3) |
 | `StockControlPending_Staging` (N18) | `TransactionId` Text **Enforce-Unique + indexed**; the FULL econ-v1 row column set (as StockTransactions_Staging) + `TargetTransactionId`; `OwnerDeviceId` Text |
 | BOTH ledger lists gain (N7) | `ControlId`, `ControlType`, `TargetLine` (Note JSON), `OriginalEventAt`, `ControlState`, `CommitSig` Text; `ControlRevision`, `BornPublicationVersion` Number |
-| `AppConfig_Staging` items | `archive_state` ConfigData TRANSFORMED to the v2 five-state shape (§3 — existing content preserved, `v:2` + request-flag fields added); NEW `seal_epoch` item `{epochId, tombstoneCommitEpochId, archiveC2EpochId, recordedAt, **cutoverPackageDigest**, EpochSig}` (N16, epoch-v1-signed — the package digest is IN the signed canonical, R7 finding 3; it is the CUTOVER-TIME package, historical evidence only); **N19 is a LIST, not an AppConfig item** — see `BuildApprovals_Staging` in the table above (R8 finding 3: an overwriteable singleton is replayable); `stock_snapshot` ConfigData gains `controlManifest:{version,controlHeads:{}}` + `fence:0` on first correction-era publish (carried forward by N10) |
+| `AppConfig_Staging` items | `archive_state` ConfigData TRANSFORMED to the v2 five-state shape (§3 — existing content preserved, `v:2` + request-flag fields added); NEW `seal_epoch` item `{epochId, tombstoneCommitEpochId, archiveC2EpochId, recordedAt, **cutoverPackageDigest**, EpochSig}` (N16, epoch-v1-signed — the package digest is IN the signed canonical, R7 finding 3; it is the CUTOVER-TIME package, historical evidence only); **N19 is a LIST, not an AppConfig item** — see `BuildApprovals_Staging` in the table above (R8 finding 3: an overwriteable singleton is replayable); NEW **`build_high_water`** item `{highestRevision, observedAt, HwSig}` (`buildhw-v1`-signed, **ConfigType Enforce-Unique**, create-if-absent + outcome-by-read, MONOTONIC — the selection floor guarding the approval log; **R10 finding 4 / AGY P1: this item was specified in §D but MISSING from this inventory, so an implementer provisioning from §A alone would never create it**); `stock_snapshot` ConfigData gains `controlManifest:{version,controlHeads:{}}` + `fence:0` on first correction-era publish (carried forward by N10) |
 
 ## B. NEW LA `bob-stock-correction-staging` (N1) — phase-by-phase
 
@@ -290,6 +293,24 @@ quiesced window):
     REUSED as-is; a verifying row whose digest differs from the REVIEWED one ⇒ HALT (never
     auto-advance — **advancing the approval revision requires an explicit new reviewed-release
     input, never an observation**); a row that does not verify ⇒ HALT + surface;
+(3d) **THE APPROVAL ADVANCE LANE — a numbered, explicitly-invoked action (R10 finding 5).** Rows 4
+    and 8 previously just said "advance N19" with no procedure at all, while (3c) is hard-coded to
+    revision 1 and HALTs on a differing digest — so an implementer had to invent the mechanism, and
+    the obvious invention (raise the floor, then append) is exactly the one that bricks: a crash
+    between them leaves floor 2 with only revision 1 in the log ⇒ permanent halt. This lane is
+    invoked ONLY with an explicit new `REVIEWED_PACKAGE_DIGEST` input (never by observation), and
+    its ORDER IS LOAD-BEARING:
+    (i) allocate `revision = highest existing Revision + 1`;
+    (ii) sign `{packageDigest: <the NEW reviewed digest>, revision, approvedAt}` under
+         `buildrec-v1`;
+    (iii) **APPEND** to `BuildApprovals_Staging` — Enforce-Unique `Revision` makes a concurrent or
+         retried append a 409 ⇒ OUTCOME-BY-READ (re-read; identical row ⇒ proceed; different row at
+         that revision ⇒ HALT);
+    (iv) READ BACK and VERIFY the signature and digest;
+    (v) **ONLY THEN raise `build_high_water` to that revision** (monotonic CAS).
+    **APPEND-BEFORE-FLOOR is mandatory.** A crash between (iv) and (v) leaves floor N-1 with
+    revision N present and verifying — selection takes the highest valid revision ≥ floor, gets N,
+    and raises the floor on the next pass. **Self-healing.** Floor-first would be a permanent halt;
 (4) the QUIESCENT CUTOVER (C2-R18-3/C2-R19-3/C2-R20-4), continuing under the fence established in
     (3a): **`archive_state` v2
     TRANSFORM (preserve content, add v:2 fields) — safe here, the only writer of that item is
@@ -325,8 +346,14 @@ divergence) is only meaningful while the writers are quiesced. After step (6) le
 NECESSARILY advances the archive boundary, so a full rerun — say the runner crashed during step (7)
 — would re-observe item 101 against a sealed 100 and HALT under the mandatory rule, blocking its own
 probes and cleanup with no way to distinguish legitimate post-cutover growth from an unsafe
-pre-cutover change. The runner therefore establishes PHASE FIRST, and the authority is OBSERVED
-WRITER STATE, not a deletable marker (the same principle as C2-R19-1/C2-R24-1):
+pre-cutover change. The runner therefore establishes PHASE FIRST. **Phase is decided from the FULL
+observed tuple — writer state, seal validity, deployed build identity, AND the `C` latch (R10
+finding 1: this sentence used to say authority was "OBSERVED WRITER STATE, not a deletable marker",
+which contradicts `C` being a required discriminator in the matrix).** The C2-R19-1/C2-R24-1
+principle still holds in the form that matters: **no marker is trusted for anything observable state
+can prove.** `C` is not trusted to assert that the boundary is safe — that is re-observed directly
+at (6b-i); `C` only records that the handover has begun, and it is set BEFORE the irreversible act
+so its absence is a conservative claim rather than an optimistic one.
 **CLOSED-WORLD PHASE MATRIX (R4 finding 3; CORRECTED at R5 findings 1-3).** The R4 matrix was not
 actually closed — it **excluded the ordinary starting state**. A virgin system reads (push enabled,
 legacy archive enabled, C2 archive disabled, transforms absent), which matched no row and therefore
@@ -394,14 +421,29 @@ N17 provenance and halt a later sweep. Three explicit controls, in order of stre
    is READ BACK and confirmed. An ambiguous write (timeout, unknown outcome) is NEVER continued
    through: the runner STOPS and re-reads — present ⇒ HANDOVER (row 6); absent ⇒ retry (6b-i) from
    row 5. It never assumes either way.
-3. **EXCLUSIVITY OF CONTROL-PLANE ENABLES.** For the cutover window the Logic Apps carry an Azure
-   resource lock / RBAC deny on `Microsoft.Logic/workflows/write` for every principal except the
-   runner's, so a manual portal enable is not merely prohibited by convention but refused. The
-   operational inventory previously banned direct-write DIAGNOSTICS but said nothing about
-   control-plane enables. **NAMED RESIDUAL:** a subscription-owner can remove the lock; that is the
-   same P-13 trust boundary as direct SharePoint access, is detected by control (1) whenever the
-   intruding writer actually archived anything, and is banked for server-side enforcement — not
-   claimed closed.
+3. **EXCLUSIVITY OF CONTROL-PLANE EXECUTION — REWRITTEN AT R10 finding 2, and DEMOTED to a
+   staging-verified control rather than an asserted one.** The R9 text denied only
+   `Microsoft.Logic/workflows/write` and called the mechanism "an Azure resource lock / RBAC deny",
+   which is wrong in three separate ways:
+   - **`write` is not the operation that runs a workflow.** Azure exposes
+     `workflows/enable/action`, `workflows/disable/action`, `workflows/run/action`,
+     `workflows/triggers/run/action` and trigger-history RESUBMIT as SEPARATE operations. Denying
+     `write` leaves every one of those available. The deny must name the whole set.
+   - **A resource lock is the wrong instrument.** A `ReadOnly` lock applies to ALL principals
+     including the runner (it would block the cutover itself), and `CanNotDelete` still permits
+     modification. The control is an **RBAC DENY ASSIGNMENT scoped to non-runner principals**, not a
+     lock.
+   - **"Disabled" is not quiescent for Consumption workflows.** In-progress runs continue after a
+     disable, and runs can still be resubmitted from trigger history. So the (3a) wait must be "no
+     in-flight runs AND `archive_state` idle", not merely "disabled".
+   **This control is now a STAGING ACCEPTANCE ITEM, not a paper claim:** the deny assignment must be
+   EMPIRICALLY PROVEN on staging to refuse enable, manual run, trigger run and resubmit for a
+   non-runner principal, before it is relied on. I cannot establish Azure's effective permission
+   behaviour from the repo, and will not assert it.
+   **NAMED RESIDUAL (unchanged, still honest):** a subscription-owner can remove the deny
+   assignment. That is the same P-13 boundary as direct SharePoint access, is caught by control (1)
+   whenever the intruding writer actually archived anything, and is banked for server-side
+   enforcement — not claimed closed.
 
 With that ordering, "writers on while `C` absent" becomes genuinely unreachable, one row absorbs
 every partial-enable state, and the post-repair-deploy state has a forward path by construction
@@ -412,11 +454,11 @@ rather than by another special case. 8 rows.
 | 1 | \[NOT(push fenced AND legacy off)\] | | off | off | any | absent | any | absent | **PRE-QUIESCENCE** (bootstrap + partial (3a)) | (re-)assert (3a): disable the legacy archive LA, fence push, WAIT IDLE. Idempotent, re-entrant from the virgin state and any partial (3a) |
 | 2 | fenced | off | off | off | any | absent | any | absent | **QUIESCED-PRESEAL** | (3b) deploy the reviewed build if not already → **(3c) BOOTSTRAP the N19 authority record (below)** → (4) transform `archive_state`, complete the published run's Live-delete, residue cleanup, OBSERVE the boundary, write the seal |
 | 3 | fenced | off | off | off | any | **valid** | reviewed | absent | **QUIESCED-SEALED** | re-observe the boundary, HALT on divergence (the anomaly gate — nothing may mint rows while the window is quiet); proceed (5) |
-| 4 | fenced | off | off | off | any | valid | **not reviewed** | absent | **QUIESCED-REBUILD** | writers already quiet ⇒ forward-deploy the reviewed build (and bootstrap/advance N19 if that is what is missing) ⇒ re-enter row 3 |
-| 5 | enabled | off | off | off | **verified** | valid | reviewed | absent | **MID-ENABLE** | (6a) is done. NO boundary writer has ever been live ⇒ the seal is still exact. **Next: (6b-i) STAMP `C`**, then (6b-ii)/(6b-iii) |
+| 4 | fenced | off | off | off | any | valid | **not reviewed** | absent | **QUIESCED-REBUILD** | writers already quiet ⇒ forward-deploy the reviewed build; if the APPROVAL is what is missing or stale, run (3c) bootstrap or the (3d) ADVANCE LANE — never an ad-hoc write (R10 finding 5) — if that is what is missing) ⇒ re-enter row 3 |
+| 5 | enabled | off | off | off | **verified** | valid | reviewed | absent | **MID-ENABLE** | (6a) is done. NO boundary writer has ever been live ⇒ the seal is still exact. **Next: (6b-i) in full — RE-OBSERVE the boundary, HALT on divergence, stamp `C`, READ IT BACK and confirm** (R10 finding 1: this cell used to say only "stamp `C`", so an implementer reading the row rather than the numbered step would drop the re-observation and the read-back — the whole latch enforcement) — then (6b-ii) enable the C2 archive LA, then (6b-iii) enable N1 |
 | 6 | any | off | \[NOT(C2 on AND N1 on)\] | | verified | valid | reviewed | **present** | **HANDOVER** — absorbs every partial enable AND every post-repair-deploy state | ensure push enabled, ensure the C2 archive LA enabled, ensure N1 enabled — idempotently, in that order. Then row 7. Does NOT re-observe the boundary (`C` is latched) |
 | 7 | enabled | off | on | on | verified | valid | reviewed | present | **POST-CUTOVER** | skip re-observation, reuse the sealed values byte-for-byte, resume at (7)/(8). Boundary growth here is expected, not evidence |
-| 8 | any | off | any | any | verified | valid | **not reviewed** | present | **REPAIR** | ONE predicate, ONE entry point, and it OWNS the whole repair regardless of writer state. **First action, always, idempotently: disable the C2 archive LA, disable N1, fence push, WAIT IDLE.** Then forward-deploy the reviewed build (advancing N19 if the approval is what changed). The deploy flips `build` to reviewed ⇒ the state falls into **row 6**, which drives the re-enable to completion. Does NOT re-observe the boundary |
+| 8 | any | off | any | any | verified | valid | **not reviewed** | present | **REPAIR** | ONE predicate, ONE entry point, and it OWNS the whole repair regardless of writer state. **First action, always, idempotently: disable the C2 archive LA, disable N1, fence push, WAIT IDLE.** Then forward-deploy the reviewed build; if the APPROVAL is what changed, run the **(3d) ADVANCE LANE** with an explicit new reviewed-release input — never an ad-hoc write, and never triggered by merely observing a different live digest (R10 finding 5). The deploy flips `build` to reviewed ⇒ the state falls into **row 6**, which drives the re-enable to completion. Does NOT re-observe the boundary |
 | — | **anything else** | | | | | | | | **INCONSISTENT** | **HALT + surface, no automatic recovery** — states no legitimate prefix produces: the legacy archive LA enabled after (3a); **any boundary writer on while `C` is absent** (unreachable now that the stamp PRECEDES the enable); any writer enabled with transforms missing/half-applied; `C` present with no valid seal |
 
 **Why this is complete where R7 was not.** R7 finding 1: after a repair's forward-deploy, `build`
@@ -450,10 +492,22 @@ R7 findings 3-5).** THREE artifacts with three different jobs — conflating the
      location, no frame, no CAS procedure — and `runrec-v1` is the N17 ARCHIVE-run frame, which has
      nothing to do with build approvals. The artifact is now specified: AppConfig item
      **`build_high_water`** `{highestRevision, observedAt, HwSig}`, signed with the NEW frame
-     **`buildhw-v1`**, written by ETag-CAS, and **MONOTONIC — a write whose `highestRevision` is
-     lower than the stored one is REFUSED.** The runner loads it before selecting, and refuses any
-     approval revision below it. Absent item on a virgin run ⇒ floor 0 (bootstrap); absent item
-     AFTER a valid approval log exists ⇒ HALT + surface (the floor cannot legitimately vanish).
+     **`buildhw-v1`**, and **MONOTONIC — a write whose `highestRevision` is lower than the stored
+     one is REFUSED.** The runner loads it before selecting, and refuses any approval revision below
+     it. **SINGLETON + AMBIGUOUS-OUTCOME PROTOCOL (R10 finding 4 / AGY P1):** it is listed in the §A
+     AppConfig inventory (it was missing, so an implementer provisioning from §A would never create
+     it); its `ConfigType` key is **Enforce-Unique**, so a timed-out POST that actually succeeded
+     cannot produce a second row; creation is **create-if-absent with OUTCOME-BY-READ** (a 409 or a
+     timeout ⇒ RE-READ, never blind-retry); and **more than one matching row ⇒ HALT + surface**,
+     never `first()`. ETag-CAS governs UPDATES only — it cannot protect a row that does not exist
+     yet, which is what the R9 text wrongly implied.
+     **ABSENT-ITEM RULE, CORRECTED (R10 finding 3):** the R9 rule "absent AFTER a valid approval log
+     exists ⇒ HALT" DEADLOCKED its own bootstrap — (3c) creates approval revision 1 and THEN the
+     floor, so a crash between them left every rerun facing a valid log with no floor and executing
+     the mandated HALT, with no row or action owning that legitimate prefix. Corrected: absent floor
+     with **the log containing exactly revision 1** ⇒ **COMPLETE THE BOOTSTRAP** (create the floor
+     at 1) — a forward action, not a halt. Absent floor with a log whose highest revision is **> 1**
+     ⇒ HALT + surface (a floor that has genuinely advanced cannot legitimately vanish).
    - **P-13 BOUNDARY, STATED HONESTLY AND NARROWLY (R9 finding 3).** A SharePoint-direct actor with
      delete rights over BOTH the approval log AND the high-water item can still regress the pair —
      the high-water lives in the same store, so it does not escape that actor's authority, and I am
@@ -467,7 +521,9 @@ R7 findings 3-5).** THREE artifacts with three different jobs — conflating the
    create-once and reused byte-for-byte, so the next legitimately-reviewed package (say a
    `correctionCompute` fix with no archive-compatibility change) would be misclassified as a rollback
    FOREVER, leaving the runner to halt, redeploy an obsolete build, or ignore its own rule. Approving a
-   new build = writing a new `approved_build` revision; that is the ONLY advancement lane.
+   new build = **APPENDING a new revision to `BuildApprovals_Staging` via the (3d) ADVANCE LANE below**
+   (R10 finding 1: this line still said "writing a new `approved_build` revision", the retired
+   singleton wording — an implementer following it would rebuild the replayable artifact).
 2. **HISTORICAL EVIDENCE = `cutoverPackageDigest` inside the one-shot signed epoch (N16)** — the
    package that performed the cutover, frozen with the epoch. **R7 finding 3:** §D previously CLAIMED
    this was "bound into the signed epoch artifact" while the `epoch-v1` canonical did not cover it —
@@ -485,8 +541,11 @@ R7 findings 3-5).** THREE artifacts with three different jobs — conflating the
    any comparison; a malformed or unresolved stamp is a fail-closed abort, never an equality input.
    The digest is the full SHA-256, no longer truncated to 64 bits.
 
-- The matrix's `build` fact = "the live Azure package digest (control-plane metadata) equals the
-  digest in the current signed `approved_build` record". Not the epoch's, and not a self-report.
+- The matrix's `build` fact = "the live Azure package digest (from control-plane metadata) equals
+  the `PackageDigest` of the **SELECTED APPROVAL — the highest `Revision` in
+  `BuildApprovals_Staging` whose `BuildSig` verifies AND whose revision is ≥ the signed
+  `build_high_water` floor**". Not the epoch's digest, not a self-report, and not a singleton
+  record (R10 finding 1: this line still named the retired `approved_build` record).
 - **Any Function App change — forward deploy OR ROLLBACK — obeys the (3a) quiesce-first discipline.**
 
 **OPERATIONAL WRITER INVENTORY (R6 finding 3).** `{C2 archive LA, N1}` is the complete set of
@@ -505,7 +564,10 @@ operator confirms it. Any such tool used during the window must delete its rows 
   row 10 that no longer exists, and called `C` present with writers not yet enabled a CONTRADICTION
   — which is now the ordinary HANDOVER row 6 and the very state the table exists to recover).** It
   is the discriminator between the pre-cutover quiesced rows 3/4 and the post-latch rows 6/7/8,
-  which are otherwise identical in writer state. Superseded rule, for the record — **R6 finding 2:**
+  which are otherwise identical in writer state. **The marker is EXPECTED — not a contradiction — in
+  rows 6, 7 and 8** (R10 finding 1 / AGY P2: the superseded note below still said "expected in row
+  10", a row that no longer exists, and still described a legitimately stamped-and-quiesced state as
+  a contradiction). Superseded rule, for the record — **R6 finding 2:**
   the R5 rule "`cutoverCompletedAt` present in any phase
   other than POST-CUTOVER ⇒ CONTRADICTION ⇒ HALT" made the build-recovery lane deadlock itself — the
   recovery's own first action (disable C2 + N1, fence push) moves the state OUT of POST while the
@@ -919,3 +981,44 @@ topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Z
   over-stated, and is the (3c) reviewed-digest gate sound including its rerun and
   revision-advancement rules?
 - **QW5:** Anything not closed, or newly noticed. Same artifact rule.
+
+---
+
+## X. INTERIM LA REVIEW — ROUND 10 FOLD RECORD (`W-B2r10`)
+
+**R10 verdicts: AGY PASS-with-notes×2 · Codex BLOCK×5.** All REAL, all folded; **both AGY notes
+CONVERGED with Codex findings** (the missing §A inventory entry, and the stale "row 10"). Suite
+173 → **175/175**. Both reviewers re-confirmed the matrix DISJOINT and COMPLETE — it was not touched
+this round. **Every finding was again in the runbook around the table, and two were in claims I made
+about the outside world.**
+
+| # | Finding | Fold |
+|---|---|---|
+| **O1** | **Five coherence conflicts still in §D** (AGY P2 converged on one): the phase-authority sentence still said "OBSERVED WRITER STATE, not a deletable marker" while `C` is now a required discriminator; **row 5's cell still said only "stamp `C`"**, dropping the re-observation, divergence halt and read-back — so an implementer reading the row rather than the numbered step recreates the pre-latch gap; the build section still said "writing a new `approved_build` revision" (the retired singleton — an implementer would rebuild the replayable artifact); the matrix's `build` fact still named that singleton instead of the highest-valid log row; and the marker paragraph still expected `C` in a deleted row 10 while calling a legitimate stamped state a contradiction. | All five rewritten. The authority sentence now states the honest principle — *no marker is trusted for anything observable state can prove* — and explains that `C` records only that handover has begun, set BEFORE the irreversible act so its absence is conservative. |
+| **O2** | **The Azure exclusion control did not exclude the operations that matter.** Codex is right on all three counts: `Microsoft.Logic/workflows/write` is NOT what runs a workflow (`enable/action`, `disable/action`, `run/action`, `triggers/run/action` and trigger-history RESUBMIT are separate operations); a resource lock is the wrong instrument (`ReadOnly` applies to ALL principals including the runner and would block the cutover; `CanNotDelete` still permits modification); and a DISABLED Consumption workflow still completes in-progress runs and still permits resubmission, so "disabled" ≠ quiescent. | The deny now names the full operation set and is an **RBAC DENY ASSIGNMENT scoped to non-runner principals**, not a lock; (3a)'s wait is "no in-flight runs AND `archive_state` idle". **DEMOTED from an asserted control to a STAGING ACCEPTANCE ITEM** — it must be EMPIRICALLY PROVEN on staging to refuse enable/run/trigger/resubmit for a non-runner principal before it is relied on. I cannot establish Azure's effective-permission behaviour from the repo and will not assert it. |
+| **O3** | **My own fail-closed rule deadlocked its own bootstrap.** (3c) creates approval revision 1 and THEN the floor; the rule "absent floor + valid approval log ⇒ HALT" meant a crash between those two steps left every rerun facing exactly that state and halting forever, with no row or action owning the prefix. | Absent floor with the log containing **exactly revision 1** ⇒ **COMPLETE THE BOOTSTRAP** (create the floor at 1) — a forward action. Absent floor with highest revision **> 1** ⇒ HALT (an advanced floor cannot legitimately vanish). |
+| **O4** | **The high-water had no singleton or ambiguous-outcome protocol** (AGY P1 converged): missing from the §A inventory entirely — an implementer provisioning from §A would never create it — no uniqueness on the key, and no create-if-absent/duplicate/timeout rule. ETag-CAS protects an already-selected item; it cannot stop a timed-out POST that succeeded from producing a SECOND row, after which a `first()` load makes the floor nondeterministic. | Added to §A; `ConfigType` **Enforce-Unique**; **create-if-absent with OUTCOME-BY-READ** (409 or timeout ⇒ re-read, never blind-retry); **more than one matching row ⇒ HALT**, never `first()`; ETag-CAS explicitly scoped to updates only. |
+| **O5** | **Revision advancement was asserted but never specified**, and contradicted (3c) — which is hard-coded to revision 1 and HALTs on a differing digest. Rows 4 and 8 just said "advance N19", leaving an implementer to invent it; the obvious invention (raise the floor, then append) BRICKS — a crash between leaves floor 2 with only revision 1 in the log. | New numbered **(3d) ADVANCE LANE**, invoked ONLY with an explicit new reviewed-release input: allocate `highest+1` → sign → **APPEND** (Enforce-Unique ⇒ 409 ⇒ outcome-by-read) → read back and verify → **ONLY THEN raise the floor**. **APPEND-BEFORE-FLOOR is load-bearing and probed**: a crash between leaves floor N-1 with revision N verifying ⇒ selection takes N and heals on the next pass. Rows 4 and 8 now point at (3c)/(3d) instead of an ad-hoc write. |
+
+**Gates:** correction **175/175** · attest 58/58 · archive-carry 28/28 · buyback-export 170/170 ·
+topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Zero client files.
+
+**STAGING ACCEPTANCE ITEMS — now TWO that cannot be closed on paper:**
+1. The live-vs-archive SharePoint echo for the eight N7 columns (absent vs null vs `''`).
+2. **NEW:** the RBAC deny assignment empirically refusing enable / manual run / trigger run /
+   resubmit for a non-runner principal, and the "no in-flight runs" quiescence check.
+
+## Y. Review questions for ROUND 11
+
+- **QY1:** Do O1-O5 close their findings without introducing a new defect?
+- **QY2:** **Coherence sweep again, same method** — read §A, §B, §C, §D in order as an implementer
+  who follows the numbered steps and the inventory tables and never reads the matrix. Two rounds
+  running this has found real conflicts. Name every remaining one.
+- **QY3:** **The (3d) advance lane and the bootstrap-completion rule are new state machinery** — the
+  exact class that has produced a defect every time I have added it. Walk them for crash-safety at
+  every step boundary, concurrent invocation, and interaction with rows 4/8, and confirm
+  append-before-floor cannot be inverted by any legitimate path.
+- **QY4:** Is the O2 rewrite now technically correct about Azure's operation set, lock semantics and
+  Consumption-workflow quiescence — and is demoting it to a staging-proven item the right call
+  rather than asserting it here?
+- **QY5:** Anything not closed, or newly noticed. Same artifact rule.
