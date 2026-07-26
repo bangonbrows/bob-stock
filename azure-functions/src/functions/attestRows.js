@@ -147,7 +147,19 @@ const CTL_V1_FIELDS = [
 const FRAME_FIELDS = {
   'ctl-v1': CTL_V1_FIELDS,
   'ctlcommit-v1': ['TransactionId', 'TargetTransactionId'],
-  'epoch-v1': ['epochId', 'tombstoneCommitEpochId', 'archiveC2EpochId', 'recordedAt'],
+  // R6 finding 3: §D claimed the reviewed Function package digest was "bound into the signed epoch
+  // artifact", but the canonical never covered it — attestRows ignores properties outside this
+  // list, so a runner could pass `cutoverPackageDigest` for signing, the field would be stored, and
+  // it could later be CHANGED while the original EpochSig kept verifying. It is now signed.
+  // NOTE it is the CUTOVER-TIME package (historical evidence, frozen with the one-shot epoch), NOT
+  // the current-build authority — see 'buildrec-v1'.
+  'epoch-v1': ['epochId', 'tombstoneCommitEpochId', 'archiveC2EpochId', 'recordedAt', 'cutoverPackageDigest'],
+  // R6 finding 4: the epoch is create-once and reused byte-for-byte, so it CANNOT also be the
+  // permanent current-build authority — a later legitimately-reviewed package would be
+  // misclassified as a rollback forever. The APPROVED-BUILD RECORD is a separate, signed, and
+  // deliberately UPDATEABLE artifact: it names the package digest currently authorised to serve,
+  // with a monotonic revision so an old record cannot be replayed over a newer one.
+  'buildrec-v1': ['packageDigest', 'revision', 'approvedAt'],
   'runrec-v1': ['RunId', 'SnapshotVersion', 'InputDigest', 'TombstoneIds', 'ArchiveMemberSourceIds'],
   'runrec-pub-v1': ['RunId']
 };

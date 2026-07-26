@@ -69,6 +69,12 @@ const CANON_VERSION = 'archcanon-v2';
 // `Verify_content_hash` — those two calls straddle the copy loop, so an unequal pair means the
 // deployment changed mid-run ⇒ abort BUILD_STRADDLE (retryable) instead of a bogus fidelity failure
 // on a faithful copy; (b) a fast-path hint for the runner, subordinate to the package identity.
+// R6 finding 5: the digest is the FULL sha256 (the first cut truncated to 16 hex = 64 bits — no
+// reason to weaken it), and an unreadable-source failure returns a value that is DETECTABLY invalid
+// rather than a constant. Two instances that both fail to read their sources used to return the
+// SAME literal, so the archive LA's equality check passed and the straddle belt saw nothing. The
+// consumers (LA + runner) MUST reject any stamp that does not match /^c2-[0-9a-f]{64}$/ BEFORE
+// comparing — equality is only meaningful between two well-formed stamps.
 const BUILD_STAMP = (() => {
   try {
     const fs = require('fs');
@@ -76,8 +82,8 @@ const BUILD_STAMP = (() => {
     for (const f of ['attestRows.js', 'correctionCompute.js', 'snapshotCompute.js']) {
       h.update(f).update(fs.readFileSync(require('path').join(__dirname, f)));
     }
-    return 'c2-' + h.digest('hex').slice(0, 16);
-  } catch (e) { return 'c2-UNRESOLVED'; }
+    return 'c2-' + h.digest('hex');
+  } catch (e) { return 'c2-UNRESOLVED-' + (e && e.code ? String(e.code) : 'ERR'); }
 })();
 const hasKey = (r, ...keys) => keys.some(k => Object.prototype.hasOwnProperty.call(r, k));
 // Text cell: present-with-null stays null (NOT ''), otherwise String-coerced.

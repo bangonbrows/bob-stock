@@ -1,56 +1,59 @@
-# REVIEW PACK — Contract 2 INTERIM LA REVIEW · ROUND 7
+# REVIEW PACK — Contract 2 INTERIM LA REVIEW · ROUND 8
 
 **Context.** Routine internal pre-deployment review for our own stock-management app (Bang on
 Brows, Perth; reviewers and engineer all work for the owner). The Contract 2 correction-approval
 DESIGN converged 2026-07-25 and has not been in question since. This is the interim paper review of
-the CONCRETE staging artifacts — in practice, of the CUTOVER RUNBOOK — before the owner applies them.
+the CONCRETE staging artifacts — in practice, of the CUTOVER RUNBOOK.
 
-**Round 6 outcome: Codex BLOCK×4 (the count went UP). All four real, all fixed. AGY PASS.**
+**Round 7 outcome: BOTH BLOCKED — AGY×1 + Codex×5 = 5 distinct (1 converged). All real, all fixed.**
 
-**Third consecutive round where every finding was in my own previous fix.** The R5 fold claimed to
-deliver a disjoint phase partition and did not: two rows overlapped on the ordinary post-step-5
-state, giving the runner two competing actions. The build-recovery lane I added deadlocked itself —
-its own first action moved the state out of POST while the completion marker was still stamped,
-tripping my own contradiction rule. My "complete set of boundary-advancing writers" was complete for
-production but ignored two C1 diagnostic scripts in this repo that POST straight into the archive
-list. And the build stamp was a hand-maintained constant with a "remember to bump it" comment, which
-is not authority — and five error returns omitted it while the spec claimed "every response".
+AGY, this was your first block, and it was the right one: asked for a mechanical pairwise proof
+instead of an opinion, you built your own table and found the rows 1/2 overlap independently — the
+same defect Codex found. That is exactly what the round needed.
 
-Fold record: **§P**. Suite 161 → **164/164**; all regression gates green.
+The five:
+1. **[both of you] Rows 1 and 2 still overlapped** — the defect R6 claimed to fix. Adding the `seal`
+   fact separated rows 1-2 from 3-10 but left row 2 a strict subset of row 1, so the ordinary
+   post-(3a) state matched both. My R6 fix addressed the symptom (missing facts), not the cause: row
+   1 used wildcards that subsume its successor. Also `cutoverCompletedAt` was declared a fact but had
+   no column, so rows 3/10 and 4/10 were separated only by prose.
+2. **Partial build-repair states mapped to no row** — repair is three non-atomic remote toggles and
+   only its endpoints existed.
+3. **The package digest was never actually bound into `epoch-v1`** — the canonical didn't cover it,
+   so the stored digest could change while the signature kept verifying.
+4. **A one-shot epoch cannot be the permanent current-build authority** — the next legitimately
+   reviewed package would be misclassified as a rollback forever, with no advancement lane.
+5. **The derived response digest didn't fail closed** — two instances that both failed to read their
+   sources returned the same literal and compared equal, so the straddle belt saw nothing.
 
-**On the two questions I asked last round:** AGY answered both in a way that confirmed my work
-rather than testing it — it declared the overlapping partition "mathematically airtight", and
-defended the self-reported stamp on reasoning that addressed a *pre-C2 rollback* rather than the
-actual failure mode. Codex re-derived independently and found both. **Please derive before you
-compare.**
+Fold record: **§R**. Suite 164 → **169/169**; all regression gates green.
 
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
-1. `AZURE-CHUNK-ORG-C2-LA-CHANGES.md` — **§P is the R6 fold record; §Q is this round's questions
-   QQ1-QQ5.** §D carries the rebuilt 10-row partition, the REPAIR-QUIESCED lane, the operational
-   writer inventory, and the package-identity authority. §F/§H/§J/§L/§N are the earlier folds.
-2. The amended code (164/164 local probes): `azure-functions/src/functions/snapshotCompute.js`
-   (⚠ still a flagged amendment to the audited Chunk-8 surface) ·
-   `azure-functions/src/functions/correctionCompute.js` · `test/correction-proof.js` (sections
-   14-19) · `test/archive-carry-proof.js`.
-3. For grounding: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` · `audit-artifacts/archive-def-current.json` ·
-   `audit-artifacts/diag-c1-insert.js` and `audit-artifacts/probe-c1-archive-run.js` (the direct
-   archive writers that drove K3).
+1. `AZURE-CHUNK-ORG-C2-LA-CHANGES.md` — **§R is the R7 fold record; §S is this round's questions
+   QS1-QS5.** §D carries the corrected 9-row table (row 1 is now a NEGATED predicate, `C` is a real
+   column, repair is one predicate) and the three-artifact build model. §A carries N16's new signed
+   `cutoverPackageDigest` and the new N19 `approved_build` record.
+2. The amended code (169/169 local probes): `azure-functions/src/functions/snapshotCompute.js` ·
+   `azure-functions/src/functions/attestRows.js` (**`epoch-v1` gains `cutoverPackageDigest`; new
+   `buildrec-v1` frame**) · `azure-functions/src/functions/correctionCompute.js` ·
+   `test/correction-proof.js` (sections 14-20).
+3. For grounding: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` · `audit-artifacts/archive-def-current.json`.
 
-**What I want from this round — three mechanical checks, not impressions:**
-- **QQ2 — prove DISJOINTNESS pairwise.** For every ordered pair of the 10 rows, name a fact whose
-  value differs, or show they overlap. This has been wrong twice; build your own table and diff it
-  against mine rather than reading mine.
-- **QQ3 — prove COMPLETENESS over reachable states.** Name any state a legitimate prefix of §D can
-  produce that maps to no row, and any row no legitimate prefix can produce.
-- **QQ4 — is the out-of-band package digest the right authority**, and is binding it into the signed
-  epoch artifact at SEAL time correct, given the build can change after the seal? Is the derived
-  response digest sound as a straddle belt?
+**Three mechanical checks again — same format, it worked:**
+- **QS2 — pairwise disjointness on the corrected 9-row table.** For every ordered pair, name a
+  separating fact or show the overlap. Rows 1/2 have now been wrong TWICE, and the fix is a NEGATED
+  PREDICATE rather than a value list — check it as such, and build your own table first.
+- **QS3 — completeness**, with particular attention to row 9, which now claims to absorb every
+  partial-repair state by re-asserting all three toggles as its first action.
+- **QS4 — the three build artifacts** (N19 current authority · epoch historical evidence · response
+  belt). Are the boundaries right, is the monotonic revision sufficient against replay, and does
+  anything still treat the epoch digest as current?
 
 **Standing item neither of you can close on paper:** the real live-vs-archive SharePoint echo for the
 eight N7 columns (absent vs null vs `''`). Staging probe before the first live archive run; if they
 differ, normalise at the read shape, never loosen the canonical.
 
-**Judge:** do K1-K4 close their findings without introducing a new defect? Findings only — the
+**Judge:** do L1-L5 close their findings without introducing a new defect? Findings only — the
 engineer ground-truths and applies all changes. Verdict format: PASS / PASS-with-notes / BLOCK with
 numbered findings + concrete failure sequences.
 

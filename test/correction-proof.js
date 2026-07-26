@@ -711,8 +711,9 @@ ok('J3: the stamp rides alongside partitionMode on BOTH partitions',
 // claimed "every response" while five error paths omitted it.
 ok('K4: the build stamp RESOLVES from the real module bytes (never the fail-closed UNRESOLVED)',
   (() => {
+    // Format widened to the FULL sha256 at R7 finding 5 (the first cut truncated to 64 bits).
     const s = SC.compute({ mode: 'hash', rows: [] }).buildStamp;
-    return typeof s === 'string' && /^c2-[0-9a-f]{16}$/.test(s);
+    return typeof s === 'string' && /^c2-[0-9a-f]{64}$/.test(s);
   })());
 ok('K4: EVERY error return carries the stamp — BAD_CUTOFF, UNSUPPORTED_CONTROL_PROTOCOL, BAD_CONTROL_MANIFEST, CONTROL_MANIFEST_REQUIRED',
   (() => {
@@ -738,6 +739,46 @@ ok('K4: the stamp is IDENTICAL across compute mode, hash mode and error returns 
 // no pure-function surface. Acceptance = the staging crash drill, which now also requires: a
 // post-cutover Function rollback driven through REPAIR-QUIESCED back to POST, and a confirmation
 // that no direct-write diagnostic is running before the fence.
+
+// ── 20. INTERIM LA REVIEW ROUND 7 folds (Codex findings 1-5, AGY L1 converged on finding 1) ───────
+ok('L5: the build stamp is the FULL sha256 and is well-formed (no 64-bit truncation)',
+  (() => /^c2-[0-9a-f]{64}$/.test(SC.compute({ mode: 'hash', rows: [] }).buildStamp))());
+ok('L5: an UNRESOLVED stamp is rejected by the well-formed test consumers must apply BEFORE comparing',
+  (() => {
+    // Two instances that both fail to read their sources returned the SAME literal, so equality
+    // passed and the straddle belt saw nothing. The rule is: reject before comparing.
+    const wellFormed = (s) => /^c2-[0-9a-f]{64}$/.test(s);
+    return wellFormed('c2-' + 'a'.repeat(64)) && !wellFormed('c2-UNRESOLVED-ENOENT')
+      && !wellFormed('c2-UNRESOLVED-ERR') && !wellFormed('c2-' + 'a'.repeat(16));
+  })());
+ok('L3: epoch-v1 SIGNS cutoverPackageDigest — tampering with it now breaks EpochSig',
+  (() => {
+    const e = { epochId: 5, tombstoneCommitEpochId: 900, archiveC2EpochId: 100,
+      recordedAt: '2026-07-26T00:00:00.000Z', cutoverPackageDigest: 'sha256:' + 'a'.repeat(64) };
+    const sig = A.signFrame(KR, 'epoch-v1', e);
+    if (!A.verifyFrame(KR, 'epoch-v1', e, sig)) return false;
+    const tampered = Object.assign({}, e, { cutoverPackageDigest: 'sha256:' + 'b'.repeat(64) });
+    return !A.verifyFrame(KR, 'epoch-v1', tampered, sig); // pre-fix: the field was outside the canonical => still verified
+  })());
+ok('L4: buildrec-v1 signs the UPDATEABLE approved-build record incl. its monotonic revision',
+  (() => {
+    const r1 = { packageDigest: 'sha256:' + 'c'.repeat(64), revision: 1, approvedAt: '2026-07-26T00:00:00.000Z' };
+    const s1 = A.signFrame(KR, 'buildrec-v1', r1);
+    if (!A.verifyFrame(KR, 'buildrec-v1', r1, s1)) return false;
+    const replayed = Object.assign({}, r1, { revision: 2 });      // replay an old record at a new revision
+    const swapped = Object.assign({}, r1, { packageDigest: 'sha256:' + 'd'.repeat(64) });
+    return !A.verifyFrame(KR, 'buildrec-v1', replayed, s1) && !A.verifyFrame(KR, 'buildrec-v1', swapped, s1);
+  })());
+ok('L4: buildrec-v1 and epoch-v1 are DOMAIN-SEPARATED (a build record can never pass as an epoch)',
+  (() => {
+    const r = { packageDigest: 'sha256:' + 'e'.repeat(64), revision: 3, approvedAt: '2026-07-26T00:00:00.000Z' };
+    const s = A.signFrame(KR, 'buildrec-v1', r);
+    return A.signFrame(KR, 'epoch-v1', r) !== s;
+  })());
+// L1 (rows 1/2 STILL overlapping — the R6 fold fixed the symptom, not the wildcard that subsumes
+// its successor; found independently by BOTH reviewers) and L2 (partial build-repair states mapping
+// to no row) are §D RUNBOOK fixes with no pure-function surface. Acceptance = the staging crash
+// drill, which now also requires a crash at EACH of the three repair toggles.
 
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);
