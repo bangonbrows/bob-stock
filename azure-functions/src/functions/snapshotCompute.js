@@ -52,6 +52,16 @@ const optNum = (v) => (v == null || v === '' ? '' : String(num(v)));
 // same shape for its seal frames, attestRows.js:134; econ-v1's String canonical deliberately does
 // not, which is why it could not simply be reused here.)
 const CANON_VERSION = 'archcanon-v2';
+// BUILD STAMP (R5 finding 3). The apply runner's phase authority reads writer state, which cannot
+// see WHICH Function build the Logic Apps are calling — so a rollback after cutover still resolved
+// POST while the LAs talked to an incompatible build. Every response now carries this stamp so:
+//   (a) the apply runner PINS it (a mismatch in POST is a recovery lane, not "still POST");
+//   (b) the archive LA compares the stamp from `Call_compute` against the one from
+//       `Verify_content_hash` — the two calls straddle the copy loop, so an unequal pair means the
+//       deployment changed mid-run and the run aborts as BUILD_STRADDLE (retryable) INSTEAD of
+//       surfacing as a bogus fidelity failure on a faithful copy (R4 finding 1's residual).
+// Bump this whenever the canonical, the frames, or any compute op changes shape.
+const BUILD_STAMP = 'c2-b4';
 const hasKey = (r, ...keys) => keys.some(k => Object.prototype.hasOwnProperty.call(r, k));
 // Text cell: present-with-null stays null (NOT ''), otherwise String-coerced.
 const cText = (r, f) => (hasKey(r, f) ? [1, r[f] === null ? null : String(r[f])] : [0]);
@@ -106,7 +116,7 @@ function compute(body) {
   // GPT P2: hash-only mode — the archive Logic App re-reads the ARCHIVED rows' content and asks for their
   // content hash, then compares it to the source archive-hash from the main compute BEFORE it publishes/deletes.
   // Mismatch => a copy/mapping corruption => the run aborts, live ledger untouched.
-  if (body.mode === 'hash') return { ok: true, hash: hashRows(rows), count: rows.length };
+  if (body.mode === 'hash') return { ok: true, hash: hashRows(rows), count: rows.length, buildStamp: BUILD_STAMP };
   const cutoffId = Number(body.cutoffId);
   const retainAfterTs = body.retainAfterTs != null ? Number(body.retainAfterTs) : null; // rows with Timestamp>=this stay LIVE even if Id<=cutoff
   if (!Number.isFinite(cutoffId) || cutoffId <= 0) return { ok: false, reason: 'BAD_CUTOFF' };
@@ -271,6 +281,7 @@ function compute(body) {
     ok: true,
     cutoffId,
     partitionMode: c2Mode ? 'c2' : 'legacy', // R3 finding 2: the caller asserts what it got
+    buildStamp: BUILD_STAMP,                 // R5 finding 3: straddle/rollback detection
     snapshotVersion: Number(body.snapshotVersion) || 0,
     runId: String(body.runId || ''),
     stepCutoffTs,

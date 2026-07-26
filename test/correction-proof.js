@@ -683,5 +683,27 @@ ok('I2: a legacy caller (no protocol, no manifest) is still accepted as legacy',
 // apply runner quiesces BEFORE redeploying; I3's is the staging crash drill across (6a)/(6b).
 // Recorded here so the omission is deliberate and visible, not an oversight.
 
+// ── 18. INTERIM LA REVIEW ROUND 5 folds (Codex findings 1-3) ──────────────────────────────────────
+// J3: the build stamp — the observable that makes a rollback/straddle detectable. Writer state
+// cannot see WHICH Function build the LAs are calling, so POST used to survive a rollback.
+ok('J3: every compute response carries the build stamp (compute mode AND hash mode)',
+  (() => {
+    const c = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    const h = SC.compute({ mode: 'hash', rows: headedRows() });
+    return typeof c.buildStamp === 'string' && c.buildStamp.length > 0 && c.buildStamp === h.buildStamp;
+  })());
+ok('J3: the stamp is stable across calls, so the LA can compare Call_compute vs Verify_content_hash (BUILD_STRADDLE detection)',
+  (() => SC.compute({ mode: 'hash', rows: [] }).buildStamp === SC.compute({ mode: 'hash', rows: headedRows() }).buildStamp)());
+ok('J3: the stamp rides alongside partitionMode on BOTH partitions',
+  (() => {
+    const legacy = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    const c2 = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlProtocol: 2, controlHeads: {} });
+    return legacy.partitionMode === 'legacy' && c2.partitionMode === 'c2' && legacy.buildStamp === c2.buildStamp;
+  })());
+// J1 (PRE-QUIESCENCE / bootstrap states) and J2 (N1 created disabled + in the fence and matrix) are
+// §D/§B SEQUENCING fixes with no pure-function surface. Their acceptance is the staging apply-runner
+// crash drill, which MUST now include: a run from the virgin state, a crash partway through (3a),
+// and a crash inside (6b) with only one of the two boundary-advancing writers enabled.
+
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);

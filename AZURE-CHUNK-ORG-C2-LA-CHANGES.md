@@ -1,12 +1,11 @@
 # OS-W4.4 Contract 2 — CONCRETE STAGING ARTIFACTS (LA definitions + apply inventory)
 
-**Status: 🔍 W-B2r4 INTERIM LA REVIEW — ROUND 5. R1: AGY×2 + Codex×11 = 13 REAL, folded @
-`bb1987e` (§F). R2: AGY PASS + Codex×6 — all REAL @ `aa1527a` (§H). R3: AGY PASS (⚠ its QI3 answer
-was FABRICATED — §J) + Codex×3 — all REAL @ `0046224` (§J). R4: AGY PASS (compliant this round —
-it verified the absent artifacts instead of inventing them) + Codex×3 — all REAL, folded (fold
-record §L, questions §M); Codex CONFIRMED the H1 scope split. Suite 127 → 144 → 154 → 158/158.
-Codex has blocked five consecutive rounds (13 → 6 → 3 → 3), every finding real — narrowing, NOT
-converged. Cadence option 2: paper review of these
+**Status: 🔍 W-B2r5 INTERIM LA REVIEW — ROUND 6. R1: AGY×2 + Codex×11 = 13 REAL @ `bb1987e` (§F).
+R2: AGY PASS + Codex×6 @ `aa1527a` (§H). R3: AGY PASS (⚠ FABRICATED QI3 — §J) + Codex×3 @
+`0046224` (§J). R4: AGY PASS + Codex×3 @ `a403d5c` (§L). R5: AGY PASS + Codex×3 — all REAL, folded
+(fold record §N, questions §O); **all three were defects in the R4 fold's own state machine**.
+Suite 127 → 144 → 154 → 158 → 161/161. Codex has blocked SIX consecutive rounds (13 → 6 → 3 → 3 →
+3), every finding real, zero refuted. Cadence option 2: paper review of these
 definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
 DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
 CONVERGED 2026-07-25 — Codex R25 PASS "No findings" + AGY PASS confirmed on the same revision).
@@ -266,14 +265,21 @@ quiesced window):
     VALID EpochSig is REUSED byte-for-byte (never re-sampled); a rerun whose freshly-observed
     boundary DIFFERS from a valid existing seal ⇒ HALT + surface (the boundary is one-shot, never
     a refreshable maximum).** Writers STAY DISABLED at the end of this step;
-(5) deploy the N1 LA from the reviewed definition + TRANSFORM N9/N10/N13 per §C;
+(5) deploy the N1 LA from the reviewed definition **CREATED DISABLED (R5 finding 2)** + TRANSFORM
+    N9/N10/N13 per §C. N1 is a LEDGER WRITER — §B step 16 SP-CREATEs the control row into the
+    TARGET'S OWN LIST, i.e. DIRECT-TO-ARCHIVE for an archived target (SR-135). Deployed enabled
+    here it could, before N13 is transformed, write a control row into Live that the OLD pull LA
+    (no `ControlId eq null` filter) would deliver to devices as a PHANTOM STOCK MOVEMENT; and its
+    direct-to-archive writes can advance the archive boundary. It stays disabled until (6b);
 (6) **RE-ENABLE the writers ONLY NOW** — after every C2 writer/transform is live (Codex 1:
     re-enabling the LEGACY writers post-seal would mint above-epoch rows with no N17 provenance /
-    post-epoch tombstones with no CommitSig ⇒ sweep/allowlist halts). **PINNED ORDER (R4 finding
-    3): (6a) re-enable push; (6b) enable the C2 archive LA — LAST.** The archive LA is the only
-    writer that can advance the archive boundary, so enabling it last means the boundary cannot
-    move while the runner is in an intermediate state, and the PRE→POST transition is a SINGLE
-    observable action. The legacy archive LA is NEVER re-enabled;
+    post-epoch tombstones with no CommitSig ⇒ sweep/allowlist halts). **PINNED ORDER (R4 finding 3,
+    corrected R5 finding 2): (6a) re-enable push; (6b) enable BOTH boundary-advancing writers —
+    the C2 archive LA AND the N1 correction LA — LAST.** Push cannot advance the archive boundary,
+    so after (6a) the seal is still exact (MID-ENABLE). Enabling the boundary-advancing pair last
+    means the boundary cannot move while the runner is in an intermediate state. A crash INSIDE
+    (6b) with only one of the pair enabled resolves to POST-CUTOVER, whose first action is to
+    ensure both are enabled. The legacy archive LA is NEVER re-enabled;
 (7) PROBES on the real cloud (sign/verify each new frame; a correction dry-run against a probe
     row; the sweep in REPORT-ONLY mode first);
 (8) cleanup (probe rows deleted, temp LA deleted).
@@ -284,20 +290,46 @@ NECESSARILY advances the archive boundary, so a full rerun — say the runner cr
 probes and cleanup with no way to distinguish legitimate post-cutover growth from an unsafe
 pre-cutover change. The runner therefore establishes PHASE FIRST, and the authority is OBSERVED
 WRITER STATE, not a deletable marker (the same principle as C2-R19-1/C2-R24-1):
-**CLOSED-WORLD PHASE MATRIX (R4 finding 3).** The R3 predicates were not closed: PRE did not require
-the C2 archive LA to be disabled, POST did not require the LEGACY archive LA to stay disabled, and
-mixed states had no prescribed outcome — so a crash after (6b) but before (6a) classified PRE with a
-C2 archive writer live, and a legacy LA accidentally left enabled alongside the C2 one still passed
-POST and skipped the boundary observation. The runner now observes FOUR facts — push fenced?, legacy
-archive LA enabled?, C2 archive LA enabled?, N9/N10/N13 transforms verified present? — and every
-combination has exactly one outcome:
+**CLOSED-WORLD PHASE MATRIX (R4 finding 3; CORRECTED at R5 findings 1-3).** The R4 matrix was not
+actually closed — it **excluded the ordinary starting state**. A virgin system reads (push enabled,
+legacy archive enabled, C2 archive disabled, transforms absent), which matched no row and therefore
+fell to INCONSISTENT ⇒ a fresh runner HALTED before it could begin; a crash partway through (3a)
+(legacy disabled, push not yet fenced) did the same, permanently, instead of finishing quiescence.
+**Governing rule (R5 finding 1): `INCONSISTENT` is reserved for states that CANNOT arise from a
+legitimate prefix of this runbook. Every state that can arise from a legitimate prefix has a forward
+action.** Two further corrections: the **correction LA (N1) is a LEDGER WRITER** — §B step 16 SP-
+CREATEs the control row into the TARGET'S OWN LIST, which for an archived target is a DIRECT-TO-
+ARCHIVE write (SR-135), so N1 can advance the archive boundary and can mint control rows into Live;
+it must be fenced, observed, and enabled in a pinned position (R5 finding 2). And **phase authority
+must include the FUNCTION BUILD**, because writer state cannot see which build the LAs are calling
+(R5 finding 3).
 
-| push | legacy archive | C2 archive | transforms | phase | action |
-|---|---|---|---|---|---|
-| fenced | disabled | disabled | any | **PRE-CUTOVER** | full boundary re-observation + divergence HALT — the anomaly gate proving nothing minted rows while the window was meant to be quiet |
-| enabled | disabled | disabled | verified | **MID-ENABLE** | recognised intermediate of the pinned (6a)→(6b) order. No archive writer is live ⇒ the boundary CANNOT have advanced ⇒ the seal is still exact. Resume at (6b) |
-| enabled | disabled | enabled | verified | **POST-CUTOVER** | skip re-observation, reuse the sealed values byte-for-byte, resume at (7). Boundary growth here is expected, not evidence |
-| **any other combination** | | | | **INCONSISTENT** | **HALT + surface, no automatic recovery.** Explicitly includes: the legacy archive LA enabled at all after step (4); the C2 archive LA enabled while push is still fenced; any writer enabled while the transforms are missing or half-applied |
+The runner observes SIX facts: push fenced? · legacy archive LA enabled? · C2 archive LA enabled? ·
+**N1 correction LA enabled?** · N9/N10/N13 transforms verified? · **Function `buildStamp` == the
+reviewed build?** Boundary-advancing writers = **{C2 archive LA, N1}** (not the archive LA alone —
+that R4 claim was wrong).
+
+| push | legacy arch | C2 arch | N1 | transforms | phase | action |
+|---|---|---|---|---|---|---|
+| any | any | disabled | disabled | any | **PRE-QUIESCENCE** (covers BOOTSTRAP + partial (3a)) | no C2 writer exists yet and no seal is relied upon ⇒ (re-)assert (3a): disable the legacy archive LA, fence push, WAIT IDLE. Idempotent; re-entrant from the virgin state and from any partial (3a) |
+| fenced | disabled | disabled | disabled | any | **PRE-CUTOVER** | full boundary re-observation + divergence HALT — the anomaly gate proving nothing minted rows while the window was meant to be quiet. Proceed (3b)→(4)→(5) |
+| enabled | disabled | disabled | disabled | verified | **MID-ENABLE** | recognised intermediate of the pinned (6a)→(6b) order. NO boundary-advancing writer is live ⇒ the boundary cannot have advanced ⇒ the seal is still exact. Resume at (6b) |
+| enabled | disabled | enabled **or** N1 enabled | verified | | **POST-CUTOVER** | skip re-observation, reuse the sealed values byte-for-byte. First ENSURE BOTH boundary-advancing writers are enabled (completes a crash inside 6b), then resume at (7). Boundary growth here is expected, not evidence |
+| **anything else** | | | | | **INCONSISTENT** | **HALT + surface, no automatic recovery** — states no legitimate prefix produces: the legacy archive LA enabled after step (4); any boundary-advancing writer live while push is still fenced; any writer enabled while the transforms are missing or half-applied |
+
+**FUNCTION BUILD IS PART OF PHASE (R5 finding 3).** Every `snapshotCompute` response carries
+`buildStamp`. The runner PINS the reviewed value:
+- Any phase with a MATCHING stamp ⇒ proceed as above.
+- **POST-CUTOVER with a MISMATCHED stamp ⇒ `FUNCTION_BUILD_MISMATCH`** — NOT "still POST". Recovery
+  lane: quiesce every affected writer (disable the C2 archive LA and N1, fence push), wait idle,
+  forward-redeploy the reviewed build, then re-enter the pinned (6a)/(6b) enable sequence.
+- **Any Function App change — forward deploy OR ROLLBACK — obeys the same quiesce-first discipline
+  as (3a).** Quiescing only the forward deploy left a later rollback able to reopen the exact
+  mixed-canonical window that (3a) was introduced to close.
+- Belt inside the archive LA: it compares the `buildStamp` returned by `Call_compute` with the one
+  returned by `Verify_content_hash`. Unequal ⇒ the deployment changed mid-run ⇒ abort as
+  `BUILD_STRADDLE` (transient, retryable), so a straddle can never present as a bogus fidelity
+  failure on a faithful copy.
 
 - The seal item also records `cutoverCompletedAt`, stamped when step (6b) completes. It is a
   FAST-PATH HINT ONLY (exactly as `PublishedSig` is for the sweep, C2-R24-1) — deleting or forging
@@ -494,3 +526,45 @@ canonical) if they differ.
   pinned body complete and correct against what `snapshotCompute` actually reads?
 - **QM5:** Anything not closed, or newly noticed. Same rule as R4: verify against files that exist,
   and say so plainly when an artifact does not.
+
+---
+
+## N. INTERIM LA REVIEW — ROUND 5 FOLD RECORD (`W-B2r5`)
+
+**R5 verdicts: AGY PASS · Codex BLOCK×3.** All three REAL, all folded. Codex confirmed I2 closed,
+confirmed the conditional-canonical rejection was correct reasoning (QM2), and confirmed the pinned
+`Call_compute` body matches what the code actually reads (QM4). Suite 158 → **161/161**.
+
+**All three findings were in MY OWN R4 fold** — the "closed-world" matrix I introduced was neither
+closed nor complete, and its central justification was factually wrong. Recorded plainly because the
+pattern matters: a fix that adds a state machine needs the same adversarial walk as the bug it
+replaces. AGY's QM3 walkthrough declared the same matrix "airtight against arbitrary crashes"; it
+walked only the states the table listed and never asked what the system looks like BEFORE step (1).
+
+| # | Finding | Fold |
+|---|---|---|
+| **J1** | **The matrix excluded the ordinary starting state.** A virgin system reads (push enabled, legacy archive enabled, C2 archive disabled, transforms absent) — matching no row, so it fell to `INCONSISTENT` and **a fresh runner HALTED before it could begin**. A crash partway through (3a) (legacy disabled, push not yet fenced) did the same, permanently, instead of simply finishing quiescence. | New **PRE-QUIESCENCE** row covering BOOTSTRAP and any partial (3a): no C2 writer exists and no seal is relied upon ⇒ (re-)assert "disable legacy + fence push, wait idle", idempotently. **Governing rule adopted (Codex's words): `INCONSISTENT` is reserved for states that CANNOT arise from a legitimate prefix of the runbook; every state that can, has a forward action.** |
+| **J2** | **The correction LA (N1) was missing from the fence and the matrix.** §B step 16 SP-CREATEs the control row into the TARGET'S OWN LIST — direct-to-archive for an archived target (SR-135) — so **N1 is a ledger writer**. Step (5) deployed it without pinning it disabled, and step (6) enabled only push and the C2 archive LA. Two consequences: N1 live before N13 is transformed can write a control row into Live that the OLD pull LA (no `ControlId eq null` filter) delivers to devices as a **phantom stock movement**; and N1's direct-to-archive writes can advance the archive boundary, **disproving the MID-ENABLE justification that only the archive LA can advance it**. | N1 is **CREATED DISABLED** at step (5) and is now an observed fact in the matrix. Boundary-advancing writers = **{C2 archive LA, N1}**. Step (6b) enables BOTH, last; a crash with only one enabled resolves to POST-CUTOVER, whose first action is to ensure both are enabled. |
+| **J3** | **Function rollback was invisible to phase authority.** Phase was decided from writer/transform state alone, which cannot see WHICH build the LAs call. After (6b) a rollback still resolved **POST**, so a rerun skipped deployment while the LAs talked to an incompatible build — reopening the mixed-canonical straddle and potentially losing compute/attestation ops. Quiescing only the FORWARD deploy was never sufficient. | Every `snapshotCompute` response carries a `buildStamp` (both compute and hash modes). The runner PINS the reviewed value; **POST + mismatched stamp ⇒ `FUNCTION_BUILD_MISMATCH`**, a specified recovery lane (quiesce the boundary-advancing writers + fence push → wait idle → forward-redeploy the reviewed build → re-enter (6a)/(6b)) — not "still POST", not a bare halt. **Any Function change, forward OR rollback, now obeys the (3a) quiesce-first discipline.** Belt: the archive LA compares the stamp from `Call_compute` against the one from `Verify_content_hash` — unequal ⇒ abort as `BUILD_STRADDLE` (transient, retryable), so a straddle can never present as a bogus fidelity failure on a faithful copy. |
+
+**Gates:** correction **161/161** · archive-carry 28/28 · attest 58/58 · buyback-export 170/170 ·
+topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Zero client files.
+
+**Staging crash drill — REQUIRED CASES** (grown by this round, carried to the E2E): a run from the
+VIRGIN state; a crash partway through (3a); a crash inside (6b) with only one of the two
+boundary-advancing writers enabled; a Function rollback while writers are live.
+
+## O. Review questions for ROUND 6
+
+- **QO1:** Do J1-J3 close their findings without introducing a new defect?
+- **QO2:** **Re-derive the matrix from scratch rather than checking my rows.** Enumerate the
+  reachable states of {push, legacy archive, C2 archive, N1, transforms, buildStamp} that a
+  legitimate prefix of §D can produce, and confirm each maps to exactly one row with a forward
+  action — and that everything mapping to `INCONSISTENT` is genuinely unreachable legitimately.
+- **QO3:** Is `{C2 archive LA, N1}` the COMPLETE set of boundary-advancing writers? Name any other
+  writer, LA, or path that can create a row in the archive list or mint an above-epoch id.
+- **QO4:** J3 makes phase depend on a self-reported `buildStamp`. Is a self-reported stamp adequate
+  authority here, given the project's own principle of preferring non-forgeable ledger state over
+  markers (C2-R19-1/C2-R24-1)? If not, what observable would be?
+- **QO5:** Anything not closed, or newly noticed. Same artifact rule: verify against files that
+  exist, and say so plainly when one does not.
