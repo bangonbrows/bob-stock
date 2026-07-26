@@ -156,10 +156,19 @@ const FRAME_FIELDS = {
   'epoch-v1': ['epochId', 'tombstoneCommitEpochId', 'archiveC2EpochId', 'recordedAt', 'cutoverPackageDigest'],
   // R6 finding 4: the epoch is create-once and reused byte-for-byte, so it CANNOT also be the
   // permanent current-build authority — a later legitimately-reviewed package would be
-  // misclassified as a rollback forever. The APPROVED-BUILD RECORD is a separate, signed, and
-  // deliberately UPDATEABLE artifact: it names the package digest currently authorised to serve,
-  // with a monotonic revision so an old record cannot be replayed over a newer one.
+  // misclassified as a rollback forever. Build approvals are a SEPARATE artifact.
+  // ⚠ R8 finding 3 (this comment was stale until R9): the approval is NOT an "updateable record
+  // with an internal monotonic revision" — that shape was REPLAYABLE, because restoring the
+  // complete, still-valid revision-1 tuple AND its signature over revision 2 verifies perfectly.
+  // A signature proves authenticity, never freshness. The approval log is APPEND-ONLY
+  // (`BuildApprovals_Staging`, Enforce-Unique Revision); authority = the HIGHEST revision whose
+  // signature verifies, floored by the separately-signed `build_high_water` item ('buildhw-v1').
+  // The signed digest is the INDEPENDENTLY REVIEWED package, never whatever Azure happens to be
+  // serving (R9 finding 4 — observation is not approval).
   'buildrec-v1': ['packageDigest', 'revision', 'approvedAt'],
+  // The monotonic floor for approval selection — deliberately a SEPARATE artifact from the log it
+  // guards, so regressing the log alone does not regress the floor (R9 finding 3).
+  'buildhw-v1': ['highestRevision', 'observedAt'],
   'runrec-v1': ['RunId', 'SnapshotVersion', 'InputDigest', 'TombstoneIds', 'ArchiveMemberSourceIds'],
   'runrec-pub-v1': ['RunId']
 };

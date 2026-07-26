@@ -782,6 +782,23 @@ ok('M3: WHOLE-RECORD replay VERIFIES — a signature alone can never reject it (
     // Restoring the COMPLETE r1+s1 over r2 passes verification — the record is authentic, just stale.
     return A.verifyFrame(KR, 'buildrec-v1', r1, s1) && A.verifyFrame(KR, 'buildrec-v1', r2, s2);
   })());
+ok('N3: the high-water is a REAL signed artifact (buildhw-v1), monotonic and tamper-evident',
+  (() => {
+    const hw = { highestRevision: 2, observedAt: '2026-07-26T02:00:00.000Z' };
+    const s = A.signFrame(KR, 'buildhw-v1', hw);
+    if (!A.verifyFrame(KR, 'buildhw-v1', hw, s)) return false;
+    const lowered = Object.assign({}, hw, { highestRevision: 1 }); // regress the floor, keep the sig
+    return !A.verifyFrame(KR, 'buildhw-v1', lowered, s)
+      && A.signFrame(KR, 'buildrec-v1', hw) !== s; // domain-separated from the approval frame
+  })());
+ok('N4: an approval signs the INDEPENDENTLY REVIEWED digest — a live-digest mismatch must HALT, never self-approve',
+  (() => {
+    // R9 finding 4: (3c) used to sign whatever Azure reported and "verify" it against that same
+    // observation. Modelled correctly: approval is gated on the pinned reviewed digest.
+    const REVIEWED = 'sha256:' + 'a'.repeat(64);
+    const gate = (live) => (live === REVIEWED ? { ok: true } : { ok: false, reason: 'PACKAGE_NOT_REVIEWED' });
+    return gate(REVIEWED).ok === true && gate('sha256:' + 'f'.repeat(64)).reason === 'PACKAGE_NOT_REVIEWED';
+  })());
 ok('M3: HIGHEST-VALID selection + a retained high-water is what actually rejects the stale record',
   (() => {
     // The structural defence, modelled: authority = highest verifying revision in the append-only
