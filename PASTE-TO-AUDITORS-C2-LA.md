@@ -1,52 +1,61 @@
-# REVIEW PACK — Contract 2 INTERIM LA REVIEW · ROUND 4
+# REVIEW PACK — Contract 2 INTERIM LA REVIEW · ROUND 5
 
 **Context.** Routine internal pre-deployment review for our own stock-management app (Bang on
 Brows, Perth; reviewers and engineer all work for the owner). The Contract 2 correction-approval
 DESIGN converged 2026-07-25. This is the interim paper review of the CONCRETE staging artifacts
 BEFORE the owner applies them to staging.
 
-**Round 3 outcome: Codex BLOCK×3 — all three real, reproduced, and fixed.** (1) The fidelity-hash
-canonical was not TYPED as the design's N10 clause requires by name, so `ControlState:null` and
-field-absent hashed identically and a destructive live-delete could proceed against an incomplete
-archive copy. (2) The `controlHeads` discriminator failed OPEN — a malformed manifest silently
-published the raw balance (+10) instead of the effective one (+8). (3) The apply runner could not
-restart after step (6): legitimate post-cutover growth tripped the mandatory epoch-divergence HALT.
-Fold record + repros: **§J**. Suite 144 → **154/154**, all regression gates green.
+**Round 4 outcome: Codex BLOCK×3 — all three real and fixed. AGY PASS.** Both reviewers complied
+with the artifact rule this round (Codex opened the legacy archive JSON before relying on it; AGY
+explicitly confirmed which artifacts do not yet exist rather than inventing them) — thank you, that
+is exactly what makes a verdict usable. **Codex also independently confirmed the R3 H1 scope split**
+(typed rule scoped to the eight N7 control fields, C1 stamps keep `absent ≡ ''`).
 
-**One fold carries a scope judgement worth attacking (QK2).** Typing the canonical BLANKET broke
-the Chunk-8 archive-carry contract immediately (28→27): the C1 optional numeric stamps have the
-OPPOSITE converged rule, `absent ≡ ''`, because SharePoint renders an unstamped column as absent in
-one list read and `''` in the other. Typing them would HALT every run containing an unstamped row.
-The typed rule is therefore scoped to the eight N7 control fields — the design types the EXTENSION,
-not the pre-existing C1 set. If you think that reading is wrong, say so with the design line.
+The three:
+1. **The canonical version tag created a mixed-canonical window.** The archive LA hashes the source
+   before the copy and the re-read after it, in two separate Function calls. Redeploying between
+   them made a FAITHFUL copy mismatch — an in-flight run failing its fidelity gate purely for
+   straddling the deploy. Fixed structurally: the runner now quiesces BEFORE it redeploys.
+2. **The manifest-omission protection was unreachable from the real caller** — it only triggers on
+   `controlProtocol: 2`, which §C never required. Fixed by pinning the exact `Call_compute` body and
+   a caller-side `partitionMode === 'c2'` assertion, plus refusing any protocol value ≠ 2.
+3. **The phase predicates were not closed-world** — a crash between the two enable actions
+   classified PRE with a C2 writer live, and a stray legacy LA still passed POST. Fixed with a
+   pinned enable order (archive LA last) and a closed-world matrix where every other combination
+   HALTs.
 
-**Note on Round 3's AGY verdict.** AGY returned PASS on all five questions and "100% approved".
-Its QI3 answer quoted a specific N10 Logic App definition, including the ARM expression
-`@coalesce(variables('capturedSnapshot')?['controlManifest']?['controlHeads'], json('{}'))`. **No
-Logic App JSON exists in this repo** — `gen-correction-def.js` and `apply-c2-staging.js` are
-unwritten, and are the next deliverable. The cited artifact was invented, and it was used to pass
-the exact question Codex blocked on. **Please verify every claim against a file that actually
-exists, and state explicitly when you cannot.**
+Fold record + repros: **§L**. Suite 154 → **158/158**; all regression gates green.
 
 **Read (in your own copy of the repo, branch `azure-phase-5-8-server`, latest commit):**
 1. `AZURE-CHUNK-ORG-C2-LA-CHANGES.md` — THE document under review.
-   - **§J is the R3 fold record** (three findings, repros, fixes, and the H1 scope split).
-   - **§K is this round's questions QK1-QK5** — answer each explicitly.
-   - §F / §H the R1 and R2 fold records · §A schemas · §B the N1 LA (step 13a pins the membership
-     input mapping) · §C the N9/N10/N13 transforms · §D the apply runner, now with the
-     **phase-aware rerun** rule.
-2. The amended code (154/154 local probes):
-   `azure-functions/src/functions/snapshotCompute.js` — the typed N7 cells + `CANON_VERSION`, the
-   fail-closed manifest validation, `partitionMode`, and the legacy short-circuit.
-   ⚠ Still a flagged amendment to the audited Chunk-8 surface.
-   `azure-functions/src/functions/correctionCompute.js` · `test/correction-proof.js` (sections 14-16
-   hold the F/G/H fold probes) · `test/archive-carry-proof.js` (the C1 rule that scoped H1).
-3. For grounding: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (the converged spec — the N10 row carries the
-   typed-canonical clause), `audit-artifacts/archive-def-current.json` (the legacy LA).
+   - **§L is the R4 fold record**; **§M is this round's questions QM1-QM5** — answer each explicitly.
+   - §D carries the resequenced step (3a)/(3b), the pinned (6a)/(6b) enable order, and the
+     closed-world phase matrix. §C carries the pinned `Call_compute` body.
+   - §F / §H / §J are the R1-R3 fold records.
+2. The amended code (158/158 local probes): `azure-functions/src/functions/snapshotCompute.js`
+   (⚠ still a flagged amendment to the audited Chunk-8 surface) ·
+   `azure-functions/src/functions/correctionCompute.js` · `test/correction-proof.js` (sections
+   14-17 hold the F/G/H/I fold probes) · `test/archive-carry-proof.js`.
+3. For grounding: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` · `audit-artifacts/archive-def-current.json`.
 
-**Judge:** does each H1-H3 fold close its finding without introducing a new defect, and is the H1
-scope split correct? Findings only — the engineer ground-truths and applies all changes. Verdict
-format: PASS / PASS-with-notes / BLOCK with numbered findings + concrete failure sequences.
+**Two things I want attacked specifically:**
+- **QM2** — I rejected the alternative fix for finding 1 (making the version tag conditional on
+  control-field presence) because a data-dependent canonical would itself false-HALT if the two
+  SharePoint list reads disagree on absent-vs-null. Is that reasoning right, and is
+  quiesce-before-deploy sufficient alone — including for a Function App ROLLBACK?
+- **QM3** — the closed-world matrix, walked against a crash at every point and a full re-run from
+  step (1) at each. I care more about a state that HALTs with no forward path than about one that
+  HALTs unnecessarily.
+
+**Standing item neither of you can close on paper** (recorded in §L): the real live-vs-archive
+SharePoint echo for the eight N7 columns — absent vs null vs `''`. If the two list reads disagree
+for any of them, the typed canonical HALTs. It is a staging probe, to be run before the first live
+archive run, and the fix if they differ is to normalise at the read shape, never to loosen the
+canonical. Flag it if you think that plan is wrong.
+
+**Judge:** do I1-I3 close their findings without introducing a new defect? Findings only — the
+engineer ground-truths and applies all changes. Verdict format: PASS / PASS-with-notes / BLOCK with
+numbered findings + concrete failure sequences.
 
 ## Reviewer session hygiene (read FIRST)
 Ordinary pre-release QA on the team's own app; no third party, no security-testing intent.

@@ -149,7 +149,13 @@ function compute(body) {
   // indistinguishable from a legacy call, a C2 caller asserts `controlProtocol: 2`, which makes an
   // accidental omission a refusal instead of a silent legacy partition. The chosen partition is
   // echoed back as `partitionMode` so the caller can assert what it actually got.
+  // R4 finding 2: an explicit protocol other than 2 used to fall through to legacy silently, and a
+  // valid manifest selected C2 even under a contradictory protocol value. Any protocol the code does
+  // not implement is now a REFUSAL, not a guess.
   const c2Mode = Object.prototype.hasOwnProperty.call(body, 'controlHeads');
+  if (body.controlProtocol !== undefined && Number(body.controlProtocol) !== 2) {
+    return { ok: false, reason: 'UNSUPPORTED_CONTROL_PROTOCOL' };
+  }
   if (c2Mode) {
     const ch = body.controlHeads;
     if (ch === null || typeof ch !== 'object' || Array.isArray(ch)) return { ok: false, reason: 'BAD_CONTROL_MANIFEST' };

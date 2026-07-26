@@ -658,5 +658,30 @@ ok('H2: a legacy caller still reports partitionMode legacy and keeps the pre-C2 
 // H3 (phase-aware apply-runner rerun after step 6) is a §D SEQUENCING fix — no pure-function
 // surface; its acceptance is the staging apply-runner crash drill.
 
+// ── 17. INTERIM LA REVIEW ROUND 4 folds (Codex findings 1-3) ──────────────────────────────────────
+// I2: an explicit protocol the code does not implement must REFUSE, never fall through to a guess.
+ok('I2: an UNSUPPORTED controlProtocol refuses — never silently selects a partition',
+  (() => [1, 3, '2x', 'v2', null].every(p =>
+    SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlProtocol: p,
+      controlHeads: { txT1: { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 3 } } }).reason === 'UNSUPPORTED_CONTROL_PROTOCOL'))());
+ok('I2: a CONTRADICTORY protocol cannot be overridden by a valid manifest (protocol wins, fail closed)',
+  (() => SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlProtocol: 1,
+    controlHeads: {} }).reason === 'UNSUPPORTED_CONTROL_PROTOCOL')());
+ok('I2: the PINNED N10 body (controlProtocol 2 + manifest) folds effective and reports partitionMode c2',
+  (() => {
+    const r = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3, controlProtocol: 2,
+      controlHeads: { txT1: { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 3 } } });
+    return r.ok && balOf(r) === 8 && r.partitionMode === 'c2';
+  })());
+ok('I2: a legacy caller (no protocol, no manifest) is still accepted as legacy',
+  (() => {
+    const r = SC.compute({ rows: headedRows(), cutoffId: 100, runId: 'R9', snapshotVersion: 3 });
+    return r.ok && r.partitionMode === 'legacy';
+  })());
+// I1 (the canonical version tag straddling the step-3 Function deploy) and I3 (the closed-world
+// phase matrix) are §D SEQUENCING fixes — no pure-function surface. I1's acceptance is that the
+// apply runner quiesces BEFORE redeploying; I3's is the staging crash drill across (6a)/(6b).
+// Recorded here so the omission is deliberate and visible, not an oversight.
+
 console.log(`\n==== ${pass}/${pass + fail} correction-compute probes ${fail === 0 ? 'PASS' : 'FAIL (' + fail + ' failing)'} ====`);
 process.exit(fail === 0 ? 0 : 1);

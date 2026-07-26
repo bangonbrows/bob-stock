@@ -1,9 +1,12 @@
 # OS-W4.4 Contract 2 — CONCRETE STAGING ARTIFACTS (LA definitions + apply inventory)
 
-**Status: 🔍 W-B2r3 INTERIM LA REVIEW — ROUND 4. R1: AGY×2 + Codex×11 = 13 REAL, folded @
-`bb1987e` (§F). R2: AGY PASS + Codex×6 — all REAL, folded @ `aa1527a` (§H). R3: AGY PASS
-(⚠ its QI3 answer was FABRICATED — see §J) + Codex×3 — all REAL, folded (fold record §J,
-questions §K); suite 127 → 144 → 154/154. Cadence option 2: paper review of these
+**Status: 🔍 W-B2r4 INTERIM LA REVIEW — ROUND 5. R1: AGY×2 + Codex×11 = 13 REAL, folded @
+`bb1987e` (§F). R2: AGY PASS + Codex×6 — all REAL @ `aa1527a` (§H). R3: AGY PASS (⚠ its QI3 answer
+was FABRICATED — §J) + Codex×3 — all REAL @ `0046224` (§J). R4: AGY PASS (compliant this round —
+it verified the absent artifacts instead of inventing them) + Codex×3 — all REAL, folded (fold
+record §L, questions §M); Codex CONFIRMED the H1 scope split. Suite 127 → 144 → 154 → 158/158.
+Codex has blocked five consecutive rounds (13 → 6 → 3 → 3), every finding real — narrowing, NOT
+converged. Cadence option 2: paper review of these
 definitions by BOTH reviewers BEFORE the Kunal-executed staging apply; the full build audit vs the
 DEPLOYED system follows the E2E per §15.** Parent: `AZURE-CHUNK-ORG-W44-C2-DESIGN.md` (SPEC
 CONVERGED 2026-07-25 — Codex R25 PASS "No findings" + AGY PASS confirmed on the same revision).
@@ -187,6 +190,19 @@ fidelity canonical carrying the FULL N7 control form + typed values (C2-R6-4/C2-
 `TargetLine`, `OriginalEventAt`, `ControlState`, `CommitSig` joined the canon; R2 finding 2 caught
 the claim running ahead of the code, so a copy that DROPPED ControlId hashed identical to its
 source and the live-delete then destroyed the only complete control row**);
+**`Call_compute` BODY — PINNED (R4 finding 2).** The N10 generator MUST emit, and the apply runner
+MUST verify, exactly: `{ rows, cutoffId, retainAfterTs, snapshotVersion, runId, stepCutoffTs,
+controlHeads: <the captured stock_snapshot's controlManifest.controlHeads, {} when empty>,
+`**`controlProtocol: 2`**` }`. The LA then **ASSERTS `body('Call_compute')?['partitionMode']`
+equals `'c2'` and FAILS the run otherwise.** Without BOTH halves the helper's protection was
+unreachable from the real caller: `controlProtocol` appeared nowhere in §C, so a generator following
+§C alone could omit it AND `controlHeads` and receive a SUCCESSFUL LEGACY result — folding an active
+correction under the wrong partition, the very defect R2 finding 5 closed. `snapshotCompute` also
+REFUSES `UNSUPPORTED_CONTROL_PROTOCOL` for any explicit protocol value other than 2, so a
+contradictory or future value can never silently select a partition. `Verify_content_hash` takes
+`rows` only (no partition selection) but MUST reach the same Function deployment as its paired
+`Call_compute` — see §D step (3).
+
 **`Call_compute` PASSES the active `controlManifest.controlHeads` (from the captured
 stock_snapshot) into snapshotCompute, which now folds EFFECTIVE values (Codex C2-LA finding 3 —
 the ⚠ flagged C8-surface amendment, shipped W-B2r: active-headed targets excluded, active-head
@@ -222,16 +238,27 @@ quiesced window):
     it cannot be ETag-fenced). A single legacy run starting between steps (2) and (4) therefore
     ERASED `state`, `v:2` and the request flags, and step (5) would then deploy N10/N1 against an
     old-shape coordination record. The writer must be disabled AND idle before the shape changes.)*;
-(3) **REDEPLOY THE FUNCTION APP FIRST** (correctionCompute + the attestRows frames +
-    validateUser 'correction') — the epoch seal in step (4) NEEDS frame:'epoch-v1' live
-    (AGY C2-LA-2: signing before deploy = 400 mid-quiescence). SAFE to deploy this early: the
-    amended `snapshotCompute` is byte-identical to pre-C2 for any caller that does not send the
-    `controlHeads` property, and the legacy archive LA never sends it (R2 finding 5 — the C2
-    partition keys on PROPERTY PRESENCE, so deploying does not change live archive behaviour
-    during the step (3)→(6) window);
-(4) the QUIESCENT CUTOVER (C2-R18-3/C2-R19-3/C2-R20-4): DISABLE the legacy archive LA + FENCE
-    push (disable the push LA for the bounded interval) → wait idle → **`archive_state` v2
-    TRANSFORM (preserve content, add v:2 fields) — HERE, now that the only writer of that item is
+(3) **ENTER QUIESCENCE FIRST, THEN REDEPLOY THE FUNCTION APP** (correctionCompute + the attestRows
+    frames + validateUser 'correction'). Order within this step is fixed:
+    **(3a) DISABLE the legacy archive LA + FENCE push (disable the push LA for the bounded
+    interval) → WAIT until `archive_state` is idle; (3b) only then redeploy the Function App.**
+    The seal in step (4) needs frame:'epoch-v1' live (AGY C2-LA-2: signing before deploy = 400
+    mid-quiescence), so the deploy must precede the seal — but it must NOT precede quiescence.
+    **R4 finding 1:** the deploy was previously ahead of quiescence on the argument that the
+    amended `snapshotCompute` is byte-identical for callers that omit `controlHeads`. That claim
+    was true of the PARTITION but NOT of the HASH: the canonical is version-tagged
+    (`archcanon-v2`), so its BYTES changed for every row. The legacy archive LA hashes the source
+    in `Call_compute` BEFORE the copy loop and the re-read in `Verify_content_hash` AFTER it, then
+    compares the two (`archive-def-current.json:78`, `:245`, `:467`) — two separate Function
+    invocations straddling the copy. Redeploying between them makes a FAITHFUL copy mismatch and
+    the run fails its fidelity gate purely because it straddled the deployment. Quiescing first
+    closes the window entirely: no archive run can be in flight when the canonical changes.
+    (The `controlHeads` property-presence discriminator still holds and is still what keeps the
+    PARTITION pre-C2 for legacy callers — R2 finding 5 — it simply was never a statement about
+    hash bytes.);
+(4) the QUIESCENT CUTOVER (C2-R18-3/C2-R19-3/C2-R20-4), continuing under the fence established in
+    (3a): **`archive_state` v2
+    TRANSFORM (preserve content, add v:2 fields) — safe here, the only writer of that item is
     disabled and idle (R2 finding 6)** → complete any published
     legacy run's Live-delete by its exact set → SourceId residue cleanup (legacy AUTH BYPASS
     documented, C2-R22-1) → seal `{epochId, tombstoneCommitEpochId, archiveC2EpochId}` + EpochSig.
@@ -240,9 +267,13 @@ quiesced window):
     boundary DIFFERS from a valid existing seal ⇒ HALT + surface (the boundary is one-shot, never
     a refreshable maximum).** Writers STAY DISABLED at the end of this step;
 (5) deploy the N1 LA from the reviewed definition + TRANSFORM N9/N10/N13 per §C;
-(6) **RE-ENABLE push + enable the C2 archive LA ONLY NOW** — after every C2 writer/transform is
-    live (Codex 1: re-enabling the LEGACY writers post-seal would mint above-epoch rows with no
-    N17 provenance / post-epoch tombstones with no CommitSig ⇒ sweep/allowlist halts);
+(6) **RE-ENABLE the writers ONLY NOW** — after every C2 writer/transform is live (Codex 1:
+    re-enabling the LEGACY writers post-seal would mint above-epoch rows with no N17 provenance /
+    post-epoch tombstones with no CommitSig ⇒ sweep/allowlist halts). **PINNED ORDER (R4 finding
+    3): (6a) re-enable push; (6b) enable the C2 archive LA — LAST.** The archive LA is the only
+    writer that can advance the archive boundary, so enabling it last means the boundary cannot
+    move while the runner is in an intermediate state, and the PRE→POST transition is a SINGLE
+    observable action. The legacy archive LA is NEVER re-enabled;
 (7) PROBES on the real cloud (sign/verify each new frame; a correction dry-run against a probe
     row; the sweep in REPORT-ONLY mode first);
 (8) cleanup (probe rows deleted, temp LA deleted).
@@ -253,16 +284,25 @@ NECESSARILY advances the archive boundary, so a full rerun — say the runner cr
 probes and cleanup with no way to distinguish legitimate post-cutover growth from an unsafe
 pre-cutover change. The runner therefore establishes PHASE FIRST, and the authority is OBSERVED
 WRITER STATE, not a deletable marker (the same principle as C2-R19-1/C2-R24-1):
-- **Writers still disabled** (legacy archive LA disabled AND push fenced) ⇒ PRE-CUTOVER phase ⇒ the
-  boundary re-observation + divergence HALT applies in full: it is the anomaly gate that proves
-  nothing minted rows while the window was supposed to be quiet.
-- **C2 writers live** (push re-enabled AND the C2 archive LA enabled AND the N9/N10/N13 transforms
-  present) ⇒ POST-CUTOVER phase ⇒ the runner SKIPS the re-observation entirely, reuses the sealed
-  values byte-for-byte, and resumes at step (7). Boundary growth here is expected, not evidence.
-- The seal item also records `cutoverCompletedAt`, stamped when step (6) completes. It is a
+**CLOSED-WORLD PHASE MATRIX (R4 finding 3).** The R3 predicates were not closed: PRE did not require
+the C2 archive LA to be disabled, POST did not require the LEGACY archive LA to stay disabled, and
+mixed states had no prescribed outcome — so a crash after (6b) but before (6a) classified PRE with a
+C2 archive writer live, and a legacy LA accidentally left enabled alongside the C2 one still passed
+POST and skipped the boundary observation. The runner now observes FOUR facts — push fenced?, legacy
+archive LA enabled?, C2 archive LA enabled?, N9/N10/N13 transforms verified present? — and every
+combination has exactly one outcome:
+
+| push | legacy archive | C2 archive | transforms | phase | action |
+|---|---|---|---|---|---|
+| fenced | disabled | disabled | any | **PRE-CUTOVER** | full boundary re-observation + divergence HALT — the anomaly gate proving nothing minted rows while the window was meant to be quiet |
+| enabled | disabled | disabled | verified | **MID-ENABLE** | recognised intermediate of the pinned (6a)→(6b) order. No archive writer is live ⇒ the boundary CANNOT have advanced ⇒ the seal is still exact. Resume at (6b) |
+| enabled | disabled | enabled | verified | **POST-CUTOVER** | skip re-observation, reuse the sealed values byte-for-byte, resume at (7). Boundary growth here is expected, not evidence |
+| **any other combination** | | | | **INCONSISTENT** | **HALT + surface, no automatic recovery.** Explicitly includes: the legacy archive LA enabled at all after step (4); the C2 archive LA enabled while push is still fenced; any writer enabled while the transforms are missing or half-applied |
+
+- The seal item also records `cutoverCompletedAt`, stamped when step (6b) completes. It is a
   FAST-PATH HINT ONLY (exactly as `PublishedSig` is for the sweep, C2-R24-1) — deleting or forging
   it cannot flip the phase, because the observed writer state decides. A `cutoverCompletedAt`
-  present while writers are still disabled ⇒ CONTRADICTION ⇒ HALT + surface.
+  present in any phase other than POST-CUTOVER ⇒ CONTRADICTION ⇒ HALT + surface.
 
 PRODUCTION-cutover variant: VERIFIES the archive list is EMPTY before sealing (C2-R23-N1) — else
 HALT + Kunal decision. EVERY step is idempotent (create-if-missing / reuse-if-valid / halt-on-
@@ -412,3 +452,45 @@ topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Z
   but archive LA disabled, transforms half-applied) — does any of them resolve to the wrong phase?
 - **QK5:** Anything not closed, or newly noticed. If you cannot verify a claim against a file that
   exists in the repo, say so explicitly rather than inferring the artifact.
+
+---
+
+## L. INTERIM LA REVIEW — ROUND 4 FOLD RECORD (`W-B2r4`)
+
+**R4 verdicts: AGY PASS · Codex BLOCK×3.** All three REAL, all folded. Codex confirmed the **H1
+scope split is correct** (QK2 — it re-derived the design clause independently and found no N7 field
+with a permitted benign live/archive difference), and it complied with the new pack rule: it opened
+`archive-def-current.json` before relying on it and stated plainly which artifacts do not yet exist.
+**AGY also complied this round** — it explicitly confirmed the absent LA JSONs rather than inventing
+them, which is the correction the R3 pack asked for. Suite 154 → **158/158**.
+
+| # | Finding | Fold |
+|---|---|---|
+| **I1** | **The canonical version tag created a mixed-canonical window at step (3).** `CANON_VERSION` is prepended unconditionally, so the hash BYTES changed for every row — including legacy ones. The R2/R3 claim that an absent `controlHeads` is "byte-identical pre-C2" was true of the PARTITION but never of the HASH. The legacy archive LA hashes the source in `Call_compute` BEFORE the copy and the re-read in `Verify_content_hash` AFTER it, then compares them (`archive-def-current.json:78`, `:245`, `:467`) — **two Function invocations straddling the copy loop.** Redeploying between them makes a FAITHFUL copy mismatch, and the in-flight run fails its fidelity gate purely because it straddled the deploy. | §D step (3) SPLIT and resequenced: **(3a) disable the legacy archive LA + fence push, wait idle; (3b) only then redeploy the Function App.** The window is closed structurally — no archive run can be in flight when the canonical changes. The false "byte-identical hash" claim is deleted and replaced with the precise statement (the discriminator governs the PARTITION, not hash bytes). Rejected the alternative of making the version tag conditional on control-field presence: that would make the canonical data-dependent and would itself false-HALT if SharePoint's two list reads disagree on absent-vs-null for a legacy row. |
+| **I2** | **The omission protection was unreachable from the real caller.** The helper only rejects omission when `controlProtocol: 2` is supplied, but §C never required it — a generator following §C alone could omit both it and `controlHeads` and get a SUCCESSFUL LEGACY result. Also: any explicit protocol other than 2 fell through to legacy silently, and a valid manifest selected C2 even under a contradictory protocol value. | §C now **PINS the exact `Call_compute` body** (including `controlProtocol: 2`) and requires the LA to **ASSERT `partitionMode === 'c2'`** and fail the run otherwise. `snapshotCompute` REFUSES `UNSUPPORTED_CONTROL_PROTOCOL` for any explicit protocol ≠ 2 — checked BEFORE the manifest, so protocol wins and a contradiction can never resolve to a partition. |
+| **I3** | **The phase predicates were not closed-world.** PRE did not require the C2 archive LA disabled; POST did not require the LEGACY archive LA disabled; other mixed states had no outcome. So a crash after enabling the C2 archive but before re-enabling push classified **PRE with a C2 writer live**, and a legacy LA accidentally left enabled alongside the C2 one still passed **POST and skipped the boundary observation**. | Step (6) gains a **PINNED ORDER: (6a) push, then (6b) the C2 archive LA LAST** — the only writer that can advance the boundary goes live last, so the PRE→POST transition is a single observable action and the boundary cannot move mid-sequence. §D now carries a **CLOSED-WORLD MATRIX** over four observed facts: PRE (push fenced, legacy disabled, C2 disabled), MID-ENABLE (push enabled, both archives disabled, transforms verified ⇒ resume at 6b — no archive writer live ⇒ the seal is still exact), POST (push enabled, legacy disabled, C2 enabled, transforms verified), and **every other combination ⇒ HALT + surface**, naming the three Codex called out. `cutoverCompletedAt` present in any phase but POST ⇒ contradiction ⇒ HALT. |
+
+**Gates:** correction **158/158** · archive-carry 28/28 · attest 58/58 · buyback-export 170/170 ·
+topology 256/256 · access-policy 67/67 · smoke 277/277 · static + CSP PASS. Zero client files.
+
+**Standing acceptance item carried to the staging apply** (both reviewers, QK2/QI2): the real
+live-vs-archive SharePoint echo for the eight N7 columns — absent vs null vs `''` — cannot be
+verified on paper because the transformed N10 definition does not exist yet. If the two list reads
+disagree on representation for any N7 field, the typed canonical will HALT. **Probe it on the real
+cloud before the first live archive run**, and normalise at the read shape (never by loosening the
+canonical) if they differ.
+
+## M. Review questions for ROUND 5
+
+- **QM1:** Do I1-I3 close their findings without introducing a new defect? I1 changed the cutover
+  ORDER; I3 changed both the enable order and the phase classification.
+- **QM2:** I1 rejects the conditional-version-tag alternative on the grounds that a data-dependent
+  canonical would false-HALT on live/archive representation drift. Is that reasoning right, and is
+  quiesce-before-deploy sufficient on its own — including for a rollback of the Function App?
+- **QM3:** Walk the closed-world matrix in §D against a crash at EVERY point in (3a),(3b),(4),(5),
+  (6a),(6b),(7),(8), plus a full re-run from step (1) at each. Any state that resolves to the wrong
+  phase, or that HALTs with no forward path?
+- **QM4:** §C now pins the `Call_compute` body and a caller-side `partitionMode` assertion. Is the
+  pinned body complete and correct against what `snapshotCompute` actually reads?
+- **QM5:** Anything not closed, or newly noticed. Same rule as R4: verify against files that exist,
+  and say so plainly when an artifact does not.
