@@ -114,27 +114,43 @@ for (const [name, c] of Object.entries(calls)) {
     RETURNS[name] = new Set(['ok', 'username', 'role']);
   }
 }
-// STATIC RETURN KEYS the proxy pass cannot see (an op that refuses early never builds its success
-// object). Derived by reading the module's return statements — kept here explicitly so a reviewer
-// can diff them against the source.
-const EXTRA_RETURNS = {
-  candidate: ['controlId', 'candidateHeads', 'adoptionDecisions', 'outputTransactionId'],
-  targetLine: ['targetLine', 'transferless', 'originalEventAt'],
-  stamps: ['tier', 'stamps'],
-  delta: ['deltas', 'suppressed'],
-  membership: ['decision'],
-  recoveryDecision: ['decision', 'why'],
-  targetSeal: ['outcome', 'lane'],
-  modeGate: ['baseline', 'lane'],
-  claimDispatch: ['action', 'status'],
-  assembleSnapshot: ['configData'],
-  ctlRowsEqual: ['equal'],
-  rowsEqual: ['equal'],
-  digest: ['digest'],
-  stepSetDigest: ['digest', 'count'],
-};
+// STATIC RETURN KEYS the proxy pass cannot see — an op that refuses on empty input never builds its
+// success object, so we must read the source.
+//
+// ⚠ THIS WAS A HAND-MAINTAINED TABLE AND IT ROTTED ON THE VERY FIRST CHANGE: extending
+// assembleCandidate to return `row`/`journalId`/`candidateVersion` left the table stale, and the
+// harness kept reporting properties as "never returned" when they now were. A gate that needs
+// hand-maintenance is a gate that lies. Return keys are now DERIVED from the module source, so they
+// track the code automatically — the same reason the request side uses a proxy rather than a list.
+const CC_SRC = fs.readFileSync(path.join(FN_DIR, 'correctionCompute.js'), 'utf8');
+function bodyOf(fnName) {
+  const start = CC_SRC.indexOf(`function ${fnName}(`);
+  if (start < 0) return '';
+  // to the next top-level function/section marker
+  const rest = CC_SRC.slice(start + 1);
+  const endRel = rest.search(/\n(?:function |\/\/ ──|const OPS)/);
+  return endRel < 0 ? rest : rest.slice(0, endRel);
+}
+// map op -> the function it dispatches to, read from the OPS table source
+function fnNameForOp(opName) {
+  const m = CC_SRC.match(new RegExp(`\\n\\s*${opName}:\\s*\\(b\\)\\s*=>\\s*\\(?\\s*\\{?\\s*([A-Za-z0-9_]+)`));
+  return m ? m[1] : null;
+}
+function derivedReturnKeys(opName) {
+  const keys = new Set();
+  const fnName = fnNameForOp(opName);
+  // an inline op like `digest: (b) => ({ digest: opDigest(b.input) })` names its keys in OPS itself
+  const inline = CC_SRC.match(new RegExp(`\\n\\s*${opName}:\\s*\\(b\\)\\s*=>\\s*\\(\\{([^}]*)\\}\\)`));
+  if (inline) for (const km of inline[1].matchAll(/([A-Za-z0-9_]+)\s*:/g)) keys.add(km[1]);
+  const src = fnName ? bodyOf(fnName) : '';
+  for (const m of src.matchAll(/return\s*\{([^}]*)\}/g)) {
+    for (const km of m[1].matchAll(/([A-Za-z0-9_]+)\s*:/g)) keys.add(km[1]);
+  }
+  for (const m of src.matchAll(/\b(?:out|res|result)\.([A-Za-z0-9_]+)\s*=/g)) keys.add(m[1]);
+  return keys;
+}
 for (const [name, c] of Object.entries(calls)) {
-  if (c.route === 'correctionCompute' && EXTRA_RETURNS[c.op]) EXTRA_RETURNS[c.op].forEach(k => RETURNS[name].add(k));
+  if (c.route === 'correctionCompute' && cc.OPS[c.op]) derivedReturnKeys(c.op).forEach(k => RETURNS[name].add(k));
 }
 
 const raw = fs.readFileSync(defFile, 'utf8');

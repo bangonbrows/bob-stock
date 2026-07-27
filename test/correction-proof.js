@@ -129,9 +129,11 @@ function engineHeadCheck(manifest, target, c) {
   if (!(head.bornPublicationVersion <= manifest.version)) return 'CONTROL_HEAD_MISMATCH:born>active';
   return 'ok';
 }
-const cand = C.assembleCandidate({ mode: 'create', opId: 'op1', revision: 0, candidateVersion: 12, target: 'txT1' });
+// create/supersede now REQUIRE a control payload — they publish a control row, and the row is built
+// here (generated-artifact round). A deletion control is the minimal valid form for id probes.
+const cand = C.assembleCandidate({ mode: 'create', opId: 'op1', revision: 0, candidateVersion: 12, target: 'txT1', control: { controlType: 'deletion' } });
 ok('deterministic ids: ctl:opId / corr:opId:rev', cand.ok && cand.controlId === 'ctl:op1' && cand.outputTransactionId === 'corr:op1:0');
-ok('revision >0 joins the ctl id', C.assembleCandidate({ mode: 'supersede', opId: 'op1', revision: 2, candidateVersion: 13, target: 'txT1' }).controlId === 'ctl:op1:2');
+ok('revision >0 joins the ctl id', C.assembleCandidate({ mode: 'supersede', opId: 'op1', revision: 2, candidateVersion: 13, target: 'txT1', control: { controlType: 'deletion' } }).controlId === 'ctl:op1:2');
 ok('ENGINE PARITY: an assembled create head passes the frozen engine head check verbatim (C2-R3-1)',
   engineHeadCheck({ version: 12, controlHeads: cand.candidateHeads }, 'txT1', { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 12 }) === 'ok');
 const adoptCand = C.assembleCandidate({ mode: 'adopt', opId: 'op2', candidateVersion: 13, adoptions: [{ tombstoneId: 'txDel1', target: 'txT9', membership: { decision: 'excluded' } }] });
@@ -843,6 +845,62 @@ ok('L4: buildrec-v1 and epoch-v1 are DOMAIN-SEPARATED (a build record can never 
     const s = A.signFrame(KR, 'buildrec-v1', r);
     return A.signFrame(KR, 'epoch-v1', r) !== s;
   })());
+// ── 21. GENERATED-ARTIFACT ROUND: assembleCandidate returns the control ROW ───────────────────────
+// Both auditors found the LA reading Candidate.row / .journalId / .revision / .candidateVersion —
+// none of which existed. §B says the LA "creates the control row with N7 columns + minted stamps +
+// TargetLine + OriginalEventAt" but no op built it, so the LA would have had to, violating the F1
+// rule that the LA carries no logic. The row is now assembled HERE, from the same inputs the delta
+// consumed, so the signed row and the published balances cannot diverge.
+const candIn = (o) => Object.assign({
+  mode: 'create', opId: 'op1', revision: 0, candidateVersion: 5, target: 'txT1',
+  targetLine: { qty: 3 }, originalEventAt: '2026-07-26T00:00:00.000Z',
+  stamps: { sellAtSupply: 12.5, discAtSupply: 30, pricingVersion: 4, catalogueVersion: 9, unitPriceAtTime: 8 },
+  control: { controlType: 'replacement', replacement: { storeId: 'boor', productId: 'prodA', type: 'transfer_in', qty: 3, timestamp: '2026-07-26T01:00:00.000Z' } },
+}, o);
+ok('P1: candidate returns the assembled control ROW, echoing candidateVersion/revision/journalId',
+  (() => {
+    const r = C.assembleCandidate(candIn());
+    return r.ok && r.row && r.candidateVersion === 5 && r.revision === 0 && typeof r.journalId === 'string' && r.journalId.length > 0;
+  })());
+ok('P1: the row carries EXACTLY the ctl-v1 covered set (nothing invented, nothing missing)',
+  (() => {
+    const r = C.assembleCandidate(candIn());
+    const need = ['ControlId', 'ControlType', 'TargetTransactionId', 'ControlRevision', 'BornPublicationVersion',
+      'TargetLine', 'OriginalEventAt', 'TransactionId', 'StoreId', 'ProductId', 'Type', 'Qty', 'Date',
+      'Timestamp', 'Reason', 'StockFrom', 'StockTo', 'StockFromStoreId', 'StockToStoreId', 'TransferId',
+      'IdempotencyKey', 'UnitPriceAtTime', 'SellAtSupply', 'DiscAtSupply', 'PricingVersion', 'CatalogueVersion'];
+    return need.every(f => Object.prototype.hasOwnProperty.call(r.row, f));
+  })());
+ok('P1: the assembled row SIGNS and VERIFIES under ctl-v1 (it is a real signable row, not a shape)',
+  (() => {
+    const r = C.assembleCandidate(candIn());
+    const sig = A.signFrame(KR, 'ctl-v1', r.row);
+    if (!A.verifyFrame(KR, 'ctl-v1', r.row, sig)) return false;
+    const tampered = Object.assign({}, r.row, { Qty: 99 });
+    return !A.verifyFrame(KR, 'ctl-v1', tampered, sig);
+  })());
+ok('P1: a DELETION control carries identity only — engine-row fields stay ABSENT (typed [0], not empty)',
+  (() => {
+    const r = C.assembleCandidate(candIn({ control: { controlType: 'deletion' } }));
+    return r.ok && r.row && r.row.ControlType === 'deletion'
+      && !Object.prototype.hasOwnProperty.call(r.row, 'StoreId')
+      && !Object.prototype.hasOwnProperty.call(r.row, 'Qty');
+  })());
+ok('P1: a malformed replacement REFUSES rather than signing a corrupt row',
+  (() => {
+    const bad = [{ qty: -1 }, { qty: 1.5 }, { type: 'deleted' }, { storeId: '' }, { timestamp: 'not-a-date' }];
+    return bad.every(patch => {
+      const base = candIn().control.replacement;
+      const r = C.assembleCandidate(candIn({ control: { controlType: 'replacement', replacement: Object.assign({}, base, patch) } }));
+      return r.ok === false && r.reason === 'BAD_REPLACEMENT_ROW';
+    });
+  })());
+ok('P1: withdraw/retire build NO row (null-head modes publish no control row)',
+  (() => {
+    const w = C.assembleCandidate(candIn({ mode: 'withdraw' }));
+    return w.ok && !Object.prototype.hasOwnProperty.call(w, 'row');
+  })());
+
 // L1 (rows 1/2 STILL overlapping — the R6 fold fixed the symptom, not the wildcard that subsumes
 // its successor; found independently by BOTH reviewers) and L2 (partial build-repair states mapping
 // to no row) are §D RUNBOOK fixes with no pure-function surface. Acceptance = the staging crash

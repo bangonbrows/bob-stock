@@ -235,8 +235,73 @@ function assembleCandidate(input) {
   }
   if (Object.keys(heads).length === 0) return refuse('NO_PENDING_ADOPTIONS'); // C2-R3-5: empty set unbuildable
   const out = { ok: true, controlId, candidateHeads: heads, adoptionDecisions };
-  if (mode === 'create' || mode === 'supersede') out.outputTransactionId = 'corr:' + opId + ':' + rev;
+  // ECHO the inputs the caller must carry forward. The LA has to stamp these onto the journal,
+  // registry and response, and it must NOT recompute them — the R1 rule is that the LA carries no
+  // logic. Returning them here is what stops the LA doing arithmetic on a version number.
+  out.candidateVersion = cv;
+  out.revision = rev;
+  out.journalId = 'jrn:' + opId + (rev > 0 ? ':' + rev : '');
+  if (mode === 'create' || mode === 'supersede') {
+    out.outputTransactionId = 'corr:' + opId + ':' + rev;
+    // THE CONTROL ROW ITSELF (interim LA review, generated-artifact round). §B step 16 says the LA
+    // "SP CREATEs the control row with N7 columns + minted stamps + TargetLine + OriginalEventAt",
+    // but NO op returned that row — so the LA would have had to assemble it, violating the very
+    // rule F1 established. It is built HERE, from the same inputs the delta was computed from, so
+    // the signed row and the published balances cannot diverge.
+    const row = buildControlRow(input, controlId, rev, cv, out.outputTransactionId);
+    if (row.reason) return refuse(row.reason);
+    out.row = row.row;
+  }
   return out;
+}
+
+// The control row's exact shape — the ctl-v1 covered set (attestRows CTL_V1_FIELDS), no more and no
+// less. A DELETION control carries the control identity only; the engine-row fields stay ABSENT so
+// the typed canonical encodes them as [0] rather than as empty values.
+function buildControlRow(input, controlId, rev, cv, outputTransactionId) {
+  const c = input.control || {};
+  const type = c.controlType === 'deletion' ? 'deletion' : 'replacement';
+  const row = {
+    ControlId: controlId,
+    ControlType: type,
+    TargetTransactionId: input.target,
+    ControlRevision: rev,
+    BornPublicationVersion: cv,
+    TargetLine: input.targetLine == null ? null : JSON.stringify(input.targetLine),
+    OriginalEventAt: input.originalEventAt == null ? null : String(input.originalEventAt),
+    ControlState: 'active',
+  };
+  if (type === 'deletion') return { row };
+
+  // A replacement carries the FULL engine row form — the same fields the delta arithmetic consumed.
+  const r = c.replacement || {};
+  const s = input.stamps || {};
+  if (!reqId(r.storeId) || !reqId(r.productId) || !validQty(r.qty) || !hasEconDirection(r.type)) {
+    return { reason: 'BAD_REPLACEMENT_ROW' };
+  }
+  if (!isIsoUtc(String(r.timestamp || ''))) return { reason: 'BAD_REPLACEMENT_ROW' };
+  Object.assign(row, {
+    TransactionId: outputTransactionId,
+    StoreId: r.storeId,
+    ProductId: r.productId,
+    Type: r.type,
+    Qty: r.qty,
+    Date: String(r.timestamp).slice(0, 10),
+    Timestamp: String(r.timestamp),
+    Reason: r.reason == null ? '' : String(r.reason),
+    StockFrom: r.stockFrom == null ? '' : String(r.stockFrom),
+    StockTo: r.stockTo == null ? '' : String(r.stockTo),
+    StockFromStoreId: r.stockFromStoreId == null ? '' : String(r.stockFromStoreId),
+    StockToStoreId: r.stockToStoreId == null ? '' : String(r.stockToStoreId),
+    TransferId: r.transferId == null ? '' : String(r.transferId),
+    IdempotencyKey: outputTransactionId,   // deterministic: the control row IS its own idempotency key
+    UnitPriceAtTime: s.unitPriceAtTime == null ? null : Number(s.unitPriceAtTime),
+    SellAtSupply: s.sellAtSupply == null ? null : Number(s.sellAtSupply),
+    DiscAtSupply: s.discAtSupply == null ? null : Number(s.discAtSupply),
+    PricingVersion: s.pricingVersion == null ? null : Number(s.pricingVersion),
+    CatalogueVersion: s.catalogueVersion == null ? null : Number(s.catalogueVersion),
+  });
+  return { row };
 }
 
 // ── recoveryDecision — per-entry CandidateHeads vs the active manifest (§6, C2-R2-7/C2-R3-5) ───────
