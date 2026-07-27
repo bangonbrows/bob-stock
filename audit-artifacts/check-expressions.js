@@ -44,6 +44,12 @@ const addExpr = (s) => {
   if (s.startsWith('@') && !s.startsWith('@{')) { exprStrings.push(s.slice(1)); return; }
   for (const m of s.matchAll(/@\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g)) exprStrings.push(m[1]);
 };
+const uriStrings = [];
+(function harvestUris(node) {
+  if (typeof node === 'string') { if (node.includes('$filter=') || node.includes('getbytitle')) uriStrings.push(node); return; }
+  if (Array.isArray(node)) { node.forEach(harvestUris); return; }
+  if (node && typeof node === 'object') Object.values(node).forEach(harvestUris);
+})(def);
 (function harvest(node) {
   if (typeof node === 'string') { addExpr(node); return; }
   if (Array.isArray(node)) { node.forEach(harvest); return; }
@@ -62,8 +68,12 @@ for (const s of exprStrings) {
 // An empty array is NOT null, so coalesce(emptyArray, fallback) returns the EMPTY ARRAY and never
 // reaches the fallback. Source-first "live else archive" selection written with coalesce therefore
 // never sees the archive. Use if(empty(x), fallback, x).
+// ⚠ THE FIRST VERSION OF THIS RULE COULD NEVER FIRE. It used `[^,()]*` for the first argument — but
+// the shape it exists to catch, `coalesce(body('X')?['value'], ...)`, CONTAINS parentheses. The rule
+// looked right, reported zero, and three real instances sat in the artifact. Match the argument
+// properly (balanced one level) instead.
 for (const s of exprStrings) {
-  for (const m of s.matchAll(/coalesce\(\s*([^,()]*\?\['value'\][^,)]*)\s*,/g)) {
+  for (const m of s.matchAll(/coalesce\(\s*((?:[^,()]|\([^()]*\))*\?\['value'\])\s*,/g)) {
     problems.push(`COALESCE OVER AN ARRAY — an empty array is not null, so the fallback is unreachable: coalesce(${m[1].trim()}, ...)`);
   }
 }
@@ -72,11 +82,15 @@ for (const s of exprStrings) {
 // The two auditors DISAGREE on whether first([]) returns null or raises a template error, and that
 // is an external platform fact neither I nor they can settle from this repo. Guarding is correct
 // under BOTH readings, so the guard is mandatory and the disagreement is a staging probe.
+// ⚠ THE GUARD TEST USED TO BE POSITIONAL — "some empty() appears before some first()" — so an
+// empty() on a COMPLETELY DIFFERENT collection counted as a guard (AGY). The guard must test the
+// SAME argument the first() consumes.
 for (const s of exprStrings) {
-  for (const m of s.matchAll(/first\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g)) {
-    const arg = m[1];
-    const guarded = /empty\(/.test(s) && (s.indexOf('empty(') < s.indexOf('first('));
-    if (!guarded) problems.push(`UNGUARDED first() — behaviour on an empty collection is platform-dependent: first(${arg.slice(0, 70)})`);
+  for (const m of s.matchAll(/first\(((?:[^()]|\([^()]*\))*)\)/g)) {
+    const arg = m[1].trim();
+    if (!arg) continue;
+    const guarded = s.includes(`empty(${arg})`);
+    if (!guarded) problems.push(`UNGUARDED first() — behaviour on an empty collection is platform-dependent, and any empty() guard must test THIS argument: first(${arg.slice(0, 70)})`);
   }
 }
 
@@ -91,6 +105,14 @@ for (const s of exprStrings) {
   }
 }
 
+function findAction(node, name) {
+  for (const [k, a] of Object.entries(node || {})) {
+    if (k === name) return a;
+    for (const sub of [a.actions, a.else && a.else.actions, a.default && a.default.actions]) { const h = sub && findAction(sub, name); if (h) return h; }
+    for (const c of Object.values(a.cases || {})) { const h = c.actions && findAction(c.actions, name); if (h) return h; }
+  }
+  return null;
+}
 // ── 5. runAfter must handle TimedOut wherever it handles Failed ────────────────────────────────────
 // An action can end Succeeded / Failed / Skipped / TimedOut. A gate that lists only Succeeded+Failed
 // is SKIPPED on a timeout, so the run ends with no Response — the caller hangs and the refusal
@@ -98,6 +120,10 @@ for (const s of exprStrings) {
 (function walkRunAfter(actions, scope) {
   for (const [name, a] of Object.entries(actions || {})) {
     for (const [dep, statuses] of Object.entries(a.runAfter || {})) {
+      const fallible = (n) => { const a = findAction(def.actions, n); return a && (a.type === 'Http' || a.type === 'ApiConnection'); };
+      if (fallible(dep) && !statuses.includes('Failed') && !statuses.includes('TimedOut')) {
+        problems.push(`runAfter HANDLES NEITHER Failed NOR TimedOut: '${name}' after the fallible call '${dep}' handles only [${statuses.join(',')}] — any failure ends the run with no Response`);
+      }
       if (statuses.includes('Failed') && !statuses.includes('TimedOut')) {
         problems.push(`runAfter MISSING TimedOut: '${name}' after '${dep}' handles [${statuses.join(',')}] — a timeout skips it and the run ends with no Response`);
       }

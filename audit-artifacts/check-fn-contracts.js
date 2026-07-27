@@ -64,7 +64,8 @@ function collect(actions, scope) {
         op: body.op,
         frame: body.frame,
         topLevel: Object.keys(body),
-        input: body.input && typeof body.input === 'object' ? Object.keys(body.input) : null,
+        input: body.input && typeof body.input === 'object' && !Array.isArray(body.input) ? Object.keys(body.input) : null,
+        rowsIsArray: Array.isArray(body.rows),
       };
     }
     if (a.actions) collect(a.actions, name);
@@ -90,6 +91,8 @@ for (const [name, c] of Object.entries(calls)) {
     const unused = [...sent].filter(s => !reads.has(s));
     if (missing.length) problems.push(`${name} (op:${c.op}): reads but NOT SENT -> ${missing.join(', ')}`);
     if (unused.length) note.push(`${name} (op:${c.op}): sent but never read -> ${unused.join(', ')}`);
+  } else if (!['attestRows', 'validateKeys', 'verifyProof'].includes(c.route)) {
+    problems.push(`${name}: calls /api/${c.route}, which is not a known function route`);
   } else if (c.route === 'attestRows') {
     // Verified against attestRows.evaluate: it reads body.rows (ARRAY, required), body.op, body.frame.
     if (!c.topLevel.includes('rows')) problems.push(`${name}: attestRows requires a 'rows' ARRAY; sent [${c.topLevel.join(',')}]`);
@@ -105,25 +108,6 @@ for (const [name, c] of Object.entries(calls)) {
   }
 }
 
-// ── 4. RESPONSE-side conformance ───────────────────────────────────────────────────────────────────
-// Every `body('Action')?['prop']` in the whole definition must name a property the handler returns.
-const RETURNS = {};   // actionName -> Set(real output keys)
-for (const [name, c] of Object.entries(calls)) {
-  if (c.route === 'correctionCompute' && cc.OPS[c.op]) {
-    const keys = new Set(['ok', 'reason', 'detail']);   // every op may refuse
-    // sample the real return across a couple of permissive inputs
-    for (const probe of [{}, { input: {} }]) {
-      try { const r = cc.OPS[c.op](probe); if (r && typeof r === 'object') Object.keys(r).forEach(k => keys.add(k)); } catch (e) {}
-    }
-    RETURNS[name] = keys;
-  } else if (c.route === 'attestRows') {
-    RETURNS[name] = new Set(c.op === 'sign' ? ['sigs', 'error'] : ['results', 'error']);
-  } else if (c.route === 'validateKeys') {
-    RETURNS[name] = new Set(['storeOk', 'directorOk', 'error']);
-  } else if (c.route === 'verifyProof') {
-    RETURNS[name] = new Set(['ok', 'username', 'role']);
-  }
-}
 // STATIC RETURN KEYS the proxy pass cannot see — an op that refuses on empty input never builds its
 // success object, so we must read the source.
 //
@@ -175,11 +159,98 @@ function derivedReturnKeys(opName) {
   for (const m of src.matchAll(/\b(?:out|res|result)\.([A-Za-z0-9_]+)\s*=/g)) keys.add(m[1]);
   return keys;
 }
+// ── 4. RESPONSE-side conformance ───────────────────────────────────────────────────────────────────
+// Every `body('Action')?['prop']` in the whole definition must name a property the handler returns.
+const RETURNS = {};   // actionName -> Set(real output keys)
+for (const [name, c] of Object.entries(calls)) {
+  if (c.route === 'correctionCompute' && cc.OPS[c.op]) {
+    // ⚠ NO SEEDING. The first version unconditionally seeded ['ok','reason','detail'] "because any
+    // op may refuse" — and that is precisely what blinded it to the defect that shipped: the
+    // workflow tested `body('Seal_threeway')?['ok']` while targetSeal returns ONLY {outcome:...},
+    // so every valid target was refused and the gate reported zero mismatches. A default that makes
+    // a check pass more often is a hole. Refusal keys are DERIVED: an op gets them only if its own
+    // source actually calls refuse() or returns ok/reason itself.
+    const keys = new Set();
+    const fnSrc = (function () { const n = fnNameForOp(c.op); return n ? bodyOf(n) : ''; })();
+    if (/\brefuse\s*\(/.test(fnSrc)) { keys.add('ok'); keys.add('reason'); keys.add('detail'); }
+    // sample the real return across a couple of permissive inputs
+    for (const probe of [{}, { input: {} }]) {
+      try { const r = cc.OPS[c.op](probe); if (r && typeof r === 'object') Object.keys(r).forEach(k => keys.add(k)); } catch (e) {}
+    }
+    RETURNS[name] = keys;
+  } else if (!['attestRows', 'validateKeys', 'verifyProof'].includes(c.route)) {
+    problems.push(`${name}: calls /api/${c.route}, which is not a known function route`);
+  } else if (c.route === 'attestRows') {
+    RETURNS[name] = new Set(c.op === 'sign' ? ['sigs', 'error'] : ['results', 'error']);
+  } else if (c.route === 'validateKeys') {
+    RETURNS[name] = new Set(['storeOk', 'directorOk', 'error']);
+  } else if (c.route === 'verifyProof') {
+    RETURNS[name] = new Set(['ok', 'username', 'role']);
+  }
+}
+
+for (const [name, c] of Object.entries(calls)) {
+  if (c.route === 'correctionCompute' && cc.OPS[c.op]) derivedReturnKeys(c.op).forEach(k => RETURNS[name].add(k));
+}
+// fold the source-derived return keys in now that RETURNS exists
 for (const [name, c] of Object.entries(calls)) {
   if (c.route === 'correctionCompute' && cc.OPS[c.op]) derivedReturnKeys(c.op).forEach(k => RETURNS[name].add(k));
 }
 
+// ── ENUM DOMAINS + NUMERIC KEYS, derived from the function source ─────────────────────────────────
+// Both fatal mismatches that shipped were DISCRIMINANT comparisons: `.ok` on an op that returns only
+// `.outcome`, and `.decision === 'committed'` when the op emits roll_forward/roll_back/
+// INVARIANT_BROKEN. A property-name check cannot see either — the name is real, the VALUE is
+// impossible. So: harvest the string literals each op assigns to a discriminant key, and flag any
+// expression comparing that key to a literal outside the set. Same for numeric keys vs string
+// literals, because WDL equals() is type-strict (AGY).
+const DISCRIMINANTS = ['outcome', 'decision', 'baseline', 'lane', 'action', 'status', 'tier', 'partitionMode'];
+const NUMERIC_KEYS = ['revision', 'candidateVersion', 'cutoffId', 'snapshotVersion', 'highestRevision', 'count'];
+const domains = {};   // op -> key -> Set(literals)
+for (const opName of Object.keys(cc.OPS)) {
+  const n = fnNameForOp(opName); if (!n) continue;
+  const src = bodyOf(n);
+  for (const key of DISCRIMINANTS) {
+    for (const m of src.matchAll(new RegExp(`${key}\\s*:\\s*'([^']*)'`, 'g'))) {
+      ((domains[opName] = domains[opName] || {})[key] = domains[opName][key] || new Set()).add(m[1]);
+    }
+  }
+}
+
 const raw = fs.readFileSync(defFile, 'utf8');
+
+// Walk the PARSED comparison structures — never raw text. A regex over the JSON matched adjacent
+// object keys as if they were operands ("revision is compared to 'publicationVersion'"), which is
+// the same imprecision that makes a gate lie. Comparisons live in `expression` trees as
+// { equals|contains|greater|...: [operandA, operandB] }.
+const CMP = new Set(['equals', 'contains', 'greater', 'less', 'greaterOrEquals', 'lessOrEquals']);
+const readRe = /body\('([A-Za-z0-9_]+)'\)\?\['([A-Za-z0-9_]+)'\]/;
+function checkComparison(pair) {
+  if (!Array.isArray(pair) || pair.length !== 2) return;
+  for (const [a, b] of [[pair[0], pair[1]], [pair[1], pair[0]]]) {
+    if (typeof a !== 'string' || typeof b !== 'string') continue;
+    const m = a.match(readRe); if (!m) continue;
+    const [, action, key] = m;
+    const c = calls[action]; if (!c || c.route !== 'correctionCompute' || !c.op) continue;
+    if (b.includes('@')) continue;                       // both sides dynamic — nothing to prove
+    const dom = (domains[c.op] || {})[key];
+    if (dom && dom.size && !dom.has(b)) {
+      problems.push(`IMPOSSIBLE COMPARISON: body('${action}')?['${key}'] is compared to '${b}', but ${c.op} can only emit { ${[...dom].join(' | ')} }`);
+    }
+    if (NUMERIC_KEYS.includes(key) && b !== '' && isNaN(Number(b))) {
+      problems.push(`TYPE-STRICT COMPARISON: body('${action}')?['${key}'] is numeric but is compared to the STRING "${b}" — WDL equals() is type-strict, so this is always false`);
+    }
+  }
+}
+(function walkExpr(node) {
+  if (Array.isArray(node)) { node.forEach(walkExpr); return; }
+  if (!node || typeof node !== 'object') return;
+  for (const [k, v] of Object.entries(node)) {
+    if (CMP.has(k)) checkComparison(v);
+    walkExpr(v);
+  }
+})(def);
+
 const refRe = /body\('([A-Za-z0-9_]+)'\)\?\['([A-Za-z0-9_@.]+)'\]/g;
 const seen = new Set();
 let m;

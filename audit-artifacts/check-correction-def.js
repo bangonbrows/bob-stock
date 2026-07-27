@@ -47,29 +47,64 @@ function walk(actions, scopePath) {
 // lets the else-branch respond and then CONTINUES into the parent scope's next action — so the
 // gate is decorative and a refused correction still publishes. An empty success branch is
 // therefore legal ONLY IF every terminal path in the else/case branch ends in a Terminate.
+// ⚠ THIS WAS EXISTENTIAL AND BOTH AUDITORS CAUGHT IT. `vals.some(...)` meant ANY Terminate anywhere
+// in the branch made it "terminating" — so a nested If where only ONE inner path terminated passed,
+// and the other path fell straight through into the parent scope. Termination must be UNIVERSAL:
+// every path out of the branch has to end.
 function branchTerminates(actions) {
   const vals = Object.values(actions || {});
   if (vals.length === 0) return false;
-  if (vals.some(a => a.type === 'Terminate')) return true;
-  // a nested scope counts if all of its own branches terminate
-  return vals.some(a => (a.actions && branchTerminates(a.actions)) || (a.else && branchTerminates(a.else.actions)));
+  if (vals.some(a => a.type === 'Terminate')) return true;   // a Terminate at this level ends every path here
+  // otherwise the branch only terminates if some nested scope terminates on ALL of its own paths
+  return vals.some(a => {
+    if (a.type === 'If') {
+      const s = branchTerminates(a.actions);
+      const e = branchTerminates(a.else && a.else.actions);
+      return s && e;                                          // BOTH sides, not either
+    }
+    if (a.type === 'Switch') {
+      const cases = Object.values(a.cases || {});
+      const allCases = cases.length > 0 && cases.every(c => branchTerminates(c.actions));
+      return allCases && branchTerminates(a.default && a.default.actions);
+    }
+    return false;
+  });
 }
 function auditGates(actions, scopePath) {
   for (const [name, a] of Object.entries(actions)) {
     const where = scopePath ? `${scopePath} > ${name}` : name;
+    // Does this scope contain a Response anywhere (directly or nested)?
+    const respondsIn = (acts) => Object.values(acts || {}).some(x => x.type === 'Response'
+      || respondsIn(x.actions) || respondsIn(x.else && x.else.actions)
+      || Object.values(x.cases || {}).some(c => respondsIn(c.actions)) || respondsIn(x.default && x.default.actions));
+
     if (a.type === 'If') {
       const successEmpty = Object.keys(a.actions || {}).length === 0;
       const elseActs = a.else && a.else.actions;
-      if (successEmpty) {
-        if (!elseActs || Object.keys(elseActs).length === 0) problems.push(`DEAD GATE: '${where}' has an empty success branch AND an empty else — it decides nothing`);
-        else if (!branchTerminates(elseActs)) problems.push(`FALL-THROUGH GATE: '${where}' responds in its else branch but never Terminates — execution continues into the happy path after a refusal`);
+      if (successEmpty && (!elseActs || Object.keys(elseActs).length === 0)) {
+        problems.push(`DEAD GATE: '${where}' has an empty success branch AND an empty else — it decides nothing`);
+      }
+      // ⚠ THE CHECK USED TO RUN ONLY WHEN THE SUCCESS BRANCH WAS EMPTY (AGY). A gate that DOES work
+      // in its success branch could still have an unterminated Response in its else and fall
+      // through. Any branch that responds must terminate, whatever the other branch does.
+      if (elseActs && respondsIn(elseActs) && !branchTerminates(elseActs)) {
+        problems.push(`FALL-THROUGH GATE: '${where}' responds in its else branch but never Terminates — execution continues into the happy path after a refusal`);
+      }
+      if (a.actions && respondsIn(a.actions) && !branchTerminates(a.actions)) {
+        problems.push(`FALL-THROUGH GATE: '${where}' responds in its SUCCESS branch but never Terminates`);
       }
     }
     if (a.type === 'Switch') {
       for (const [cn, c] of Object.entries(a.cases || {})) {
-        if (c.actions && Object.values(c.actions).some(x => x.type === 'Response') && !branchTerminates(c.actions)) {
+        if (c.actions && respondsIn(c.actions) && !branchTerminates(c.actions)) {
           problems.push(`FALL-THROUGH CASE: '${where}' case '${cn}' responds but never Terminates`);
         }
+      }
+      // ⚠ THE DEFAULT BRANCH WAS NEVER AUDITED (AGY). A refusal in a switch's default responds and
+      // falls straight through into whatever follows the switch.
+      const dflt = a.default && a.default.actions;
+      if (dflt && respondsIn(dflt) && !branchTerminates(dflt)) {
+        problems.push(`FALL-THROUGH DEFAULT: '${where}' default branch responds but never Terminates`);
       }
     }
     if (a.actions) auditGates(a.actions, where);
