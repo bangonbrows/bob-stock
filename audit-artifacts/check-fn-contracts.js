@@ -12,6 +12,16 @@
 //                   `body('Action')?['prop']` expression in the definition is checked against it.
 //
 // Exit 0 = every emitted call matches the real handler. Exit 1 = at least one mismatch.
+//
+// ⚠ KNOWN LIMIT — READ BEFORE TRUSTING A CLEAN RUN. Proxy discovery observes only the branch the
+// function takes when every input is undefined. A function that refuses early (`if (!input.cell)
+// return refuse(...)`) never reaches its later reads, so those properties are never observed.
+// Therefore:
+//   "reads but NOT SENT"  is SOUND      — anything observed as read really is read.
+//   "sent but never read" is a NOTE ONLY — it may simply be a property behind an early return.
+// That asymmetry is why the second list never fails the build. It also means a clean run proves
+// "nothing I send is wrong", NOT "everything the function needs is sent" on deeper branches — those
+// are covered by the proof suite (test/correction-proof.js), which drives real inputs end to end.
 'use strict';
 const fs = require('fs');
 const path = require('path');

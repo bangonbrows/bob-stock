@@ -1,0 +1,135 @@
+// EXPRESSION VALIDATOR for the generated N1 Logic App definition.
+//
+// The third gate. The other two cannot see this class:
+//   check-fn-contracts.js  knows WHAT we send a function, not whether the expression producing it evaluates.
+//   check-correction-def.js knows HOW actions connect, not what the expressions inside them mean.
+// Both auditors found runtime-semantics defects by hand — a `Response` that does not end a run, a
+// `coalesce` that never falls through, a `filter()` that is not a Workflow Definition Language
+// function at all. Those deploy cleanly and fail in production. This gate catches them at build time.
+'use strict';
+const fs = require('fs');
+const path = require('path');
+
+const file = process.argv[2] || path.join(__dirname, 'correction-def-generated.json');
+const raw = fs.readFileSync(file, 'utf8');
+const def = JSON.parse(raw);
+const problems = [];
+
+// ── 1. WDL function allowlist ──────────────────────────────────────────────────────────────────────
+// Workflow Definition Language has a FIXED function set and NO user-defined functions or lambdas.
+// `filter(array, item => ...)` is JavaScript, not WDL: it fails at definition validation or at
+// evaluation. Array filtering is a Query ACTION with item(), never an inline expression.
+const WDL = new Set([
+  'concat', 'coalesce', 'if', 'equals', 'not', 'and', 'or', 'empty', 'length', 'first', 'last',
+  'json', 'string', 'int', 'float', 'bool', 'array', 'createArray', 'union', 'intersection', 'take',
+  'skip', 'join', 'split', 'replace', 'toLower', 'toUpper', 'trim', 'substring', 'indexOf',
+  'lastIndexOf', 'startsWith', 'endsWith', 'contains', 'add', 'sub', 'mul', 'div', 'mod', 'min',
+  'max', 'range', 'rand', 'utcNow', 'addMinutes', 'addHours', 'addDays', 'addSeconds',
+  'formatDateTime', 'startOfDay', 'ticks', 'dayOfWeek', 'base64', 'base64ToString',
+  'encodeUriComponent', 'encodeURIComponent', 'decodeUriComponent', 'uriComponent', 'guid',
+  'workflow', 'trigger', 'triggerBody', 'triggerOutputs', 'triggerFormDataValue', 'body', 'outputs',
+  'items', 'item', 'variables', 'parameters', 'actions', 'setProperty', 'addProperty',
+  'removeProperty', 'xpath', 'greater', 'less', 'greaterOrEquals', 'lessOrEquals', 'nullValue',
+  'isNull', 'result', 'action', 'binary', 'dataUri',
+]);
+
+// Harvest EXPRESSION CODE ONLY. A SharePoint URI is a literal that happens to contain `@{...}`
+// interpolations — scanning the whole literal reported `getbytitle(` as an unknown WDL function,
+// 23 times. A gate that reports 23 non-bugs teaches you to skim its output, which is how a real
+// one gets missed. So: take the whole string when it is a bare `@expression`, otherwise take only
+// what is inside each `@{ ... }`.
+const exprStrings = [];
+const addExpr = (s) => {
+  if (typeof s !== 'string' || !s.includes('@')) return;
+  if (s.startsWith('@') && !s.startsWith('@{')) { exprStrings.push(s.slice(1)); return; }
+  for (const m of s.matchAll(/@\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g)) exprStrings.push(m[1]);
+};
+(function harvest(node) {
+  if (typeof node === 'string') { addExpr(node); return; }
+  if (Array.isArray(node)) { node.forEach(harvest); return; }
+  if (node && typeof node === 'object') { Object.values(node).forEach(harvest); }
+})(def);
+
+for (const s of exprStrings) {
+  for (const m of s.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const fnName = m[1];
+    if (!WDL.has(fnName)) problems.push(`UNKNOWN WDL FUNCTION '${fnName}(' in: ${s.slice(0, 110)}`);
+  }
+  if (/=>/.test(s)) problems.push(`ARROW FUNCTION in an expression — WDL has no lambdas: ${s.slice(0, 110)}`);
+}
+
+// ── 2. coalesce() against an ARRAY-valued expression ───────────────────────────────────────────────
+// An empty array is NOT null, so coalesce(emptyArray, fallback) returns the EMPTY ARRAY and never
+// reaches the fallback. Source-first "live else archive" selection written with coalesce therefore
+// never sees the archive. Use if(empty(x), fallback, x).
+for (const s of exprStrings) {
+  for (const m of s.matchAll(/coalesce\(\s*([^,()]*\?\['value'\][^,)]*)\s*,/g)) {
+    problems.push(`COALESCE OVER AN ARRAY — an empty array is not null, so the fallback is unreachable: coalesce(${m[1].trim()}, ...)`);
+  }
+}
+
+// ── 3. first() without an emptiness guard ──────────────────────────────────────────────────────────
+// The two auditors DISAGREE on whether first([]) returns null or raises a template error, and that
+// is an external platform fact neither I nor they can settle from this repo. Guarding is correct
+// under BOTH readings, so the guard is mandatory and the disagreement is a staging probe.
+for (const s of exprStrings) {
+  for (const m of s.matchAll(/first\(([^()]*(?:\([^()]*\)[^()]*)*)\)/g)) {
+    const arg = m[1];
+    const guarded = /empty\(/.test(s) && (s.indexOf('empty(') < s.indexOf('first('));
+    if (!guarded) problems.push(`UNGUARDED first() — behaviour on an empty collection is platform-dependent: first(${arg.slice(0, 70)})`);
+  }
+}
+
+// ── 4. ETag property naming + reading an ETag off a MERGE response ─────────────────────────────────
+// nometadata returns the item ETag as `odata.etag` (no '@' prefix) — the deployed archive LA proves
+// it. And a SharePoint MERGE answers 204 with no body and no usable ETag header, so a CAS chained
+// off a MERGE response is fencing on null.
+if (raw.includes("['@odata.etag']")) problems.push("ETAG NAMING: ['@odata.etag'] — nometadata returns 'odata.etag' with no '@' prefix");
+for (const s of exprStrings) {
+  if (/outputs\('[^']+'\)\?\['headers'\]\?\['ETag'\]/i.test(s)) {
+    problems.push(`ETAG FROM A MERGE RESPONSE: ${s.slice(0, 90)} — SharePoint MERGE returns 204 with no ETag header; reuse the ETag captured from the GET`);
+  }
+}
+
+// ── 5. runAfter must handle TimedOut wherever it handles Failed ────────────────────────────────────
+// An action can end Succeeded / Failed / Skipped / TimedOut. A gate that lists only Succeeded+Failed
+// is SKIPPED on a timeout, so the run ends with no Response — the caller hangs and the refusal
+// branch never fires. Function cold starts make this ordinary, not exotic.
+(function walkRunAfter(actions, scope) {
+  for (const [name, a] of Object.entries(actions || {})) {
+    for (const [dep, statuses] of Object.entries(a.runAfter || {})) {
+      if (statuses.includes('Failed') && !statuses.includes('TimedOut')) {
+        problems.push(`runAfter MISSING TimedOut: '${name}' after '${dep}' handles [${statuses.join(',')}] — a timeout skips it and the run ends with no Response`);
+      }
+    }
+    if (a.actions) walkRunAfter(a.actions, name);
+    if (a.else?.actions) walkRunAfter(a.else.actions, name);
+    for (const c of Object.values(a.cases || {})) if (c.actions) walkRunAfter(c.actions, name);
+    if (a.default?.actions) walkRunAfter(a.default.actions, name);
+  }
+})(def.actions, '');
+
+// ── 6. unescaped interpolation inside an OData string literal ──────────────────────────────────────
+// A value containing an apostrophe (O'Connor) terminates the literal early: the query 400s, or worse
+// becomes injectable. OData escapes a quote by DOUBLING it, so every interpolated value needs
+// replace(x, '''', '''''').
+for (const s of exprStrings) {
+  if (!/\$filter=/.test(s)) continue;
+  for (const m of s.matchAll(/eq\s*'@\{([^}]*)\}'/g)) {
+    if (!/replace\(/.test(m[1])) problems.push(`UNESCAPED ODATA INTERPOLATION: eq '@{${m[1].slice(0, 70)}}' — an apostrophe in the value breaks or injects the filter`);
+  }
+}
+
+// ── report ─────────────────────────────────────────────────────────────────────────────────────────
+console.log(`expression validator: ${path.basename(file)}`);
+console.log(`  expressions scanned: ${exprStrings.length}`);
+if (problems.length === 0) { console.log('\n==== EXPRESSIONS OK — 0 problems ===='); process.exit(0); }
+const byKind = {};
+for (const p of problems) { const k = p.split(':')[0]; (byKind[k] = byKind[k] || []).push(p); }
+console.log(`\n==== ${problems.length} EXPRESSION PROBLEM(S) ====`);
+for (const [k, list] of Object.entries(byKind)) {
+  console.log(`\n  ${k}  (${list.length})`);
+  list.slice(0, 6).forEach(p => console.log('    - ' + p));
+  if (list.length > 6) console.log(`    … and ${list.length - 6} more`);
+}
+process.exit(1);

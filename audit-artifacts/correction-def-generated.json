@@ -66,7 +66,8 @@
       "runAfter": {
         "Read_creds": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "runtimeConfiguration": {
@@ -93,7 +94,8 @@
       "runAfter": {
         "Gate_keys": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "actions": {},
@@ -172,7 +174,8 @@
       "runAfter": {
         "Read_actor": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "runtimeConfiguration": {
@@ -205,7 +208,8 @@
       "runAfter": {
         "Gate_proof": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "actions": {},
@@ -299,7 +303,7 @@
     },
     "Journal_branch": {
       "type": "Switch",
-      "expression": "@if(empty(body('Journal_lookup')?['value']),'none',if(contains(json('[\"complete\",\"rolled_back\",\"needs_manual\"]'),coalesce(first(body('Journal_lookup')?['value'])?['State'],'')),if(equals(coalesce(first(body('Journal_lookup')?['value'])?['Digest'],''),coalesce(body('Digest')?['digest'],'')),'replay','reused'),'reconcile'))",
+      "expression": "@if(empty(body('Journal_lookup')?['value']),'none',if(contains(json('[\"complete\",\"rolled_back\",\"needs_manual\"]'),coalesce(if(empty(body('Journal_lookup')?['value']), null, first(body('Journal_lookup')?['value']))?['State'],'')),if(equals(coalesce(if(empty(body('Journal_lookup')?['value']), null, first(body('Journal_lookup')?['value']))?['Digest'],''),coalesce(body('Digest')?['digest'],'')),'replay','reused'),'reconcile'))",
       "runAfter": {
         "Journal_lookup": [
           "Succeeded"
@@ -317,7 +321,7 @@
                 "headers": {
                   "Content-Type": "application/json"
                 },
-                "body": "@json(coalesce(first(body('Journal_lookup')?['value'])?['StoredResult'],'{}'))"
+                "body": "@json(coalesce(if(empty(body('Journal_lookup')?['value']), null, first(body('Journal_lookup')?['value']))?['StoredResult'],'{}'))"
               },
               "runAfter": {}
             },
@@ -426,20 +430,32 @@
         ]
       }
     },
+    "Filter_foreign_prepass": {
+      "type": "Query",
+      "inputs": {
+        "from": "@coalesce(body('Reconcile_prepass')?['value'], json('[]'))",
+        "where": "@and(not(equals(item()?['OpId'], coalesce(triggerBody()?['intent']?['opId'],''))), greater(coalesce(item()?['HeartbeatAt'],''), addMinutes(utcNow(), -10)))"
+      },
+      "runAfter": {
+        "Reconcile_prepass": [
+          "Succeeded"
+        ]
+      }
+    },
     "Prepass_gate": {
       "type": "If",
       "expression": {
         "and": [
           {
             "equals": [
-              "@length(filter(coalesce(body('Reconcile_prepass')?['value'],json('[]')), item => and(not(equals(item?['OpId'], coalesce(triggerBody()?['intent']?['opId'],''))), greater(coalesce(item?['HeartbeatAt'],''), addMinutes(utcNow(),-10)))))",
+              "@length(body('Filter_foreign_prepass'))",
               0
             ]
           }
         ]
       },
       "runAfter": {
-        "Reconcile_prepass": [
+        "Filter_foreign_prepass": [
           "Succeeded"
         ]
       },
@@ -511,15 +527,15 @@
         "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
         "body": {
           "method": "POST",
-          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
+          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['Id']})",
           "headers": {
             "Accept": "application/json;odata=nometadata",
             "Content-Type": "application/json;odata=nometadata",
             "X-HTTP-Method": "MERGE",
-            "IF-MATCH": "@{first(body('Get_archive_state')?['value'])?['@odata.etag']}"
+            "IF-MATCH": "@{if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['odata.etag']}"
           },
           "body": {
-            "ConfigData": "@{string(setProperty(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','correction_active'),'opId',coalesce(triggerBody()?['intent']?['opId'],'')),'owner',workflow()?['run']?['name']),'heartbeatAt',utcNow()))}"
+            "ConfigData": "@{string(setProperty(setProperty(setProperty(setProperty(json(coalesce(if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['ConfigData'],'{}')),'state','correction_active'),'opId',coalesce(triggerBody()?['intent']?['opId'],'')),'owner',workflow()?['run']?['name']),'heartbeatAt',utcNow()))}"
           }
         }
       },
@@ -544,7 +560,8 @@
       "runAfter": {
         "Acquire": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "actions": {},
@@ -610,7 +627,7 @@
           {
             "name": "snapEtag",
             "type": "string",
-            "value": "@{first(body('Capture_snapshot')?['value'])?['@odata.etag']}"
+            "value": "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['odata.etag']}"
           }
         ]
       },
@@ -627,7 +644,7 @@
           {
             "name": "snapData",
             "type": "string",
-            "value": "@{coalesce(first(body('Capture_snapshot')?['value'])?['ConfigData'],'{}')}"
+            "value": "@{coalesce(if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['ConfigData'],'{}')}"
           }
         ]
       },
@@ -644,7 +661,7 @@
           {
             "name": "snapItemId",
             "type": "string",
-            "value": "@{first(body('Capture_snapshot')?['value'])?['Id']}"
+            "value": "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['Id']}"
           }
         ]
       },
@@ -843,8 +860,8 @@
           "frame": "epoch-v1",
           "rows": [
             {
-              "obj": "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))",
-              "sig": "@coalesce(json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))?['EpochSig'],'')"
+              "obj": "@json(coalesce(if(empty(body('Get_seal_epoch')?['value']), null, first(body('Get_seal_epoch')?['value']))?['ConfigData'],'{}'))",
+              "sig": "@coalesce(json(coalesce(if(empty(body('Get_seal_epoch')?['value']), null, first(body('Get_seal_epoch')?['value']))?['ConfigData'],'{}'))?['EpochSig'],'')"
             }
           ]
         }
@@ -852,7 +869,8 @@
       "runAfter": {
         "Verify_target_row": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "runtimeConfiguration": {
@@ -876,18 +894,17 @@
           "op": "targetSeal",
           "input": {
             "econSigPresent": "@not(empty(coalesce(first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))?['EconSig'],'')))",
-            "verifyOk": "@coalesce(first(body('Verify_target_row')?['results'])?['ok'],false)",
-            "provenanceId": "@coalesce(first(body('Target_live')?['value'])?['Id'],first(body('Target_archive')?['value'])?['SourceId'],'')",
-            "epochPresent": "@not(empty(coalesce(body('Get_seal_epoch')?['value'],json('[]'))))",
-            "epochSigValid": "@coalesce(first(body('Verify_epoch')?['results']),false)",
-            "epoch": "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))"
+            "verifyOk": "@coalesce(if(empty(body('Verify_target_row')?['results']), null, first(body('Verify_target_row')?['results']))?['ok'],false)",
+            "provenanceId": "@coalesce(if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value']))?['Id'],if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['SourceId'],'')",
+            "epoch": "@if(empty(body('Get_seal_epoch')?['value']), null, setProperty(json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}')), 'epochSigValid', coalesce(if(empty(body('Verify_epoch')?['results']), null, first(body('Verify_epoch')?['results'])), false)))"
           }
         }
       },
       "runAfter": {
         "Verify_epoch": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "runtimeConfiguration": {
@@ -919,32 +936,6 @@
       "actions": {},
       "else": {
         "actions": {
-          "Rollback_release_seal": {
-            "type": "ApiConnection",
-            "inputs": {
-              "host": {
-                "connection": {
-                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
-                }
-              },
-              "method": "post",
-              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
-              "body": {
-                "method": "POST",
-                "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
-                "headers": {
-                  "Accept": "application/json;odata=nometadata",
-                  "Content-Type": "application/json;odata=nometadata",
-                  "X-HTTP-Method": "MERGE",
-                  "IF-MATCH": "@{outputs('Acquire')?['headers']?['ETag']}"
-                },
-                "body": {
-                  "ConfigData": "@{string(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}"
-                }
-              }
-            },
-            "runAfter": {}
-          },
           "Respond_seal": {
             "type": "Response",
             "kind": "Http",
@@ -958,11 +949,7 @@
                 "reason": "@coalesce(body('Seal_threeway')?['reason'],'TARGET_SEAL_BROKEN')"
               }
             },
-            "runAfter": {
-              "Rollback_release_seal": [
-                "Succeeded"
-              ]
-            }
+            "runAfter": {}
           },
           "Respond_seal_stop": {
             "type": "Terminate",
@@ -1092,8 +1079,8 @@
           "input": {
             "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
             "expected": "@triggerBody()?['intent']?['expected']",
-            "registryItem": "@first(body('Registry_lookup')?['value'])",
-            "beltTombstone": "@first(body('Belt_tombstone')?['value'])",
+            "registryItem": "@if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))",
+            "beltTombstone": "@if(empty(body('Belt_tombstone')?['value']), null, first(body('Belt_tombstone')?['value']))",
             "retireEvidence": "@triggerBody()?['intent']?['retireEvidence']"
           }
         }
@@ -1132,32 +1119,6 @@
       "actions": {},
       "else": {
         "actions": {
-          "Rollback_release_mode": {
-            "type": "ApiConnection",
-            "inputs": {
-              "host": {
-                "connection": {
-                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
-                }
-              },
-              "method": "post",
-              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
-              "body": {
-                "method": "POST",
-                "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
-                "headers": {
-                  "Accept": "application/json;odata=nometadata",
-                  "Content-Type": "application/json;odata=nometadata",
-                  "X-HTTP-Method": "MERGE",
-                  "IF-MATCH": "@{outputs('Acquire')?['headers']?['ETag']}"
-                },
-                "body": {
-                  "ConfigData": "@{string(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}"
-                }
-              }
-            },
-            "runAfter": {}
-          },
           "Respond_mode": {
             "type": "Response",
             "kind": "Http",
@@ -1171,11 +1132,7 @@
                 "reason": "@coalesce(body('Mode_gate')?['reason'],'MODE_REFUSED')"
               }
             },
-            "runAfter": {
-              "Rollback_release_mode": [
-                "Succeeded"
-              ]
-            }
+            "runAfter": {}
           },
           "Respond_mode_stop": {
             "type": "Terminate",
@@ -1203,7 +1160,7 @@
         "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
         "body": {
           "method": "GET",
-          "uri": "_api/web/lists/getbytitle('@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}')/items?$top=2&$filter=ControlId eq '@{coalesce(first(body('Registry_lookup')?['value'])?['ControlId'],'~none~')}'",
+          "uri": "_api/web/lists/getbytitle('@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}')/items?$top=2&$filter=ControlId eq '@{coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['ControlId'],'~none~')}'",
           "headers": {
             "Accept": "application/json;odata=nometadata"
           }
@@ -1229,7 +1186,7 @@
             "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
             "baseline": "@coalesce(body('Mode_gate')?['baseline'],'no-head')",
             "controlType": "@coalesce(triggerBody()?['intent']?['control']?['controlType'],'replacement')",
-            "priorControlType": "@first(body('Fetch_prior_control')?['value'])?['ControlType']"
+            "priorControlType": "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))?['ControlType']"
           }
         }
       },
@@ -1288,7 +1245,7 @@
         "body": {
           "op": "stamps",
           "input": {
-            "target": "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
+            "target": "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
             "replacement": "@triggerBody()?['intent']?['control']?['replacement']",
             "steps": "@coalesce(body('Steps_enumerate')?['value'],json('[]'))"
           }
@@ -1345,8 +1302,8 @@
           "frame": "runrec-v1",
           "rows": [
             {
-              "obj": "@first(body('Run_record')?['value'])",
-              "sig": "@coalesce(first(body('Run_record')?['value'])?['RecordSig'],'')"
+              "obj": "@if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))",
+              "sig": "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['RecordSig'],'')"
             }
           ]
         }
@@ -1354,7 +1311,8 @@
       "runAfter": {
         "Run_record": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "runtimeConfiguration": {
@@ -1378,16 +1336,16 @@
           "op": "membership",
           "input": {
             "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
-            "tombstoneTransactionId": "@coalesce(first(body('Belt_tombstone')?['value'])?['TransactionId'],'')",
+            "tombstoneTransactionId": "@coalesce(if(empty(body('Belt_tombstone')?['value']), null, first(body('Belt_tombstone')?['value']))?['TransactionId'],'')",
             "target": {
-              "archiveRunId": "@coalesce(first(body('Target_archive')?['value'])?['ArchiveRunId'],'')",
-              "snapshotVersion": "@coalesce(first(body('Target_archive')?['value'])?['SnapshotVersion'],'')"
+              "archiveRunId": "@coalesce(if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['ArchiveRunId'],'')",
+              "snapshotVersion": "@coalesce(if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['SnapshotVersion'],'')"
             },
             "runRecord": {
-              "RunId": "@coalesce(first(body('Run_record')?['value'])?['RunId'],'')",
-              "SnapshotVersion": "@coalesce(first(body('Run_record')?['value'])?['SnapshotVersion'],'')",
-              "TombstoneIds": "@json(coalesce(first(body('Run_record')?['value'])?['TombstoneIds'],'[]'))",
-              "recordSigValid": "@coalesce(first(body('Verify_run_record')?['results']),false)"
+              "RunId": "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['RunId'],'')",
+              "SnapshotVersion": "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['SnapshotVersion'],'')",
+              "TombstoneIds": "@json(coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['TombstoneIds'],'[]'))",
+              "recordSigValid": "@coalesce(if(empty(body('Verify_run_record')?['results']), null, first(body('Verify_run_record')?['results'])),false)"
             }
           }
         }
@@ -1395,7 +1353,8 @@
       "runAfter": {
         "Verify_run_record": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "runtimeConfiguration": {
@@ -1422,8 +1381,8 @@
             "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
             "target": "@body('Target_line')?['targetLine']",
             "newOutput": "@triggerBody()?['intent']?['control']?['replacement']",
-            "prevOutput": "@first(body('Fetch_prior_control')?['value'])",
-            "originalTarget": "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
+            "prevOutput": "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))",
+            "originalTarget": "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
             "membership": "@body('Membership')"
           }
         }
@@ -1456,7 +1415,7 @@
             "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
             "opId": "@coalesce(triggerBody()?['intent']?['opId'],'')",
             "target": "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
-            "revision": "@coalesce(first(body('Registry_lookup')?['value'])?['Revision'],0)",
+            "revision": "@coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['Revision'],0)",
             "candidateVersion": "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
             "adoptions": "@coalesce(triggerBody()?['intent']?['adoptions'],json('[]'))"
           }
@@ -1491,38 +1450,13 @@
       "runAfter": {
         "Candidate": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       },
       "actions": {},
       "else": {
         "actions": {
-          "Rollback_release_compute": {
-            "type": "ApiConnection",
-            "inputs": {
-              "host": {
-                "connection": {
-                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
-                }
-              },
-              "method": "post",
-              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
-              "body": {
-                "method": "POST",
-                "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
-                "headers": {
-                  "Accept": "application/json;odata=nometadata",
-                  "Content-Type": "application/json;odata=nometadata",
-                  "X-HTTP-Method": "MERGE",
-                  "IF-MATCH": "@{outputs('Acquire')?['headers']?['ETag']}"
-                },
-                "body": {
-                  "ConfigData": "@{string(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}"
-                }
-              }
-            },
-            "runAfter": {}
-          },
           "Respond_compute": {
             "type": "Response",
             "kind": "Http",
@@ -1536,11 +1470,7 @@
                 "reason": "@coalesce(body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')"
               }
             },
-            "runAfter": {
-              "Rollback_release_compute": [
-                "Succeeded"
-              ]
-            }
+            "runAfter": {}
           },
           "Respond_compute_stop": {
             "type": "Terminate",
@@ -1703,10 +1633,10 @@
             "Accept": "application/json;odata=nometadata",
             "Content-Type": "application/json;odata=nometadata",
             "X-HTTP-Method": "MERGE",
-            "IF-MATCH": "@{body('Candidate_row')?['@odata.etag']}"
+            "IF-MATCH": "@{body('Candidate_row')?['odata.etag']}"
           },
           "body": {
-            "EconSig": "@{first(body('Sign_ctl')?['sigs'])}"
+            "EconSig": "@{if(empty(body('Sign_ctl')?['sigs']), null, first(body('Sign_ctl')?['sigs']))}"
           }
         }
       },
@@ -1849,32 +1779,6 @@
       "actions": {},
       "else": {
         "actions": {
-          "Rollback_release_verify": {
-            "type": "ApiConnection",
-            "inputs": {
-              "host": {
-                "connection": {
-                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
-                }
-              },
-              "method": "post",
-              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
-              "body": {
-                "method": "POST",
-                "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
-                "headers": {
-                  "Accept": "application/json;odata=nometadata",
-                  "Content-Type": "application/json;odata=nometadata",
-                  "X-HTTP-Method": "MERGE",
-                  "IF-MATCH": "@{outputs('Acquire')?['headers']?['ETag']}"
-                },
-                "body": {
-                  "ConfigData": "@{string(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}"
-                }
-              }
-            },
-            "runAfter": {}
-          },
           "Respond_verify": {
             "type": "Response",
             "kind": "Http",
@@ -1888,11 +1792,7 @@
                 "reason": "CANDIDATE_VERIFY_FAILED"
               }
             },
-            "runAfter": {
-              "Rollback_release_verify": [
-                "Succeeded"
-              ]
-            }
+            "runAfter": {}
           },
           "Respond_verify_stop": {
             "type": "Terminate",
@@ -1908,6 +1808,30 @@
         }
       }
     },
+    "Reread_state_restamp": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
+        "body": {
+          "method": "GET",
+          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'",
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          }
+        }
+      },
+      "runAfter": {
+        "Verify_gate": [
+          "Succeeded"
+        ]
+      }
+    },
     "Final_restamp": {
       "type": "ApiConnection",
       "inputs": {
@@ -1920,20 +1844,20 @@
         "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
         "body": {
           "method": "POST",
-          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
+          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['Id']})",
           "headers": {
             "Accept": "application/json;odata=nometadata",
             "Content-Type": "application/json;odata=nometadata",
             "X-HTTP-Method": "MERGE",
-            "IF-MATCH": "@{outputs('Acquire')?['headers']?['ETag']}"
+            "IF-MATCH": "@{if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['odata.etag']}"
           },
           "body": {
-            "ConfigData": "@{string(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'heartbeatAt',utcNow()))}"
+            "ConfigData": "@{string(setProperty(json(coalesce(if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['ConfigData'],'{}')),'heartbeatAt',utcNow()))}"
           }
         }
       },
       "runAfter": {
-        "Verify_gate": [
+        "Reread_state_restamp": [
           "Succeeded"
         ]
       }
@@ -2021,7 +1945,8 @@
       "runAfter": {
         "Publish": [
           "Succeeded",
-          "Failed"
+          "Failed",
+          "TimedOut"
         ]
       }
     },
@@ -2037,9 +1962,9 @@
           "op": "recoveryDecision",
           "input": {
             "candidateHeads": "@body('Candidate')?['candidateHeads']",
-            "activeManifest": "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))",
+            "activeManifest": "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))",
             "candidateVersion": "@body('Candidate')?['candidateVersion']",
-            "observedVersion": "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['version']"
+            "observedVersion": "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))?['version']"
           }
         }
       },
@@ -2123,7 +2048,7 @@
             "Accept": "application/json;odata=nometadata",
             "Content-Type": "application/json;odata=nometadata",
             "X-HTTP-Method": "MERGE",
-            "IF-MATCH": "@{body('Reserve')?['@odata.etag']}"
+            "IF-MATCH": "@{body('Reserve')?['odata.etag']}"
           },
           "body": {
             "State": "committed",
@@ -2156,7 +2081,7 @@
             "Accept": "application/json;odata=nometadata",
             "Content-Type": "application/json;odata=nometadata",
             "X-HTTP-Method": "MERGE",
-            "IF-MATCH": "@{body('Journal_create')?['@odata.etag']}"
+            "IF-MATCH": "@{body('Journal_create')?['odata.etag']}"
           },
           "body": {
             "State": "complete",
@@ -2170,7 +2095,7 @@
         ]
       }
     },
-    "Conditional_release": {
+    "Reread_state_final": {
       "type": "ApiConnection",
       "inputs": {
         "host": {
@@ -2181,16 +2106,10 @@
         "method": "post",
         "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
         "body": {
-          "method": "POST",
-          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_archive_state')?['value'])?['Id']})",
+          "method": "GET",
+          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'",
           "headers": {
-            "Accept": "application/json;odata=nometadata",
-            "Content-Type": "application/json;odata=nometadata",
-            "X-HTTP-Method": "MERGE",
-            "IF-MATCH": "@{outputs('Acquire')?['headers']?['ETag']}"
-          },
-          "body": {
-            "ConfigData": "@{string(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}"
+            "Accept": "application/json;odata=nometadata"
           }
         }
       },
@@ -2198,6 +2117,55 @@
         "Journal_complete": [
           "Succeeded"
         ]
+      }
+    },
+    "Release_final": {
+      "type": "If",
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@coalesce(json(coalesce(if(empty(body('Reread_state_final')?['value']), null, first(body('Reread_state_final')?['value']))?['ConfigData'],'{}'))?['owner'],'')",
+              "@workflow()?['run']?['name']"
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Reread_state_final": [
+          "Succeeded"
+        ]
+      },
+      "actions": {
+        "Do_Release_final": {
+          "type": "ApiConnection",
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
+            "body": {
+              "method": "POST",
+              "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{if(empty(body('Reread_state_final')?['value']), null, first(body('Reread_state_final')?['value']))?['Id']})",
+              "headers": {
+                "Accept": "application/json;odata=nometadata",
+                "Content-Type": "application/json;odata=nometadata",
+                "X-HTTP-Method": "MERGE",
+                "IF-MATCH": "@{if(empty(body('Reread_state_final')?['value']), null, first(body('Reread_state_final')?['value']))?['odata.etag']}"
+              },
+              "body": {
+                "ConfigData": "@{string(setProperty(setProperty(setProperty(json(coalesce(if(empty(body('Reread_state_final')?['value']), null, first(body('Reread_state_final')?['value']))?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}"
+              }
+            }
+          },
+          "runAfter": {}
+        }
+      },
+      "else": {
+        "actions": {}
       }
     },
     "Respond_ok": {
@@ -2218,7 +2186,7 @@
         }
       },
       "runAfter": {
-        "Conditional_release": [
+        "Release_final": [
           "Succeeded"
         ]
       }

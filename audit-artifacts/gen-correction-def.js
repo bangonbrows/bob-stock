@@ -44,9 +44,12 @@ const after = (deps) => {
   for (const d of [].concat(deps || [])) r[d] = ['Succeeded'];
   return r;
 };
+// afterAny: MUST include TimedOut. A Function cold start exceeding the connector timeout ends the
+// action as 'TimedOut', not 'Failed' -- a gate that omits it is skipped, the refusal branch never
+// fires, and the caller is left hanging with no HTTP response.
 const afterAny = (deps) => {
   const r = {};
-  for (const d of [].concat(deps || [])) r[d] = ['Succeeded', 'Failed'];
+  for (const d of [].concat(deps || [])) r[d] = ['Succeeded', 'Failed', 'TimedOut'];
   return r;
 };
 
@@ -196,10 +199,10 @@ function build() {
   // Terminal + digest MISMATCH => OPID_REUSED. Non-terminal own => reconcile.
   A.Journal_branch = {
     type: 'Switch',
-    expression: "@if(empty(body('Journal_lookup')?['value']),'none',if(contains(json('[\"complete\",\"rolled_back\",\"needs_manual\"]'),coalesce(first(body('Journal_lookup')?['value'])?['State'],'')),if(equals(coalesce(first(body('Journal_lookup')?['value'])?['Digest'],''),coalesce(body('Digest')?['digest'],'')),'replay','reused'),'reconcile'))",
+    expression: "@if(empty(body('Journal_lookup')?['value']),'none',if(contains(json('[\"complete\",\"rolled_back\",\"needs_manual\"]'),coalesce(if(empty(body('Journal_lookup')?['value']), null, first(body('Journal_lookup')?['value']))?['State'],'')),if(equals(coalesce(if(empty(body('Journal_lookup')?['value']), null, first(body('Journal_lookup')?['value']))?['Digest'],''),coalesce(body('Digest')?['digest'],'')),'replay','reused'),'reconcile'))",
     runAfter: after('Journal_lookup'),
     cases: {
-      Replay: { case: 'replay', actions: { Respond_replay: response(200, "@json(coalesce(first(body('Journal_lookup')?['value'])?['StoredResult'],'{}'))"), Respond_replay_stop: terminate(after('Respond_replay')) } },
+      Replay: { case: 'replay', actions: { Respond_replay: response(200, "@json(coalesce(if(empty(body('Journal_lookup')?['value']), null, first(body('Journal_lookup')?['value']))?['StoredResult'],'{}'))"), Respond_replay_stop: terminate(after('Respond_replay')) } },
       Reused: { case: 'reused', actions: { Respond_reused: refuse('OPID_REUSED', 409), Respond_reused_stop: terminate(after('Respond_reused')) } },
       Reconcile: { case: 'reconcile', actions: { Respond_reconcile: response(202, { ok: false, reason: 'RECOVERY_REQUIRED', detail: 'a non-terminal journal for this opId exists; the B-R reconcile sub-flow owns it' }), Respond_reconcile_stop: terminate(after('Respond_reconcile')) } },
     },
@@ -208,20 +211,31 @@ function build() {
 
   // ── P2: acquire + capture (the P6 ETag is captured HERE and never re-read, C2-R1-1) ──────────────
   A.Reconcile_prepass = sp(item(L.journal, `?$select=Id,OpId,State,HeartbeatAt&$filter=State ne 'complete' and State ne 'rolled_back' and State ne 'needs_manual'`), { runAfter: after('Journal_branch') });
+  // ⚠ WDL HAS NO `filter()` AND NO LAMBDAS. The first cut wrote
+  // `filter(array, item => ...)`, which is JavaScript — the expression parser rejects it, so the
+  // definition fails validation or evaluation. Array filtering is a QUERY ACTION using `item()`.
+  A.Filter_foreign_prepass = {
+    type: 'Query',
+    inputs: {
+      from: "@coalesce(body('Reconcile_prepass')?['value'], json('[]'))",
+      where: "@and(not(equals(item()?['OpId'], coalesce(triggerBody()?['intent']?['opId'],''))), greater(coalesce(item()?['HeartbeatAt'],''), addMinutes(utcNow(), -10)))",
+    },
+    runAfter: after('Reconcile_prepass'),
+  };
   A.Prepass_gate = {
     type: 'If',
     // any FRESH foreign non-terminal journal (heartbeat within T-1 = 10 min) => 409 busy.
-    expression: { and: [{ equals: ["@length(filter(coalesce(body('Reconcile_prepass')?['value'],json('[]')), item => and(not(equals(item?['OpId'], coalesce(triggerBody()?['intent']?['opId'],''))), greater(coalesce(item?['HeartbeatAt'],''), addMinutes(utcNow(),-10)))))", 0] }] },
-    runAfter: after('Reconcile_prepass'),
+    expression: { and: [{ equals: ["@length(body('Filter_foreign_prepass'))", 0] }] },
+    runAfter: after('Filter_foreign_prepass'),
     actions: {},
     else: { actions: { Respond_busy: refuse('BUSY_FOREIGN_CORRECTION', 409), Respond_busy_stop: terminate(after('Respond_busy')) } },
   };
 
   A.Get_archive_state = sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'`), { runAfter: after('Prepass_gate') });
   A.Acquire = spMerge(
-    item(L.config, "(@{first(body('Get_archive_state')?['value'])?['Id']})"),
-    { ConfigData: "@{string(setProperty(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','correction_active'),'opId',coalesce(triggerBody()?['intent']?['opId'],'')),'owner',workflow()?['run']?['name']),'heartbeatAt',utcNow()))}" },
-    "@{first(body('Get_archive_state')?['value'])?['@odata.etag']}",
+    item(L.config, "(@{if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['Id']})"),
+    { ConfigData: "@{string(setProperty(setProperty(setProperty(setProperty(json(coalesce(if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['ConfigData'],'{}')),'state','correction_active'),'opId',coalesce(triggerBody()?['intent']?['opId'],'')),'owner',workflow()?['run']?['name']),'heartbeatAt',utcNow()))}" },
+    "@{if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['odata.etag']}",
     after('Get_archive_state'));
   A.Acquire_ok = {
     type: 'If',
@@ -232,9 +246,9 @@ function build() {
 
   // Capture_snapshot — BOTH the ETag and the ConfigData go into variables NOW; P6 uses ONLY these.
   A.Capture_snapshot = sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'stock_snapshot'`), { runAfter: after('Acquire_ok') });
-  A.Set_snapshot_etag = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapEtag', type: 'string', value: "@{first(body('Capture_snapshot')?['value'])?['@odata.etag']}" }] }, runAfter: after('Capture_snapshot') };
-  A.Set_snapshot_data = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapData', type: 'string', value: "@{coalesce(first(body('Capture_snapshot')?['value'])?['ConfigData'],'{}')}" }] }, runAfter: after('Set_snapshot_etag') };
-  A.Set_snapshot_id = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapItemId', type: 'string', value: "@{first(body('Capture_snapshot')?['value'])?['Id']}" }] }, runAfter: after('Set_snapshot_data') };
+  A.Set_snapshot_etag = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapEtag', type: 'string', value: "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['odata.etag']}" }] }, runAfter: after('Capture_snapshot') };
+  A.Set_snapshot_data = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapData', type: 'string', value: "@{coalesce(if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['ConfigData'],'{}')}" }] }, runAfter: after('Set_snapshot_etag') };
+  A.Set_snapshot_id = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapItemId', type: 'string', value: "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['Id']}" }] }, runAfter: after('Set_snapshot_data') };
 
   // ── P3: authoritative state ──────────────────────────────────────────────────────────────────────
   // SOURCE-FIRST Live -> Archive (C2-R17-2).
@@ -255,20 +269,21 @@ function build() {
   // Three-way seal: econ-v1 on the row, epoch-v1 on the seal artifact, then op:targetSeal adjudicates.
   A.Get_seal_epoch = sp(item(L.config, `?$select=Id,ConfigData&$filter=ConfigType eq 'seal_epoch'`), { runAfter: after('Target_gate') });
   A.Verify_target_row = fn('attestRows', { op: 'verify', frame: 'econ-v1', rows: "@coalesce(union(coalesce(body('Target_live')?['value'],json('[]')),coalesce(body('Target_archive')?['value'],json('[]'))),json('[]'))" }, after('Get_seal_epoch'));
-  A.Verify_epoch = fn('attestRows', { op: 'verify', frame: 'epoch-v1', rows: [{ obj: "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))", sig: "@coalesce(json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))?['EpochSig'],'')" }] }, afterAny('Verify_target_row'));
+  A.Verify_epoch = fn('attestRows', { op: 'verify', frame: 'epoch-v1', rows: [{ obj: "@json(coalesce(if(empty(body('Get_seal_epoch')?['value']), null, first(body('Get_seal_epoch')?['value']))?['ConfigData'],'{}'))", sig: "@coalesce(json(coalesce(if(empty(body('Get_seal_epoch')?['value']), null, first(body('Get_seal_epoch')?['value']))?['ConfigData'],'{}'))?['EpochSig'],'')" }] }, afterAny('Verify_target_row'));
   A.Seal_threeway = op('targetSeal', {
     econSigPresent: "@not(empty(coalesce(first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))?['EconSig'],'')))",
-    verifyOk: "@coalesce(first(body('Verify_target_row')?['results'])?['ok'],false)",
-    provenanceId: "@coalesce(first(body('Target_live')?['value'])?['Id'],first(body('Target_archive')?['value'])?['SourceId'],'')",
-    epochPresent: "@not(empty(coalesce(body('Get_seal_epoch')?['value'],json('[]'))))",
-    epochSigValid: "@coalesce(first(body('Verify_epoch')?['results']),false)",
-    epoch: "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))",
+    verifyOk: "@coalesce(if(empty(body('Verify_target_row')?['results']), null, first(body('Verify_target_row')?['results']))?['ok'],false)",
+    provenanceId: "@coalesce(if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value']))?['Id'],if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['SourceId'],'')",
+    // targetSeal reads input.epoch.epochSigValid -- a NESTED field. Sending epochPresent/epochSigValid
+    // at the TOP level left it undefined, so a well-sealed epoch returned EPOCH_TAMPERED. A null epoch
+    // is how the function distinguishes EPOCH_UNDEFINED from EPOCH_TAMPERED, so absence stays null.
+    epoch: "@if(empty(body('Get_seal_epoch')?['value']), null, setProperty(json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}')), 'epochSigValid', coalesce(if(empty(body('Verify_epoch')?['results']), null, first(body('Verify_epoch')?['results'])), false)))",
   }, afterAny('Verify_epoch'));
   A.Seal_gate = {
     type: 'If',
     expression: { and: [{ equals: ["@coalesce(body('Seal_threeway')?['ok'],false)", true] }] },
     runAfter: after('Seal_threeway'), actions: {},
-    else: { actions: { Rollback_release_seal: releaseAction('Respond_seal'), Respond_seal: response(409, { ok: false, reason: "@coalesce(body('Seal_threeway')?['reason'],'TARGET_SEAL_BROKEN')" }, after('Rollback_release_seal')), Respond_seal_stop: terminate(after('Respond_seal')) } },
+    else: { actions: { Respond_seal: response(409, { ok: false, reason: "@coalesce(body('Seal_threeway')?['reason'],'TARGET_SEAL_BROKEN')" }), Respond_seal_stop: terminate(after('Respond_seal')) } },
   };
 
   // Steps enumeration (transfer-linked targets only) — paged walk, then a digest.
@@ -281,25 +296,25 @@ function build() {
   A.Mode_gate = op('modeGate', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
     expected: "@triggerBody()?['intent']?['expected']",
-    registryItem: "@first(body('Registry_lookup')?['value'])",
-    beltTombstone: "@first(body('Belt_tombstone')?['value'])",
+    registryItem: "@if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))",
+    beltTombstone: "@if(empty(body('Belt_tombstone')?['value']), null, first(body('Belt_tombstone')?['value']))",
     retireEvidence: "@triggerBody()?['intent']?['retireEvidence']",
   }, after('Belt_tombstone'));
   A.Mode_gate_ok = {
     type: 'If',
     expression: { and: [{ equals: ["@coalesce(body('Mode_gate')?['ok'],false)", true] }] },
     runAfter: after('Mode_gate'), actions: {},
-    else: { actions: { Rollback_release_mode: releaseAction('Respond_mode'), Respond_mode: response(409, { ok: false, reason: "@coalesce(body('Mode_gate')?['reason'],'MODE_REFUSED')" }, after('Rollback_release_mode')), Respond_mode_stop: terminate(after('Respond_mode')) } },
+    else: { actions: { Respond_mode: response(409, { ok: false, reason: "@coalesce(body('Mode_gate')?['reason'],'MODE_REFUSED')" }), Respond_mode_stop: terminate(after('Respond_mode')) } },
   };
 
   // ── P4: compute — every decision via correctionCompute ───────────────────────────────────────────
   // The LA fetches EXACTLY the rows modeGate named in `needs` — it does not decide which.
-  A.Fetch_prior_control = sp(item("@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}", "?$top=2&$filter=ControlId eq '@{coalesce(first(body('Registry_lookup')?['value'])?['ControlId'],'~none~')}'"), { runAfter: after('Mode_gate_ok') });
+  A.Fetch_prior_control = sp(item("@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}", "?$top=2&$filter=ControlId eq '@{coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['ControlId'],'~none~')}'"), { runAfter: after('Mode_gate_ok') });
   A.Delta_cell = op('deltaCell', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
     baseline: "@coalesce(body('Mode_gate')?['baseline'],'no-head')",
     controlType: "@coalesce(triggerBody()?['intent']?['control']?['controlType'],'replacement')",
-    priorControlType: "@first(body('Fetch_prior_control')?['value'])?['ControlType']",
+    priorControlType: "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))?['ControlType']",
   }, after('Fetch_prior_control'));
 
   A.Target_line = op('targetLine', {
@@ -310,26 +325,26 @@ function build() {
   // stamps and tier (b) from the server steps projection. The first cut sent mode/control/targetLine,
   // none of which it reads, so every call fell through to STAMPS_UNRESOLVABLE.
   A.Stamps = op('stamps', {
-    target: "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
+    target: "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
     replacement: "@triggerBody()?['intent']?['control']?['replacement']",
     steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))",
   }, after('Target_line'));
 
   // op:membership INPUT MAPPING — PINNED (§B 13a). Both target bindings are MANDATORY.
   A.Run_record = sp(item(L.runRecords, `?$top=2&$filter=RunId eq '@{coalesce(first(coalesce(body(''Target_live'')?[''value''],body(''Target_archive'')?[''value'']))?[''ArchiveRunId''],'''')}'`), { runAfter: after('Stamps') });
-  A.Verify_run_record = fn('attestRows', { op: 'verify', frame: 'runrec-v1', rows: [{ obj: "@first(body('Run_record')?['value'])", sig: "@coalesce(first(body('Run_record')?['value'])?['RecordSig'],'')" }] }, afterAny('Run_record'));
+  A.Verify_run_record = fn('attestRows', { op: 'verify', frame: 'runrec-v1', rows: [{ obj: "@if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))", sig: "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['RecordSig'],'')" }] }, afterAny('Run_record'));
   A.Membership = op('membership', {
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
-    tombstoneTransactionId: "@coalesce(first(body('Belt_tombstone')?['value'])?['TransactionId'],'')",
+    tombstoneTransactionId: "@coalesce(if(empty(body('Belt_tombstone')?['value']), null, first(body('Belt_tombstone')?['value']))?['TransactionId'],'')",
     target: {
-      archiveRunId: "@coalesce(first(body('Target_archive')?['value'])?['ArchiveRunId'],'')",
-      snapshotVersion: "@coalesce(first(body('Target_archive')?['value'])?['SnapshotVersion'],'')",
+      archiveRunId: "@coalesce(if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['ArchiveRunId'],'')",
+      snapshotVersion: "@coalesce(if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['SnapshotVersion'],'')",
     },
     runRecord: {
-      RunId: "@coalesce(first(body('Run_record')?['value'])?['RunId'],'')",
-      SnapshotVersion: "@coalesce(first(body('Run_record')?['value'])?['SnapshotVersion'],'')",
-      TombstoneIds: "@json(coalesce(first(body('Run_record')?['value'])?['TombstoneIds'],'[]'))",
-      recordSigValid: "@coalesce(first(body('Verify_run_record')?['results']),false)",
+      RunId: "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['RunId'],'')",
+      SnapshotVersion: "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['SnapshotVersion'],'')",
+      TombstoneIds: "@json(coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['TombstoneIds'],'[]'))",
+      recordSigValid: "@coalesce(if(empty(body('Verify_run_record')?['results']), null, first(body('Verify_run_record')?['results'])),false)",
     },
   }, afterAny('Verify_run_record'));
 
@@ -338,8 +353,8 @@ function build() {
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
     target: "@body('Target_line')?['targetLine']",
     newOutput: "@triggerBody()?['intent']?['control']?['replacement']",
-    prevOutput: "@first(body('Fetch_prior_control')?['value'])",
-    originalTarget: "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
+    prevOutput: "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))",
+    originalTarget: "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
     membership: "@body('Membership')",
   }, after('Membership'));
 
@@ -347,7 +362,7 @@ function build() {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
     opId: "@coalesce(triggerBody()?['intent']?['opId'],'')",
     target: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
-    revision: "@coalesce(first(body('Registry_lookup')?['value'])?['Revision'],0)",
+    revision: "@coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['Revision'],0)",
     candidateVersion: "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
     adoptions: "@coalesce(triggerBody()?['intent']?['adoptions'],json('[]'))",
   }, after('Delta'));
@@ -356,7 +371,7 @@ function build() {
     type: 'If',
     expression: { and: [{ equals: ["@and(coalesce(body('Delta')?['ok'],false),coalesce(body('Candidate')?['ok'],false))", true] }] },
     runAfter: afterAny('Candidate'), actions: {},
-    else: { actions: { Rollback_release_compute: releaseAction('Respond_compute'), Respond_compute: response(409, { ok: false, reason: "@coalesce(body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')" }, after('Rollback_release_compute')), Respond_compute_stop: terminate(after('Respond_compute')) } },
+    else: { actions: { Respond_compute: response(409, { ok: false, reason: "@coalesce(body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')" }), Respond_compute_stop: terminate(after('Respond_compute')) } },
   };
 
   // ── P5: journal + candidate (publishes NOTHING) ──────────────────────────────────────────────────
@@ -390,8 +405,8 @@ function build() {
   A.Sign_ctl = fn('attestRows', { op: 'sign', frame: 'ctl-v1', rows: ["@body('Candidate')?['row']"] }, after('Candidate_row'));
   A.Stamp_ctl_sig = spMerge(
     item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", "(@{body('Candidate_row')?['Id']})"),
-    { EconSig: "@{first(body('Sign_ctl')?['sigs'])}" },
-    "@{body('Candidate_row')?['@odata.etag']}",
+    { EconSig: "@{if(empty(body('Sign_ctl')?['sigs']), null, first(body('Sign_ctl')?['sigs']))}" },
+    "@{body('Candidate_row')?['odata.etag']}",
     after('Sign_ctl'));
 
   // Verify: the seal is minted FROM THE INTENT, and the re-read row is compared to that intent.
@@ -408,15 +423,18 @@ function build() {
       ],
     },
     runAfter: after('Steps_redigest'), actions: {},
-    else: { actions: { Rollback_release_verify: releaseAction('Respond_verify'), Respond_verify: response(409, { ok: false, reason: 'CANDIDATE_VERIFY_FAILED' }, after('Rollback_release_verify')), Respond_verify_stop: terminate(after('Respond_verify')) } },
+    else: { actions: { Respond_verify: response(409, { ok: false, reason: 'CANDIDATE_VERIFY_FAILED' }), Respond_verify_stop: terminate(after('Respond_verify')) } },
   };
 
   // ── P6: THE PUBLISH (irrevocable) ────────────────────────────────────────────────────────────────
+  // Re-read before the CAS: the pre-acquire body would write idle back over correction_active, and
+  // a MERGE response carries no ETag to fence on.
+  A.Reread_state_restamp = sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'`), { runAfter: after('Verify_gate') });
   A.Final_restamp = spMerge(
-    item(L.config, "(@{first(body('Get_archive_state')?['value'])?['Id']})"),
-    { ConfigData: "@{string(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'heartbeatAt',utcNow()))}" },
-    "@{outputs('Acquire')?['headers']?['ETag']}",
-    after('Verify_gate'));
+    item(L.config, "(@{if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['Id']})"),
+    { ConfigData: "@{string(setProperty(json(coalesce(if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['ConfigData'],'{}')),'heartbeatAt',utcNow()))}" },
+    "@{if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['odata.etag']}",
+    after('Reread_state_restamp'));
 
   // op:assembleSnapshot returns the EXACT serialized ConfigData — the LA does NO arithmetic.
   A.Assemble = op('assembleSnapshot', {
@@ -436,9 +454,9 @@ function build() {
   A.Outcome_by_read = sp(item(L.config, `?$select=Id,ConfigData&$filter=ConfigType eq 'stock_snapshot'`), { runAfter: afterAny('Publish') });
   A.Recovery_decision = op('recoveryDecision', {
     candidateHeads: "@body('Candidate')?['candidateHeads']",
-    activeManifest: "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))",
+    activeManifest: "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))",
     candidateVersion: "@body('Candidate')?['candidateVersion']",
-    observedVersion: "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['version']",
+    observedVersion: "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))?['version']",
   }, after('Outcome_by_read'));
 
   A.Published_gate = {
@@ -458,7 +476,7 @@ function build() {
       Revision: "@{body('Candidate')?['revision']}",
       PublicationVersion: "@{body('Candidate')?['candidateVersion']}",
     },
-    "@{body('Reserve')?['@odata.etag']}",
+    "@{body('Reserve')?['odata.etag']}",
     after('Published_gate'));
 
   A.Journal_complete = spMerge(
@@ -467,10 +485,10 @@ function build() {
       State: 'complete',
       StoredResult: "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['controlId'],''),'\",\"revision\":',string(body('Candidate')?['revision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}",
     },
-    "@{body('Journal_create')?['@odata.etag']}",
+    "@{body('Journal_create')?['odata.etag']}",
     after('Registry_terminal'));
 
-  A.Conditional_release = releaseAction(null, after('Journal_complete'));
+  Object.assign(A, releasePair('final', after('Journal_complete')).actions);
   A.Respond_ok = response(200, {
     ok: true,
     controlId: "@coalesce(body('Candidate')?['controlId'],'')",
@@ -478,17 +496,48 @@ function build() {
     publicationVersion: "@body('Candidate')?['candidateVersion']",
     deviceConvergencePending: "@not(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'))",
     affectedTarget: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
-  }, after('Conditional_release'));
+  }, after('Release_final'));
 
   return A;
 
   // Conditional release: ETag + content-conditional, asserting the state is still OURS (C2-R1-2).
-  function releaseAction(_unused, runAfter) {
-    return spMerge(
-      item(L.config, "(@{first(body('Get_archive_state')?['value'])?['Id']})"),
-      { ConfigData: "@{string(setProperty(setProperty(setProperty(json(coalesce(first(body('Get_archive_state')?['value'])?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}" },
-      "@{outputs('Acquire')?['headers']?['ETag']}",
-      runAfter || {});
+  //
+  // ⚠ TWO BUGS LIVED HERE, both found by the expression validator:
+  //  1. It rebuilt ConfigData from the PRE-ACQUIRE `Get_archive_state` body — writing the old idle
+  //     content back over `correction_active` and DROPPING opId and owner, immediately before the
+  //     publish. The fence would have been released while we still believed we held it.
+  //  2. It fenced on `outputs('Acquire')?['headers']?['ETag']`. A SharePoint MERGE answers 204 with
+  //     no body and no usable ETag header, and Logic Apps lowercases header keys anyway — so the
+  //     CAS was fencing on null, i.e. not fencing.
+  // Both dissolve the same way: RE-READ the coordination record immediately before the CAS, and use
+  // that read's `odata.etag` and its CURRENT content. The release additionally asserts the record is
+  // still OURS by owner, so a displaced run cannot release a fence it no longer holds.
+  //
+  // Returns a PAIR of actions — the caller splices both into its scope.
+  function releasePair(suffix, runAfter) {
+    const readName = 'Reread_state_' + suffix;
+    const mergeName = 'Release_' + suffix;
+    const cur = `if(empty(body('${readName}')?['value']), null, first(body('${readName}')?['value']))`;
+    return {
+      readName, mergeName,
+      actions: {
+        [readName]: sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'`), { runAfter: runAfter || {} }),
+        [mergeName]: {
+          type: 'If',
+          // content-conditional: only release what we still own
+          expression: { and: [{ equals: [`@coalesce(json(coalesce(${cur}?['ConfigData'],'{}'))?['owner'],'')`, "@workflow()?['run']?['name']"] }] },
+          runAfter: after(readName),
+          actions: {
+            ['Do_' + mergeName]: spMerge(
+              item(L.config, `(@{${cur}?['Id']})`),
+              { ConfigData: `@{string(setProperty(setProperty(setProperty(json(coalesce(${cur}?['ConfigData'],'{}')),'state','idle'),'opId',''),'owner',''))}` },
+              `@{${cur}?['odata.etag']}`,
+              {}),
+          },
+          else: { actions: {} },   // not ours any more — a recoverer displaced us; leave it alone
+        },
+      },
+    };
   }
 }
 
