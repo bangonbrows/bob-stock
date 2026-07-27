@@ -530,7 +530,7 @@ function modeGate(input) {
     case 'create':
       if (!reg) {
         if (input.beltTombstone) return { ok: false, reason: 'LAZY_ADOPTION_REQUIRED' }; // §4 C2-R1-4: register it, then the adopted-head lane
-        return { ok: true };
+        return { ok: true, baseline: 'no-head', needs: ['target'] }; // first publication: the TARGET is the baseline
       }
       return { ok: false, reason: 'TARGET_RESERVED' };        // one registry item per target (SR-144)
     case 'supersede': case 'withdraw': {
@@ -543,7 +543,11 @@ function modeGate(input) {
       if (!controlIdNull && e.activeControlId !== reg.ControlId) return { ok: false, reason: 'EXPECTED_MISMATCH' };
       if (e.revision !== reg.Revision || e.publicationVersion !== reg.PublicationVersion) return { ok: false, reason: 'EXPECTED_MISMATCH' };
       if (mode === 'withdraw' && controlIdNull) return { ok: false, reason: 'ALREADY_WITHDRAWN' };
-      return { ok: true, baseline: controlIdNull ? 'null-head' : 'active-head' };
+      // `needs` tells the LA WHICH ROWS to fetch — it never decides that for itself. An active head
+      // means a prior committed control row exists and its effect must be backed out, so the LA
+      // fetches it; a null head means the baseline is the ORIGINAL target row instead.
+      return { ok: true, baseline: controlIdNull ? 'null-head' : 'active-head',
+               needs: controlIdNull ? ['originalTarget'] : ['priorControl'] };
     }
     case 'retire_claim': {
       if (!reg || reg.State !== 'committed' || controlIdNull || !unadopted || reg.Origin === 'director')
@@ -558,6 +562,39 @@ function modeGate(input) {
       return { ok: true };                                     // no target argument; eligibility computed at P4
     default:
       return { ok: false, reason: 'UNKNOWN_MODE' };
+  }
+}
+
+// ── deltaCell — WHICH delta-arithmetic branch applies (generated-artifact round) ────────────────────
+// The LA used to read `cell` off modeGate, which never returned it — so computeDelta always got
+// null and refused UNKNOWN_CELL. Choosing the branch is a DECISION (the six-cell table plus the
+// null-head lane), so it belongs here, not in a Logic App condition tree (the F1 rule).
+// It is a SEPARATE op from modeGate because the choice depends on the PRIOR control row's type,
+// which the LA can only supply after fetching the row modeGate told it to fetch via `needs`.
+// input: { mode, baseline: 'no-head'|'active-head'|'null-head', controlType: 'replacement'|'deletion',
+//          priorControlType?: 'replacement'|'deletion' }
+function deltaCell(input) {
+  const mode = input.mode, base = input.baseline;
+  const isDel = input.controlType === 'deletion';
+  const priorDel = input.priorControlType === 'deletion';
+  switch (mode) {
+    case 'create':
+      if (base !== 'no-head') return refuse('BAD_CELL_INPUT', 'create requires baseline no-head');
+      return { ok: true, cell: isDel ? 'create-delete' : 'create-replace' };
+    case 'supersede':
+      if (base === 'null-head') return { ok: true, cell: isDel ? 'null-delete' : 'null-replace' }; // post-withdraw/retire baseline (C2-R6-2)
+      if (base !== 'active-head') return refuse('BAD_CELL_INPUT', 'supersede requires an active or null head');
+      if (!input.priorControlType) return refuse('BAD_CELL_INPUT', 'supersede requires priorControlType');
+      // the six-cell table: a deletion cannot be superseded BY a deletion (nothing changes)
+      if (priorDel && isDel) return refuse('BAD_CELL_INPUT', 'deletion superseded by deletion is a no-op');
+      if (priorDel) return { ok: true, cell: 'supersede-delete-replace' };
+      return { ok: true, cell: isDel ? 'supersede-replace-delete' : 'supersede-replace-replace' };
+    case 'withdraw':
+      if (base !== 'active-head') return refuse('BAD_CELL_INPUT', 'withdraw requires an active head');
+      return { ok: true, cell: 'withdraw' };
+    case 'retire_claim': return { ok: true, cell: 'retire' };
+    case 'adopt': return { ok: true, cell: 'adopt' };
+    default: return refuse('UNKNOWN_MODE', mode);
   }
 }
 
@@ -602,7 +639,8 @@ const OPS = {
   targetSeal: (b) => targetSeal(b.input || {}),
   stepSetDigest: (b) => stepSetDigest(b.input || {}),
   assembleSnapshot: (b) => assembleSnapshot(b.input || {}),
-  modeGate: (b) => modeGate(b.input || {})
+  modeGate: (b) => modeGate(b.input || {}),
+  deltaCell: (b) => deltaCell(b.input || {})
 };
 
 app.http('correctionCompute', {
@@ -621,4 +659,4 @@ app.http('correctionCompute', {
 module.exports = { opDigest, computeTargetLine, mintStamps, computeDelta, assembleCandidate,
   recoveryDecision, membershipDecision, sweepClassify, claimDispatch, pushIdempotency,
   exportBlocker, rowsEqual, ctlRowsEqual, effectOf, targetSeal, stepSetDigest,
-  assembleSnapshot, modeGate, normalizeArchiveRow, stableClone, OPS };
+  assembleSnapshot, modeGate, deltaCell, normalizeArchiveRow, stableClone, OPS };

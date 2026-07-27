@@ -368,32 +368,6 @@
         "Reconcile": {
           "case": "reconcile",
           "actions": {
-            "Run_reconcile": {
-              "type": "Http",
-              "inputs": {
-                "method": "POST",
-                "uri": "https://bob-stock-money-fn.azurewebsites.net/api/correctionCompute?code=@@FN_KEY@@",
-                "headers": {
-                  "Content-Type": "application/json"
-                },
-                "body": {
-                  "op": "claimDispatch",
-                  "input": {
-                    "lane": "own-nonterminal",
-                    "journal": "@first(body('Journal_lookup')?['value'])"
-                  }
-                }
-              },
-              "runAfter": {},
-              "runtimeConfiguration": {
-                "secureData": {
-                  "properties": [
-                    "inputs",
-                    "outputs"
-                  ]
-                }
-              }
-            },
             "Respond_reconcile": {
               "type": "Response",
               "kind": "Http",
@@ -404,14 +378,11 @@
                 },
                 "body": {
                   "ok": false,
-                  "reason": "RECOVERY_IN_PROGRESS"
+                  "reason": "RECOVERY_REQUIRED",
+                  "detail": "a non-terminal journal for this opId exists; the B-R reconcile sub-flow owns it"
                 }
               },
-              "runAfter": {
-                "Run_reconcile": [
-                  "Succeeded"
-                ]
-              }
+              "runAfter": {}
             },
             "Respond_reconcile_stop": {
               "type": "Terminate",
@@ -1220,6 +1191,62 @@
         }
       }
     },
+    "Fetch_prior_control": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
+        "body": {
+          "method": "GET",
+          "uri": "_api/web/lists/getbytitle('@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}')/items?$top=2&$filter=ControlId eq '@{coalesce(first(body('Registry_lookup')?['value'])?['ControlId'],'~none~')}'",
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          }
+        }
+      },
+      "runAfter": {
+        "Mode_gate_ok": [
+          "Succeeded"
+        ]
+      }
+    },
+    "Delta_cell": {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/correctionCompute?code=@@FN_KEY@@",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "op": "deltaCell",
+          "input": {
+            "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
+            "baseline": "@coalesce(body('Mode_gate')?['baseline'],'no-head')",
+            "controlType": "@coalesce(triggerBody()?['intent']?['control']?['controlType'],'replacement')",
+            "priorControlType": "@first(body('Fetch_prior_control')?['value'])?['ControlType']"
+          }
+        }
+      },
+      "runAfter": {
+        "Fetch_prior_control": [
+          "Succeeded"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      }
+    },
     "Target_line": {
       "type": "Http",
       "inputs": {
@@ -1391,12 +1418,12 @@
         "body": {
           "op": "delta",
           "input": {
-            "cell": "@body('Mode_gate')?['cell']",
+            "cell": "@body('Delta_cell')?['cell']",
             "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
             "target": "@body('Target_line')?['targetLine']",
             "newOutput": "@triggerBody()?['intent']?['control']?['replacement']",
-            "prevOutput": "@body('Mode_gate')?['prevOutput']",
-            "originalTarget": "@body('Mode_gate')?['originalTarget']",
+            "prevOutput": "@first(body('Fetch_prior_control')?['value'])",
+            "originalTarget": "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
             "membership": "@body('Membership')"
           }
         }
@@ -1431,7 +1458,7 @@
             "target": "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
             "revision": "@coalesce(first(body('Registry_lookup')?['value'])?['Revision'],0)",
             "candidateVersion": "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
-            "adoptions": "@body('Mode_gate')?['adoptions']"
+            "adoptions": "@coalesce(triggerBody()?['intent']?['adoptions'],json('[]'))"
           }
         }
       },

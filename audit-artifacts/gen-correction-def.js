@@ -201,7 +201,7 @@ function build() {
     cases: {
       Replay: { case: 'replay', actions: { Respond_replay: response(200, "@json(coalesce(first(body('Journal_lookup')?['value'])?['StoredResult'],'{}'))"), Respond_replay_stop: terminate(after('Respond_replay')) } },
       Reused: { case: 'reused', actions: { Respond_reused: refuse('OPID_REUSED', 409), Respond_reused_stop: terminate(after('Respond_reused')) } },
-      Reconcile: { case: 'reconcile', actions: { Run_reconcile: op('claimDispatch', { lane: 'own-nonterminal', journal: "@first(body('Journal_lookup')?['value'])" }), Respond_reconcile: response(202, { ok: false, reason: 'RECOVERY_IN_PROGRESS' }, after('Run_reconcile')), Respond_reconcile_stop: terminate(after('Respond_reconcile')) } },
+      Reconcile: { case: 'reconcile', actions: { Respond_reconcile: response(202, { ok: false, reason: 'RECOVERY_REQUIRED', detail: 'a non-terminal journal for this opId exists; the B-R reconcile sub-flow owns it' }), Respond_reconcile_stop: terminate(after('Respond_reconcile')) } },
     },
     default: { actions: {} },   // 'none' => proceed to P2
   };
@@ -293,6 +293,15 @@ function build() {
   };
 
   // ── P4: compute — every decision via correctionCompute ───────────────────────────────────────────
+  // The LA fetches EXACTLY the rows modeGate named in `needs` — it does not decide which.
+  A.Fetch_prior_control = sp(item("@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}", "?$top=2&$filter=ControlId eq '@{coalesce(first(body('Registry_lookup')?['value'])?['ControlId'],'~none~')}'"), { runAfter: after('Mode_gate_ok') });
+  A.Delta_cell = op('deltaCell', {
+    mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
+    baseline: "@coalesce(body('Mode_gate')?['baseline'],'no-head')",
+    controlType: "@coalesce(triggerBody()?['intent']?['control']?['controlType'],'replacement')",
+    priorControlType: "@first(body('Fetch_prior_control')?['value'])?['ControlType']",
+  }, after('Fetch_prior_control'));
+
   A.Target_line = op('targetLine', {
     target: "@first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))",
     steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))",
@@ -325,12 +334,12 @@ function build() {
   }, afterAny('Verify_run_record'));
 
   A.Delta = op('delta', {
-    cell: "@body('Mode_gate')?['cell']",
+    cell: "@body('Delta_cell')?['cell']",
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
     target: "@body('Target_line')?['targetLine']",
     newOutput: "@triggerBody()?['intent']?['control']?['replacement']",
-    prevOutput: "@body('Mode_gate')?['prevOutput']",
-    originalTarget: "@body('Mode_gate')?['originalTarget']",
+    prevOutput: "@first(body('Fetch_prior_control')?['value'])",
+    originalTarget: "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
     membership: "@body('Membership')",
   }, after('Membership'));
 
@@ -340,7 +349,7 @@ function build() {
     target: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
     revision: "@coalesce(first(body('Registry_lookup')?['value'])?['Revision'],0)",
     candidateVersion: "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
-    adoptions: "@body('Mode_gate')?['adoptions']",
+    adoptions: "@coalesce(triggerBody()?['intent']?['adoptions'],json('[]'))",
   }, after('Delta'));
 
   A.Compute_gate = {

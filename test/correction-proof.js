@@ -901,6 +901,58 @@ ok('P1: withdraw/retire build NO row (null-head modes publish no control row)',
     return w.ok && !Object.prototype.hasOwnProperty.call(w, 'row');
   })());
 
+// ── 22. deltaCell + modeGate `needs` (generated-artifact round, slice 3) ──────────────────────────
+// The LA read `cell` off modeGate, which never returned it — so computeDelta always received null
+// and refused UNKNOWN_CELL. Choosing the branch is a DECISION, so it lives in a function; the rows
+// the choice depends on are named by modeGate's `needs` and fetched by the LA.
+ok('Q1: the six-cell table is derived, not wired — every legal (mode,baseline,type) maps to its cell',
+  (() => {
+    const c = (i) => C.deltaCell(i).cell;
+    return c({ mode: 'create', baseline: 'no-head', controlType: 'replacement' }) === 'create-replace'
+      && c({ mode: 'create', baseline: 'no-head', controlType: 'deletion' }) === 'create-delete'
+      && c({ mode: 'supersede', baseline: 'active-head', controlType: 'replacement', priorControlType: 'replacement' }) === 'supersede-replace-replace'
+      && c({ mode: 'supersede', baseline: 'active-head', controlType: 'deletion', priorControlType: 'replacement' }) === 'supersede-replace-delete'
+      && c({ mode: 'supersede', baseline: 'active-head', controlType: 'replacement', priorControlType: 'deletion' }) === 'supersede-delete-replace'
+      && c({ mode: 'withdraw', baseline: 'active-head', controlType: 'replacement' }) === 'withdraw'
+      && c({ mode: 'retire_claim', baseline: 'active-head', controlType: 'deletion' }) === 'retire'
+      && c({ mode: 'adopt', baseline: 'no-head', controlType: 'deletion' }) === 'adopt';
+  })());
+ok('Q1: the NULL-HEAD baseline routes to the null-* lane (post-withdraw/retire, C2-R6-2)',
+  (() => C.deltaCell({ mode: 'supersede', baseline: 'null-head', controlType: 'replacement' }).cell === 'null-replace'
+      && C.deltaCell({ mode: 'supersede', baseline: 'null-head', controlType: 'deletion' }).cell === 'null-delete')());
+ok('Q1: illegal combinations REFUSE rather than guessing a cell',
+  (() => {
+    const bad = [
+      { mode: 'create', baseline: 'active-head', controlType: 'replacement' },       // create onto a head
+      { mode: 'supersede', baseline: 'active-head', controlType: 'replacement' },     // no priorControlType
+      { mode: 'supersede', baseline: 'active-head', controlType: 'deletion', priorControlType: 'deletion' }, // no-op
+      { mode: 'withdraw', baseline: 'null-head', controlType: 'replacement' },        // already withdrawn
+      { mode: 'nonsense', baseline: 'no-head', controlType: 'replacement' },
+    ];
+    return bad.every(i => C.deltaCell(i).ok === false);
+  })());
+ok('Q1: EVERY cell deltaCell can emit is one computeDelta actually implements (no orphan branch)',
+  (() => {
+    const cells = ['create-replace', 'create-delete', 'supersede-replace-replace', 'supersede-replace-delete',
+      'supersede-delete-replace', 'withdraw', 'null-replace', 'null-delete', 'adopt', 'retire'];
+    const row = { storeId: 'boor', productId: 'prodA', type: 'in', qty: 5 };
+    return cells.every(cell => {
+      const r = C.computeDelta({ cell, targetLocation: 'archive', target: row, newOutput: row,
+        prevOutput: row, originalTarget: row, membership: { decision: 'excluded' } });
+      return r.reason !== 'UNKNOWN_CELL';   // it may refuse for other reasons; it must KNOW the cell
+    });
+  })());
+ok('Q2: modeGate NAMES the rows the LA must fetch — active head => priorControl, null head => originalTarget',
+  (() => {
+    const exp = { activeControlId: 'ctl:x', revision: 0, publicationVersion: 7 };
+    const active = C.modeGate({ mode: 'supersede', expected: exp, registryItem: { State: 'committed', ControlId: 'ctl:x', Revision: 0, PublicationVersion: 7 } });
+    const nul = C.modeGate({ mode: 'supersede', expected: { activeControlId: null, revision: 1, publicationVersion: 8 }, registryItem: { State: 'committed', ControlId: '', Revision: 1, PublicationVersion: 8 } });
+    const create = C.modeGate({ mode: 'create', registryItem: null });
+    return active.ok && JSON.stringify(active.needs) === JSON.stringify(['priorControl'])
+      && nul.ok && JSON.stringify(nul.needs) === JSON.stringify(['originalTarget'])
+      && create.ok && JSON.stringify(create.needs) === JSON.stringify(['target']);
+  })());
+
 // L1 (rows 1/2 STILL overlapping — the R6 fold fixed the symptom, not the wildcard that subsumes
 // its successor; found independently by BOTH reviewers) and L2 (partial build-repair states mapping
 // to no row) are §D RUNBOOK fixes with no pure-function surface. Acceptance = the staging crash
