@@ -6,6 +6,46 @@
 
 ---
 
+## 0. STANDING PROTOCOL — EFFORT MODE (read first, every session)
+
+**Kunal is paying for this and is not a developer. He cannot tell from a task description whether
+parallel orchestration will earn its cost. So you must tell him — every time, unprompted.**
+
+**AT THE START OF EVERY SUBSTANTIAL TASK, before doing the work, state in one line which mode fits
+and why.** Do not wait to be asked. Do not silently spend on a workflow for work that does not need
+one. If ultracode is already on and the next task does not warrant it, say so and recommend dropping
+back to high effort. If it is off and the task genuinely needs fan-out, say so and let him decide.
+
+**ULTRACODE / WORKFLOW earns it when:**
+- The work splits into genuinely INDEPENDENT parts that can be investigated simultaneously
+- Breadth beats depth: sweeps, inventories, "find every X", multi-angle searches
+- A claim needs ADVERSARIAL verification — several independent attempts to REFUTE it
+- Several rival designs need comparing before committing
+
+**HIGH EFFORT is enough (and cheaper) when:**
+- The work is SERIAL and lands in ONE OR TWO FILES — parallel agents collide, and their output still
+  needs re-verifying anyway
+- A mechanical gate already verifies each step in seconds (harness, proof suite, validator) — the
+  bottleneck is the gate, not the thinking
+- Applying an already-decided list of edits
+- Conversational turns, auditor messages, commits, documentation
+
+**Clearest tell:** if the agents would be editing the same file, parallelism costs more than it
+returns.
+
+**⚠ THE CAVEAT THAT OVERRIDES ALL OF THE ABOVE.** On this project the highest-value moves have never
+been "more thinking" — they were MECHANICAL GATES (the contract harness; the gate mutation suite) and
+EXTERNAL ADVERSARIAL REVIEW (Codex/Antigravity). Ultracode buys parallel reasoning. It does **not**
+buy a gate that bites, and it is never a substitute for one. **Reach for a harness before reaching
+for more agents.** If you are about to propose a workflow where a mechanical check would do the job,
+propose the check instead.
+
+**Practical note to raise when relevant:** `.claude/settings.json` pins Fable 5, so a session restart
+reverts the model mid-task regardless of what was selected. Worth flagging when a long multi-round
+build is in flight.
+
+---
+
 ## 1. Business Context
 
 Bang on Brows (BOB) is a beauty salon chain in Perth, Western Australia, co-owned by Kunal Joshi and Shahin. The business operates multiple store locations including Karrinyup, Whitford, Ardross, and a Head Office warehouse that supplies all stores.
