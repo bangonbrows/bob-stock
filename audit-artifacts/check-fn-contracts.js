@@ -66,6 +66,7 @@ function collect(actions, scope) {
         topLevel: Object.keys(body),
         input: body.input && typeof body.input === 'object' && !Array.isArray(body.input) ? Object.keys(body.input) : null,
         rowsIsArray: Array.isArray(body.rows),
+        rowsExpr: typeof body.rows === 'string' ? body.rows : null,
       };
     }
     if (a.actions) collect(a.actions, name);
@@ -76,6 +77,15 @@ function collect(actions, scope) {
 }
 collect(def.actions, '');
 
+// An expression is ARRAY-SHAPED if its outermost call produces a collection, or it reads a
+// SharePoint result set (?['value'] / ?['results']). A bare property access is scalar-shaped.
+function arrayShapedExpr(s) {
+  if (typeof s !== 'string') return false;
+  const e = s.trim().replace(/^@/, '');
+  if (/^(union|createArray|coalesce|json|take|skip|split|range|intersection)\s*\(/.test(e)) return true;
+  if (/\?\['(value|results|sigs)'\]\s*$/.test(e)) return true;
+  return false;
+}
 // ── 3. REQUEST-side conformance ────────────────────────────────────────────────────────────────────
 for (const [name, c] of Object.entries(calls)) {
   if (c.route === 'correctionCompute') {
@@ -97,7 +107,14 @@ for (const [name, c] of Object.entries(calls)) {
     // Verified against attestRows.evaluate: it reads body.rows (ARRAY, required), body.op, body.frame.
     if (!c.topLevel.includes('rows')) problems.push(`${name}: attestRows requires a 'rows' ARRAY; sent [${c.topLevel.join(',')}]`);
     // attestRows.evaluate calls rows.map(...) — a SCALAR throws / 400s. Presence is not enough.
-    else if (!c.rowsIsArray) problems.push(`${name}: attestRows 'rows' must be an ARRAY — a scalar expression was sent, and evaluate() maps over it`);
+    // `rows` may legitimately be a WDL EXPRESSION that evaluates to an array (e.g.
+    // "@union(coalesce(a,json('[]')), coalesce(b,json('[]')))"). Array.isArray() alone cannot tell
+    // that from a genuine scalar, so it wrongly flagged a correct binding. Distinguish by SHAPE:
+    // an array-producing form is fine; a BARE PROPERTY ACCESS (@body('X')?['row']) is the real
+    // defect, because evaluate() calls rows.map(). Keeps the C4 mutation caught.
+    else if (!c.rowsIsArray && !arrayShapedExpr(c.rowsExpr)) {
+      problems.push(`${name}: attestRows 'rows' must be an ARRAY — a scalar expression was sent (${String(c.rowsExpr).slice(0, 60)}), and evaluate() maps over it`);
+    }
     if (c.frame && c.frame !== 'econ-v1' && c.op === 'verify') note.push(`${name}: framed verify needs rows:[{obj,sig}] and returns results:[bool]`);
   } else if (c.route === 'validateKeys') {
     for (const need of ['claimedStoreId', 'storeKey', 'directorKey', 'rows']) {

@@ -47,6 +47,54 @@ function isIsoUtc(s) {
 }
 const refuse = (reason, detail) => (detail === undefined ? { ok: false, reason } : { ok: false, reason, detail });
 
+// ── SharePoint row -> ENGINE row shape (interim LA review, generated-artifact round) ───────────────
+// Every ledger row the LA hands us comes straight off a SharePoint list: PascalCase columns, and the
+// ARCHIVE list additionally aliases three econ fields (TxnType/TxnDate/TxnTimestamp, archive-def:220
+// — the same aliasing normalizeArchiveRow already handles for pushIdempotency). The ops below read
+// the ENGINE row form (buybackExport.js:25-34: id/type/productId/storeId/qty/timestamp/transferId/
+// the four authority fields). Nothing bridged the two, so a fetched target arrived as an EMPTY
+// engine row: targetLine refused BAD_TARGET_INSTANT on every call, mintStamps could never resolve
+// tier (a), and every delta row failed validEconRow.
+// WHY HERE AND NOT IN THE WORKFLOW: a 25-field column map is a decision about shape, and decisions
+// live in the compute core (the F1 rule). Expressing it as setProperty chains in WDL would put the
+// mapping beyond the reach of the proof suite and duplicate it at five call sites.
+// Rows ALREADY in engine shape pass through byte-for-byte (no engine key appears in the map), so
+// every existing fixture and every trigger-supplied replacement is unaffected.
+const SP_TO_ENGINE = {
+  TransactionId: 'id', StoreId: 'storeId', ProductId: 'productId',
+  Type: 'type', TxnType: 'type', Qty: 'qty', Date: 'date', TxnDate: 'date',
+  Timestamp: 'timestamp', TxnTimestamp: 'timestamp', TransferId: 'transferId', Reason: 'reason',
+  StockFrom: 'stockFrom', StockTo: 'stockTo', StockFromStoreId: 'stockFromStoreId',
+  StockToStoreId: 'stockToStoreId', IdempotencyKey: 'idempotencyKey',
+  TargetTransactionId: 'targetTransactionId', UnitPriceAtTime: 'unitPriceAtTime',
+  SellAtSupply: 'sellAtSupply', DiscAtSupply: 'discAtSupply', PricingVersion: 'pricingVersion',
+  CatalogueVersion: 'catalogueVersion', ArchiveRunId: 'archiveRunId',
+  SnapshotVersion: 'snapshotVersion', SourceId: 'sourceId', ControlId: 'controlId',
+  ControlType: 'controlType', ControlRevision: 'controlRevision', ControlState: 'controlState',
+};
+// SharePoint Number columns can echo back as numeric STRINGS through the passthru, and the engine
+// validators are TYPE-STRICT (Number.isSafeInteger), so a '8' would fail validQty exactly like a
+// missing field. Coerce ONLY on an exact numeric round-trip; anything else is left alone to fail
+// closed rather than be guessed at.
+const NUMERIC_ENGINE_FIELDS = ['qty', 'timestamp', 'unitPriceAtTime', 'sellAtSupply', 'discAtSupply',
+  'pricingVersion', 'catalogueVersion', 'snapshotVersion'];
+function toEngineRow(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const out = {};
+  for (const [k, v] of Object.entries(row)) {
+    const mapped = SP_TO_ENGINE[k];
+    if (mapped === undefined) { out[k] = v; continue; }
+    // never let a blank alias (an empty Type column) beat the real aliased value, and never
+    // overwrite a value the row already carries in engine shape
+    if (out[mapped] === undefined || out[mapped] === null || out[mapped] === '') out[mapped] = v;
+  }
+  for (const f of NUMERIC_ENGINE_FIELDS) {
+    const v = out[f];
+    if (typeof v === 'string' && v.trim() !== '' && String(Number(v.trim())) === v.trim()) out[f] = Number(v.trim());
+  }
+  return out;
+}
+
 // ── digest — the opId-reuse guard (§5 request contract) ─────────────────────────────────────────────
 // JSON-array-framed canonical (never a join — field-boundary injection class, C1 lesson).
 // stableClone: deep clone with RECURSIVELY SORTED object keys — a canonical serialization, so a
@@ -80,7 +128,7 @@ function opDigest(input) {
 // steps = the enumerated RecordSteps for target.transferId (empty array when none);
 // targetSealValid = the P3.2 three-way outcome ('valid' | 'broken' | 'unsealed-legacy').
 function computeTargetLine(input) {
-  const t = input.target || {};
+  const t = toEngineRow(input.target) || {};   // the LA hands us the RAW SharePoint row (see toEngineRow)
   const steps = Array.isArray(input.steps) ? input.steps : [];
   if (t.transferId) {
     if (steps.length === 0) return refuse('TARGET_PRE_EPOCH'); // transfer-linked, no steps (D-C2-2 manual lane)
@@ -112,7 +160,7 @@ function computeTargetLine(input) {
 // tier (b): the transfer's ITEM stamps for the REPLACEMENT product via foldProjection —
 // trusted (not backfill-untrusted) and mint-attested only.
 function mintStamps(input) {
-  const t = input.target || {}, r = input.replacement || {};
+  const t = toEngineRow(input.target) || {}, r = toEngineRow(input.replacement) || {};   // raw SharePoint casing in, engine shape out
   const tup = engine.readTuple(t.sellAtSupply, t.discAtSupply, t.pricingVersion, t.catalogueVersion);
   if (tup && !tup.absent
       && t.productId === r.productId && t.storeId === r.storeId && t.type === r.type) {
@@ -150,8 +198,12 @@ function validEconRow(row) {
   return !!row && reqId(row.storeId) && reqId(row.productId) && validQty(row.qty)
     && typeof row.type === 'string' && row.type.length > 0 && hasEconDirection(row.type);
 }
-function effectOf(row) {
-  if (!row) return null;
+function effectOf(rawRow) {
+  if (!rawRow) return null;
+  // ONE seam covers target / newOutput / prevOutput / originalTarget: every row entering delta
+  // arithmetic is normalised from SharePoint casing to the engine shape BEFORE validation, so a
+  // fetched ledger row is judged on its real economics rather than rejected for its column names.
+  const row = toEngineRow(rawRow);
   if (!validEconRow(row)) return { invalid: true };
   const dir = engine.isIn(row) ? 1 : -1;
   return { key: row.storeId + '|' + row.productId, amount: dir * row.qty };
@@ -252,6 +304,24 @@ function assembleCandidate(input) {
     if (row.reason) return refuse(row.reason);
     out.row = row.row;
   }
+  // ── THE P7 TERMINAL SHAPE (§B step 20). Which registry form a mode writes, whether it publishes a
+  // control row at all, and which targets get their PublicationVersion filled are POLICY CHOICES, so
+  // they are decided HERE and the LA merely executes them (the F1 rule). The LA used to write one
+  // 'committed' shape for every mode, create a control row unconditionally (a null body on the modes
+  // that build none), and ECHO Revision — a prior revision of 4 stayed 4 after a withdraw.
+  out.publishesControlRow = mode === 'create' || mode === 'supersede';
+  // THE REVISION THE REGISTRY ENDS ON. It must also be what the caller is TOLD, because modeGate
+  // refuses the next correction unless expected.revision === the registry's Revision — reporting the
+  // pre-bump number would EXPECTED_MISMATCH every follow-up on the same target.
+  out.terminalRevision = (mode === 'supersede' || mode === 'withdraw' || mode === 'retire_claim') ? rev + 1 : rev;
+  out.registryTerminal = mode === 'adopt' ? null : {
+    State: 'committed',
+    // '' IS the withdrawn null (§A, N3 ControlRegistry): withdraw/retire retire the head, OpId kept.
+    ControlId: (mode === 'withdraw' || mode === 'retire_claim') ? '' : controlId,
+    Revision: out.terminalRevision,
+    PublicationVersion: cv,
+  };
+  out.adoptionFills = (input.adoptions || []).map(a => ({ targetTransactionId: a.target, publicationVersion: cv }));
   return out;
 }
 

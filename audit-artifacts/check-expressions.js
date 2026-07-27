@@ -115,6 +115,53 @@ for (const s of exprStrings) {
   }
 }
 
+// Is `name` inside a Scope that HAS a failure handler which actually reaches a Response?
+// This is deliberately strict: the mere existence of an enclosing Scope proves nothing — some
+// sibling of that Scope must run on [Failed]/[TimedOut] AND that branch must reach a Response.
+// Otherwise a failure inside the Scope still ends the run silently.
+function reachesResponse(actions) {
+  return Object.values(actions || {}).some(a => a.type === 'Response'
+    || reachesResponse(a.actions) || reachesResponse(a.else && a.else.actions)
+    || Object.values(a.cases || {}).some(c => reachesResponse(c.actions))
+    || reachesResponse(a.default && a.default.actions));
+}
+function containedByFailureHandler(name) {
+  // find the chain of Scopes enclosing `name`
+  const enclosing = [];
+  (function walk(node, stack) {
+    for (const [k, a] of Object.entries(node || {})) {
+      if (k === name) { enclosing.push(...stack); return; }
+      const nextStack = a.type === 'Scope' ? stack.concat([{ scopeName: k, siblings: node }]) : stack;
+      for (const sub of [a.actions, a.else && a.else.actions, a.default && a.default.actions]) if (sub) walk(sub, nextStack);
+      for (const c of Object.values(a.cases || {})) if (c.actions) walk(c.actions, nextStack);
+    }
+  })(def.actions, []);
+  // The handler is rarely the Response itself — it is usually the HEAD of a chain
+  // (re-read state -> release the lock -> respond -> terminate). So from every sibling triggered by
+  // the Scope failing, FOLLOW THE runAfter EDGES FORWARD and ask whether a Response is reachable.
+  // Checking only the immediate sibling reported 31 false positives against a correct structure.
+  return enclosing.some(({ scopeName, siblings }) => {
+    const heads = Object.entries(siblings).filter(([, sib]) => {
+      const st = (sib.runAfter || {})[scopeName] || [];
+      return st.includes('Failed') || st.includes('TimedOut');
+    }).map(([n]) => n);
+    if (!heads.length) return false;
+    const seen = new Set(heads);
+    const queue = [...heads];
+    while (queue.length) {
+      const cur = queue.shift();
+      const a = siblings[cur];
+      if (!a) continue;
+      if (a.type === 'Response' || reachesResponse(a.actions) || reachesResponse(a.else && a.else.actions)) return true;
+      for (const [n, sib] of Object.entries(siblings)) {
+        if (seen.has(n)) continue;
+        if (Object.keys(sib.runAfter || {}).includes(cur)) { seen.add(n); queue.push(n); }
+      }
+    }
+    return false;
+  });
+}
+
 function findAction(node, name) {
   for (const [k, a] of Object.entries(node || {})) {
     if (k === name) return a;
@@ -131,8 +178,18 @@ function findAction(node, name) {
   for (const [name, a] of Object.entries(actions || {})) {
     for (const [dep, statuses] of Object.entries(a.runAfter || {})) {
       const fallible = (n) => { const a = findAction(def.actions, n); return a && (a.type === 'Http' || a.type === 'ApiConnection'); };
-      if (fallible(dep) && !statuses.includes('Failed') && !statuses.includes('TimedOut')) {
-        problems.push(`runAfter HANDLES NEITHER Failed NOR TimedOut: '${name}' after the fallible call '${dep}' handles only [${statuses.join(',')}] — any failure ends the run with no Response`);
+      // ⚠ RULE RESHAPED — and I checked this was not just "make the gate pass".
+      // The ORIGINAL rule was per-edge: every successor of a fallible call must itself handle
+      // Failed/TimedOut. That was right while the workflow was a flat chain. It is WRONG once the
+      // actions are wrapped in a containment Scope: a failure inside a Scope fails the SCOPE, and
+      // the Scope's own failure handler catches it. Demanding per-edge handling inside an enclosed
+      // Scope would force 31 redundant handlers and make the correct structure un-passable.
+      // What ACTUALLY has to be true is unchanged: every failure must reach a Response. So the rule
+      // now asks that — the action either handles the status itself, OR sits inside a Scope whose
+      // failure handler reaches a Response. If that enclosure is missing or handles nothing, all 31
+      // come back (proved by mutation X1, which strips the handler's runAfter statuses).
+      if (fallible(dep) && !statuses.includes('Failed') && !statuses.includes('TimedOut') && !containedByFailureHandler(name)) {
+        problems.push(`runAfter HANDLES NEITHER Failed NOR TimedOut: '${name}' after the fallible call '${dep}' handles only [${statuses.join(',')}], and it is not inside a Scope with a failure handler that responds — any failure ends the run with no Response`);
       }
       if (statuses.includes('Failed') && !statuses.includes('TimedOut')) {
         problems.push(`runAfter MISSING TimedOut: '${name}' after '${dep}' handles [${statuses.join(',')}] — a timeout skips it and the run ends with no Response`);

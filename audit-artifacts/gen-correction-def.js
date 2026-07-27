@@ -106,6 +106,12 @@ function fn(route, body, runAfter) {
 // calls; check-fn-contracts.js now fails the build on it.
 const op = (name, inputs, runAfter) => fn('correctionCompute', { op: name, input: inputs }, runAfter);
 
+// Variable helpers. InitializeVariable is a TOP-LEVEL-ONLY action in Logic Apps — it cannot be
+// created inside a Scope / Condition / Foreach — so DECLARATION and ASSIGNMENT are separate
+// builders: declare at the top level with initVar(), assign in place with setVar().
+const initVar = (name, value, runAfter) => ({ type: 'InitializeVariable', inputs: { variables: [{ name, type: 'string', value }] }, runAfter: runAfter || {} });
+const setVar = (name, value, runAfter) => ({ type: 'SetVariable', inputs: { name, value }, runAfter: runAfter || {} });
+
 function response(statusCode, body, runAfter) {
   return { type: 'Response', kind: 'Http', inputs: { statusCode, headers: { 'Content-Type': 'application/json' }, body }, runAfter: runAfter || {} };
 }
@@ -122,7 +128,10 @@ function refusalBranch(name, statusCode, body, pre) {
   const b = {};
   let last = null;
   if (pre) { Object.assign(b, pre.actions); last = pre.last; }
-  b[name] = response(statusCode, body, last ? after(last) : {});
+  // afterAny, not after: once a releasePair is spliced in as the preamble (releasingRefusal), a
+  // FAILED coordination re-read would otherwise skip the release gate, which would skip the
+  // Response and the Terminate — reintroducing the very hang this file exists to prevent.
+  b[name] = response(statusCode, body, last ? afterAny(last) : {});
   b[name + '_stop'] = terminate(after(name));
   return b;
 }
@@ -133,14 +142,34 @@ function build() {
   const A = {};
   const item = (list, filterOrId) => `_api/web/lists/getbytitle('${list}')/items${filterOrId}`;
 
+  // A POST-ACQUIRE refusal terminal. Releasing the coordination fence is NOT optional here: the
+  // refusal Terminates the run, so the scope-level abort handler never gets to run. The release is
+  // ownership-conditional, so splicing it in front of a refusal that may not hold the fence is a
+  // harmless no-op. Mirrors the DEPLOYED archive LA, which puts Release_<x> -> Respond_<x> in every
+  // refusal branch. `runAfter` orders the re-read when the refusal is not the first thing in its
+  // branch (the lazy-adoption lane re-reads only after the re-run has answered).
+  function releasingRefusal(suffix, name, statusCode, body, runAfter) {
+    const p = releasePair(suffix, runAfter || {});
+    return refusalBranch(name, statusCode, body, { actions: p.actions, last: p.mergeName });
+  }
+
   // ── P0: triple gate (mirrors the archive LA verbatim, purpose swapped to 'correction', N8) ───────
   // validateKeys v2 does the PAIRING itself: the LA reads StoreCredentials over the secured
   // connection and hands the rows in, so no hash material is ever computed in the workflow.
   // Contract (validateKeys.js): {claimedStoreId, storeKey, directorKey, rows} -> {storeOk, directorOk}.
   // There is no `ok`; the first cut invented one and rejected every request.
-  A.Read_creds = sp(item('StoreCredentials_Staging', `?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq '__director')`));
+  // THE CLAIMED STORE IS THE PRESENTED ONE. `claimedStoreId:'__director'` was a hard-coded lie:
+  // validateKeys.evaluate matches the '__director' row on its FIRST branch (validateKeys.js:64), so
+  // the store branch was unreachable, `storeOk` was structurally always false, and the presented
+  // auth.storeId / auth.deviceId bound to nothing at all — the device half of the triple gate was
+  // decorative. The store row must also be READ or the pairing has nothing to verify against. The
+  // interpolated storeId is OData-escaped (apostrophe doubled): an unescaped value terminates the
+  // literal early and injects the filter. Keys_ok still requires ONLY directorOk — see the design
+  // note before tightening it.
+  const storeIdQ = "@{replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''','''''')}";
+  A.Read_creds = sp(item('StoreCredentials_Staging', `?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq '${storeIdQ}' or StoreId eq '__director')`));
   A.Gate_keys = fn('validateKeys', {
-    claimedStoreId: '__director',
+    claimedStoreId: "@coalesce(triggerBody()?['auth']?['storeId'],'')",
     storeKey: "@coalesce(triggerBody()?['auth']?['storeKey'],'')",
     directorKey: "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
     rows: "@coalesce(body('Read_creds')?['value'],json('[]'))",
@@ -153,7 +182,12 @@ function build() {
     else: { actions: { Reject_keys: response(401, { ok: false, reason: 'UNAUTHORIZED' }), Reject_keys_stop: terminate(after('Reject_keys')) } },
   };
 
-  A.Read_actor = sp(item(L.users, `?$select=Id,Username,Role,TokenVersion,Active&$filter=Active eq 1 and Username eq '@{coalesce(triggerBody()?[''actorUsername''],'''')}'`), { runAfter: after('Keys_ok') });
+  // `@{...}` is EXPRESSION context, NOT a WDL string literal, so the apostrophes inside it must not
+  // be doubled: `triggerBody()?[''actorUsername'']` parses as an empty string followed by a bare
+  // token (and `''''` is the one-character string "'", not the empty-string default). The action
+  // never evaluated, so Gate_proof verified every proof against ZERO rows and P0 was dead for EVERY
+  // caller. The doubling belongs to the VALUE, which lands inside the OData literal — via replace().
+  A.Read_actor = sp(item(L.users, `?$select=Id,Username,Role,TokenVersion,Active&$filter=Active eq 1 and Username eq '@{replace(coalesce(triggerBody()?['actorUsername'],''),'''','''''')}'`), { runAfter: after('Keys_ok') });
   A.Gate_proof = fn('verifyProof', {
     proof: "@coalesce(triggerBody()?['proof'],'')",
     expectedPurposes: ['correction'],                       // N8 — in SUDO_PURPOSES as of W-B1
@@ -169,15 +203,23 @@ function build() {
   // enforces the check internally (validateUser.js — a password reset bumps TokenVersion and kills
   // every outstanding proof). The first cut compared against a property that never exists, so it
   // rejected every valid director.
+  // §B P0 pins THREE distinguishable outcomes and the combined gate collapsed two of them: a bad
+  // key is 401, an invalid/expired/wrong-purpose/wrong-device PROOF is 401, and only a VERIFIED
+  // person holding the wrong role is 403. Answering 403 to a failed proof tells the client "you are
+  // not allowed" when the truth is "you are not authenticated" — so it stops instead of re-minting
+  // the one thing that would fix it. Both branches stay FAIL-CLOSED: a Function failure/timeout
+  // leaves body('Gate_proof') null, coalesce yields false, and the 401 branch fires.
+  A.Proof_ok = {
+    type: 'If',
+    expression: { and: [{ equals: ["@coalesce(body('Gate_proof')?['ok'],false)", true] }] },
+    runAfter: afterAny('Gate_proof'),
+    actions: {},
+    else: { actions: { Reject_proof: response(401, { ok: false, reason: 'PROOF_INVALID' }), Reject_proof_stop: terminate(after('Reject_proof')) } },
+  };
   A.Gate_role = {
     type: 'If',
-    expression: {
-      and: [
-        { equals: ["@coalesce(body('Gate_proof')?['ok'],false)", true] },
-        { equals: ["@toLower(coalesce(body('Gate_proof')?['role'],''))", 'director'] },
-      ],
-    },
-    runAfter: afterAny('Gate_proof'),
+    expression: { and: [{ equals: ["@toLower(coalesce(body('Gate_proof')?['role'],''))", 'director'] }] },
+    runAfter: after('Proof_ok'),
     actions: {},
     else: { actions: { Reject_role: response(403, { ok: false, reason: 'FORBIDDEN' }), Reject_role_stop: terminate(after('Reject_role')) } },
   };
@@ -193,7 +235,7 @@ function build() {
     actorUsername: "@coalesce(triggerBody()?['actorUsername'],'')",
   }, after('Gate_role'));
 
-  A.Journal_lookup = sp(item(L.journal, `?$select=Id,OpId,JournalId,Mode,Target,State,Digest,StoredResult,CandidateHeads,AdoptionDecisions,CandidateVersion,HeartbeatAt&$filter=OpId eq '@{coalesce(triggerBody()?[''intent'']?[''opId''],'''')}'`), { runAfter: after('Digest') });
+  A.Journal_lookup = sp(item(L.journal, `?$select=Id,OpId,JournalId,Mode,Target,State,Digest,StoredResult,CandidateHeads,AdoptionDecisions,CandidateVersion,HeartbeatAt&$filter=OpId eq '@{replace(coalesce(triggerBody()?['intent']?['opId'],''),'''','''''')}'`), { runAfter: after('Digest') });
 
   // Terminal + digest match => REPLAY StoredResult (incl. the C2-R8-1 convergence fields).
   // Terminal + digest MISMATCH => OPID_REUSED. Non-terminal own => reconcile.
@@ -232,36 +274,59 @@ function build() {
   };
 
   A.Get_archive_state = sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'`), { runAfter: after('Prepass_gate') });
+  // The CAS alone cannot express "only if idle": an ETag match proves only that nobody has written
+  // the record since our READ — it says nothing about WHICH state we read. A healthy run_active run
+  // or a fresh foreign correction_active lease has a stable ETag, so the MERGE succeeds and stomps a
+  // lock we do not hold. §3 pins that ONLY `idle` is acquirable for work; the gate asserts that on
+  // the read and the IF-MATCH closes the read->write race. Reading a state is I/O sequencing, not a
+  // policy decision, so it stays in the workflow (F1); the FAIRNESS request flags are NOT decided
+  // here — see the coordinationAcquire design note.
+  A.State_idle_gate = {
+    type: 'If',
+    expression: { and: [{ equals: ["@toLower(coalesce(json(coalesce(if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['ConfigData'],'{}'))?['state'],''))", 'idle'] }] },
+    runAfter: afterAny('Get_archive_state'),
+    actions: {},
+    else: { actions: { Respond_state_busy: refuse('COORDINATION_BUSY', 409), Respond_state_busy_stop: terminate(after('Respond_state_busy')) } },
+  };
   A.Acquire = spMerge(
     item(L.config, "(@{if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['Id']})"),
     { ConfigData: "@{string(setProperty(setProperty(setProperty(setProperty(json(coalesce(if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['ConfigData'],'{}')),'state','correction_active'),'opId',coalesce(triggerBody()?['intent']?['opId'],'')),'owner',workflow()?['run']?['name']),'heartbeatAt',utcNow()))}" },
     "@{if(empty(body('Get_archive_state')?['value']), null, first(body('Get_archive_state')?['value']))?['odata.etag']}",
-    after('Get_archive_state'));
+    after('State_idle_gate'));
   A.Acquire_ok = {
     type: 'If',
     expression: { and: [{ less: ["@int(coalesce(outputs('Acquire')?['statusCode'],500))", 300] }] },
     runAfter: afterAny('Acquire'), actions: {},
-    else: { actions: { Respond_acquire_conflict: refuse('COORDINATION_CONFLICT', 409), Respond_acquire_conflict_stop: terminate(after('Respond_acquire_conflict')) } },
+    else: { actions: releasingRefusal('acq', 'Respond_acquire_conflict', 409, { ok: false, reason: 'COORDINATION_CONFLICT' }) },
   };
 
   // Capture_snapshot — BOTH the ETag and the ConfigData go into variables NOW; P6 uses ONLY these.
   A.Capture_snapshot = sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'stock_snapshot'`), { runAfter: after('Acquire_ok') });
-  A.Set_snapshot_etag = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapEtag', type: 'string', value: "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['odata.etag']}" }] }, runAfter: after('Capture_snapshot') };
-  A.Set_snapshot_data = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapData', type: 'string', value: "@{coalesce(if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['ConfigData'],'{}')}" }] }, runAfter: after('Set_snapshot_etag') };
-  A.Set_snapshot_id = { type: 'InitializeVariable', inputs: { variables: [{ name: 'snapItemId', type: 'string', value: "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['Id']}" }] }, runAfter: after('Set_snapshot_data') };
+  A.Set_snapshot_etag = setVar('snapEtag', "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['odata.etag']}", after('Capture_snapshot'));
+  A.Set_snapshot_data = setVar('snapData', "@{coalesce(if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['ConfigData'],'{}')}", after('Set_snapshot_etag'));
+  A.Set_snapshot_id = setVar('snapItemId', "@{if(empty(body('Capture_snapshot')?['value']), null, first(body('Capture_snapshot')?['value']))?['Id']}", after('Set_snapshot_data'));
 
   // ── P3: authoritative state ──────────────────────────────────────────────────────────────────────
   // SOURCE-FIRST Live -> Archive (C2-R17-2).
   const tgt = "@{coalesce(triggerBody()?['intent']?['targetTransactionId'],'')}";
-  A.Target_live = sp(item(L.live, `?$top=2&$filter=TransactionId eq '${tgt}'`), { runAfter: after('Set_snapshot_id') });
-  A.Target_archive = sp(item(L.archive, `?$top=2&$filter=TransactionId eq '${tgt}'`), { runAfter: after('Target_live') });
+  // THE SAME VALUE INSIDE AN ODATA STRING LITERAL. An apostrophe in the id closes the literal
+  // early: the query 400s, or its tail is parsed as filter syntax. OData escapes a quote by
+  // DOUBLING it, so every interpolated literal goes through replace(x, '''', ''''''). `tgt` stays
+  // UNESCAPED for the journal/registry PAYLOADS — escaping those would store the doubled form.
+  const tgtQ = "@{replace(coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'''','''''')}";
+  // SOURCE-FIRST target row, live else archive (C2-R17-2) — NEVER coalesce(): an EMPTY live array
+  // is not null, so coalesce returns the empty live array and the ARCHIVE IS NEVER CONSULTED,
+  // making every archived target invisible to the expression.
+  const targetRow = "if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))";
+  A.Target_live = sp(item(L.live, `?$top=2&$filter=TransactionId eq '${tgtQ}'`), { runAfter: after('Set_snapshot_id') });
+  A.Target_archive = sp(item(L.archive, `?$top=2&$filter=TransactionId eq '${tgtQ}'`), { runAfter: after('Target_live') });
   A.Target_gate = {
     type: 'Switch',
     expression: "@if(and(empty(body('Target_live')?['value']),empty(body('Target_archive')?['value'])),'none',if(and(not(empty(body('Target_live')?['value'])),not(empty(body('Target_archive')?['value']))),'both','one'))",
     runAfter: after('Target_archive'),
     cases: {
-      None: { case: 'none', actions: { Respond_no_target: refuse('TARGET_NOT_FOUND', 404), Respond_no_target_stop: terminate(after('Respond_no_target')) } },
-      Both: { case: 'both', actions: { Respond_dup_target: refuse('TARGET_DUPLICATED', 409), Respond_dup_target_stop: terminate(after('Respond_dup_target')) } },
+      None: { case: 'none', actions: releasingRefusal('notarget', 'Respond_no_target', 404, { ok: false, reason: 'TARGET_NOT_FOUND' }) },
+      Both: { case: 'both', actions: releasingRefusal('duptarget', 'Respond_dup_target', 409, { ok: false, reason: 'TARGET_DUPLICATED' }) },
     },
     default: { actions: {} },
   };
@@ -271,7 +336,9 @@ function build() {
   A.Verify_target_row = fn('attestRows', { op: 'verify', frame: 'econ-v1', rows: "@coalesce(union(coalesce(body('Target_live')?['value'],json('[]')),coalesce(body('Target_archive')?['value'],json('[]'))),json('[]'))" }, after('Get_seal_epoch'));
   A.Verify_epoch = fn('attestRows', { op: 'verify', frame: 'epoch-v1', rows: [{ obj: "@json(coalesce(if(empty(body('Get_seal_epoch')?['value']), null, first(body('Get_seal_epoch')?['value']))?['ConfigData'],'{}'))", sig: "@coalesce(json(coalesce(if(empty(body('Get_seal_epoch')?['value']), null, first(body('Get_seal_epoch')?['value']))?['ConfigData'],'{}'))?['EpochSig'],'')" }] }, afterAny('Verify_target_row'));
   A.Seal_threeway = op('targetSeal', {
-    econSigPresent: "@not(empty(coalesce(first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))?['EconSig'],'')))",
+    // source-first via targetRow: coalesce(live,archive) returned the EMPTY live array, so
+    // econSigPresent was FALSE for every ARCHIVED target and targetSeal never consulted its seal.
+    econSigPresent: `@not(empty(coalesce(${targetRow}?['EconSig'],'')))`,
     verifyOk: "@coalesce(if(empty(body('Verify_target_row')?['results']), null, first(body('Verify_target_row')?['results']))?['ok'],false)",
     provenanceId: "@coalesce(if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value']))?['Id'],if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['SourceId'],'')",
     // targetSeal reads input.epoch.epochSigValid -- a NESTED field. Sending epochPresent/epochSigValid
@@ -286,33 +353,99 @@ function build() {
     // 'unsealed-legacy' is a legitimate pre-epoch row, so both passing outcomes proceed.
     expression: { and: [{ contains: ["@json('[\"valid\",\"unsealed-legacy\"]')", "@coalesce(body('Seal_threeway')?['outcome'],'')"] }] },
     runAfter: after('Seal_threeway'), actions: {},
-    else: { actions: { Respond_seal: response(409, { ok: false, reason: "@coalesce(body('Seal_threeway')?['outcome'],'TARGET_SEAL_BROKEN')" }), Respond_seal_stop: terminate(after('Respond_seal')) } },
+    else: { actions: releasingRefusal('seal', 'Respond_seal', 409, { ok: false, reason: "@coalesce(body('Seal_threeway')?['outcome'],'TARGET_SEAL_BROKEN')" }) },
   };
 
   // Steps enumeration (transfer-linked targets only) — paged walk, then a digest.
-  A.Steps_enumerate = sp(item(L.steps, `?$top=200&$orderby=Id asc&$filter=RecordId eq '@{coalesce(first(coalesce(body(''Target_live'')?[''value''],body(''Target_archive'')?[''value'']))?[''TransferId''],'''')}'`), { runAfter: after('Seal_gate') });
+  A.Steps_enumerate = sp(item(L.steps, `?$top=200&$orderby=Id asc&$filter=RecordId eq '@{replace(coalesce(${targetRow}?['TransferId'],''),'''','''''')}'`), { runAfter: after('Seal_gate') });
   A.Step_digest = op('stepSetDigest', { steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))" }, after('Steps_enumerate'));
 
   // Mode gate — ALL legality lives in the compute op (C2-LA-1b).
-  A.Registry_lookup = sp(item(L.registry, `?$top=2&$filter=TargetTransactionId eq '${tgt}'`), { runAfter: after('Step_digest') });
-  A.Belt_tombstone = sp(item(L.live, `?$top=5&$filter=Type eq 'deleted' and TargetTransactionId eq '${tgt}'`), { runAfter: after('Registry_lookup') });
+  A.Registry_lookup = sp(item(L.registry, `?$top=2&$filter=TargetTransactionId eq '${tgtQ}'`), { runAfter: after('Step_digest') });
+  // THE BELT — §B step 12 requires BOTH ledger lists. Querying only Live means an ARCHIVED
+  // tombstone is invisible: modeGate sees beltTombstone=null, 'create' returns ok/'no-head', and a
+  // second control publishes over an already-controlled target — the exact gap lazy adoption exists
+  // to close, and the compensating control for the deliberate absence of registry backfill (H4).
+  // The archive list RENAMES the econ columns (Type -> TxnType, archive-def-current.json:106), so
+  // the live filter cannot be reused verbatim; TargetTransactionId / TransactionId are carried
+  // across unchanged, so those two bind identically on both sides.
+  // beltRow is source-first live->archive as nested if(empty()) — NOT coalesce, which returns the
+  // EMPTY live array and never consults the archive.
+  const beltRow = "if(empty(body('Belt_tombstone')?['value']), if(empty(body('Belt_tombstone_archive')?['value']), null, first(body('Belt_tombstone_archive')?['value'])), first(body('Belt_tombstone')?['value']))";
+  A.Belt_tombstone = sp(item(L.live, `?$top=5&$filter=Type eq 'deleted' and TargetTransactionId eq '${tgtQ}'`), { runAfter: after('Registry_lookup') });
+  A.Belt_tombstone_archive = sp(item(L.archive, `?$top=5&$filter=TxnType eq 'deleted' and TargetTransactionId eq '${tgtQ}'`), { runAfter: after('Belt_tombstone') });
   A.Mode_gate = op('modeGate', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
     expected: "@triggerBody()?['intent']?['expected']",
     registryItem: "@if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))",
-    beltTombstone: "@if(empty(body('Belt_tombstone')?['value']), null, first(body('Belt_tombstone')?['value']))",
-    retireEvidence: "@triggerBody()?['intent']?['retireEvidence']",
-  }, after('Belt_tombstone'));
+    beltTombstone: '@' + beltRow,
+    // RETIREMENT EVIDENCE IS GATHERED, NEVER ASSERTED. Taking this from the request body let the
+    // CALLER supply modeGate's own justification: `retireEvidence:{rowAbsentEverywhere:true}` walks
+    // straight past the RETIRE_EVIDENCE_INSUFFICIENT interlock (correctionCompute.js:555-559) and
+    // retires a live, materialised device tombstone claim — publishing the explicit-null head and
+    // restoring the target's balance on evidence nobody checked. `sealOutcome` is the compute op's
+    // OWN P3 verdict (op:targetSeal), so it is authoritative. The other two lanes are pinned FALSE
+    // until the workflow gathers them (see the design decisions): fail-closed, so retire_claim
+    // survives only on the 'unsealed-legacy' evidence the workflow itself observed.
+    retireEvidence: {
+      sealOutcome: "@coalesce(body('Seal_threeway')?['outcome'],'')",
+      provenancePreEpoch: false,
+      rowAbsentEverywhere: false,
+    },
+  }, after('Belt_tombstone_archive'));
   A.Mode_gate_ok = {
     type: 'If',
     expression: { and: [{ equals: ["@coalesce(body('Mode_gate')?['ok'],false)", true] }] },
     runAfter: after('Mode_gate'), actions: {},
-    else: { actions: { Respond_mode: response(409, { ok: false, reason: "@coalesce(body('Mode_gate')?['reason'],'MODE_REFUSED')" }), Respond_mode_stop: terminate(after('Respond_mode')) } },
+    else: {
+      actions: {
+        // LAZY_ADOPTION_REQUIRED IS NOT A TERMINAL REFUSAL (§B step 12, design §4 C2-R1-4).
+        // Refusing it left the tombstone permanently unregistered, so EVERY later correction on
+        // that target — including the supersede the Director is told to use instead — hit the same
+        // refusal forever: the target became uncorrectable, which is the defect lazy adoption was
+        // added to fix. The LA REGISTERS the belt tombstone (committed, ControlId = the tombstone's
+        // own TransactionId, Revision 0, Origin 'device-adopted', PublicationVersion ABSENT so it
+        // reads as committed-UNADOPTED) and RE-RUNS the gate against the RE-READ registry item.
+        // Registration is create-if-absent: TargetTransactionId is Enforce-Unique, so the race is
+        // atomic and a 409 simply means someone else registered it — hence afterAny on the re-read
+        // and the re-run judging off the read rather than off the write. The LA does NOT predict
+        // the verdict; it echoes whatever modeGate returns (the F1 rule).
+        // BOTH terminals hand the coordination fence back before they respond.
+        Lazy_gate: {
+          type: 'If',
+          expression: { and: [{ equals: ["@coalesce(body('Mode_gate')?['reason'],'')", 'LAZY_ADOPTION_REQUIRED'] }] },
+          runAfter: {},
+          actions: Object.assign({
+            Lazy_register: spCreate(item(L.registry, ''), {
+              TargetTransactionId: tgt,
+              State: 'committed',
+              ControlId: `@{coalesce(${beltRow}?['TransactionId'],'')}`,
+              Revision: 0,
+              OpId: `@{coalesce(${beltRow}?['TransactionId'],'')}`,
+              Origin: 'device-adopted',
+            }, {}),
+            Lazy_reread: sp(item(L.registry, `?$top=2&$filter=TargetTransactionId eq '${tgtQ}'`), { runAfter: afterAny('Lazy_register') }),
+            Mode_gate_rerun: op('modeGate', {
+              mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
+              expected: "@triggerBody()?['intent']?['expected']",
+              registryItem: "@if(empty(body('Lazy_reread')?['value']), null, first(body('Lazy_reread')?['value']))",
+              beltTombstone: '@' + beltRow,
+              retireEvidence: {
+                sealOutcome: "@coalesce(body('Seal_threeway')?['outcome'],'')",
+                provenancePreEpoch: false,
+                rowAbsentEverywhere: false,
+              },
+            }, afterAny('Lazy_reread')),
+          }, releasingRefusal('lazy', 'Respond_lazy', 409, { ok: false, reason: "@coalesce(body('Mode_gate_rerun')?['reason'],'MODE_REFUSED')" }, afterAny('Mode_gate_rerun'))),
+          else: { actions: releasingRefusal('mode', 'Respond_mode', 409, { ok: false, reason: "@coalesce(body('Mode_gate')?['reason'],'MODE_REFUSED')" }) },
+        },
+      },
+    },
   };
 
   // ── P4: compute — every decision via correctionCompute ───────────────────────────────────────────
   // The LA fetches EXACTLY the rows modeGate named in `needs` — it does not decide which.
-  A.Fetch_prior_control = sp(item("@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}", "?$top=2&$filter=ControlId eq '@{coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['ControlId'],'~none~')}'"), { runAfter: after('Mode_gate_ok') });
+  A.Fetch_prior_control = sp(item("@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}", "?$top=2&$filter=ControlId eq '@{replace(coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['ControlId'],'~none~'),'''','''''')}'"), { runAfter: after('Mode_gate_ok') });
   A.Delta_cell = op('deltaCell', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
     baseline: "@coalesce(body('Mode_gate')?['baseline'],'no-head')",
@@ -321,8 +454,16 @@ function build() {
   }, after('Fetch_prior_control'));
 
   A.Target_line = op('targetLine', {
-    target: "@first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))",
+    // TWO defects lived in this one line. (1) SOURCE-FIRST selection written as coalesce(live,
+    // archive) NEVER reaches the archive — an EMPTY array is not null — so every ARCHIVED target
+    // was invisible and first([]) ran on an empty collection. (2) computeTargetLine reads
+    // targetSealValid (correctionCompute.js:103) to decide whether a TRANSFERLESS target's own
+    // stamps are trustworthy; omitting it made every transferless target behave as though its C1
+    // seal had failed. The SharePoint -> engine COLUMN CASING is normalised inside the op
+    // (toEngineRow) — a 25-field shape table is logic, and logic does not live in the workflow.
+    target: `@${targetRow}`,
     steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))",
+    targetSealValid: "@coalesce(body('Seal_threeway')?['outcome'],'')",
   }, after('Mode_gate_ok'));
   // mintStamps reads {target, replacement, steps} — it resolves tier (a) from the target row's own
   // stamps and tier (b) from the server steps projection. The first cut sent mode/control/targetLine,
@@ -334,11 +475,11 @@ function build() {
   }, after('Target_line'));
 
   // op:membership INPUT MAPPING — PINNED (§B 13a). Both target bindings are MANDATORY.
-  A.Run_record = sp(item(L.runRecords, `?$top=2&$filter=RunId eq '@{coalesce(first(coalesce(body(''Target_live'')?[''value''],body(''Target_archive'')?[''value'']))?[''ArchiveRunId''],'''')}'`), { runAfter: after('Stamps') });
+  A.Run_record = sp(item(L.runRecords, `?$top=2&$filter=RunId eq '@{replace(coalesce(${targetRow}?['ArchiveRunId'],''),'''','''''')}'`), { runAfter: after('Stamps') });
   A.Verify_run_record = fn('attestRows', { op: 'verify', frame: 'runrec-v1', rows: [{ obj: "@if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))", sig: "@coalesce(if(empty(body('Run_record')?['value']), null, first(body('Run_record')?['value']))?['RecordSig'],'')" }] }, afterAny('Run_record'));
   A.Membership = op('membership', {
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
-    tombstoneTransactionId: "@coalesce(if(empty(body('Belt_tombstone')?['value']), null, first(body('Belt_tombstone')?['value']))?['TransactionId'],'')",
+    tombstoneTransactionId: `@coalesce(${beltRow}?['TransactionId'],'')`,
     target: {
       archiveRunId: "@coalesce(if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['ArchiveRunId'],'')",
       snapshotVersion: "@coalesce(if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value']))?['SnapshotVersion'],'')",
@@ -354,12 +495,23 @@ function build() {
   A.Delta = op('delta', {
     cell: "@body('Delta_cell')?['cell']",
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
-    target: "@body('Target_line')?['targetLine']",
+    // computeTargetLine returns `targetLine` as an IDENTITY/PROJECTION ({transferId, productId,
+    // qty}) — the engine's resolve-pinned QUANTITY AUTHORITY, not an economic row. computeDelta
+    // needs storeId (the balance key) and type (the direction), so this refused INVALID_ROW on
+    // every create-replace / create-delete / adopt / retire cell. The economic row is the FETCHED
+    // TARGET LEDGER ROW itself — the same source `originalTarget` uses. No cell consumes both
+    // `target` and `originalTarget`, so there is no double-count.
+    target: `@${targetRow}`,
     newOutput: "@triggerBody()?['intent']?['control']?['replacement']",
     prevOutput: "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))",
     originalTarget: "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
     membership: "@body('Membership')",
-  }, after('Membership'));
+    // EXECUTION-ORDER RACE. This action reads body('Delta_cell') and body('Fetch_prior_control')
+    // but ran after Membership ONLY. Logic Apps does NOT infer dependencies from output references
+    // — they must be DECLARED. Mode_gate_ok forks two parallel branches and Delta joined only one,
+    // so `cell` could resolve to nothing and computeDelta refuse UNKNOWN_CELL. Declaring Delta_cell
+    // covers Fetch_prior_control too (it is Delta_cell's own runAfter parent).
+  }, after(['Membership', 'Delta_cell']));
 
   A.Candidate = op('candidate', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
@@ -368,13 +520,26 @@ function build() {
     revision: "@coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['Revision'],0)",
     candidateVersion: "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
     adoptions: "@coalesce(triggerBody()?['intent']?['adoptions'],json('[]'))",
+    // assembleCandidate now BUILDS THE CONTROL ROW itself (buildControlRow, correctionCompute.js:261)
+    // — §B step 16 says the LA creates the row with N7 columns + minted stamps + TargetLine +
+    // OriginalEventAt, and no op returned it, so it was moved into the function rather than
+    // assembled in the workflow. Sending NONE of its inputs meant BAD_REPLACEMENT_ROW on EVERY
+    // create/supersede — and, worse, retire_claim did NOT fail: with `membership` absent, :228
+    // silently stamped AdoptionDecisions[target] = {decision:'undecidable'}, a wrong adjudication
+    // rather than a refusal. All five sources are transitive runAfter ancestors via
+    // Target_line -> Stamps -> Run_record -> Verify_run_record -> Membership -> Delta.
+    control: "@triggerBody()?['intent']?['control']",
+    targetLine: "@body('Target_line')?['targetLine']",
+    originalEventAt: "@body('Target_line')?['originalEventAt']",
+    stamps: "@body('Stamps')?['stamps']",
+    membership: "@body('Membership')",
   }, after('Delta'));
 
   A.Compute_gate = {
     type: 'If',
     expression: { and: [{ equals: ["@and(coalesce(body('Delta')?['ok'],false),coalesce(body('Candidate')?['ok'],false))", true] }] },
     runAfter: afterAny('Candidate'), actions: {},
-    else: { actions: { Respond_compute: response(409, { ok: false, reason: "@coalesce(body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')" }), Respond_compute_stop: terminate(after('Respond_compute')) } },
+    else: { actions: releasingRefusal('compute', 'Respond_compute', 409, { ok: false, reason: "@coalesce(body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')" }) },
   };
 
   // ── P5: journal + candidate (publishes NOTHING) ──────────────────────────────────────────────────
@@ -404,60 +569,115 @@ function build() {
     Origin: 'director',
   }, after('Journal_create'));
 
-  A.Candidate_row = spCreate(item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", ''), "@body('Candidate')?['row']", after('Reserve'));
-  A.Sign_ctl = fn('attestRows', { op: 'sign', frame: 'ctl-v1', rows: ["@body('Candidate')?['row']"] }, after('Candidate_row'));
-  A.Stamp_ctl_sig = spMerge(
-    item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", "(@{body('Candidate_row')?['Id']})"),
-    { EconSig: "@{if(empty(body('Sign_ctl')?['sigs']), null, first(body('Sign_ctl')?['sigs']))}" },
-    "@{body('Candidate_row')?['odata.etag']}",
-    after('Sign_ctl'));
-
-  // Verify: the seal is minted FROM THE INTENT, and the re-read row is compared to that intent.
-  A.Reread_candidate = sp(item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", "(@{body('Candidate_row')?['Id']})"), { runAfter: after('Stamp_ctl_sig') });
-  A.Rows_equal = op('ctlRowsEqual', { a: "@body('Candidate')?['row']", b: "@body('Reread_candidate')" }, after('Reread_candidate'));
-  A.Steps_recheck = sp(item(L.steps, `?$top=200&$orderby=Id asc&$filter=RecordId eq '@{coalesce(first(coalesce(body(''Target_live'')?[''value''],body(''Target_archive'')?[''value'']))?[''TransferId''],'''')}'`), { runAfter: after('Rows_equal') });
+  // §B step 16 says "create/supersede only", and op:candidate returns `row` for THOSE MODES ONLY.
+  // An UNCONDITIONAL create therefore POSTed a NULL body on every withdraw / retire_claim / adopt:
+  // a junk ledger item, signed as garbage, with the run then dying at the verify gate and that item
+  // already committed and un-rolled-back. The mode decision stays in the function
+  // (publishesControlRow); the workflow only obeys it (the F1 rule). No Response inside the scope —
+  // a refusal there would trip the FALL-THROUGH GATE rule, so the outcome rides out on `rowOk`.
+  A.Publish_control_row = {
+    type: 'If',
+    expression: { and: [{ equals: ["@coalesce(body('Candidate')?['publishesControlRow'],false)", true] }] },
+    runAfter: after('Reserve'),
+    actions: {
+      Candidate_row: spCreate(item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", ''), "@body('Candidate')?['row']", {}),
+      Sign_ctl: fn('attestRows', { op: 'sign', frame: 'ctl-v1', rows: ["@body('Candidate')?['row']"] }, after('Candidate_row')),
+      Stamp_ctl_sig: spMerge(
+        item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", "(@{body('Candidate_row')?['Id']})"),
+        { EconSig: "@{if(empty(body('Sign_ctl')?['sigs']), null, first(body('Sign_ctl')?['sigs']))}" },
+        "@{body('Candidate_row')?['odata.etag']}",
+        after('Sign_ctl')),
+      // Verify: the seal is minted FROM THE INTENT, and the re-read row is compared to that intent.
+      Reread_candidate: sp(item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", "(@{body('Candidate_row')?['Id']})"), { runAfter: after('Stamp_ctl_sig') }),
+      Rows_equal: op('ctlRowsEqual', { a: "@body('Candidate')?['row']", b: "@body('Reread_candidate')" }, after('Reread_candidate')),
+      Set_row_ok: setVar('rowOk', "@coalesce(body('Rows_equal')?['equal'],false)", afterAny('Rows_equal')),
+    },
+    else: { actions: {} },
+  };
+  A.Steps_recheck = sp(item(L.steps, `?$top=200&$orderby=Id asc&$filter=RecordId eq '@{replace(coalesce(${targetRow}?['TransferId'],''),'''','''''')}'`), { runAfter: after('Publish_control_row') });
   A.Steps_redigest = op('stepSetDigest', { steps: "@coalesce(body('Steps_recheck')?['value'],json('[]'))" }, after('Steps_recheck'));
   A.Verify_gate = {
     type: 'If',
     expression: {
       and: [
-        { equals: ["@coalesce(body('Rows_equal')?['equal'],false)", true] },
+        { equals: ["@variables('rowOk')", true] },
         { equals: ["@coalesce(body('Steps_redigest')?['digest'],'x')", "@coalesce(body('Step_digest')?['digest'],'y')"] },
       ],
     },
     runAfter: after('Steps_redigest'), actions: {},
-    else: { actions: { Respond_verify: response(409, { ok: false, reason: 'CANDIDATE_VERIFY_FAILED' }), Respond_verify_stop: terminate(after('Respond_verify')) } },
+    else: { actions: releasingRefusal('verify', 'Respond_verify', 409, { ok: false, reason: 'CANDIDATE_VERIFY_FAILED' }) },
   };
 
   // ── P6: THE PUBLISH (irrevocable) ────────────────────────────────────────────────────────────────
   // Re-read before the CAS: the pre-acquire body would write idle back over correction_active, and
   // a MERGE response carries no ETag to fence on.
   A.Reread_state_restamp = sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'`), { runAfter: after('Verify_gate') });
+  // OWNERSHIP, not just freshness (§3a). The release pair asserts `owner === this run` before it
+  // touches the record; the boundary re-stamp must do the same. A run displaced after its lease went
+  // stale re-reads a record it no longer owns, CASes a fresh heartbeat onto the NEW holder's lock —
+  // prolonging a lease it does not hold, and defeating the staleness exit every recoverer keys off —
+  // and then walks on into P6. §3a: a re-stamp that is no longer ours => the worker ABORTS.
+  // The abort deliberately does NOT release the state (it is not ours to release).
+  A.Restamp_owner_gate = {
+    type: 'If',
+    expression: { and: [{ equals: ["@coalesce(json(coalesce(if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['ConfigData'],'{}'))?['owner'],'')", "@workflow()?['run']?['name']"] }] },
+    runAfter: afterAny('Reread_state_restamp'),
+    actions: {},
+    else: { actions: { Respond_displaced: response(202, { ok: false, reason: 'OWNERSHIP_LOST', detail: 'this run no longer owns the coordination record; a recoverer owns the journal' }), Respond_displaced_stop: terminate(after('Respond_displaced')) } },
+  };
   A.Final_restamp = spMerge(
     item(L.config, "(@{if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['Id']})"),
     { ConfigData: "@{string(setProperty(json(coalesce(if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['ConfigData'],'{}')),'heartbeatAt',utcNow()))}" },
     "@{if(empty(body('Reread_state_restamp')?['value']), null, first(body('Reread_state_restamp')?['value']))?['odata.etag']}",
-    after('Reread_state_restamp'));
+    after('Restamp_owner_gate'));
+  // The gate above closes the observed-by-read case; the CAS closes the race (a seize between the
+  // read and the MERGE changes the ETag => 412). That 412 used to be invisible: Assemble was
+  // Succeeded-only, so on failure the run ended with no Response and the caller hung forever.
+  A.Final_restamp_ok = {
+    type: 'If',
+    expression: { and: [{ less: ["@int(coalesce(outputs('Final_restamp')?['statusCode'],500))", 300] }] },
+    runAfter: afterAny('Final_restamp'), actions: {},
+    else: { actions: { Respond_restamp_conflict: response(202, { ok: false, reason: 'OWNERSHIP_LOST', detail: 'the boundary re-stamp CAS failed; the coordination record changed under this run' }), Respond_restamp_conflict_stop: terminate(after('Respond_restamp_conflict')) } },
+  };
 
   // op:assembleSnapshot returns the EXACT serialized ConfigData — the LA does NO arithmetic.
   A.Assemble = op('assembleSnapshot', {
-    snapshotConfigData: "@variables('snapData')",
+    // assembleSnapshot requires a PARSED OBJECT (`typeof cfg !== 'object'` => BAD_ASSEMBLY_INPUT),
+    // and snapData is a STRING variable — so the op refused on 100% of runs. Parsed at the CALL
+    // SITE, not by retyping the variable: A.Candidate does json(variables('snapData')) too, and
+    // json() over an already-parsed object is not a valid WDL call.
+    snapshotConfigData: "@json(variables('snapData'))",
     candidateVersion: "@body('Candidate')?['candidateVersion']",
     deltas: "@body('Delta')?['deltas']",
     candidateHeads: "@body('Candidate')?['candidateHeads']",
-  }, after('Final_restamp'));
+  }, after('Final_restamp_ok'));
+
+  // assembleSnapshot expresses REFUSAL as HTTP 200 + {ok:false,reason} (correctionCompute.js:497-498
+  // via refuse()), so the CALL succeeds and `configData` is simply ABSENT. Without this gate the
+  // MERGE below writes `ConfigData: ""` over the live snapshot with the still-valid P2 ETag —
+  // balances, controlManifest and fence destroyed, irrevocably, on a refusal.
+  A.Assemble_ok = {
+    type: 'If',
+    expression: { and: [{ equals: ["@coalesce(body('Assemble')?['ok'],false)", true] }] },
+    runAfter: afterAny('Assemble'), actions: {},
+    else: { actions: releasingRefusal('assemble', 'Respond_assemble', 409, { ok: false, reason: "@coalesce(body('Assemble')?['reason'],'BAD_ASSEMBLY_INPUT')" }) },
+  };
 
   // ONE MERGE, with the P2-CAPTURED ETag — never a re-read (C2-R1-1).
   A.Publish = spMerge(
     item(L.config, "(@{variables('snapItemId')})"),
     { ConfigData: "@{body('Assemble')?['configData']}" },
     "@{variables('snapEtag')}",
-    after('Assemble'));
+    after('Assemble_ok'));
 
   A.Outcome_by_read = sp(item(L.config, `?$select=Id,ConfigData&$filter=ConfigType eq 'stock_snapshot'`), { runAfter: afterAny('Publish') });
   A.Recovery_decision = op('recoveryDecision', {
     candidateHeads: "@body('Candidate')?['candidateHeads']",
-    activeManifest: "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))",
+    // recoveryDecision reads manifest.controlHeads / manifest.version — the controlManifest OBJECT,
+    // not the snapshot ROOT. Passing the root made controlHeads always undefined => present 0, and
+    // after a SUCCESSFUL publish root.version === candidateVersion, so it returned INVARIANT_BROKEN
+    // and P7 never ran: registry never committed, journal never terminal, fence never released.
+    activeManifest: "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))?['controlManifest']",
     candidateVersion: "@body('Candidate')?['candidateVersion']",
     observedVersion: "@json(coalesce(if(empty(body('Outcome_by_read')?['value']), null, first(body('Outcome_by_read')?['value']))?['ConfigData'],'{}'))?['version']",
   }, after('Outcome_by_read'));
@@ -469,41 +689,154 @@ function build() {
     expression: { and: [{ equals: ["@coalesce(body('Recovery_decision')?['decision'],'')", 'roll_forward'] }] },
     runAfter: after('Recovery_decision'),
     actions: {},   // P7 hangs off this branch
-    else: { actions: { Respond_held: response(202, { ok: false, reason: 'PUBLICATION_HELD_FOR_RECONCILE' }), Respond_held_stop: terminate(after('Respond_held')) } },
+    else: {
+      actions: {
+        // NOT every non-roll_forward outcome is the same (§B step 19). recoveryDecision emits
+        // 'roll_back' ONLY when every candidate head is positively ABSENT and the manifest version
+        // is still below ours — the spec's positively-absent + version-unchanged case, provably
+        // "the publish did not land". INVARIANT_BROKEN (partial/foreign write) is a different
+        // animal and must be left pending for reconcile. The one thing recoveryDecision cannot know
+        // is whether we are STILL THE OWNER — it takes no ownership input — so the workflow
+        // supplies it the only way it can, by re-reading the record (the releasePair pattern).
+        // NO compensating writes here: the rollback sub-flow (§B step 17) is a separate item.
+        Reread_state_outcome: sp(item(L.config, `?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'archive_state'`), { runAfter: {} }),
+        Rollback_or_hold: {
+          type: 'If',
+          expression: {
+            and: [
+              { equals: ["@coalesce(body('Recovery_decision')?['decision'],'')", 'roll_back'] },
+              { equals: ["@coalesce(json(coalesce(if(empty(body('Reread_state_outcome')?['value']), null, first(body('Reread_state_outcome')?['value']))?['ConfigData'],'{}'))?['owner'],'')", "@workflow()?['run']?['name']"] },
+            ],
+          },
+          runAfter: afterAny('Reread_state_outcome'),
+          actions: {
+            Respond_not_published: response(409, { ok: false, reason: 'PUBLICATION_FAILED', detail: 'nothing was published: the candidate heads are positively absent and the manifest version is unchanged; the journal stays pending for rollback' }),
+            Respond_not_published_stop: terminate(after('Respond_not_published')),
+          },
+          else: {
+            actions: {
+              Respond_held: response(202, { ok: false, reason: 'PUBLICATION_HELD_FOR_RECONCILE' }),
+              Respond_held_stop: terminate(after('Respond_held')),
+            },
+          },
+        },
+      },
+    },
   };
 
+  // The publish is IRREVOCABLE, so the window between it and the outcome verdict is the one place
+  // the generic abort handler must NOT reach. If the outcome re-read or the verdict itself fails,
+  // the publication may have committed: releasing the fence there would let the archive LA run over
+  // an unreconciled snapshot. §B step 19 says exactly what to do instead — leave the journal pending
+  // and the fence HELD, and let the B-R reconcile sub-flow seize it. These two handlers answer the
+  // caller (so it never hangs) and stop, WITHOUT releasing.
+  A.Respond_held_outcome = response(202, { ok: false, reason: 'PUBLICATION_HELD_FOR_RECONCILE', detail: 'the publication outcome could not be read back; the reconcile sub-flow owns this journal' }, { Outcome_by_read: ['Failed', 'TimedOut'] });
+  A.Respond_held_outcome_stop = terminate(after('Respond_held_outcome'));
+  A.Respond_held_recovery = response(202, { ok: false, reason: 'PUBLICATION_HELD_FOR_RECONCILE', detail: 'the recovery verdict could not be computed; the reconcile sub-flow owns this journal' }, { Recovery_decision: ['Failed', 'TimedOut'] });
+  A.Respond_held_recovery_stop = terminate(after('Respond_held_recovery'));
+
   // ── P7: terminal ─────────────────────────────────────────────────────────────────────────────────
-  A.Registry_terminal = spMerge(
-    item(L.registry, "(@{body('Reserve')?['Id']})"),
-    {
-      State: 'committed',
-      ControlId: "@{coalesce(body('Candidate')?['controlId'],'')}",
-      Revision: "@{body('Candidate')?['revision']}",
-      PublicationVersion: "@{body('Candidate')?['candidateVersion']}",
+  // §B step 20 — THE TERMINAL REGISTRY WRITE IS PER MODE, and which shape a mode writes is a policy
+  // choice, so op:candidate decides it and returns the exact field-set (`registryTerminal`); the
+  // workflow MERGEs that verbatim and carries no condition tree (F1). What was here wrote ONE shape
+  // for every mode: withdraw/retire never got the WITHDRAWN FORM (ControlId '' — the withdrawn
+  // null), and Revision was ECHOED rather than bumped, so a prior revision of 4 stayed 4.
+  // `registryTerminal` is null for adopt, which adjudicates no target of its own.
+  A.Registry_terminal = {
+    type: 'If',
+    expression: { and: [{ equals: ["@empty(body('Candidate')?['registryTerminal'])", false] }] },
+    runAfter: after('Published_gate'),
+    actions: {
+      Do_registry_terminal: spMerge(
+        item(L.registry, "(@{body('Reserve')?['Id']})"),
+        {
+          State: "@{body('Candidate')?['registryTerminal']?['State']}",
+          ControlId: "@{body('Candidate')?['registryTerminal']?['ControlId']}",
+          Revision: "@{body('Candidate')?['registryTerminal']?['Revision']}",
+          PublicationVersion: "@{body('Candidate')?['registryTerminal']?['PublicationVersion']}",
+        },
+        "@{body('Reserve')?['odata.etag']}",
+        {}),
     },
-    "@{body('Reserve')?['odata.etag']}",
-    after('Published_gate'));
+    else: { actions: {} },
+  };
+
+  // §B step 20 — adoptions (ANY mode): CAS-fill each adopted target's PublicationVersion. The LIST
+  // comes from op:candidate (`adoptionFills`); the workflow only walks it and writes. Sequential and
+  // ETag-fenced, so a recovery re-run is idempotent (C2-R2-6).
+  A.Adoption_fills = {
+    type: 'Foreach',
+    foreach: "@coalesce(body('Candidate')?['adoptionFills'],json('[]'))",
+    runAfter: after('Registry_terminal'),
+    runtimeConfiguration: { concurrency: { repetitions: 1 } },
+    actions: {
+      Adopt_lookup: sp(item(L.registry, "?$top=2&$filter=TargetTransactionId eq '@{replace(coalesce(items('Adoption_fills')?['targetTransactionId'],''),'''','''''')}'")),
+      Adopt_fill: {
+        type: 'If',
+        expression: { and: [{ equals: ["@empty(body('Adopt_lookup')?['value'])", false] }] },
+        runAfter: afterAny('Adopt_lookup'),
+        actions: {
+          Do_adopt_fill: spMerge(
+            item(L.registry, "(@{if(empty(body('Adopt_lookup')?['value']), null, first(body('Adopt_lookup')?['value']))?['Id']})"),
+            { PublicationVersion: "@{items('Adoption_fills')?['publicationVersion']}" },
+            "@{if(empty(body('Adopt_lookup')?['value']), null, first(body('Adopt_lookup')?['value']))?['odata.etag']}",
+            {}),
+        },
+        else: { actions: {} },
+      },
+    },
+  };
 
   A.Journal_complete = spMerge(
     item(L.journal, "(@{body('Journal_create')?['Id']})"),
     {
       State: 'complete',
-      StoredResult: "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['controlId'],''),'\",\"revision\":',string(body('Candidate')?['revision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}",
+      StoredResult: "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['controlId'],''),'\",\"revision\":',string(body('Candidate')?['terminalRevision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}",
     },
     "@{body('Journal_create')?['odata.etag']}",
-    after('Registry_terminal'));
+    after('Adoption_fills'));
 
   Object.assign(A, releasePair('final', after('Journal_complete')).actions);
   A.Respond_ok = response(200, {
     ok: true,
     controlId: "@coalesce(body('Candidate')?['controlId'],'')",
-    revision: "@body('Candidate')?['revision']",
+    // the revision the REGISTRY now holds — the caller sends it straight back as expected.revision,
+    // and modeGate refuses unless it equals the registry's Revision.
+    revision: "@body('Candidate')?['terminalRevision']",
     publicationVersion: "@body('Candidate')?['candidateVersion']",
     deviceConvergencePending: "@not(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'))",
     affectedTarget: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
   }, after('Release_final'));
 
-  return A;
+  return wrap(A);
+
+  // ── FAILURE CONTAINMENT ────────────────────────────────────────────────────────────────────────
+  // A Logic Apps action that ends Failed or TimedOut with NO successor handling that status ends the
+  // RUN with no Response. For a request/response workflow that is a HANG, not an error: the caller
+  // waits out its own timeout and learns nothing. Chaining 36 calls on [Succeeded] meant 36 hangs.
+  // Bolting a status gate onto each call is not the fix — a Scope reports Failed/TimedOut whenever
+  // anything inside it does, so ONE sibling handler covers every action in the workflow, including
+  // every action added later. The handler RELEASES THE COORDINATION FENCE FIRST; releasePair is
+  // ownership-conditional, so it is a no-op on the paths that never acquired.
+  // ⚠ InitializeVariable is a TOP-LEVEL-ONLY action — it cannot be created inside a scope,
+  // condition or loop — so all four variables are DECLARED here and ASSIGNED inside with SetVariable
+  // (rowOk defaults TRUE: the modes that publish no control row have nothing to verify).
+  function wrap(inner) {
+    const abort = releasePair('abort', { Main: ['Failed', 'TimedOut'] });
+    const out = {
+      Init_snapEtag: initVar('snapEtag', '', {}),
+      Init_snapData: initVar('snapData', '{}', after('Init_snapEtag')),
+      Init_snapItemId: initVar('snapItemId', '', after('Init_snapData')),
+      Init_row_ok: { type: 'InitializeVariable', inputs: { variables: [{ name: 'rowOk', type: 'boolean', value: true }] }, runAfter: after('Init_snapItemId') },
+      Main: { type: 'Scope', actions: inner, runAfter: after('Init_row_ok') },
+    };
+    Object.assign(out, abort.actions);
+    // NOT [.. 'Skipped']: Release_abort is Skipped exactly when the scope SUCCEEDED, and responding
+    // there would send a second Response over the top of the happy path's 200.
+    out.Abort_respond = response(500, { ok: false, reason: 'CORRECTION_ABORTED', detail: 'the correction could not complete; the coordination fence was released if it was still ours' }, afterAny(abort.mergeName));
+    out.Abort_stop = terminate(after('Abort_respond'));
+    return out;
+  }
 
   // Conditional release: ETag + content-conditional, asserting the state is still OURS (C2-R1-2).
   //
@@ -531,7 +864,11 @@ function build() {
           type: 'If',
           // content-conditional: only release what we still own
           expression: { and: [{ equals: [`@coalesce(json(coalesce(${cur}?['ConfigData'],'{}'))?['owner'],'')`, "@workflow()?['run']?['name']"] }] },
-          runAfter: after(readName),
+          // afterAny: a FAILED coordination re-read must not skip the release gate and everything
+          // chained behind it. The expression degrades safely on a failed read — body(...) is
+          // absent, the owner comparison yields '' != this run's name, and the else branch (leave
+          // it alone) is taken, so nothing is written.
+          runAfter: afterAny(readName),
           actions: {
             ['Do_' + mergeName]: spMerge(
               item(L.config, `(@{${cur}?['Id']})`),
@@ -554,7 +891,44 @@ const def = {
     manual: {
       type: 'Request',
       kind: 'Http',
-      inputs: { method: 'POST', schema: { type: 'object', properties: {} } },
+      // The §B/§5 request contract, encoded SHALLOWLY. `properties:{}` documents nothing and accepts
+      // anything: a body with no `intent` at all reaches P0, every downstream coalesce turns the
+      // absence into '', and the refusal surfaces many actions later — AFTER the coordination fence
+      // has been acquired — instead of at the door. Deliberately permissive: NO
+      // additionalProperties:false (the envelope grows), nothing mode-specific required, and `mode`
+      // carries NO enum — which modes exist and which fields each needs is op:modeGate's decision,
+      // not a schema's (the F1 rule). `retireEvidence` is deliberately NOT declared: the workflow
+      // now GATHERS it, so the contract must not advertise a caller-supplied field it must ignore.
+      inputs: {
+        method: 'POST',
+        schema: {
+          type: 'object',
+          required: ['auth', 'actorUsername', 'proof', 'intent'],
+          properties: {
+            auth: {
+              type: 'object',
+              properties: {
+                deviceId: { type: 'string' }, storeId: { type: 'string' },
+                storeKey: { type: 'string' }, directorKey: { type: 'string' },
+              },
+            },
+            actorUsername: { type: 'string' },
+            proof: { type: 'string' },
+            intent: {
+              type: 'object',
+              required: ['mode', 'opId'],
+              properties: {
+                mode: { type: 'string' },
+                opId: { type: 'string' },
+                targetTransactionId: { type: 'string' },
+                expected: { type: 'object' },
+                control: { type: 'object' },
+                adoptions: { type: 'array' },
+              },
+            },
+          },
+        },
+      },
       runtimeConfiguration: { secureData: { properties: ['inputs'] } },
     },
   },

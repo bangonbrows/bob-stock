@@ -86,8 +86,13 @@ const MUTATIONS = [
     apply: (d) => { find(d.actions, 'Stamps').inputs.body.input.target = "@if(empty(body('Read_creds')?['value']), null, first(body('Target_archive')?['value']))"; } },
   { id: 'E4', gate: 'check-expressions.js', why: 'a WDL function that does not exist / a lambda',
     apply: (d) => { find(d.actions, 'Prepass_gate').expression.and[0].equals[0] = "@length(filter(body('Reconcile_prepass')?['value'], item => true))"; } },
-  { id: 'E5', gate: 'check-expressions.js', why: 'runAfter handling neither Failed nor TimedOut on a fallible call',
-    apply: (d) => { find(d.actions, 'Keys_ok').runAfter = { Gate_keys: ['Succeeded'] }; } },
+  // E5 RETIRED AND REPOINTED. Its original target (Keys_ok, inside the Main Scope) is no longer a
+  // defect: the containment handler covers it, so the mutation was testing a rule that is no longer
+  // true. A stale mutation is worse than none — it fails for the wrong reason and invites the
+  // "adjust the gate until it goes green" reflex. It now targets the ABORT CHAIN, which sits OUTSIDE
+  // the Scope and therefore has no cover of its own.
+  { id: 'E5', gate: 'check-expressions.js', why: 'a fallible action OUTSIDE the containment Scope whose successor handles no failure',
+    apply: (d) => { d.actions.Release_abort.runAfter = { Reread_state_abort: ['Succeeded'] }; } },
   { id: 'E6', gate: 'check-expressions.js', why: 'unescaped interpolation inside an OData string literal',
     apply: (d) => { find(d.actions, 'Read_actor').inputs.body.uri = "_api/web/lists/getbytitle('UserCredentials_Staging')/items?$filter=Username eq '@{triggerBody()?['actorUsername']}'"; } },
   { id: 'E7', gate: 'check-expressions.js', why: 'type-strict equals(): integer property vs string literal (AGY class)',
@@ -96,7 +101,11 @@ const MUTATIONS = [
   { id: 'E8', gate: 'check-expressions.js', why: 'semantic enum mismatch: compares baseline to a value modeGate never emits (AGY class)',
     apply: (d) => { d.actions.Enum_gate = { type: 'If', runAfter: {}, actions: {}, else: { actions: {} },
       expression: { and: [{ equals: ["@body('Mode_gate')?['baseline']", 'active'] }] } }; } },
-];
+  // ── containment-scope cover ──────────────────────────────────────────────────────────────────────
+  { id: 'X1', gate: 'check-expressions.js', why: 'strip the containment Scope failure handler so nothing catches an enclosed failure',
+    apply: (d) => { d.actions.Reread_state_abort.runAfter.Main = ['Succeeded']; } },
+  { id: 'X2', gate: 'check-expressions.js', why: 'failure handler runs but its chain never reaches a Response (cover that does not cover)',
+    apply: (d) => { delete d.actions.Abort_respond; } },];
 
 // ⚠ EXIT CODE ALONE IS NOT A VALID SIGNAL. Once the artifact itself has defects, every gate fails on
 // the BASELINE — and then every mutation looks "caught" for the wrong reason, which is exactly the
