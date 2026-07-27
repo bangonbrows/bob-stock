@@ -143,9 +143,25 @@ function derivedReturnKeys(opName) {
   const inline = CC_SRC.match(new RegExp(`\\n\\s*${opName}:\\s*\\(b\\)\\s*=>\\s*\\(\\{([^}]*)\\}\\)`));
   if (inline) for (const km of inline[1].matchAll(/([A-Za-z0-9_]+)\s*:/g)) keys.add(km[1]);
   const src = fnName ? bodyOf(fnName) : '';
-  for (const m of src.matchAll(/return\s*\{([^}]*)\}/g)) {
-    for (const km of m[1].matchAll(/([A-Za-z0-9_]+)\s*:/g)) keys.add(km[1]);
-  }
+  // Object-literal keys come in two forms and BOTH must be read. The first cut only matched `key:`,
+  // so it missed SHORTHAND properties — `const out = { ok: true, controlId, candidateHeads: heads,
+  // adoptionDecisions }` reported controlId and adoptionDecisions as "never returned", which is a
+  // false alarm that would have sent me chasing a non-bug. A gate that cries wolf gets ignored.
+  // TOP-LEVEL keys only: strip one level of nesting first, so `deltas: {}` does not hide the
+  // literal from the scanner and a nested key is not mistaken for a returned one.
+  const keysFromLiteral = (lit) => {
+    const flat = lit.replace(/\{[^{}]*\}/g, '{}');   // collapse nested objects
+    for (const km of flat.matchAll(/([A-Za-z0-9_]+)\s*:/g)) keys.add(km[1]);            // key: value
+    // shorthand — note the `$` alternative: a TRAILING shorthand key has no ',' or '}' after it
+    // once the closing brace is outside the captured group. Without it, `{ ok: true, deltas }`
+    // silently dropped `deltas` and the harness reported a real property as never-returned.
+    for (const km of flat.matchAll(/(?:^|[{,])\s*([A-Za-z0-9_]+)\s*(?=[,}]|$)/g)) keys.add(km[1]);
+  };
+  // literal capture tolerant of ONE nesting level (`return { ok: true, deltas: {}, x: 1 }`)
+  const LITERAL = /\{((?:[^{}]|\{[^{}]*\})*)\}/;
+  for (const m of src.matchAll(new RegExp('return\\s*' + LITERAL.source, 'g'))) keysFromLiteral(m[1]);
+  // ...and literals built up in a variable that is returned later (`const out = {...}; out.x = ...`)
+  for (const m of src.matchAll(new RegExp('\\b(?:const|let|var)\\s+(?:out|res|result)\\s*=\\s*' + LITERAL.source, 'g'))) keysFromLiteral(m[1]);
   for (const m of src.matchAll(/\b(?:out|res|result)\.([A-Za-z0-9_]+)\s*=/g)) keys.add(m[1]);
   return keys;
 }

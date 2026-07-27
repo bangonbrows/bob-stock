@@ -28,6 +28,26 @@
     }
   },
   "actions": {
+    "Read_creds": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest",
+        "body": {
+          "method": "GET",
+          "uri": "_api/web/lists/getbytitle('StoreCredentials_Staging')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq '__director')",
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          }
+        }
+      },
+      "runAfter": {}
+    },
     "Gate_keys": {
       "type": "Http",
       "inputs": {
@@ -37,12 +57,18 @@
           "Content-Type": "application/json"
         },
         "body": {
-          "deviceId": "@coalesce(triggerBody()?['auth']?['deviceId'],'')",
-          "storeId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
-          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')"
+          "claimedStoreId": "__director",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Read_creds')?['value'],json('[]'))"
         }
       },
-      "runAfter": {},
+      "runAfter": {
+        "Read_creds": [
+          "Succeeded",
+          "Failed"
+        ]
+      },
       "runtimeConfiguration": {
         "secureData": {
           "properties": [
@@ -58,7 +84,7 @@
         "and": [
           {
             "equals": [
-              "@coalesce(body('Gate_keys')?['ok'],false)",
+              "@coalesce(body('Gate_keys')?['directorOk'],false)",
               true
             ]
           }
@@ -170,14 +196,8 @@
           },
           {
             "equals": [
-              "@toLower(coalesce(first(body('Read_actor')?['value'])?['Role'],''))",
+              "@toLower(coalesce(body('Gate_proof')?['role'],''))",
               "director"
-            ]
-          },
-          {
-            "equals": [
-              "@string(coalesce(first(body('Read_actor')?['value'])?['TokenVersion'],''))",
-              "@string(coalesce(body('Gate_proof')?['tokenVersion'],'x'))"
             ]
           }
         ]
@@ -230,11 +250,13 @@
         },
         "body": {
           "op": "digest",
-          "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
-          "target": "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
-          "expected": "@triggerBody()?['intent']?['expected']",
-          "control": "@triggerBody()?['intent']?['control']",
-          "actorUsername": "@coalesce(triggerBody()?['actorUsername'],'')"
+          "input": {
+            "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
+            "targetTransactionId": "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
+            "expected": "@triggerBody()?['intent']?['expected']",
+            "control": "@triggerBody()?['intent']?['control']",
+            "actorUsername": "@coalesce(triggerBody()?['actorUsername'],'')"
+          }
         }
       },
       "runAfter": {
@@ -356,8 +378,10 @@
                 },
                 "body": {
                   "op": "claimDispatch",
-                  "lane": "own-nonterminal",
-                  "journal": "@first(body('Journal_lookup')?['value'])"
+                  "input": {
+                    "lane": "own-nonterminal",
+                    "journal": "@first(body('Journal_lookup')?['value'])"
+                  }
                 }
               },
               "runAfter": {},
@@ -846,7 +870,12 @@
         "body": {
           "op": "verify",
           "frame": "epoch-v1",
-          "record": "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))"
+          "rows": [
+            {
+              "obj": "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))",
+              "sig": "@coalesce(json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))?['EpochSig'],'')"
+            }
+          ]
         }
       },
       "runAfter": {
@@ -874,12 +903,14 @@
         },
         "body": {
           "op": "targetSeal",
-          "econSigPresent": "@not(empty(coalesce(first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))?['EconSig'],'')))",
-          "verifyOk": "@coalesce(body('Verify_target_row')?['ok'],false)",
-          "provenanceId": "@coalesce(first(body('Target_live')?['value'])?['Id'],first(body('Target_archive')?['value'])?['SourceId'],'')",
-          "epochPresent": "@not(empty(coalesce(body('Get_seal_epoch')?['value'],json('[]'))))",
-          "epochSigValid": "@coalesce(body('Verify_epoch')?['ok'],false)",
-          "epoch": "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))"
+          "input": {
+            "econSigPresent": "@not(empty(coalesce(first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))?['EconSig'],'')))",
+            "verifyOk": "@coalesce(first(body('Verify_target_row')?['results'])?['ok'],false)",
+            "provenanceId": "@coalesce(first(body('Target_live')?['value'])?['Id'],first(body('Target_archive')?['value'])?['SourceId'],'')",
+            "epochPresent": "@not(empty(coalesce(body('Get_seal_epoch')?['value'],json('[]'))))",
+            "epochSigValid": "@coalesce(first(body('Verify_epoch')?['results']),false)",
+            "epoch": "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))"
+          }
         }
       },
       "runAfter": {
@@ -1010,7 +1041,9 @@
         },
         "body": {
           "op": "stepSetDigest",
-          "steps": "@coalesce(body('Steps_enumerate')?['value'],json('[]'))"
+          "input": {
+            "steps": "@coalesce(body('Steps_enumerate')?['value'],json('[]'))"
+          }
         }
       },
       "runAfter": {
@@ -1085,11 +1118,13 @@
         },
         "body": {
           "op": "modeGate",
-          "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
-          "expected": "@triggerBody()?['intent']?['expected']",
-          "registryItem": "@first(body('Registry_lookup')?['value'])",
-          "beltTombstone": "@first(body('Belt_tombstone')?['value'])",
-          "retireEvidence": "@triggerBody()?['intent']?['retireEvidence']"
+          "input": {
+            "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
+            "expected": "@triggerBody()?['intent']?['expected']",
+            "registryItem": "@first(body('Registry_lookup')?['value'])",
+            "beltTombstone": "@first(body('Belt_tombstone')?['value'])",
+            "retireEvidence": "@triggerBody()?['intent']?['retireEvidence']"
+          }
         }
       },
       "runAfter": {
@@ -1195,8 +1230,10 @@
         },
         "body": {
           "op": "targetLine",
-          "target": "@first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))",
-          "steps": "@coalesce(body('Steps_enumerate')?['value'],json('[]'))"
+          "input": {
+            "target": "@first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))",
+            "steps": "@coalesce(body('Steps_enumerate')?['value'],json('[]'))"
+          }
         }
       },
       "runAfter": {
@@ -1223,9 +1260,11 @@
         },
         "body": {
           "op": "stamps",
-          "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
-          "control": "@triggerBody()?['intent']?['control']",
-          "targetLine": "@body('Target_line')?['targetLine']"
+          "input": {
+            "target": "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
+            "replacement": "@triggerBody()?['intent']?['control']?['replacement']",
+            "steps": "@coalesce(body('Steps_enumerate')?['value'],json('[]'))"
+          }
         }
       },
       "runAfter": {
@@ -1277,7 +1316,12 @@
         "body": {
           "op": "verify",
           "frame": "runrec-v1",
-          "record": "@first(body('Run_record')?['value'])"
+          "rows": [
+            {
+              "obj": "@first(body('Run_record')?['value'])",
+              "sig": "@coalesce(first(body('Run_record')?['value'])?['RecordSig'],'')"
+            }
+          ]
         }
       },
       "runAfter": {
@@ -1305,17 +1349,19 @@
         },
         "body": {
           "op": "membership",
-          "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
-          "tombstoneTransactionId": "@coalesce(first(body('Belt_tombstone')?['value'])?['TransactionId'],'')",
-          "target": {
-            "archiveRunId": "@coalesce(first(body('Target_archive')?['value'])?['ArchiveRunId'],'')",
-            "snapshotVersion": "@coalesce(first(body('Target_archive')?['value'])?['SnapshotVersion'],'')"
-          },
-          "runRecord": {
-            "RunId": "@coalesce(first(body('Run_record')?['value'])?['RunId'],'')",
-            "SnapshotVersion": "@coalesce(first(body('Run_record')?['value'])?['SnapshotVersion'],'')",
-            "TombstoneIds": "@json(coalesce(first(body('Run_record')?['value'])?['TombstoneIds'],'[]'))",
-            "recordSigValid": "@coalesce(body('Verify_run_record')?['ok'],false)"
+          "input": {
+            "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
+            "tombstoneTransactionId": "@coalesce(first(body('Belt_tombstone')?['value'])?['TransactionId'],'')",
+            "target": {
+              "archiveRunId": "@coalesce(first(body('Target_archive')?['value'])?['ArchiveRunId'],'')",
+              "snapshotVersion": "@coalesce(first(body('Target_archive')?['value'])?['SnapshotVersion'],'')"
+            },
+            "runRecord": {
+              "RunId": "@coalesce(first(body('Run_record')?['value'])?['RunId'],'')",
+              "SnapshotVersion": "@coalesce(first(body('Run_record')?['value'])?['SnapshotVersion'],'')",
+              "TombstoneIds": "@json(coalesce(first(body('Run_record')?['value'])?['TombstoneIds'],'[]'))",
+              "recordSigValid": "@coalesce(first(body('Verify_run_record')?['results']),false)"
+            }
           }
         }
       },
@@ -1344,13 +1390,15 @@
         },
         "body": {
           "op": "delta",
-          "cell": "@body('Mode_gate')?['cell']",
-          "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
-          "target": "@body('Target_line')?['econRow']",
-          "newOutput": "@body('Stamps')?['newOutput']",
-          "prevOutput": "@body('Mode_gate')?['prevOutput']",
-          "originalTarget": "@body('Mode_gate')?['originalTarget']",
-          "membership": "@body('Membership')"
+          "input": {
+            "cell": "@body('Mode_gate')?['cell']",
+            "targetLocation": "@if(empty(body('Target_live')?['value']),'archive','live')",
+            "target": "@body('Target_line')?['targetLine']",
+            "newOutput": "@triggerBody()?['intent']?['control']?['replacement']",
+            "prevOutput": "@body('Mode_gate')?['prevOutput']",
+            "originalTarget": "@body('Mode_gate')?['originalTarget']",
+            "membership": "@body('Membership')"
+          }
         }
       },
       "runAfter": {
@@ -1377,12 +1425,14 @@
         },
         "body": {
           "op": "candidate",
-          "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
-          "opId": "@coalesce(triggerBody()?['intent']?['opId'],'')",
-          "target": "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
-          "revision": "@coalesce(first(body('Registry_lookup')?['value'])?['Revision'],0)",
-          "candidateVersion": "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
-          "adoptions": "@body('Mode_gate')?['adoptions']"
+          "input": {
+            "mode": "@coalesce(triggerBody()?['intent']?['mode'],'')",
+            "opId": "@coalesce(triggerBody()?['intent']?['opId'],'')",
+            "target": "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
+            "revision": "@coalesce(first(body('Registry_lookup')?['value'])?['Revision'],0)",
+            "candidateVersion": "@add(int(coalesce(json(variables('snapData'))?['version'],0)),1)",
+            "adoptions": "@body('Mode_gate')?['adoptions']"
+          }
         }
       },
       "runAfter": {
@@ -1590,7 +1640,9 @@
         "body": {
           "op": "sign",
           "frame": "ctl-v1",
-          "record": "@body('Candidate')?['row']"
+          "rows": [
+            "@body('Candidate')?['row']"
+          ]
         }
       },
       "runAfter": {
@@ -1627,7 +1679,7 @@
             "IF-MATCH": "@{body('Candidate_row')?['@odata.etag']}"
           },
           "body": {
-            "EconSig": "@{body('Sign_ctl')?['signature']}"
+            "EconSig": "@{first(body('Sign_ctl')?['sigs'])}"
           }
         }
       },
@@ -1671,8 +1723,10 @@
         },
         "body": {
           "op": "ctlRowsEqual",
-          "a": "@body('Candidate')?['row']",
-          "b": "@body('Reread_candidate')"
+          "input": {
+            "a": "@body('Candidate')?['row']",
+            "b": "@body('Reread_candidate')"
+          }
         }
       },
       "runAfter": {
@@ -1723,7 +1777,9 @@
         },
         "body": {
           "op": "stepSetDigest",
-          "steps": "@coalesce(body('Steps_recheck')?['value'],json('[]'))"
+          "input": {
+            "steps": "@coalesce(body('Steps_recheck')?['value'],json('[]'))"
+          }
         }
       },
       "runAfter": {
@@ -1865,10 +1921,12 @@
         },
         "body": {
           "op": "assembleSnapshot",
-          "snapshotConfigData": "@variables('snapData')",
-          "candidateVersion": "@body('Candidate')?['candidateVersion']",
-          "deltas": "@body('Delta')?['deltas']",
-          "candidateHeads": "@body('Candidate')?['candidateHeads']"
+          "input": {
+            "snapshotConfigData": "@variables('snapData')",
+            "candidateVersion": "@body('Candidate')?['candidateVersion']",
+            "deltas": "@body('Delta')?['deltas']",
+            "candidateHeads": "@body('Candidate')?['candidateHeads']"
+          }
         }
       },
       "runAfter": {
@@ -1950,10 +2008,12 @@
         },
         "body": {
           "op": "recoveryDecision",
-          "candidateHeads": "@body('Candidate')?['candidateHeads']",
-          "manifest": "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['controlManifest']",
-          "candidateVersion": "@body('Candidate')?['candidateVersion']",
-          "observedVersion": "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['version']"
+          "input": {
+            "candidateHeads": "@body('Candidate')?['candidateHeads']",
+            "activeManifest": "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))",
+            "candidateVersion": "@body('Candidate')?['candidateVersion']",
+            "observedVersion": "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['version']"
+          }
         }
       },
       "runAfter": {
@@ -2040,7 +2100,7 @@
           },
           "body": {
             "State": "committed",
-            "ControlId": "@{coalesce(body('Candidate')?['headControlId'],'')}",
+            "ControlId": "@{coalesce(body('Candidate')?['controlId'],'')}",
             "Revision": "@{body('Candidate')?['revision']}",
             "PublicationVersion": "@{body('Candidate')?['candidateVersion']}"
           }
@@ -2073,7 +2133,7 @@
           },
           "body": {
             "State": "complete",
-            "StoredResult": "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['headControlId'],''),'\",\"revision\":',string(body('Candidate')?['revision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}"
+            "StoredResult": "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['controlId'],''),'\",\"revision\":',string(body('Candidate')?['revision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}"
           }
         }
       },
@@ -2123,7 +2183,7 @@
         },
         "body": {
           "ok": true,
-          "controlId": "@coalesce(body('Candidate')?['headControlId'],'')",
+          "controlId": "@coalesce(body('Candidate')?['controlId'],'')",
           "revision": "@body('Candidate')?['revision']",
           "publicationVersion": "@body('Candidate')?['candidateVersion']",
           "deviceConvergencePending": "@not(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'))",

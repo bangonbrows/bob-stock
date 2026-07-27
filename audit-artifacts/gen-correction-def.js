@@ -97,7 +97,11 @@ function fn(route, body, runAfter) {
 }
 
 // correctionCompute op call (N2 — every decision lives here, never in the LA).
-const op = (name, inputs, runAfter) => fn('correctionCompute', Object.assign({ op: name }, inputs), runAfter);
+// ⚠ THE ENVELOPE IS `{op, input:{...}}`, NOT flat. Every entry in correctionCompute's OPS table is
+// `(b) => f(b.input || {})`, so a flat body delivers `{}` to the function and every op silently
+// refuses or returns a degenerate answer. The first generated definition got this wrong on all 16
+// calls; check-fn-contracts.js now fails the build on it.
+const op = (name, inputs, runAfter) => fn('correctionCompute', { op: name, input: inputs }, runAfter);
 
 function response(statusCode, body, runAfter) {
   return { type: 'Response', kind: 'Http', inputs: { statusCode, headers: { 'Content-Type': 'application/json' }, body }, runAfter: runAfter || {} };
@@ -127,14 +131,20 @@ function build() {
   const item = (list, filterOrId) => `_api/web/lists/getbytitle('${list}')/items${filterOrId}`;
 
   // ── P0: triple gate (mirrors the archive LA verbatim, purpose swapped to 'correction', N8) ───────
+  // validateKeys v2 does the PAIRING itself: the LA reads StoreCredentials over the secured
+  // connection and hands the rows in, so no hash material is ever computed in the workflow.
+  // Contract (validateKeys.js): {claimedStoreId, storeKey, directorKey, rows} -> {storeOk, directorOk}.
+  // There is no `ok`; the first cut invented one and rejected every request.
+  A.Read_creds = sp(item('StoreCredentials_Staging', `?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq '__director')`));
   A.Gate_keys = fn('validateKeys', {
-    deviceId: "@coalesce(triggerBody()?['auth']?['deviceId'],'')",
-    storeId: "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+    claimedStoreId: '__director',
+    storeKey: "@coalesce(triggerBody()?['auth']?['storeKey'],'')",
     directorKey: "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
-  });
+    rows: "@coalesce(body('Read_creds')?['value'],json('[]'))",
+  }, afterAny('Read_creds'));
   A.Keys_ok = {
     type: 'If',
-    expression: { and: [{ equals: ["@coalesce(body('Gate_keys')?['ok'],false)", true] }] },
+    expression: { and: [{ equals: ["@coalesce(body('Gate_keys')?['directorOk'],false)", true] }] },
     runAfter: afterAny('Gate_keys'),
     actions: {},
     else: { actions: { Reject_keys: response(401, { ok: false, reason: 'UNAUTHORIZED' }), Reject_keys_stop: terminate(after('Reject_keys')) } },
@@ -148,14 +158,20 @@ function build() {
     rows: "@coalesce(body('Read_actor')?['value'],json('[]'))",
   }, afterAny('Read_actor'));
 
-  // Gate_role: role must be director AND the proof's TokenVersion must match the CURRENT row.
+  // Gate_role: the role must be director. Judge off the ROLE THE FUNCTION RETURNS, not the row —
+  // verifyProof deliberately returns the CURRENT row's role rather than the role signed into the
+  // proof (a proof self-certifies its role; a demotion that didn't bump TokenVersion would
+  // otherwise still assert the old one).
+  // NO TokenVersion comparison here: verifyProof does not return `tokenVersion`, and it ALREADY
+  // enforces the check internally (validateUser.js — a password reset bumps TokenVersion and kills
+  // every outstanding proof). The first cut compared against a property that never exists, so it
+  // rejected every valid director.
   A.Gate_role = {
     type: 'If',
     expression: {
       and: [
         { equals: ["@coalesce(body('Gate_proof')?['ok'],false)", true] },
-        { equals: ["@toLower(coalesce(first(body('Read_actor')?['value'])?['Role'],''))", 'director'] },
-        { equals: ["@string(coalesce(first(body('Read_actor')?['value'])?['TokenVersion'],''))", "@string(coalesce(body('Gate_proof')?['tokenVersion'],'x'))"] },
+        { equals: ["@toLower(coalesce(body('Gate_proof')?['role'],''))", 'director'] },
       ],
     },
     runAfter: afterAny('Gate_proof'),
@@ -166,7 +182,9 @@ function build() {
   // ── P1: idempotency BEFORE any CAS ───────────────────────────────────────────────────────────────
   A.Digest = op('digest', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
-    target: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
+    // opDigest reads `targetTransactionId` — the first cut sent it as `target`, so EVERY digest
+    // hashed null in the target position and all opIds collided, silently voiding the reuse guard.
+    targetTransactionId: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
     expected: "@triggerBody()?['intent']?['expected']",
     control: "@triggerBody()?['intent']?['control']",
     actorUsername: "@coalesce(triggerBody()?['actorUsername'],'')",
@@ -237,13 +255,13 @@ function build() {
   // Three-way seal: econ-v1 on the row, epoch-v1 on the seal artifact, then op:targetSeal adjudicates.
   A.Get_seal_epoch = sp(item(L.config, `?$select=Id,ConfigData&$filter=ConfigType eq 'seal_epoch'`), { runAfter: after('Target_gate') });
   A.Verify_target_row = fn('attestRows', { op: 'verify', frame: 'econ-v1', rows: "@coalesce(union(coalesce(body('Target_live')?['value'],json('[]')),coalesce(body('Target_archive')?['value'],json('[]'))),json('[]'))" }, after('Get_seal_epoch'));
-  A.Verify_epoch = fn('attestRows', { op: 'verify', frame: 'epoch-v1', record: "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))" }, afterAny('Verify_target_row'));
+  A.Verify_epoch = fn('attestRows', { op: 'verify', frame: 'epoch-v1', rows: [{ obj: "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))", sig: "@coalesce(json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))?['EpochSig'],'')" }] }, afterAny('Verify_target_row'));
   A.Seal_threeway = op('targetSeal', {
     econSigPresent: "@not(empty(coalesce(first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))?['EconSig'],'')))",
-    verifyOk: "@coalesce(body('Verify_target_row')?['ok'],false)",
+    verifyOk: "@coalesce(first(body('Verify_target_row')?['results'])?['ok'],false)",
     provenanceId: "@coalesce(first(body('Target_live')?['value'])?['Id'],first(body('Target_archive')?['value'])?['SourceId'],'')",
     epochPresent: "@not(empty(coalesce(body('Get_seal_epoch')?['value'],json('[]'))))",
-    epochSigValid: "@coalesce(body('Verify_epoch')?['ok'],false)",
+    epochSigValid: "@coalesce(first(body('Verify_epoch')?['results']),false)",
     epoch: "@json(coalesce(first(body('Get_seal_epoch')?['value'])?['ConfigData'],'{}'))",
   }, afterAny('Verify_epoch'));
   A.Seal_gate = {
@@ -279,11 +297,18 @@ function build() {
     target: "@first(coalesce(body('Target_live')?['value'],body('Target_archive')?['value']))",
     steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))",
   }, after('Mode_gate_ok'));
-  A.Stamps = op('stamps', { mode: "@coalesce(triggerBody()?['intent']?['mode'],'')", control: "@triggerBody()?['intent']?['control']", targetLine: "@body('Target_line')?['targetLine']" }, after('Target_line'));
+  // mintStamps reads {target, replacement, steps} — it resolves tier (a) from the target row's own
+  // stamps and tier (b) from the server steps projection. The first cut sent mode/control/targetLine,
+  // none of which it reads, so every call fell through to STAMPS_UNRESOLVABLE.
+  A.Stamps = op('stamps', {
+    target: "@if(empty(body('Target_live')?['value']), first(body('Target_archive')?['value']), first(body('Target_live')?['value']))",
+    replacement: "@triggerBody()?['intent']?['control']?['replacement']",
+    steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))",
+  }, after('Target_line'));
 
   // op:membership INPUT MAPPING — PINNED (§B 13a). Both target bindings are MANDATORY.
   A.Run_record = sp(item(L.runRecords, `?$top=2&$filter=RunId eq '@{coalesce(first(coalesce(body(''Target_live'')?[''value''],body(''Target_archive'')?[''value'']))?[''ArchiveRunId''],'''')}'`), { runAfter: after('Stamps') });
-  A.Verify_run_record = fn('attestRows', { op: 'verify', frame: 'runrec-v1', record: "@first(body('Run_record')?['value'])" }, afterAny('Run_record'));
+  A.Verify_run_record = fn('attestRows', { op: 'verify', frame: 'runrec-v1', rows: [{ obj: "@first(body('Run_record')?['value'])", sig: "@coalesce(first(body('Run_record')?['value'])?['RecordSig'],'')" }] }, afterAny('Run_record'));
   A.Membership = op('membership', {
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
     tombstoneTransactionId: "@coalesce(first(body('Belt_tombstone')?['value'])?['TransactionId'],'')",
@@ -295,15 +320,15 @@ function build() {
       RunId: "@coalesce(first(body('Run_record')?['value'])?['RunId'],'')",
       SnapshotVersion: "@coalesce(first(body('Run_record')?['value'])?['SnapshotVersion'],'')",
       TombstoneIds: "@json(coalesce(first(body('Run_record')?['value'])?['TombstoneIds'],'[]'))",
-      recordSigValid: "@coalesce(body('Verify_run_record')?['ok'],false)",
+      recordSigValid: "@coalesce(first(body('Verify_run_record')?['results']),false)",
     },
   }, afterAny('Verify_run_record'));
 
   A.Delta = op('delta', {
     cell: "@body('Mode_gate')?['cell']",
     targetLocation: "@if(empty(body('Target_live')?['value']),'archive','live')",
-    target: "@body('Target_line')?['econRow']",
-    newOutput: "@body('Stamps')?['newOutput']",
+    target: "@body('Target_line')?['targetLine']",
+    newOutput: "@triggerBody()?['intent']?['control']?['replacement']",
     prevOutput: "@body('Mode_gate')?['prevOutput']",
     originalTarget: "@body('Mode_gate')?['originalTarget']",
     membership: "@body('Membership')",
@@ -353,10 +378,10 @@ function build() {
   }, after('Journal_create'));
 
   A.Candidate_row = spCreate(item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", ''), "@body('Candidate')?['row']", after('Reserve'));
-  A.Sign_ctl = fn('attestRows', { op: 'sign', frame: 'ctl-v1', record: "@body('Candidate')?['row']" }, after('Candidate_row'));
+  A.Sign_ctl = fn('attestRows', { op: 'sign', frame: 'ctl-v1', rows: ["@body('Candidate')?['row']"] }, after('Candidate_row'));
   A.Stamp_ctl_sig = spMerge(
     item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", "(@{body('Candidate_row')?['Id']})"),
-    { EconSig: "@{body('Sign_ctl')?['signature']}" },
+    { EconSig: "@{first(body('Sign_ctl')?['sigs'])}" },
     "@{body('Candidate_row')?['@odata.etag']}",
     after('Sign_ctl'));
 
@@ -402,7 +427,7 @@ function build() {
   A.Outcome_by_read = sp(item(L.config, `?$select=Id,ConfigData&$filter=ConfigType eq 'stock_snapshot'`), { runAfter: afterAny('Publish') });
   A.Recovery_decision = op('recoveryDecision', {
     candidateHeads: "@body('Candidate')?['candidateHeads']",
-    manifest: "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['controlManifest']",
+    activeManifest: "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))",
     candidateVersion: "@body('Candidate')?['candidateVersion']",
     observedVersion: "@json(coalesce(first(body('Outcome_by_read')?['value'])?['ConfigData'],'{}'))?['version']",
   }, after('Outcome_by_read'));
@@ -420,7 +445,7 @@ function build() {
     item(L.registry, "(@{body('Reserve')?['Id']})"),
     {
       State: 'committed',
-      ControlId: "@{coalesce(body('Candidate')?['headControlId'],'')}",
+      ControlId: "@{coalesce(body('Candidate')?['controlId'],'')}",
       Revision: "@{body('Candidate')?['revision']}",
       PublicationVersion: "@{body('Candidate')?['candidateVersion']}",
     },
@@ -431,7 +456,7 @@ function build() {
     item(L.journal, "(@{body('Journal_create')?['Id']})"),
     {
       State: 'complete',
-      StoredResult: "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['headControlId'],''),'\",\"revision\":',string(body('Candidate')?['revision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}",
+      StoredResult: "@{string(json(concat('{\"ok\":true,\"controlId\":\"',coalesce(body('Candidate')?['controlId'],''),'\",\"revision\":',string(body('Candidate')?['revision']),',\"publicationVersion\":',string(body('Candidate')?['candidateVersion']),',\"deviceConvergencePending\":',if(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'),'false','true'),',\"affectedTarget\":\"',coalesce(triggerBody()?['intent']?['targetTransactionId'],''),'\"}')))}",
     },
     "@{body('Journal_create')?['@odata.etag']}",
     after('Registry_terminal'));
@@ -439,7 +464,7 @@ function build() {
   A.Conditional_release = releaseAction(null, after('Journal_complete'));
   A.Respond_ok = response(200, {
     ok: true,
-    controlId: "@coalesce(body('Candidate')?['headControlId'],'')",
+    controlId: "@coalesce(body('Candidate')?['controlId'],'')",
     revision: "@body('Candidate')?['revision']",
     publicationVersion: "@body('Candidate')?['candidateVersion']",
     deviceConvergencePending: "@not(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'))",
