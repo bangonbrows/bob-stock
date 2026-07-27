@@ -901,6 +901,20 @@ ok('P1: withdraw/retire build NO row (null-head modes publish no control row)',
     return w.ok && !Object.prototype.hasOwnProperty.call(w, 'row');
   })());
 
+// ── 23. targetSeal STRIP-ATTACK EXTENSION (AGY, generated-artifact round) ─────────────────────────
+// The comment on the boundary comparison says absence of a seal IS the strip attack. But the
+// comparison ran against epoch.epochId without proving it is an integer — so stripping ONE MORE
+// FIELD defeated it: `provenanceId >= undefined` is false, and a post-epoch UNSEALED row was
+// accepted as 'unsealed-legacy'. The defence was beaten by extending the same attack.
+ok('R1: a seal artifact with a STRIPPED epochId is EPOCH_TAMPERED, not unsealed-legacy',
+  (() => C.OPS.targetSeal({ input: { econSigPresent: false, provenanceId: 500, epoch: { epochSigValid: true } } }).outcome === 'EPOCH_TAMPERED')());
+ok('R1: a NON-INTEGER epochId (string, float, null) is likewise EPOCH_TAMPERED',
+  (() => ['100', 10.5, null, undefined, {}].every(v =>
+    C.OPS.targetSeal({ input: { econSigPresent: false, provenanceId: 500, epoch: { epochId: v, epochSigValid: true } } }).outcome === 'EPOCH_TAMPERED'))());
+ok('R1: a VALID boundary still classifies correctly either side of the epoch',
+  (() => C.OPS.targetSeal({ input: { econSigPresent: false, provenanceId: 500, epoch: { epochId: 100, epochSigValid: true } } }).outcome === 'TARGET_SEAL_BROKEN'
+      && C.OPS.targetSeal({ input: { econSigPresent: false, provenanceId: 50, epoch: { epochId: 100, epochSigValid: true } } }).outcome === 'unsealed-legacy')());
+
 // ── 22. deltaCell + modeGate `needs` (generated-artifact round, slice 3) ──────────────────────────
 // The LA read `cell` off modeGate, which never returned it — so computeDelta always received null
 // and refused UNKNOWN_CELL. Choosing the branch is a DECISION, so it lives in a function; the rows

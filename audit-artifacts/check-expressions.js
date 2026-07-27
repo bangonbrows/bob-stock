@@ -72,9 +72,19 @@ for (const s of exprStrings) {
 // the shape it exists to catch, `coalesce(body('X')?['value'], ...)`, CONTAINS parentheses. The rule
 // looked right, reported zero, and three real instances sat in the artifact. Match the argument
 // properly (balanced one level) instead.
+// TWO SUB-CLASSES, and only one is a defect:
+//   coalesce(X?['value'], json('[]'))        — FINE. A missing property really is null, so it falls
+//                                              through; and if it is an empty array, the fallback is
+//                                              the same empty array. No behaviour change.
+//   coalesce(live?['value'], archive?['value']) — FATAL. An EMPTY live array is not null, so the
+//                                              archive is never consulted and archived targets are
+//                                              invisible. This is the source-first selection bug.
+// Flagging both would bury the fatal case in noise, which is how a real finding gets skimmed past.
 for (const s of exprStrings) {
-  for (const m of s.matchAll(/coalesce\(\s*((?:[^,()]|\([^()]*\))*\?\['value'\])\s*,/g)) {
-    problems.push(`COALESCE OVER AN ARRAY — an empty array is not null, so the fallback is unreachable: coalesce(${m[1].trim()}, ...)`);
+  for (const m of s.matchAll(/coalesce\(\s*((?:[^,()]|\([^()]*\))*\?\['value'\])\s*,\s*((?:[^,()]|\([^()]*\))*)/g)) {
+    const fallback = (m[2] || '').trim();
+    if (!/\?\['value'\]/.test(fallback)) continue;     // literal/empty fallback — harmless
+    problems.push(`COALESCE OVER TWO ARRAYS — an empty array is not null, so the second is never reached: coalesce(${m[1].trim()}, ${fallback.slice(0, 40)})`);
   }
 }
 
@@ -139,7 +149,9 @@ function findAction(node, name) {
 // A value containing an apostrophe (O'Connor) terminates the literal early: the query 400s, or worse
 // becomes injectable. OData escapes a quote by DOUBLING it, so every interpolated value needs
 // replace(x, '''', '''''').
-for (const s of exprStrings) {
+// ⚠ THIS SCANNED THE HARVESTED INTERPOLATION FRAGMENTS, which by construction never contain
+// "$filter=" — the rule could not fire. OData literals live in the FULL URI string, so scan those.
+for (const s of uriStrings) {
   if (!/\$filter=/.test(s)) continue;
   for (const m of s.matchAll(/eq\s*'@\{([^}]*)\}'/g)) {
     if (!/replace\(/.test(m[1])) problems.push(`UNESCAPED ODATA INTERPOLATION: eq '@{${m[1].slice(0, 70)}}' — an apostrophe in the value breaks or injects the filter`);

@@ -44,7 +44,7 @@ function parentOf(node, name) {
 const MUTATIONS = [
   // ── contract gate ────────────────────────────────────────────────────────────────────────────────
   { id: 'C1', gate: 'check-fn-contracts.js', why: 'read .ok on an op that only returns an outcome enum (the defect that shipped)',
-    apply: (d) => { find(d.actions, 'Seal_gate').expression.and[0].equals[0] = "@coalesce(body('Seal_threeway')?['ok'],false)"; } },
+    apply: (d) => { find(d.actions, 'Seal_gate').expression.and[0] = { equals: ["@coalesce(body('Seal_threeway')?['ok'],false)", true] }; } },
   { id: 'C2', gate: 'check-fn-contracts.js', why: 'compare a discriminant against a value the op can never emit',
     apply: (d) => { find(d.actions, 'Published_gate').expression.and[0].equals[1] = 'committed'; } },
   { id: 'C3', gate: 'check-fn-contracts.js', why: 'call a function route that does not exist',
@@ -79,7 +79,7 @@ const MUTATIONS = [
 
   // ── expression gate ──────────────────────────────────────────────────────────────────────────────
   { id: 'E1', gate: 'check-expressions.js', why: 'coalesce over two array-valued expressions (never falls through)',
-    apply: (d) => { find(d.actions, 'Stamps').inputs.body.input.target = "@first(coalesce(body('Target_live')?['value'], body('Target_archive')?['value']))"; } },
+    apply: (d) => { find(d.actions, 'Stamps').inputs.body.input.target = "@first(coalesce(body('Read_creds')?['value'], body('Read_actor')?['value']))"; } },
   { id: 'E2', gate: 'check-expressions.js', why: 'unguarded first() on a collection that can be empty',
     apply: (d) => { find(d.actions, 'Stamps').inputs.body.input.target = "@first(body('Target_archive')?['value'])"; } },
   { id: 'E3', gate: 'check-expressions.js', why: 'first() preceded by an UNRELATED empty() (fake guard)',
@@ -98,9 +98,26 @@ const MUTATIONS = [
       expression: { and: [{ equals: ["@body('Mode_gate')?['baseline']", 'active'] }] } }; } },
 ];
 
-function runGate(gate) {
-  try { execFileSync(process.execPath, [path.join(__dirname, gate), TMP], { stdio: 'pipe' }); return 0; }
-  catch (e) { return e.status || 1; }
+// ⚠ EXIT CODE ALONE IS NOT A VALID SIGNAL. Once the artifact itself has defects, every gate fails on
+// the BASELINE — and then every mutation looks "caught" for the wrong reason, which is exactly the
+// false confidence this suite exists to prevent. A mutation counts only if it produces a problem
+// line the clean baseline did NOT have. (Found while fixing slice 6: 20/21 "caught" against a
+// baseline that was already red.)
+const GATES = ['check-fn-contracts.js', 'check-correction-def.js', 'check-expressions.js'];
+function gateOutput(gate, file) {
+  try { return execFileSync(process.execPath, [path.join(__dirname, gate), file], { stdio: 'pipe' }).toString(); }
+  catch (e) { return ((e.stdout && e.stdout.toString()) || '') + ((e.stderr && e.stderr.toString()) || ''); }
+}
+const problemLines = (txt) => new Set(txt.split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('- ')));
+// baseline, measured once against the CLEAN definition
+const BASELINE = {};
+for (const g of GATES) BASELINE[g] = problemLines(gateOutput(g, DEF));
+function addsNewProblem(file) {
+  for (const g of GATES) {
+    const after = problemLines(gateOutput(g, file));
+    for (const line of after) if (!BASELINE[g].has(line)) return true;
+  }
+  return false;
 }
 
 const caught = [], survived = [];
@@ -111,7 +128,8 @@ for (const m of MUTATIONS) {
   // a corruption counts as CAUGHT if ANY gate fails — what matters is that something bites,
   // not which script happens to own the rule.
   const gates = ['check-fn-contracts.js', 'check-correction-def.js', 'check-expressions.js'];
-  (gates.some(g => runGate(g) !== 0) ? caught : survived).push(m);
+  // CAUGHT = the mutation produced a problem line the clean baseline did not have.
+  (addsNewProblem(TMP) ? caught : survived).push(m);
 }
 try { fs.unlinkSync(TMP); } catch (e) {}
 

@@ -281,9 +281,12 @@ function build() {
   }, afterAny('Verify_epoch'));
   A.Seal_gate = {
     type: 'If',
-    expression: { and: [{ equals: ["@coalesce(body('Seal_threeway')?['ok'],false)", true] }] },
+    // targetSeal returns { outcome: valid | unsealed-legacy | TARGET_SEAL_BROKEN | EPOCH_UNDEFINED |
+    // EPOCH_TAMPERED } and NEVER an ok boolean. Testing .ok refused every valid target.
+    // 'unsealed-legacy' is a legitimate pre-epoch row, so both passing outcomes proceed.
+    expression: { and: [{ contains: ["@json('[\"valid\",\"unsealed-legacy\"]')", "@coalesce(body('Seal_threeway')?['outcome'],'')"] }] },
     runAfter: after('Seal_threeway'), actions: {},
-    else: { actions: { Respond_seal: response(409, { ok: false, reason: "@coalesce(body('Seal_threeway')?['reason'],'TARGET_SEAL_BROKEN')" }), Respond_seal_stop: terminate(after('Respond_seal')) } },
+    else: { actions: { Respond_seal: response(409, { ok: false, reason: "@coalesce(body('Seal_threeway')?['outcome'],'TARGET_SEAL_BROKEN')" }), Respond_seal_stop: terminate(after('Respond_seal')) } },
   };
 
   // Steps enumeration (transfer-linked targets only) — paged walk, then a digest.
@@ -461,7 +464,9 @@ function build() {
 
   A.Published_gate = {
     type: 'If',
-    expression: { and: [{ equals: ["@coalesce(body('Recovery_decision')?['decision'],'')", 'committed'] }] },
+    // recoveryDecision emits roll_forward | roll_back | INVARIANT_BROKEN -- never 'committed'.
+    // Testing for 'committed' meant NO publication could ever reach P7.
+    expression: { and: [{ equals: ["@coalesce(body('Recovery_decision')?['decision'],'')", 'roll_forward'] }] },
     runAfter: after('Recovery_decision'),
     actions: {},   // P7 hangs off this branch
     else: { actions: { Respond_held: response(202, { ok: false, reason: 'PUBLICATION_HELD_FOR_RECONCILE' }), Respond_held_stop: terminate(after('Respond_held')) } },

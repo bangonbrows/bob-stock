@@ -96,6 +96,8 @@ for (const [name, c] of Object.entries(calls)) {
   } else if (c.route === 'attestRows') {
     // Verified against attestRows.evaluate: it reads body.rows (ARRAY, required), body.op, body.frame.
     if (!c.topLevel.includes('rows')) problems.push(`${name}: attestRows requires a 'rows' ARRAY; sent [${c.topLevel.join(',')}]`);
+    // attestRows.evaluate calls rows.map(...) — a SCALAR throws / 400s. Presence is not enough.
+    else if (!c.rowsIsArray) problems.push(`${name}: attestRows 'rows' must be an ARRAY — a scalar expression was sent, and evaluate() maps over it`);
     if (c.frame && c.frame !== 'econ-v1' && c.op === 'verify') note.push(`${name}: framed verify needs rows:[{obj,sig}] and returns results:[bool]`);
   } else if (c.route === 'validateKeys') {
     for (const need of ['claimedStoreId', 'storeKey', 'directorKey', 'rows']) {

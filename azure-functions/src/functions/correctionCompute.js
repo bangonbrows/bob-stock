@@ -605,6 +605,13 @@ function targetSeal(input) {
   if (input.econSigPresent) return input.verifyOk ? { outcome: 'valid' } : { outcome: 'TARGET_SEAL_BROKEN' };
   if (!input.epoch) return { outcome: 'EPOCH_UNDEFINED' };
   if (input.epoch.epochSigValid !== true) return { outcome: 'EPOCH_TAMPERED' };
+  // ⚠ STRIP-ATTACK EXTENSION (AGY, generated-artifact round). The comparison below treats absence of
+  // a seal as the strip attack — but it compared against `input.epoch.epochId` WITHOUT checking that
+  // the boundary is a real integer. Strip ONE MORE FIELD (epochId) from the seal artifact and
+  // `provenanceId >= undefined` is false, so a POST-EPOCH UNSEALED row fell through to
+  // 'unsealed-legacy' and was accepted. The defence was defeated by extending the same attack it
+  // was written to stop. A malformed boundary is now indistinguishable from a tampered one.
+  if (!Number.isSafeInteger(input.epoch.epochId)) return { outcome: 'EPOCH_TAMPERED' };
   if (!Number.isSafeInteger(input.provenanceId)) return { outcome: 'TARGET_SEAL_BROKEN' }; // no provenance => cannot be legacy
   return input.provenanceId >= input.epoch.epochId
     ? { outcome: 'TARGET_SEAL_BROKEN' }        // post-C1 ingest always seals => absence IS the strip attack
