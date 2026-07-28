@@ -40,9 +40,14 @@ buy a gate that bites, and it is never a substitute for one. **Reach for a harne
 for more agents.** If you are about to propose a workflow where a mechanical check would do the job,
 propose the check instead.
 
-**Practical note to raise when relevant:** `.claude/settings.json` pins Fable 5, so a session restart
-reverts the model mid-task regardless of what was selected. Worth flagging when a long multi-round
-build is in flight.
+**Practical note to raise when relevant.** There is **no `.claude/` folder in this repo** — the file
+that governs this is the USER-level `C:\Users\joshi\.claude\settings.json`, which applies to every
+project. It currently pins `"model": "opus[1m]"` and `"effortLevel": "high"`, with
+`"switchModelsOnFlag": false`. (An earlier version of this note said it pinned Fable 5; that was true
+when the note was written and was changed ~40 minutes later. The mechanism is unchanged and is now
+stronger, because effort level is pinned too.) **Consequence to flag during a long multi-round build:
+a session restart reverts BOTH the model and the effort level to those pins, discarding whatever was
+selected mid-task.** The allow-list lives in the user-level `settings.local.json`, not a project one.
 
 ---
 
@@ -244,6 +249,23 @@ Effectively zero — Azure SWA Free tier ($0), Logic Apps Consumption (~$0 withi
 ---
 
 ## 7. Quality Assurance Process
+
+> ## ⛔ SECTION 7 IS SUPERSEDED — DO NOT FOLLOW IT
+>
+> **The governing process is `AZURE-CHUNK-PROCESS.md` (ratified by Kunal 2026-07-03), plus
+> `HANDOVER.md` for current state.** This section describes the April 2026 client phase and is kept
+> only as history. Three things in it are now WRONG and following them would cause real damage:
+>
+> 1. **"EVERY step must go to Gemini."** Gemini was retired as an auditor — it fabricated findings
+>    (an invented CVE and two hallucinated criticals in W82.74). The auditors are **GPT/Codex and
+>    Antigravity (AGY)**, and they **report findings only, never edit**.
+> 2. **"Code is pushed to GitHub → Azure SWA auto-deploys"** — per fix. That is NOT how the Azure
+>    server phase ships. Work sits on `azure-phase-5-8-server` and lands as **ONE single end-of-phase
+>    cutover, only with Kunal's explicit OK**. He runs every cloud apply himself.
+> 3. **The stage list is incomplete** — it predates spec-audit-before-code, the sentinel/saboteur
+>    gate, the convergence rule, and the 6-way blind audit.
+>
+> Everything below this banner is the historical record of the client phase.
 
 ### Three-Auditor Review
 
