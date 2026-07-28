@@ -9,6 +9,10 @@
 // asserts the responsible gate FAILS. A mutation that survives is a hole in the gate, reported as
 // SURVIVED. Run it with the gates — green gates plus a green mutation run is the only combination
 // that means anything.
+//
+// ⚠ THIS IS A LOCAL GATE, NOT AN AUDITOR TASK. It spawns a Node process per gate run. Handing it to
+// an external reviewer looks like a hang — that already happened once, and it was an instruction
+// error on my part, not a reviewer failure. Run it yourself and give reviewers the RESULT.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -121,8 +125,16 @@ const problemLines = (txt) => new Set(txt.split(/\r?\n/).map(l => l.trim()).filt
 // baseline, measured once against the CLEAN definition
 const BASELINE = {};
 for (const g of GATES) BASELINE[g] = problemLines(gateOutput(g, DEF));
-function addsNewProblem(file) {
-  for (const g of GATES) {
+// ⚠ COST. Each gate run is a fresh Node process that loads @azure/functions and the compute module.
+// Checking all three gates for all 23 mutations meant ~70 spawns, which took long enough that an
+// external reviewer asked to run it appeared to hang. (That was my instruction error — this is a
+// LOCAL gate, not an auditor task — but the suite should not be that expensive either.)
+// So: try the gate that OWNS the rule first, and only fall back to the others if it does not catch.
+// Identical verdict, ~23 spawns instead of ~70 in the normal all-caught case, and a mutation caught
+// by the WRONG gate still counts (it is reported, so a mis-assigned owner cannot hide a hole).
+function addsNewProblem(file, ownerGate) {
+  const order = ownerGate ? [ownerGate, ...GATES.filter(g => g !== ownerGate)] : GATES;
+  for (const g of order) {
     const after = problemLines(gateOutput(g, file));
     for (const line of after) if (!BASELINE[g].has(line)) return true;
   }
@@ -138,7 +150,7 @@ for (const m of MUTATIONS) {
   // not which script happens to own the rule.
   const gates = ['check-fn-contracts.js', 'check-correction-def.js', 'check-expressions.js'];
   // CAUGHT = the mutation produced a problem line the clean baseline did not have.
-  (addsNewProblem(TMP) ? caught : survived).push(m);
+  (addsNewProblem(TMP, m.gate) ? caught : survived).push(m);
 }
 try { fs.unlinkSync(TMP); } catch (e) {}
 
