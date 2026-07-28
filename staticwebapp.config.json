@@ -1,7 +1,10 @@
 {
   "routes": [
-    { "route": "/*.{md,py}", "statusCode": 404 },
-    { "route": "/test/*", "statusCode": 404 }
+    { "route": "/*.{md,py,txt}", "statusCode": 404 },
+    { "route": "/test/*", "statusCode": 404 },
+    { "route": "/audit-artifacts/*", "statusCode": 404 },
+    { "route": "/azure-functions/*", "statusCode": 404 },
+    { "route": "/.github/*", "statusCode": 404 }
   ],
   "navigationFallback": {
     "rewrite": "/index.html",
