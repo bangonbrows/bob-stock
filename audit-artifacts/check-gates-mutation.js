@@ -22,6 +22,44 @@ const DEF = path.join(__dirname, 'correction-def-generated.json');
 const TMP = path.join(__dirname, '.mutation-tmp.json');
 const clean = JSON.parse(fs.readFileSync(DEF, 'utf8'));
 
+// ── 0. GENERATOR / ARTIFACT EQUIVALENCE (runs before anything else) ────────────────────────────────
+// Every rule in this suite mutates the JSON ARTIFACT. Not one of them notices the artifact drifting
+// away from gen-correction-def.js — a hand-edit to the JSON, or a generator change nobody
+// regenerated, and the whole gate stack is faithfully validating a file the deploy step will
+// overwrite. The external mutation review named this exactly: "it mutates the JSON artifact only; it
+// does not establish generator/artifact equivalence." So: regenerate into a temp file and require a
+// byte-identical result.
+// EOL-NORMALISED. A CRLF checkout would otherwise fail this on every Windows machine for no reason,
+// which is how a real drift signal gets trained away.
+// DELIBERATELY NOT ONE OF `GATES`: every mutation below writes a temp file, so a regenerate-and-diff
+// applied per-mutation would "catch" all of them for the wrong reason and hide every real hole.
+const GEN = path.join(__dirname, 'gen-correction-def.js');
+const REGEN = path.join(__dirname, '.regen-check.json');
+try { execFileSync(process.execPath, [GEN, REGEN], { stdio: 'pipe' }); }
+catch (e) {
+  console.log('==== GENERATOR DID NOT RUN ====');
+  console.log('  ' + ((e.stderr && e.stderr.toString()) || e.message));
+  process.exit(1);
+}
+{
+  const norm = (p) => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+  const artifact = norm(DEF), fresh = norm(REGEN);
+  try { fs.unlinkSync(REGEN); } catch (e) {}
+  if (artifact !== fresh) {
+    const al = artifact.split('\n'), bl = fresh.split('\n');
+    let i = 0; while (i < al.length && i < bl.length && al[i] === bl[i]) i++;
+    console.log('==== GENERATOR / ARTIFACT DRIFT ====');
+    console.log('  correction-def-generated.json is NOT what gen-correction-def.js produces.');
+    console.log(`  first difference at line ${i + 1}:`);
+    console.log(`    artifact : ${(al[i] === undefined ? '(end of file)' : al[i].trim()).slice(0, 150)}`);
+    console.log(`    generator: ${(bl[i] === undefined ? '(end of file)' : bl[i].trim()).slice(0, 150)}`);
+    console.log('  Everything below this line would have validated a file the deploy step overwrites.');
+    console.log('  Fix: run `node gen-correction-def.js`, re-read the diff, then re-run the gates.');
+    process.exit(1);
+  }
+  console.log('generator/artifact equivalence: OK — the artifact is a byte-for-byte regeneration');
+}
+
 // Locate an action anywhere in the tree (scopes included).
 function find(node, name) {
   for (const [k, a] of Object.entries(node || {})) {
@@ -67,11 +105,11 @@ const MUTATIONS = [
     apply: (d) => { find(d.actions, 'Journal_branch').default.actions = { Respond_default: { type: 'Response', kind: 'Http', inputs: { statusCode: 400, body: { ok: false } }, runAfter: {} } }; } },
   { id: 'S3', gate: 'check-correction-def.js', why: 'nested If where only ONE inner branch terminates (existential vs universal)',
     apply: (d) => { const e = find(d.actions, 'Keys_ok').else.actions; delete e.Reject_keys_stop;
-      e.Inner = { type: 'If', expression: { and: [{ equals: [true, true] }] }, runAfter: {},
+      e.Inner = { type: 'If', expression: { and: [{ equals: ["@variables('rowOk')", true] }] }, runAfter: {},
         actions: { Stop_a: { type: 'Terminate', inputs: { runStatus: 'Cancelled' }, runAfter: {} } },
         else: { actions: { Resp_b: { type: 'Response', kind: 'Http', inputs: { statusCode: 400, body: {} }, runAfter: {} } } } }; } },
   { id: 'S4', gate: 'check-correction-def.js', why: 'unterminated else on a gate whose SUCCESS branch is non-empty (AGY blind spot)',
-    apply: (d) => { d.actions.Extra_gate = { type: 'If', expression: { and: [{ equals: [true, true] }] }, runAfter: {},
+    apply: (d) => { d.actions.Extra_gate = { type: 'If', expression: { and: [{ equals: ["@variables('rowOk')", true] }] }, runAfter: {},
       actions: { Noop: { type: 'Compose', inputs: 'x', runAfter: {} } },
       else: { actions: { Resp_c: { type: 'Response', kind: 'Http', inputs: { statusCode: 400, body: {} }, runAfter: {} } } } }; } },
   { id: 'S5', gate: 'check-correction-def.js', why: 'runAfter naming an action that does not exist at that scope',
@@ -109,7 +147,87 @@ const MUTATIONS = [
   { id: 'X1', gate: 'check-expressions.js', why: 'strip the containment Scope failure handler so nothing catches an enclosed failure',
     apply: (d) => { d.actions.Reread_state_abort.runAfter.Main = ['Succeeded']; } },
   { id: 'X2', gate: 'check-expressions.js', why: 'failure handler runs but its chain never reaches a Response (cover that does not cover)',
-    apply: (d) => { delete d.actions.Abort_respond; } },];
+    apply: (d) => { delete d.actions.Abort_respond; } },
+
+  // ── commit-boundary cover (post-P6 containment) ───────────────────────────────────────────────────
+  // The generic abort handler RELEASES the fence and answers 500. That is correct BEFORE the publish
+  // and unsafe AFTER it, so P6/P7 live in their own `Commit` Scope with a handler that HOLDS. These
+  // two prove the structure gate notices when that split is undone.
+  { id: 'X3', gate: 'check-correction-def.js', why: 'collapse the commit-boundary split — post-publish actions back inside the releasing Main scope',
+    apply: (d) => { const m = d.actions.Main.actions; Object.assign(m, m.Commit.actions); delete m.Commit; delete m.Respond_held_commit; delete m.Respond_held_commit_stop; } },
+  { id: 'X4', gate: 'check-correction-def.js', why: 'post-commit handler that RELEASES the fence instead of holding it for reconcile',
+    apply: (d) => { const m = d.actions.Main.actions;
+      m.Release_after_commit = { type: 'ApiConnection', runAfter: { Commit: ['Failed', 'TimedOut'] },
+        inputs: { host: {}, method: 'post', path: '/x', body: { method: 'POST', uri: 'x',
+          headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': "@{variables('snapEtag')}" },
+          body: { ConfigData: "@{string(setProperty(json('{}'),'state','idle'))}" } } } };
+      m.Respond_held_commit.runAfter = { Release_after_commit: ['Succeeded', 'Failed', 'TimedOut'] }; } },
+
+  // ── SEMANTIC INVARIANTS ─────────────────────────────────────────────────────────────────────────
+  // The thirteen corruptions an external reviewer ran against the previous gate set. TWELVE OF THEM
+  // SURVIVED. Its diagnosis was not "add more mutations" — it was that the suite "covers exact
+  // mutation encodings well, but lacks semantic invariants such as required action inventories,
+  // mandatory dependency ancestry, WDL parsing, case-insensitive headers, typed ETags, and
+  // commit-phase-aware failure policy." Every one of these now has a RULE behind it, and these
+  // thirteen are the standing proof that the rule bites. Do not delete one because it "duplicates"
+  // an S/E/C mutation: those test encodings, these test meanings.
+  { id: 'M1', gate: 'check-fn-contracts.js', why: "attestRows rows = json('{}') — an OBJECT wearing an array-ish wrapper",
+    apply: (d) => { find(d.actions, 'Verify_target_row').inputs.body.rows = "@json('{}')"; } },
+  { id: 'M2', gate: 'check-fn-contracts.js', why: 'attestRows rows = a SCALAR read inside an array-ish coalesce',
+    apply: (d) => { find(d.actions, 'Verify_target_row').inputs.body.rows = "@coalesce(body('Target_live')?['row'],json('{}'))"; } },
+  { id: 'M3', gate: 'check-expressions.js', why: 'an expression reads an action that is NOT a runAfter ancestor (the execution-order race)',
+    apply: (d) => { delete find(d.actions, 'Delta').runAfter.Delta_cell; } },
+  // M4 targets the COMMIT SCOPE, not Publish itself: since the containment split, Publish is the
+  // Commit scope's single (correct) entry head, so clearing ITS runAfter is a no-op. Clearing the
+  // Commit scope's runAfter is the same corruption at the new boundary — the whole irrevocable region
+  // becomes a second entry head of Main and races the auth gate, the fence and the compute chain.
+  { id: 'M4', gate: 'check-correction-def.js', why: 'remove the Commit scope runAfter — the irrevocable post-publish region becomes a second scope entry head',
+    apply: (d) => { find(d.actions, 'Commit').runAfter = {}; } },
+  { id: 'M5', gate: 'check-correction-def.js', why: "lowercase 'x-http-method: merge' with NO IF-MATCH (headers are case-insensitive at runtime)",
+    apply: (d) => { const a = find(d.actions, 'Publish'); delete a.inputs.body.headers['X-HTTP-Method']; delete a.inputs.body.headers['IF-MATCH']; a.inputs.body.headers['x-http-method'] = 'merge'; } },
+  { id: 'M6', gate: 'check-correction-def.js', why: 'IF-MATCH: "@{null}" — present, non-empty, and not a fence',
+    apply: (d) => { find(d.actions, 'Publish').inputs.body.headers['IF-MATCH'] = '@{null}'; } },
+  { id: 'M7', gate: 'check-expressions.js', why: 'doubled-quote syntax inside a bare @{} interpolation — a WDL parse error, not a value',
+    apply: (d) => { const a = find(d.actions, 'Read_actor'); a.inputs.body.uri = a.inputs.body.uri.replace("triggerBody()?['actorUsername']", "triggerBody()?[''actorUsername'']"); } },
+  { id: 'M8', gate: 'check-fn-contracts.js', why: 'an impossible enum comparison written in STRING-form WDL rather than as a JSON operand pair',
+    apply: (d) => { find(d.actions, 'Published_gate').expression.and[0] = { equals: ["@equals(coalesce(body('Recovery_decision')?['decision'],''),'committed')", true] }; } },
+  { id: 'M9', gate: 'check-fn-contracts.js', why: 'read a handler property through outputs() rather than body() — always null',
+    apply: (d) => { find(d.actions, 'Publish').inputs.body.body.ConfigData = "@{outputs('Assemble')?['configData']}"; } },
+  { id: 'M10', gate: 'check-correction-def.js', why: 'delete the ENTIRE key-validation stage (required-action inventory)',
+    apply: (d) => { const s = find(d.actions, 'Main').actions; delete s.Read_creds; delete s.Gate_keys; delete s.Keys_ok; s.Read_actor.runAfter = {}; } },
+  { id: 'M11', gate: 'check-expressions.js', why: 'Abort_respond accepts only [Succeeded] from a predecessor that can Fail — the abort path hangs',
+    apply: (d) => { d.actions.Abort_respond.runAfter = { Release_abort: ['Succeeded'] }; } },
+  { id: 'M12', gate: 'check-correction-def.js', why: 'remove a gate-specific failure response — the protocol response is no longer preserved',
+    apply: (d) => { const s = find(d.actions, 'Seal_gate').else.actions; delete s.Respond_seal; delete s.Respond_seal_stop; } },
+  // M13 builds its post-commit cleanup INSIDE the Commit scope (that is where the post-publish
+  // actions now live), so it is the real shape of the corruption after the containment split.
+  { id: 'M13', gate: 'check-correction-def.js', why: 'a POST-COMMIT cleanup that releases the coordination fence',
+    apply: (d) => {
+      const s = find(d.actions, 'Commit').actions;
+      s.Reread_state_pc = JSON.parse(JSON.stringify(s.Reread_state_final));
+      s.Reread_state_pc.runAfter = { Outcome_by_read: ['Failed', 'TimedOut'] };
+      const rel = JSON.parse(JSON.stringify(s.Release_final).replace(/Reread_state_final/g, 'Reread_state_pc'));
+      rel.actions = { Do_Release_pc: rel.actions.Do_Release_final };
+      rel.runAfter = { Reread_state_pc: ['Succeeded', 'Failed', 'TimedOut'] };
+      s.Release_pc = rel;
+      s.Respond_held_outcome.runAfter = { Release_pc: ['Succeeded', 'Failed', 'TimedOut'] };
+    } },
+
+  // ── the four rules added after the Option-A wave review (each one is here because the review found
+  //    the rule missing, so each MUST be shown to bite) ──────────────────────────────────────────────
+  { id: 'N1', gate: 'check-correction-def.js', why: 'put the registry reservation back above the refusal lanes — the placement that bricks a target on every refusal',
+    apply: (d) => {
+      const res = find(d.actions, 'Reserve');
+      res.runAfter = { Journal_create: ['Succeeded'] };
+      find(d.actions, 'Publish').runAfter = { Assemble_ok: ['Succeeded'] };
+    } },
+  { id: 'N2', gate: 'check-correction-def.js', why: 'a decision gate that stops consulting its evidence — Compute_gate no longer looks at Delta_cell or Candidate',
+    apply: (d) => { find(d.actions, 'Compute_gate').expression = { and: [{ equals: ["@coalesce(body('Delta')?['ok'],false)", true] }] }; } },
+  { id: 'N3', gate: 'check-correction-def.js', why: 'a gate pre-decided with a literal condition — the branch is unreachable and the refusal is dead code',
+    apply: (d) => { find(d.actions, 'Verify_gate').expression = { and: [{ equals: [true, true] }] }; } },
+  { id: 'N4', gate: 'check-correction-def.js', why: 'a Terminate hooked on a status its Response can never produce — named in runAfter, so a presence-only check passes',
+    apply: (d) => { find(d.actions, 'Respond_seal_stop').runAfter = { Respond_seal: ['Skipped'] }; } },
+];
 
 // ⚠ EXIT CODE ALONE IS NOT A VALID SIGNAL. Once the artifact itself has defects, every gate fails on
 // the BASELINE — and then every mutation looks "caught" for the wrong reason, which is exactly the

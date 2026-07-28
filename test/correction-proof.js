@@ -85,13 +85,19 @@ const D = (r) => (r.ok ? (r.deltas['boor|prodA'] || 0) : r.reason);
 ok('create-replace: -target +new (archived)', D(C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: ROW(10), newOutput: ROW(8) })) === -2);
 ok('create-delete: -target', D(C.computeDelta({ cell: 'create-delete', targetLocation: 'archive', target: ROW(10) })) === -10);
 ok('AGY R2-2 repro: supersede replace(+8)->replace(+5) = -8+5 = -3 (95 from 98, NOT 93)',
-  D(C.computeDelta({ cell: 'supersede-replace-replace', targetLocation: 'archive', prevOutput: ROW(8), newOutput: ROW(5) })) === -3);
+  D(C.computeDelta({ cell: 'supersede-replace-replace', targetLocation: 'archive', target: ROW(10), prevOutput: ROW(8), newOutput: ROW(5) })) === -3);
 ok('supersede replace->delete: -prevOutput', D(C.computeDelta({ cell: 'supersede-replace-delete', targetLocation: 'archive', prevOutput: ROW(8) })) === -8);
-ok('supersede delete->replace: +new', D(C.computeDelta({ cell: 'supersede-delete-replace', targetLocation: 'archive', newOutput: ROW(5) })) === 5);
+ok('supersede delete->replace: +new', D(C.computeDelta({ cell: 'supersede-delete-replace', targetLocation: 'archive', target: ROW(10), newOutput: ROW(5) })) === 5);
 ok('withdraw: -prevOutput +originalTarget', D(C.computeDelta({ cell: 'withdraw', targetLocation: 'archive', prevOutput: ROW(8), originalTarget: ROW(10) })) === 2);
 ok('C2-R6-2 null->replace: -originalTarget +new (retire-restored +10 then +8 => -2 => lands at 8)',
-  D(C.computeDelta({ cell: 'null-replace', targetLocation: 'archive', originalTarget: ROW(10), newOutput: ROW(8) })) === -2);
+  D(C.computeDelta({ cell: 'null-replace', targetLocation: 'archive', target: ROW(10), originalTarget: ROW(10), newOutput: ROW(8) })) === -2);
 ok('C2-R6-2 null->delete: -originalTarget', D(C.computeDelta({ cell: 'null-delete', targetLocation: 'archive', originalTarget: ROW(10) })) === -10);
+ok('CONTRACT: a storeId smuggled into control.row NEVER keys the delta -- the target store does',
+  (() => {
+    const r = C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: ROW(10),
+      newOutput: { storeId: 'ELSEWHERE', productId: 'prodA', qty: 8, type: 'transfer_in' } });
+    return r.ok && r.deltas['boor|prodA'] === -2 && r.deltas['ELSEWHERE|prodA'] === undefined;
+  })());
 ok('NORMALIZATION LAW: live-target cells adjust NO balances (any cell)',
   (() => { const r = C.computeDelta({ cell: 'create-replace', targetLocation: 'live', target: ROW(10), newOutput: ROW(8) }); return r.ok && Object.keys(r.deltas).length === 0; })());
 ok('adoption, tombstone EXCLUDED at archive time -> delta 0 (C2-R3-3)',
@@ -113,7 +119,7 @@ ok('OUTBOUND effect sign: deleting an out(-4) row RESTORES +4',
 ok('NORMALIZATION INDUCTION: create-replace -> supersede -> withdraw telescopes to zero net',
   (() => {
     const a = D(C.computeDelta({ cell: 'create-replace', targetLocation: 'archive', target: ROW(10), newOutput: ROW(8) }));
-    const b = D(C.computeDelta({ cell: 'supersede-replace-replace', targetLocation: 'archive', prevOutput: ROW(8), newOutput: ROW(5) }));
+    const b = D(C.computeDelta({ cell: 'supersede-replace-replace', targetLocation: 'archive', target: ROW(10), prevOutput: ROW(8), newOutput: ROW(5) }));
     const c = D(C.computeDelta({ cell: 'withdraw', targetLocation: 'archive', prevOutput: ROW(5), originalTarget: ROW(10) }));
     return a + b + c === 0; // balance returns exactly to the pre-correction baseline
   })());
@@ -131,9 +137,9 @@ function engineHeadCheck(manifest, target, c) {
 }
 // create/supersede now REQUIRE a control payload — they publish a control row, and the row is built
 // here (generated-artifact round). A deletion control is the minimal valid form for id probes.
-const cand = C.assembleCandidate({ mode: 'create', opId: 'op1', revision: 0, candidateVersion: 12, target: 'txT1', control: { controlType: 'deletion' } });
+const cand = C.assembleCandidate({ mode: 'create', opId: 'op1', revision: 0, candidateVersion: 12, target: 'txT1', control: { type: 'deletion' } });
 ok('deterministic ids: ctl:opId / corr:opId:rev', cand.ok && cand.controlId === 'ctl:op1' && cand.outputTransactionId === 'corr:op1:0');
-ok('revision >0 joins the ctl id', C.assembleCandidate({ mode: 'supersede', opId: 'op1', revision: 2, candidateVersion: 13, target: 'txT1', control: { controlType: 'deletion' } }).controlId === 'ctl:op1:2');
+ok('revision >0 joins the ctl id', C.assembleCandidate({ mode: 'supersede', opId: 'op1', revision: 2, candidateVersion: 13, target: 'txT1', control: { type: 'deletion' } }).controlId === 'ctl:op1:2');
 ok('ENGINE PARITY: an assembled create head passes the frozen engine head check verbatim (C2-R3-1)',
   engineHeadCheck({ version: 12, controlHeads: cand.candidateHeads }, 'txT1', { controlId: 'ctl:op1', revision: 0, bornPublicationVersion: 12 }) === 'ok');
 const adoptCand = C.assembleCandidate({ mode: 'adopt', opId: 'op2', candidateVersion: 13, adoptions: [{ tombstoneId: 'txDel1', target: 'txT9', membership: { decision: 'excluded' } }] });
@@ -317,13 +323,32 @@ for (const f of A.CTL_V1_FIELDS) {   // whole-population tamper probe (attest-pr
   if (A.verifyFrame(KR, 'ctl-v1', t, ctlSig)) { allBreak = false; ok(`ctl-v1 tamper NOT caught on ${f}`, false); }
 }
 ok(`ctl-v1: tampering EVERY covered field (${A.CTL_V1_FIELDS.length}) breaks the seal — incl. TransferId + UnitPriceAtTime (the C2-R2-2 finding)`, allBreak);
-ok('ctl-v1 TYPED encoding: 0, null, and ABSENT are three distinct canonicals (C2-R7-5)',
+// ⚠ C2-R7-5 NARROWED, DELIBERATELY, AND THIS IS THE RECORD OF IT.
+// The converged rule was "0, null and ABSENT are three distinct canonicals". Two thirds of it stand
+// and are the part that carries the safety: 0 must never collapse into null-or-absent, because a
+// zero quantity is a FACT and a missing quantity is the absence of one — that is the econ-v1
+// String-coercion mistake this frame exists to avoid. The third third — null distinct from ABSENT —
+// is UNHOLDABLE FOR ctl-v1 and was converged without anyone testing the branch that needs it: a
+// ctl-v1 subject is a SharePoint list item, and a list item cannot represent absence. Every unwritten
+// column reads back as null, so the seal minted over the intent could never verify against the row
+// it describes (see F30). A rule that makes a frame's own storage fail its own signature is not a
+// safety property. Null and absent are therefore ONE state for this frame only; the three-way rule
+// is still proven, unchanged, on a frame whose subject is not a list item.
+ok('ctl-v1 TYPED encoding: 0 stays distinct from null/absent (C2-R7-5, narrowed)',
   (() => {
     const a = CTL(); a.ControlRevision = 0;
     const b = CTL(); b.ControlRevision = null;
     const c = CTL(); delete c.ControlRevision;
     const ca = A.canonicalFrame('ctl-v1', a), cb = A.canonicalFrame('ctl-v1', b), cc = A.canonicalFrame('ctl-v1', c);
-    return ca !== cb && cb !== cc && ca !== cc;
+    return ca !== cb && ca !== cc      // 0 is its own state — the part that matters
+      && cb === cc;                     // null === absent, for the storage reason above
+  })());
+ok('C2-R7-5 THREE-WAY still holds where it can: a non-list frame keeps 0 / null / ABSENT distinct',
+  (() => {
+    const a = A.canonicalFrame('runrec-v1', { RunId: 'r', SnapshotVersion: 0 });
+    const b = A.canonicalFrame('runrec-v1', { RunId: 'r', SnapshotVersion: null });
+    const c = A.canonicalFrame('runrec-v1', { RunId: 'r' });
+    return a !== b && b !== c && a !== c;
   })());
 ok('a DELETION control signs with the row-form fields ABSENT (distinct from any replacement)',
   (() => {
@@ -853,9 +878,12 @@ ok('L4: buildrec-v1 and epoch-v1 are DOMAIN-SEPARATED (a build record can never 
 // consumed, so the signed row and the published balances cannot diverge.
 const candIn = (o) => Object.assign({
   mode: 'create', opId: 'op1', revision: 0, candidateVersion: 5, target: 'txT1',
-  targetLine: { qty: 3 }, originalEventAt: '2026-07-26T00:00:00.000Z',
+  targetLine: { transferId: 'trf1', productId: 'prodA', qty: 3 }, originalEventAt: '2026-07-26T00:00:00.000Z',
   stamps: { sellAtSupply: 12.5, discAtSupply: 30, pricingVersion: 4, catalogueVersion: 9, unitPriceAtTime: 8 },
-  control: { controlType: 'replacement', replacement: { storeId: 'boor', productId: 'prodA', type: 'transfer_in', qty: 3, timestamp: '2026-07-26T01:00:00.000Z' } },
+  // §5: ECONOMIC IDENTITY ONLY -- no storeId, no instant, no transferId. Those are SERVER-derived
+  // from the fetched target row, targetLine and originalEventAt.
+  targetRow: { TransactionId: 'txT1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 10, TransferId: 'trf1' },
+  control: { type: 'replacement', row: { productId: 'prodA', type: 'transfer_in', qty: 3 } },
 }, o);
 ok('P1: candidate returns the assembled control ROW, echoing candidateVersion/revision/journalId',
   (() => {
@@ -881,19 +909,65 @@ ok('P1: the assembled row SIGNS and VERIFIES under ctl-v1 (it is a real signable
   })());
 ok('P1: a DELETION control carries identity only — engine-row fields stay ABSENT (typed [0], not empty)',
   (() => {
-    const r = C.assembleCandidate(candIn({ control: { controlType: 'deletion' } }));
+    const r = C.assembleCandidate(candIn({ control: { type: 'deletion' } }));
     return r.ok && r.row && r.row.ControlType === 'deletion'
       && !Object.prototype.hasOwnProperty.call(r.row, 'StoreId')
       && !Object.prototype.hasOwnProperty.call(r.row, 'Qty');
   })());
-ok('P1: a malformed replacement REFUSES rather than signing a corrupt row',
+ok('P1: a malformed CALLER row REFUSES rather than signing a corrupt row',
   (() => {
-    const bad = [{ qty: -1 }, { qty: 1.5 }, { type: 'deleted' }, { storeId: '' }, { timestamp: 'not-a-date' }];
+    const bad = [{ qty: -1 }, { qty: 1.5 }, { type: 'deleted' }, { productId: '' }, { qty: undefined }];
     return bad.every(patch => {
-      const base = candIn().control.replacement;
-      const r = C.assembleCandidate(candIn({ control: { controlType: 'replacement', replacement: Object.assign({}, base, patch) } }));
+      const base = candIn().control.row;
+      const r = C.assembleCandidate(candIn({ control: { type: 'replacement', row: Object.assign({}, base, patch) } }));
       return r.ok === false && r.reason === 'BAD_REPLACEMENT_ROW';
     });
+  })());
+ok('P1: NO TARGET STORE is a malformed CALLER row (the store is server-derived from the target)',
+  (() => C.assembleCandidate(candIn({ targetRow: { TransactionId: 'txT1' } })).reason === 'BAD_REPLACEMENT_ROW')());
+ok('P4 FOLD: an op:targetLine REFUSAL (absent / non-ISO originalEventAt) is TARGET_LINE_UNRESOLVED, not ok:true',
+  (() => {
+    const noWhen = C.assembleCandidate(candIn({ originalEventAt: null }));
+    const badWhen = C.assembleCandidate(candIn({ originalEventAt: '2026-07-26 01:00:00' }));
+    return [noWhen, badWhen].every(r => r.ok === false && r.reason === 'TARGET_LINE_UNRESOLVED');
+  })());
+ok('P4 FOLD: an op:stamps REFUSAL (null / partial / out-of-range stamps) is STAMPS_UNRESOLVABLE, not ok:true',
+  (() => {
+    const cases = [null, {}, { sellAtSupply: 12.5, discAtSupply: 30, pricingVersion: 4 },
+      { sellAtSupply: 12.5, discAtSupply: 300, pricingVersion: 4, catalogueVersion: 9 }];
+    return cases.every(s => {
+      const r = C.assembleCandidate(candIn({ stamps: s }));
+      return r.ok === false && r.reason === 'STAMPS_UNRESOLVABLE';
+    });
+  })());
+ok('P1 SECURITY: caller storeId/timestamp/transferId in control.row are DROPPED (no backdating, no store hop)',
+  (() => {
+    const r = C.assembleCandidate(candIn({ control: { type: 'replacement', row: {
+      productId: 'prodA', type: 'transfer_in', qty: 3,
+      storeId: 'ELSEWHERE', timestamp: '2019-01-01T00:00:00.000Z', transferId: 'trfEVIL',
+      Timestamp: 1546300800000, StoreId: 'ELSEWHERE' } } }));
+    return r.ok && r.row.StoreId === 'boor' && r.row.TransferId === 'trf1'
+      && r.row.Timestamp === '2026-07-26T00:00:00.000Z'
+      && r.row.Date === '2026-07-26' && r.row.OriginalEventAt === '2026-07-26T00:00:00.000Z';
+  })());
+ok('P1: Date/Timestamp carry the SERVER instant verbatim (the STORED ENCODING is unchanged)',
+  (() => {
+    const r = C.assembleCandidate(candIn());
+    // This wave changes the SOURCE of the instant (server, never caller) and nothing else. The live
+    // list's real column type for `Timestamp` has never been read, so the encoding question is
+    // recorded in the known-gap block, not guessed here. If the column turns out to be Number, THIS
+    // assertion is what changes -- after the column is probed.
+    return r.ok && r.row.Timestamp === candIn().originalEventAt && r.row.Date === '2026-07-26';
+  })());
+ok('P1: a TRANSFERLESS target (no targetLine) writes an EMPTY TransferId, never a caller value',
+  (() => {
+    const r = C.assembleCandidate(candIn({ targetLine: null,
+      // a TRANSFERLESS target row -- the fixture must drop TransferId too, or this is a
+      // transfer-linked target with NO targetLine, which buybackExport.js:533 refuses outright and
+      // which the deletion-side fold now refuses here as well.
+      targetRow: { TransactionId: 'txT1', StoreId: 'boor', ProductId: 'prodA', Type: 'transfer_in', Qty: 10 },
+      control: { type: 'replacement', row: { productId: 'prodA', type: 'transfer_in', qty: 3, transferId: 'trfEVIL' } } }));
+    return r.ok && r.row.TransferId === '';
   })());
 ok('P1: withdraw/retire build NO row (null-head modes publish no control row)',
   (() => {
@@ -966,6 +1040,57 @@ ok('Q2: modeGate NAMES the rows the LA must fetch — active head => priorContro
       && nul.ok && JSON.stringify(nul.needs) === JSON.stringify(['originalTarget'])
       && create.ok && JSON.stringify(create.needs) === JSON.stringify(['target']);
   })());
+
+// ── THE SEAL MUST SURVIVE A ROUND TRIP THROUGH ITS OWN STORAGE ────────────────────────────────────
+// A DELETION control row is built with the control-identity fields only; the twelve engine-row fields
+// are deliberately ABSENT so the typed canonical encodes them [0]. Sign_ctl seals THAT object, the LA
+// POSTs it to the ledger list, and the re-read comes back with every column present — the unwritten
+// ones as null. Under a strict absent≠null canonical the two differ in twelve positions, so P5.4
+// rejects EVERY deletion correction, and worse, no future verifier of the stored row can ever
+// reproduce the signed canonical. This branch had never executed: the request contract refused first.
+// SP() is the round trip — exactly what a nometadata read of that list item returns.
+ok('F30: a deletion control row verifies against its own SharePoint round trip', (() => {
+  const del = C.buildControlRow({ control: { type: 'deletion' }, target: 'txn:1', targetLine: { line: 1 }, originalEventAt: '2026-01-01T00:00:00Z', targetRow: {} }, 'ctl:1', 0, 9, null);
+  if (!del.row) return false;
+  const SP = (row) => {
+    const item = { Id: 41, 'odata.etag': '"3"', Created: '2026-01-01T00:00:00Z' };   // list noise
+    for (const f of A.CTL_V1_FIELDS) item[f] = Object.prototype.hasOwnProperty.call(row, f) ? row[f] : null;
+    return item;
+  };
+  const stored = SP(del.row);
+  // 1. the P5.4 re-read comparison holds, and 2. the SIGNATURE minted over the intent still verifies
+  //    against the stored row — the property that makes the seal durable rather than write-only.
+  const canonIntent = A.canonicalFrame('ctl-v1', del.row);
+  const canonStored = A.canonicalFrame('ctl-v1', stored);
+  return C.ctlRowsEqual(del.row, stored) === true && canonIntent === canonStored;
+})());
+
+ok('F31: null-is-absent does NOT blind the seal — a tampered value still fails', (() => {
+  const del = C.buildControlRow({ control: { type: 'deletion' }, target: 'txn:1', targetLine: { line: 1 }, originalEventAt: '2026-01-01T00:00:00Z', targetRow: {} }, 'ctl:1', 0, 9, null);
+  const stored = {}; for (const f of A.CTL_V1_FIELDS) stored[f] = Object.prototype.hasOwnProperty.call(del.row, f) ? del.row[f] : null;
+  // a SharePoint-direct actor filling an absent engine field, re-pointing the control, or blanking a
+  // covered value — all three must still change the canonical.
+  const injected = { ...stored, Qty: 5 };
+  const repointed = { ...stored, TargetTransactionId: 'txn:OTHER' };
+  const blanked = { ...stored, ControlId: null };
+  return C.ctlRowsEqual(del.row, injected) === false
+    && C.ctlRowsEqual(del.row, repointed) === false
+    && C.ctlRowsEqual(del.row, blanked) === false;
+})());
+
+ok('F32: null-is-absent is SCOPED to ctl-v1 — every other frame still separates null from absent', (() => {
+  // The other frames describe artifacts we control end to end, and one of them (runrec-v1) is
+  // ALREADY DEPLOYED: widening the rule would silently re-value signatures already stored.
+  const nul = { RunId: 'r1', SnapshotVersion: null };
+  const abs = { RunId: 'r1' };
+  const ctlNul = { ControlId: 'c1', TargetLine: null };
+  const ctlAbs = { ControlId: 'c1' };
+  return A.canonicalFrame('runrec-v1', nul) !== A.canonicalFrame('runrec-v1', abs)
+    && A.canonicalFrame('epoch-v1', { epochId: 1, recordedAt: null }) !== A.canonicalFrame('epoch-v1', { epochId: 1 })
+    && A.canonicalFrame('ctl-v1', ctlNul) === A.canonicalFrame('ctl-v1', ctlAbs)
+    // and the FROZEN econ-v1 row canonical is a different function entirely — untouched by this change
+    && A.canonical({ TransactionId: 't1', StoreId: null }) === A.canonical({ TransactionId: 't1', StoreId: null });
+})());
 
 // L1 (rows 1/2 STILL overlapping — the R6 fold fixed the symptom, not the wildcard that subsumes
 // its successor; found independently by BOTH reviewers) and L2 (partial build-repair states mapping

@@ -160,9 +160,18 @@ function computeTargetLine(input) {
 // tier (b): the transfer's ITEM stamps for the REPLACEMENT product via foldProjection —
 // trusted (not backfill-untrusted) and mint-attested only.
 function mintStamps(input) {
-  const t = toEngineRow(input.target) || {}, r = toEngineRow(input.replacement) || {};   // raw SharePoint casing in, engine shape out
+  // §5 CONTRACT: `control.row` is ECONOMIC IDENTITY ONLY — it carries NO storeId. The replacement's
+  // store is the TARGET's store (completeReplacement), so the SR-145/C2-R1-11 store conjunct below is
+  // satisfied BY CONSTRUCTION rather than by a client value, and a storeId smuggled into
+  // `control.row` can never widen tier (a).
+  const t = toEngineRow(input.target) || {}, r = completeReplacement(input.replacement, input.target);
   const tup = engine.readTuple(t.sellAtSupply, t.discAtSupply, t.pricingVersion, t.catalogueVersion);
   if (tup && !tup.absent
+      // NOTE: the STORE conjunct is now satisfied BY CONSTRUCTION (completeReplacement takes storeId
+      // from the TARGET row), so it can no longer FAIL. It is KEPT, not deleted, so SR-145/C2-R1-11
+      // conformance stays readable at the check site — but do NOT treat it as the defence against a
+      // caller storeId. That defence is completeReplacement's key whitelist, and that is where any
+      // future test of the store vector belongs.
       && t.productId === r.productId && t.storeId === r.storeId && t.type === r.type) {
     return { ok: true, tier: 'a', stamps: { sellAtSupply: tup.sell, discAtSupply: tup.disc, pricingVersion: tup.pv, catalogueVersion: tup.cv } };
   }
@@ -218,6 +227,11 @@ function addDelta(map, eff, sign) {
 //          membership?: {decision:'excluded'|'in-balances'|'undecidable'} (adoption/retirement only) }
 function computeDelta(input) {
   const cell = input.cell, deltas = {};
+  // §5 CONTRACT: `newOutput` IS the caller's `control.row` — economic identity only, carrying no
+  // storeId, which is the BALANCE KEY. Bind it to the TARGET row's store exactly as buildControlRow
+  // does, so the sealed control row and the published balance cannot key off different stores and no
+  // caller value can steer a delta onto another store's balance. `target` is sent on EVERY delta call.
+  const newOutput = input.newOutput == null ? null : completeReplacement(input.newOutput, input.target);
   let err = null;
   const add = (row, sign) => { const e = addDelta(deltas, effectOf(row), sign); if (e && !err) err = e; };
   // NORMALIZATION LAW: live-target ensembles adjust NO balances in ANY cell (they are never in
@@ -231,19 +245,19 @@ function computeDelta(input) {
   const isLive = input.targetLocation === 'live';
   switch (cell) {
     case 'create-replace':   // first publication; archived create target is ALWAYS in balances
-      add(input.target, -1); add(input.newOutput, +1); break;
+      add(input.target, -1); add(newOutput, +1); break;
     case 'create-delete':
       add(input.target, -1); break;
     case 'supersede-replace-replace':
-      add(input.prevOutput, -1); add(input.newOutput, +1); break;
+      add(input.prevOutput, -1); add(newOutput, +1); break;
     case 'supersede-replace-delete':
       add(input.prevOutput, -1); break;
     case 'supersede-delete-replace':
-      add(input.newOutput, +1); break;
+      add(newOutput, +1); break;
     case 'withdraw':
       add(input.prevOutput, -1); add(input.originalTarget, +1); break;
     case 'null-replace':     // post-withdraw/retire baseline: the TARGET is the current effective value (C2-R6-2)
-      add(input.originalTarget, -1); add(input.newOutput, +1); break;
+      add(input.originalTarget, -1); add(newOutput, +1); break;
     case 'null-delete':
       add(input.originalTarget, -1); break;
     case 'adopt': {          // first publication; in-snapshot gate by MEMBERSHIP (C2-R3-3/C2-R4-1)
@@ -328,9 +342,40 @@ function assembleCandidate(input) {
 // The control row's exact shape — the ctl-v1 covered set (attestRows CTL_V1_FIELDS), no more and no
 // less. A DELETION control carries the control identity only; the engine-row fields stay ABSENT so
 // the typed canonical encodes them as [0] rather than as empty values.
+// ── THE SERVER-COMPLETED REPLACEMENT (§5 request contract) ────────────────────────────────────────
+// §5 pins `intent.control` to `{type:'deletion'} | {type:'replacement', row:{productId, qty, type,
+// reason?, stockFrom?, stockTo?, stockFromStoreId?, stockToStoreId?}}` — "ECONOMIC identity only —
+// stamps/instants NEVER accepted". This core read `control.controlType`/`control.replacement` and
+// REQUIRED a caller `storeId` and `timestamp`, so every contract-shaped call refused
+// BAD_REPLACEMENT_ROW — and had the shape matched, a Director could have BACKDATED a control row
+// into a closed period and keyed a replacement's delta onto ANOTHER STORE's balance.
+// The three non-contract fields are SERVER-DERIVED, from state the route already fetched:
+//   StoreId    the TARGET row's own store — a correction is scoped to its target's store, and the
+//              engine refuses any other outright (buybackExport.js:541 `r.storeId !== storeId`).
+//   instant    `originalEventAt` — the transfer's SUBMIT step for a transfer-linked target, the
+//              target row's stored instant otherwise (computeTargetLine). It is EXACTLY the value
+//              the engine equality-checks (buybackExport.js:552-553) and is validated ISO-UTC
+//              (SR-130). NEVER a clock read: this function must stay pure so a recovering worker
+//              rebuilds the identical candidate (§6 roll-forward).
+//   TransferId the SERVER-VALIDATED `targetLine.transferId` — isHOSupply resolves a control row's
+//              billing from its transfer's own projection (buybackExport.js:180 reached from :659),
+//              so a caller-chosen transferId would re-point the HO-supply decision.
+// Anything the caller puts in those three keys is DROPPED, never read.
+// Declared here rather than above its two earlier callers (mintStamps, computeDelta) deliberately —
+// function declarations hoist; keeping the contract rule in ONE place is worth more than file order.
+function completeReplacement(controlRow, targetRow) {
+  const r = toEngineRow(controlRow) || {}, t = toEngineRow(targetRow) || {};
+  return {
+    storeId: t.storeId,                       // SERVER-DERIVED — never a caller field
+    productId: r.productId, qty: r.qty, type: r.type,
+    reason: r.reason, stockFrom: r.stockFrom, stockTo: r.stockTo,
+    stockFromStoreId: r.stockFromStoreId, stockToStoreId: r.stockToStoreId,
+  };
+}
+
 function buildControlRow(input, controlId, rev, cv, outputTransactionId) {
   const c = input.control || {};
-  const type = c.controlType === 'deletion' ? 'deletion' : 'replacement';
+  const type = c.type === 'deletion' ? 'deletion' : 'replacement';
   const row = {
     ControlId: controlId,
     ControlType: type,
@@ -341,29 +386,85 @@ function buildControlRow(input, controlId, rev, cv, outputTransactionId) {
     OriginalEventAt: input.originalEventAt == null ? null : String(input.originalEventAt),
     ControlState: 'active',
   };
+  // THE FOLD ABOVE ONLY PROTECTS REPLACEMENT ROWS. buybackExport.js:533 requires `targetLine` for
+  // ANY control whose target row is TRANSFER-LINKED — that check sits OUTSIDE the
+  // `c.type === 'replacement'` branch at :535, so a DELETION control is NOT exempt. Without this,
+  // create-delete and supersede-*-delete seal and publish a control row with TargetLine null over a
+  // transfer-linked target, the manifest names it the target's ACTIVE head, and the frozen engine
+  // then refuses it FOREVER with MALFORMED_CONTROL ':targetLine-required', aborting the WHOLE
+  // buyback export for that store — the identical failure mode the replacement fold exists to stop.
+  // `input.targetRow` is already supplied to op:candidate by the C2-GEN-4 binding, so this needs no
+  // new input.
+  const tRow = toEngineRow(input.targetRow) || {};
+  if (tRow.transferId && input.targetLine == null) return { reason: 'TARGET_LINE_UNRESOLVED' };
   if (type === 'deletion') return { row };
 
   // A replacement carries the FULL engine row form — the same fields the delta arithmetic consumed.
-  const r = c.replacement || {};
+  const r = completeReplacement(c.row, input.targetRow);
   const s = input.stamps || {};
+  const eventAt = input.originalEventAt == null ? '' : String(input.originalEventAt);
+  const transferId = input.targetLine && input.targetLine.transferId ? String(input.targetLine.transferId) : '';
+  // DIAGNOSABILITY, RECORDED DELIBERATELY: r.storeId is now SERVER-derived (completeReplacement takes
+  // it from the fetched target row), so its absence is never the caller's doing — yet it still
+  // reports under the CALLER's reason code, unlike the instant below. Kept as ONE guard rather than
+  // minting a new reason string in a wave that is fixing reported defects only; the path is
+  // reachable only via a binding regression, because Target_gate 404s an absent target first.
+  // Listed in the known-gap block so an auditor sees the inconsistency named rather than hidden.
   if (!reqId(r.storeId) || !reqId(r.productId) || !validQty(r.qty) || !hasEconDirection(r.type)) {
     return { reason: 'BAD_REPLACEMENT_ROW' };
   }
-  if (!isIsoUtc(String(r.timestamp || ''))) return { reason: 'BAD_REPLACEMENT_ROW' };
+  // ── THE P4 REFUSAL FOLD ──────────────────────────────────────────────────────────────────────
+  // op:targetLine and op:stamps express refusal as HTTP 200 + {ok:false,reason}, so the LA bindings
+  // body('Target_line')?['originalEventAt'] / body('Stamps')?['stamps'] simply resolve to NULL and
+  // this function could not tell a refusal from a legitimately-absent value: it returned ok:true and
+  // a control row carrying OriginalEventAt:null and all five stamp columns null, which the
+  // Compute_gate passed, so the row was sealed under ctl-v1, written to the ledger and named by the
+  // manifest as the target's ACTIVE head. The frozen engine then refuses it FOREVER
+  // (buybackExport.js:537 ':originalEventAt', :543 ':stamps'), and one MALFORMED_CONTROL aborts the
+  // WHOLE buyback export for that store.
+  // WHY HERE AND NOT IN A LOGIC APP GATE: whether those refusals are fatal depends on the MODE
+  // (withdraw/retire_claim/adopt publish no control row; a DELETION control legitimately carries no
+  // stamps and no instant), so a WDL gate would have to encode the mode table — precisely the
+  // condition tree F1 forbids. buildControlRow reaches this point ONLY for a create/supersede
+  // REPLACEMENT row, so refusing here is mode-correct by construction and surfaces as
+  // Candidate.ok=false, which the P4 Compute_gate stops on BEFORE Journal_create, the first durable
+  // write of the correction.
+  // Both predicates are the FROZEN ENGINE's own, not new policy:
+  //  · originalEventAt is also the exact discriminator for an op:targetLine refusal —
+  //    computeTargetLine returns it on EVERY success path (:146/:152/:154) and on NO refusal path,
+  //    whereas targetLine itself is legitimately null for a transferless target. TARGET_LINE_
+  //    UNRESOLVED, not BAD_REPLACEMENT_ROW: under the §5 contract the caller never supplies the
+  //    instant, so blaming the caller's row would be a lie about where the fault is.
+  //  · stamps — calling the ENGINE's own readTuple (all four present + validMoney/validDiscPct/
+  //    validVersion) rather than hand-rolling a numeric test guarantees a row that passes here also
+  //    passes buybackExport.js:543. UnitPriceAtTime is NOT checked: mintStamps never mints it
+  //    (D-C1-3 keeps it informational, outside the seal).
+  if (!isIsoUtc(eventAt)) return { reason: 'TARGET_LINE_UNRESOLVED' };
+  const mintedTuple = engine.readTuple(s.sellAtSupply, s.discAtSupply, s.pricingVersion, s.catalogueVersion);
+  if (mintedTuple === null || mintedTuple.absent) return { reason: 'STAMPS_UNRESOLVABLE' };
   Object.assign(row, {
     TransactionId: outputTransactionId,
     StoreId: r.storeId,
     ProductId: r.productId,
     Type: r.type,
     Qty: r.qty,
-    Date: String(r.timestamp).slice(0, 10),
-    Timestamp: String(r.timestamp),
+    // The instant is the SERVER's `originalEventAt`, never a caller field. THE STORED ENCODING IS
+    // DELIBERATELY UNCHANGED BY THIS WAVE — `Date` stays Text 'YYYY-MM-DD' and `Timestamp` stays the
+    // same ISO string it has always been written as. The only in-repo evidence that `Timestamp` is a
+    // NUMBER column (diag-c1-insert.js:22 ['Timestamp','Number']) is that script's OWN scratch list
+    // StockTransactions_DiagProbe (declared :12, created :40-44), not the live schema, and
+    // snapshotCompute.js:259's Number(r.Timestamp) coerces either form, so it is not type evidence
+    // either. ctl-v1 is a TYPED canonical (attestRows.js:178-191), so guessing wrong breaks the P5.4
+    // re-read equality on EVERY create and supersede. Settle it by READING the column type before N1
+    // is enabled anywhere — recorded in the known-gap block.
+    Date: eventAt.slice(0, 10),
+    Timestamp: eventAt,
     Reason: r.reason == null ? '' : String(r.reason),
     StockFrom: r.stockFrom == null ? '' : String(r.stockFrom),
     StockTo: r.stockTo == null ? '' : String(r.stockTo),
     StockFromStoreId: r.stockFromStoreId == null ? '' : String(r.stockFromStoreId),
     StockToStoreId: r.stockToStoreId == null ? '' : String(r.stockToStoreId),
-    TransferId: r.transferId == null ? '' : String(r.transferId),
+    TransferId: transferId,
     IdempotencyKey: outputTransactionId,   // deterministic: the control row IS its own idempotency key
     UnitPriceAtTime: s.unitPriceAtTime == null ? null : Number(s.unitPriceAtTime),
     SellAtSupply: s.sellAtSupply == null ? null : Number(s.sellAtSupply),
@@ -736,4 +837,5 @@ app.http('correctionCompute', {
 module.exports = { opDigest, computeTargetLine, mintStamps, computeDelta, assembleCandidate,
   recoveryDecision, membershipDecision, sweepClassify, claimDispatch, pushIdempotency,
   exportBlocker, rowsEqual, ctlRowsEqual, effectOf, targetSeal, stepSetDigest,
-  assembleSnapshot, modeGate, deltaCell, normalizeArchiveRow, stableClone, OPS };
+  assembleSnapshot, modeGate, deltaCell, normalizeArchiveRow, stableClone, OPS,
+  buildControlRow };   // buildControlRow exported for the proof suite (F30-F31 round-trip proofs)

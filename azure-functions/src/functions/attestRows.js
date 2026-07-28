@@ -175,13 +175,36 @@ const FRAME_FIELDS = {
 // Fixed literals baked into a frame's canonical (state the signature attests, not a field):
 const FRAME_SUFFIX = { 'ctlcommit-v1': ['committed'], 'runrec-pub-v1': ['published'] };
 
+// ── FRAMES WHOSE SUBJECT IS A SHAREPOINT LIST ITEM: null IS absent ────────────────────────────────
+// The typed canonical treats field-ABSENT ([0]) and field-present-with-null ([1,null]) as different
+// states, which is right for objects we control end to end. It is WRONG for a row that round-trips
+// through a SharePoint list, because a list item CANNOT REPRESENT ABSENCE: a column that was never
+// written reads back as null, and a nometadata read returns every column of the list whether the
+// writer set it or not. So the two encodings describe one storage state, and distinguishing them
+// makes the seal UNVERIFIABLE AGAINST ITS OWN STORED ROW.
+// This is not theoretical and it is not only the P5.4 re-read. A DELETION control row is built with
+// seven covered fields and the twelve engine fields deliberately absent (correctionCompute
+// buildControlRow). Sign_ctl mints EconSig over THAT object; Candidate_row POSTs it; the row comes
+// back with all nineteen columns present, twelve of them null. Under strict encoding the canonical
+// differs by twelve positions, so ctlRowsEqual is false for every deletion — and, worse, ANY future
+// verifier of that stored row recomputes the canonical from the row and the signature never matches
+// again. A seal that cannot survive a round trip through the storage it describes is not a seal.
+// Collapsing null into absent gives up nothing an attacker could use: SharePoint cannot hold the two
+// apart, so no tamper is being hidden. Changing a null to a VALUE still changes the canonical and
+// still fails verification — which is the property that matters.
+// SCOPED TO ctl-v1 ON PURPOSE. econ-v1 is FROZEN (C1-audited, deployed) and is not in this set;
+// neither are the non-list artifacts. Widening this set changes what a deployed signature means, so
+// it is a per-frame decision made once, deliberately, at the frame's introduction.
+const FRAME_NULL_IS_ABSENT = new Set(['ctl-v1']);
+
 function canonicalFrame(frame, obj) {
   const fields = FRAME_FIELDS[frame];
   if (!fields) return null;
+  const nullIsAbsent = FRAME_NULL_IS_ABSENT.has(frame);
   const o = obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
   const parts = [frame];
   for (const f of fields) {
-    if (Object.prototype.hasOwnProperty.call(o, f)) {
+    if (Object.prototype.hasOwnProperty.call(o, f) && !(nullIsAbsent && o[f] == null)) {
       const v = o[f];
       // Only JSON-representable primitives/arrays are attestable; anything else fails closed at sign.
       parts.push([1, v === undefined ? null : v]);

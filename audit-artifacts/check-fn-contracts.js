@@ -77,14 +77,76 @@ function collect(actions, scope) {
 }
 collect(def.actions, '');
 
-// An expression is ARRAY-SHAPED if its outermost call produces a collection, or it reads a
-// SharePoint result set (?['value'] / ?['results']). A bare property access is scalar-shaped.
+// ── ARRAY-SHAPE PROOF ──────────────────────────────────────────────────────────────────────────────
+// The first version MATCHED A PREFIX, NOT A PROOF. `/^(union|...|coalesce|json|...)\(/` accepted
+// "@json('{}')" (an OBJECT) and "@coalesce(body('X')?['row'],json('{}'))" (a scalar wearing an
+// array-ish wrapper). attestRows calls rows.map() (attestRows.js:224-231) and its HTTP wrapper 400s a
+// non-array (attestRows.js:248), so both are runtime failures the gate waved straight through — two
+// of the corruptions that survived the external mutation test. Shape is now PROVED, and proof is
+// RECURSIVE:
+//   json(x)      only a LITERAL argument that parses as a JSON ARRAY proves an array.
+//                json(variables('x')) / json(body(...)) prove nothing about the value.
+//   coalesce(..) EVERY operand can be the result, so EVERY operand must itself be array-shaped.
+//   if(c,a,b)    both BRANCHES must be array-shaped (the condition is not a result).
+//   take/skip    pass through to their first argument.
+// Arguments are split paren- AND quote-aware: a plain split on ',' tears coalesce(a,b) at the wrong
+// comma and mis-shapes the operands, which is the same class of imprecision as the parenthesis bug.
+function litEnd(s, i) {                 // index just past the literal that starts at s[i] === "'"
+  let j = i + 1;
+  while (j < s.length) {
+    if (s[j] === "'") { if (s[j + 1] === "'") { j += 2; continue; } return j + 1; }
+    j++;
+  }
+  return s.length;                      // unterminated — the WDL lexer in check-expressions.js owns that
+}
+function splitTopArgs(s) {
+  const out = []; let depth = 0, cur = '', i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === "'") { const j = litEnd(s, i); cur += s.slice(i, j); i = j; continue; }
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; i++; continue; }
+    cur += ch; i++;
+  }
+  out.push(cur);
+  return out.map(x => x.trim()).filter(x => x !== '');
+}
+function closingParen(s, open) {        // index of the ')' that closes s[open] === '('
+  let depth = 0;
+  for (let j = open; j < s.length; j++) {
+    if (s[j] === "'") { j = litEnd(s, j) - 1; continue; }
+    if (s[j] === '(') depth++;
+    else if (s[j] === ')') { depth--; if (depth === 0) return j; }
+  }
+  return -1;
+}
+function arrayShaped(e) {
+  e = String(e || '').trim();
+  if (/\?\['(value|results|sigs)'\]$/.test(e)) return true;         // a SharePoint / attestRows result set
+  const m = e.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*)\)$/);
+  if (!m) return false;                                             // a bare property read is scalar-shaped
+  const open = e.indexOf('(', m[1].length);
+  if (open < 0 || closingParen(e, open) !== e.length - 1) return false;   // "f(a),g(b)" is not one call
+  const fn = m[1], args = splitTopArgs(e.slice(open + 1, e.length - 1));
+  if (['createArray', 'split', 'range', 'array'].includes(fn)) return true;
+  // union()/intersection() are SHAPE-PRESERVING, not shape-producing: union of two OBJECTS is an
+  // OBJECT. Trusting them by NAME re-opened M1/M2 at the one site that actually uses union
+  // (Verify_target_row's rows binding), so every operand must itself be PROVED array-shaped.
+  if (fn === 'union' || fn === 'intersection') return args.length > 0 && args.every(arrayShaped);
+  if (fn === 'take' || fn === 'skip') return arrayShaped(args[0]);
+  if (fn === 'json') {
+    const lit = (args[0] || '').match(/^'([\s\S]*)'$/);
+    if (!lit) return false;
+    try { return Array.isArray(JSON.parse(lit[1].replace(/''/g, "'"))); } catch (e2) { return false; }
+  }
+  if (fn === 'coalesce') return args.length > 0 && args.every(arrayShaped);
+  if (fn === 'if') return args.length === 3 && arrayShaped(args[1]) && arrayShaped(args[2]);
+  return false;
+}
 function arrayShapedExpr(s) {
   if (typeof s !== 'string') return false;
-  const e = s.trim().replace(/^@/, '');
-  if (/^(union|createArray|coalesce|json|take|skip|split|range|intersection)\s*\(/.test(e)) return true;
-  if (/\?\['(value|results|sigs)'\]\s*$/.test(e)) return true;
-  return false;
+  return arrayShaped(s.trim().replace(/^@/, ''));
 }
 // ── 3. REQUEST-side conformance ────────────────────────────────────────────────────────────────────
 for (const [name, c] of Object.entries(calls)) {
@@ -124,6 +186,18 @@ for (const [name, c] of Object.entries(calls)) {
     for (const need of ['proof', 'deviceContext', 'rows']) {
       if (!c.topLevel.includes(need)) problems.push(`${name}: verifyProof requires '${need}'; sent [${c.topLevel.join(',')}]`);
     }
+  }
+  // ROWS ARRAY-SHAPE ON THE OTHER TWO ROUTES TOO. attestRows 400s a non-array, which at least fails
+  // loudly. validateKeys (validateKeys.js:61) and verifyProof (validateUser.js:116) instead DEGRADE
+  // a non-array to [] — so the gate verifies against ZERO rows, refuses every caller, and says
+  // nothing. That is the P0-dead-for-everyone failure mode, so all three routes get the same proof.
+  // Guarded on topLevel, NOT on `rowsExpr !== null`: rowsExpr is null for every rows value that is
+  // not a STRING, so guarding on it skipped a literal JSON OBJECT — the exact shape this rule exists
+  // to catch — while the attestRows branch above caught it, i.e. the file judged one defect two ways.
+  // An ABSENT 'rows' is already reported by the requires-'rows' loop, so the no-double-report intent
+  // is kept without the blind spot.
+  if (['validateKeys', 'verifyProof'].includes(c.route) && !c.rowsIsArray && c.topLevel.includes('rows') && !arrayShapedExpr(c.rowsExpr)) {
+    problems.push(`${name}: '${c.route}' rows is not PROVABLY an array — ${String(c.rowsExpr).slice(0, 70)}; a non-array degrades to [] and the gate then verifies against nothing`);
   }
 }
 
@@ -270,7 +344,10 @@ function checkComparison(pair) {
   }
 })(def);
 
-const refRe = /body\('([A-Za-z0-9_]+)'\)\?\['([A-Za-z0-9_@.]+)'\]/g;
+// WDL accepts BOTH body('X')['k'] and body('X')?['k'] — the '?' is only the null-safe form, not part
+// of the accessor. Requiring it LITERALLY meant deleting one character disabled this file's central
+// response-key rule. Optional '?' everywhere a read is matched.
+const refRe = /body\('([A-Za-z0-9_]+)'\)\??\['([A-Za-z0-9_@.]+)'\]/g;
 const seen = new Set();
 let m;
 while ((m = refRe.exec(raw)) !== null) {
@@ -282,6 +359,82 @@ while ((m = refRe.exec(raw)) !== null) {
   if (!RETURNS[action].has(prop)) {
     problems.push(`READS A PROPERTY THAT IS NEVER RETURNED: body('${action}')?['${prop}'] — ${calls[action].route}${calls[action].op ? ' op:' + calls[action].op : ''} returns { ${[...RETURNS[action]].join(', ')} }`);
   }
+}
+
+// ── STRING-FORM COMPARISONS ────────────────────────────────────────────────────────────────────────
+// walkExpr above only sees a comparison written as a JSON OPERAND PAIR ({equals:[a,b]}). The SAME
+// impossible comparison written as WDL text — "@equals(body('X')?['decision'],'committed')" — is
+// invisible to it, and the external mutation test proved exactly that: the string form survived.
+// WDL evaluates the two forms identically, so the gate must judge them identically.
+// Operands are matched ANCHORED (the whole argument is the read, bare or coalesce-wrapped) and only
+// when exactly ONE side is a quoted literal. A loose search would latch onto the first body() buried
+// inside a nested expression and report a comparison nobody wrote — the false-alarm failure mode
+// this file has been burned by twice.
+const cmpExprStrings = [];
+(function harvestCmp(node) {
+  if (typeof node === 'string') {
+    if (!node.includes('@')) return;
+    if (node.startsWith('@') && !node.startsWith('@{')) { cmpExprStrings.push(node.slice(1)); return; }
+    for (const mm of node.matchAll(/@\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g)) cmpExprStrings.push(mm[1]);
+    return;
+  }
+  if (Array.isArray(node)) { node.forEach(harvestCmp); return; }
+  if (node && typeof node === 'object') Object.values(node).forEach(harvestCmp);
+})(def);
+const READ_BARE = /^body\('([A-Za-z0-9_]+)'\)\?\['([A-Za-z0-9_]+)'\]$/;
+const READ_COAL = /^coalesce\(\s*body\('([A-Za-z0-9_]+)'\)\?\['([A-Za-z0-9_]+)'\]\s*,[\s\S]*\)$/;
+for (const s of cmpExprStrings) {
+  for (const mm of s.matchAll(/\b(equals|contains|greater|less|greaterOrEquals|lessOrEquals)\s*\(/g)) {
+    const open = s.indexOf('(', mm.index + mm[1].length);
+    const close = closingParen(s, open);
+    if (close < 0) continue;
+    const args = splitTopArgs(s.slice(open + 1, close));
+    if (args.length !== 2) continue;
+    const asLit = (x) => { const q = String(x).match(/^'([\s\S]*)'$/); return q ? q[1].replace(/''/g, "'") : null; };
+    const l0 = asLit(args[0]), l1 = asLit(args[1]);
+    if ((l0 === null) === (l1 === null)) continue;            // need exactly one literal side
+    const expr = l0 === null ? args[0] : args[1];
+    const value = l0 === null ? l1 : l0;
+    let am = expr.match(READ_BARE) || expr.match(READ_COAL);
+    // The JSON-operand path matches its read UNANCHORED, so the string form must not be strictly
+    // WEAKER than the form it exists to reach parity with: string(body(X)?[k]) and
+    // coalesce('', body(X)?[k]) are the same comparison. Fall back to the unanchored read only when
+    // the operand contains EXACTLY ONE body() read, which preserves the no-false-alarm property.
+    if (!am && (expr.match(/body\(/g) || []).length === 1) am = expr.match(readRe);
+    if (!am) continue;
+    checkComparison([`body('${am[1]}')?['${am[2]}']`, value]);
+  }
+}
+
+// ── outputs() IS THE ACTION ENVELOPE, NOT THE HANDLER'S RETURN OBJECT ──────────────────────────────
+// `outputs('X')` yields {statusCode, headers, body, ...}. `outputs('X')?['digest']` is therefore
+// ALWAYS null — it names a real handler property on the wrong object — and the response-side check
+// above never saw it because it only scanned body(). An external mutation read a bogus property
+// through outputs() and every gate stayed green. Two rules: the envelope property must be a real
+// envelope property, and outputs('X')?['body']?['P'] is held to the handler's real return keys
+// exactly like body('X')?['P'].
+const ENVELOPE = new Set(['statusCode', 'headers', 'body', 'statusLine', 'queries', 'relativePathParameters', 'pathParameters']);
+const outDeepRe = /outputs\('([A-Za-z0-9_]+)'\)\??\['body'\]\??\['([A-Za-z0-9_@.]+)'\]/g;
+const outEnvRe = /outputs\('([A-Za-z0-9_]+)'\)\??\['([A-Za-z0-9_@.]+)'\]/g;
+const seenOut = new Set();
+let om;
+while ((om = outDeepRe.exec(raw)) !== null) {
+  const [, action, prop] = om;
+  const sig = 'OUTDEEP:' + action + '.' + prop;
+  if (seenOut.has(sig)) continue;
+  seenOut.add(sig);
+  if (!RETURNS[action]) continue;
+  if (!RETURNS[action].has(prop)) {
+    problems.push(`READS A PROPERTY THAT IS NEVER RETURNED: outputs('${action}')?['body']?['${prop}'] — ${calls[action].route}${calls[action].op ? ' op:' + calls[action].op : ''} returns { ${[...RETURNS[action]].join(', ')} }`);
+  }
+}
+while ((om = outEnvRe.exec(raw)) !== null) {
+  const [, action, prop] = om;
+  if (ENVELOPE.has(prop)) continue;
+  const sig = 'OUTENV:' + action + '.' + prop;
+  if (seenOut.has(sig)) continue;
+  seenOut.add(sig);
+  problems.push(`OUTPUTS ENVELOPE VIOLATION: outputs('${action}')?['${prop}'] — outputs() exposes only { ${[...ENVELOPE].join(', ')} }; a handler property must be read as body('${action}')?['${prop}'] (or outputs('${action}')?['body']?['${prop}'])`);
 }
 
 // ── report ─────────────────────────────────────────────────────────────────────────────────────────

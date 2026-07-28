@@ -14,6 +14,12 @@
 //   - Function calls = plain Http POST, with secureData on inputs+outputs
 //   - CAS = `X-HTTP-Method: MERGE` + `IF-MATCH: <captured etag>`  (never `IF-MATCH: *`, C2-R1-2)
 //   - Every branch terminates in a Response action (no dangling runs)
+//
+// ⚠ THIS DEFINITION IS NOT A COMPLETE §B IMPLEMENTATION. The known gaps — what is deliberately not
+// built, what each one protects against, and its build/defer classification — are enumerated in
+// AZURE-CHUNK-ORG-C2-LA-CHANGES.md §B-G, which is the single source of truth. The three local gates
+// pass green with every one of them absent: NO GATE HERE DETECTS A MISSING §B STEP, so a green gate
+// report must never be presented as evidence that §B is implemented.
 'use strict';
 
 const fs = require('fs');
@@ -444,12 +450,21 @@ function build() {
   };
 
   // ── P4: compute — every decision via correctionCompute ───────────────────────────────────────────
-  // The LA fetches EXACTLY the rows modeGate named in `needs` — it does not decide which.
+  // ⚠ NOT TRUE YET — see §B-G. `body('Mode_gate')?['needs']` is read NOWHERE in this file; this
+  // fetch is UNCONDITIONAL for every mode, with '~none~' as the no-match filter value. It is benign
+  // today (a 'null-head' baseline matches nothing, prevOutput resolves null, and
+  // deltaCell/computeDelta take the originalTarget lane — the correct arithmetic), but the previous
+  // wording claimed an F1 property the definition does not implement. Honouring `needs` is pure I/O
+  // sequencing, so it stays an LA change when it is built; the DECISION already lives in modeGate.
   A.Fetch_prior_control = sp(item("@{if(empty(body('Target_live')?['value']),'StockTransactions_Archive_Staging','StockTransactions_Staging')}", "?$top=2&$filter=ControlId eq '@{replace(coalesce(if(empty(body('Registry_lookup')?['value']), null, first(body('Registry_lookup')?['value']))?['ControlId'],'~none~'),'''','''''')}'"), { runAfter: after('Mode_gate_ok') });
   A.Delta_cell = op('deltaCell', {
     mode: "@coalesce(triggerBody()?['intent']?['mode'],'')",
     baseline: "@coalesce(body('Mode_gate')?['baseline'],'no-head')",
-    controlType: "@coalesce(triggerBody()?['intent']?['control']?['controlType'],'replacement')",
+    // §5 names this field `type`, not `controlType`. Reading the wrong name made the coalesce default
+    // fire on EVERY request, so a `{type:'deletion'}` intent silently selected a REPLACEMENT cell.
+    // The op INPUT is still named controlType — that is deltaCell's own flat parameter name, not a
+    // contract field; only the SOURCE expression changes.
+    controlType: "@coalesce(triggerBody()?['intent']?['control']?['type'],'replacement')",
     priorControlType: "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))?['ControlType']",
   }, after('Fetch_prior_control'));
 
@@ -470,7 +485,7 @@ function build() {
   // none of which it reads, so every call fell through to STAMPS_UNRESOLVABLE.
   A.Stamps = op('stamps', {
     target: "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
-    replacement: "@triggerBody()?['intent']?['control']?['replacement']",
+    replacement: "@triggerBody()?['intent']?['control']?['row']",
     steps: "@coalesce(body('Steps_enumerate')?['value'],json('[]'))",
   }, after('Target_line'));
 
@@ -502,7 +517,7 @@ function build() {
     // TARGET LEDGER ROW itself — the same source `originalTarget` uses. No cell consumes both
     // `target` and `originalTarget`, so there is no double-count.
     target: `@${targetRow}`,
-    newOutput: "@triggerBody()?['intent']?['control']?['replacement']",
+    newOutput: "@triggerBody()?['intent']?['control']?['row']",
     prevOutput: "@if(empty(body('Fetch_prior_control')?['value']), null, first(body('Fetch_prior_control')?['value']))",
     originalTarget: "@if(empty(body('Target_live')?['value']), if(empty(body('Target_archive')?['value']), null, first(body('Target_archive')?['value'])), if(empty(body('Target_live')?['value']), null, first(body('Target_live')?['value'])))",
     membership: "@body('Membership')",
@@ -532,14 +547,53 @@ function build() {
     targetLine: "@body('Target_line')?['targetLine']",
     originalEventAt: "@body('Target_line')?['originalEventAt']",
     stamps: "@body('Stamps')?['stamps']",
+    // §5 pins control.row to ECONOMIC IDENTITY ONLY ("stamps/instants NEVER accepted"), so
+    // buildControlRow derives the replacement's StoreId from the TARGET ROW (its instant from
+    // originalEventAt, its TransferId from targetLine). The fetched row is a transitive runAfter
+    // ancestor of this action via Target_line -> Stamps -> ... -> Delta.
+    targetRow: `@${targetRow}`,
     membership: "@body('Membership')",
   }, after('Delta'));
 
+  // THE P4 REFUSAL GATE — COMPLETE FOR THE SIX P4 COMPUTE OPS, NOT FOR P4 AS A WHOLE.
+  // Journal_create is the FIRST DURABLE WRITE of the correction — the
+  // P2 coordination fence is the only earlier one, and every refusal below hands it back — so every
+  // P4 compute op whose refusal must stop the run has to be answered HERE. The P4 op set is
+  // Delta_cell, Target_line, Stamps, Membership, Delta, Candidate; only two of the six were tested.
+  //  · Delta_cell — UNCONDITIONALLY fatal: every mode needs a cell, and deltaCell has no mode for
+  //    which a refusal is survivable. It was ungated, and its BAD_CELL_INPUT was LAUNDERED: a null
+  //    `cell` makes computeDelta fall to its default arm and refuse UNKNOWN_CELL, so the run did stop
+  //    but the caller was told the wrong cause and 'supersede requires priorControlType' was
+  //    unreportable. Now gated, and reported FIRST in the reason chain.
+  //  · Target_line / Stamps — deliberately NOT tested here, and that is not an omission. Their
+  //    refusals are fatal only for the modes that publish a control row (withdraw/retire_claim/adopt
+  //    publish none; a DELETION control legitimately carries no stamps and no instant), so a gate
+  //    expression here would have to encode the mode table — precisely the condition tree F1 forbids.
+  //    They are folded into op:candidate instead (buildControlRow => TARGET_LINE_UNRESOLVED /
+  //    STAMPS_UNRESOLVABLE, judged by the frozen engine's own predicates), so they arrive here as
+  //    Candidate.ok=false carrying a Candidate.reason that names the cause.
+  //  · Membership — membershipDecision has NO refusal path (it always answers ok:true with a
+  //    decision, 'undecidable' included); the undecidable case is adjudicated by computeDelta's
+  //    ADOPTION_/RETIRE_DELTA_UNDECIDABLE, so it is already covered by Delta.ok.
+  //  · NOT COVERED HERE, AND STILL OPEN: §5 P4 also requires `prevOutput` — the prior control row
+  //    that drives the WHOLE supersede delta — to be SEAL-VERIFIED before use (design doc line 826).
+  //    `Fetch_prior_control` is an unauthenticated read and no attestRows verify sits in that chain,
+  //    so the supersede arithmetic currently trusts a row nobody attested. That is a MISSING STAGE,
+  //    not a missing gate, and NO rule in check-correction-def.js detects a missing §B stage — it is
+  //    recorded in the known-gap block instead.
+  // Written as sibling `equals` terms rather than one nested and(): the If `and` array is the native
+  // multi-term form and each term stays individually legible in the run history.
   A.Compute_gate = {
     type: 'If',
-    expression: { and: [{ equals: ["@and(coalesce(body('Delta')?['ok'],false),coalesce(body('Candidate')?['ok'],false))", true] }] },
+    expression: {
+      and: [
+        { equals: ["@coalesce(body('Delta_cell')?['ok'],false)", true] },
+        { equals: ["@coalesce(body('Delta')?['ok'],false)", true] },
+        { equals: ["@coalesce(body('Candidate')?['ok'],false)", true] },
+      ],
+    },
     runAfter: afterAny('Candidate'), actions: {},
-    else: { actions: releasingRefusal('compute', 'Respond_compute', 409, { ok: false, reason: "@coalesce(body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')" }) },
+    else: { actions: releasingRefusal('compute', 'Respond_compute', 409, { ok: false, reason: "@coalesce(body('Delta_cell')?['reason'],body('Delta')?['reason'],body('Candidate')?['reason'],'COMPUTE_REFUSED')" }) },
   };
 
   // ── P5: journal + candidate (publishes NOTHING) ──────────────────────────────────────────────────
@@ -559,15 +613,18 @@ function build() {
     HeartbeatAt: '@{utcNow()}',
   }, after('Compute_gate'));
 
-  A.Reserve = spCreate(item(L.registry, ''), {
-    TargetTransactionId: tgt,
-    State: 'pending',
-    Owner: "@{workflow()?['run']?['name']}",
-    OpId: "@{coalesce(triggerBody()?['intent']?['opId'],'')}",
-    JournalId: "@{body('Candidate')?['journalId']}",
-    TtlAt: '@{addMinutes(utcNow(),10)}',
-    Origin: 'director',
-  }, after('Journal_create'));
+  // ⚠ RESERVE IS DELIBERATELY THE LAST WRITE BEFORE THE IRREVOCABLE PUBLISH — see the block below.
+  // It used to sit here, immediately after Journal_create, and that placement is only survivable
+  // while the route is BROKEN. Today every request refuses at op:candidate (BAD_REPLACEMENT_ROW)
+  // before Journal_create, so nothing has ever reached this line. The moment the request contract is
+  // fixed, five refusal lanes open BELOW an early Reserve — verify, restamp-ownership, restamp-CAS,
+  // assemble, and the abort handler — and NONE of them deletes the registry item. Registry
+  // `TargetTransactionId` is ENFORCE-UNIQUE, so one refused correction would leave a row that makes
+  // that transaction PERMANENTLY UNCORRECTABLE: every future attempt, by anyone, dies on the unique
+  // constraint. A correction route whose refusals brick their own target is worse than one that
+  // refuses everything, and the fix that makes the route work is what arms it.
+  // Moved rather than compensated: a delete-on-refusal path would be five new writes, each its own
+  // failure mode, to undo a write we can simply not make yet. See A.Reserve after Assemble_ok.
 
   // §B step 16 says "create/supersede only", and op:candidate returns `row` for THOSE MODES ONLY.
   // An UNCONDITIONAL create therefore POSTed a NULL body on every withdraw / retire_claim / adopt:
@@ -578,7 +635,7 @@ function build() {
   A.Publish_control_row = {
     type: 'If',
     expression: { and: [{ equals: ["@coalesce(body('Candidate')?['publishesControlRow'],false)", true] }] },
-    runAfter: after('Reserve'),
+    runAfter: after('Journal_create'),
     actions: {
       Candidate_row: spCreate(item("@{if(empty(body('Target_live')?['value']),'" + L.archive + "','" + L.live + "')}", ''), "@body('Candidate')?['row']", {}),
       Sign_ctl: fn('attestRows', { op: 'sign', frame: 'ctl-v1', rows: ["@body('Candidate')?['row']"] }, after('Candidate_row')),
@@ -663,12 +720,40 @@ function build() {
     else: { actions: releasingRefusal('assemble', 'Respond_assemble', 409, { ok: false, reason: "@coalesce(body('Assemble')?['reason'],'BAD_ASSEMBLY_INPUT')" }) },
   };
 
+  // THE RESERVATION, PLACED AT THE LAST PRE-COMMIT INSTANT (moved from after Journal_create).
+  // Registry TargetTransactionId is ENFORCE-UNIQUE, and NOTHING in this route ever deletes a registry
+  // item — so wherever this create sits, every refusal lane BELOW it permanently bricks its target.
+  // Placed here, the set of lanes below it is exactly: Publish, Outcome_by_read, Recovery_decision and
+  // Published_gate — and on every one of those the correction may ALREADY HAVE COMMITTED, which is
+  // precisely when a `pending` registry row is the CORRECT residue: §B step 19 leaves the journal
+  // non-terminal and the fence held, and the B-R reconcile sub-flow needs this row to roll the
+  // correction forward. Above it, refusals published nothing and leave nothing behind.
+  // WHY LATE IS SAFE. The reservation's other job — stopping two corrections racing the same target —
+  // is already done, and not by this row: the P2 coordination fence is a SINGLE record acquired by
+  // CAS and held from P2 to P7, so at most one correction is in flight at a time, and
+  // Restamp_owner_gate re-proves ownership before the commit boundary. This create claims durability,
+  // not exclusivity.
+  // WHAT IT COSTS. A unique-key clash (an orphan from an older era) is now discovered AFTER the
+  // control row has been written to the ledger, not before. That trade is deliberate: an unpublished
+  // control row is INERT — nothing points at it until the manifest names it at Publish, and reaching
+  // Verify_gate already leaves one behind today — whereas an orphan registry row is permanently
+  // blocking. A recoverable inert row beats an unrecoverable live one.
+  A.Reserve = spCreate(item(L.registry, ''), {
+    TargetTransactionId: tgt,
+    State: 'pending',
+    Owner: "@{workflow()?['run']?['name']}",
+    OpId: "@{coalesce(triggerBody()?['intent']?['opId'],'')}",
+    JournalId: "@{body('Candidate')?['journalId']}",
+    TtlAt: '@{addMinutes(utcNow(),10)}',
+    Origin: 'director',
+  }, after('Assemble_ok'));
+
   // ONE MERGE, with the P2-CAPTURED ETag — never a re-read (C2-R1-1).
   A.Publish = spMerge(
     item(L.config, "(@{variables('snapItemId')})"),
     { ConfigData: "@{body('Assemble')?['configData']}" },
     "@{variables('snapEtag')}",
-    after('Assemble_ok'));
+    after('Reserve'));
 
   A.Outcome_by_read = sp(item(L.config, `?$select=Id,ConfigData&$filter=ConfigType eq 'stock_snapshot'`), { runAfter: afterAny('Publish') });
   A.Recovery_decision = op('recoveryDecision', {
@@ -807,6 +892,44 @@ function build() {
     deviceConvergencePending: "@not(equals(coalesce(triggerBody()?['intent']?['mode'],''),'adopt'))",
     affectedTarget: "@coalesce(triggerBody()?['intent']?['targetTransactionId'],'')",
   }, after('Release_final'));
+
+  // ── CONTAINMENT SPLIT AT THE COMMIT BOUNDARY ────────────────────────────────────────────────────
+  // `Publish` is the irrevocable act. BEFORE it a failure has published nothing, so the abort handler
+  // may hand the coordination fence back and answer 500. AFTER it the same handler is a DATA-SAFETY
+  // BUG: a failed Registry_terminal / adoption fill / Journal_complete would release the fence and
+  // report 500 while the snapshot is ALREADY published and the journal is still pending — the archive
+  // LA (or the next correction) then runs over an unreconciled snapshot. §B step 19 pins the opposite
+  // posture post-commit: HOLD. Leave the fence held and the journal non-terminal, answer the caller so
+  // it never hangs, and let the B-R reconcile sub-flow seize the lease once the heartbeat goes stale
+  // (T-1) and roll the correction FORWARD (§6: heads present in the manifest => roll_forward only, and
+  // every P7 step is idempotent). The two dedicated hold handlers already did this for Outcome_by_read
+  // and Recovery_decision ONLY; everything else in P6/P7 fell through to the releasing abort.
+  // The split is ORDINAL, not a hand-kept list: `A` is populated in source order, so everything from
+  // `Publish` onward IS the post-commit region by construction — a P7 action added later is contained
+  // automatically instead of silently inheriting the releasing handler.
+  const commitCut = Object.keys(A).indexOf('Publish');
+  if (commitCut < 0) throw new Error('commit-boundary split: no Publish action to cut at');
+  const Commit = {};
+  for (const n of Object.keys(A).slice(commitCut)) { Commit[n] = A[n]; delete A[n]; }
+  // The Scope now carries the join to the pre-commit region, so Publish is simply its first action.
+  Commit.Publish.runAfter = {};
+  // The join is RESERVE, not Assemble_ok: `Reserve` was moved down to sit immediately above the
+  // commit boundary, and P7's Do_registry_terminal reads `body('Reserve')`. Joining on Assemble_ok
+  // would let the Scope run in PARALLEL with Reserve — Logic Apps never infers order from a
+  // reference — so the registry MERGE would resolve its item id and ETag to null. The expression
+  // gate's non-ancestor rule caught exactly that; this is the edge it was missing.
+  A.Commit = { type: 'Scope', actions: Commit, runAfter: after('Reserve') };
+  // The post-commit handler RELEASES NOTHING — that is the entire point of the split. It answers and
+  // stops; the fence stays held and the journal stays non-terminal, which is exactly the state §6
+  // expects to find. 202, not 500: the correction is not failed, it is UNSETTLED and owned by
+  // reconcile. Re-sending the same opId returns 202 RECOVERY_REQUIRED until reconcile terminalises the
+  // journal, and the StoredResult replay (200) afterwards.
+  A.Respond_held_commit = response(202, {
+    ok: false,
+    reason: 'PUBLICATION_HELD_FOR_RECONCILE',
+    detail: 'the snapshot publish is past the point of no return but the terminal steps did not complete; the coordination fence is deliberately still held and the journal left non-terminal so the reconcile sub-flow owns this correction. Re-send the SAME opId to read the settled outcome.',
+  }, { Commit: ['Failed', 'TimedOut'] });
+  A.Respond_held_commit_stop = terminate(after('Respond_held_commit'));
 
   return wrap(A);
 
