@@ -69,26 +69,49 @@ signature is computed would invalidate signatures already stored. Please tell me
 actually affected (can any of its five signed fields ever be left unset at signing time?) and, if so,
 what a safe migration looks like. Same question for `epoch-v1` and `buildrec-v1`.
 
-**QA2 — cleanup on failure paths. Please derive the list yourself rather than checking mine.** List
-every branch that can reject, fail or abort *after* the `Reserve` step and *before* the publish step
-commits. For each, say what records it leaves behind. My claim is that all remaining ones are
-post-commit, where leaving the record is correct and intended. I also accepted a trade-off: a
-uniqueness clash is now detected *after* a control record has been written to the ledger rather than
-before, so a failure leaves an unreferenced control record instead of a blocking reservation record.
-**Is that trade-off sound, and is the generic error handler still correct at the new position?**
+**QA2 — record lifecycle review. Please build the picture yourself rather than checking mine.**
+The `Reserve` step creates a row in the correction registry with `State: 'pending'`. That row is later
+updated to a terminal state by `Registry_terminal`. Reading `audit-artifacts/gen-correction-def.js`,
+trace the workflow's execution order and produce **the full lifecycle of that row**:
+
+- where it is created, and where it reaches a terminal state;
+- **every route through the workflow that ends the run while the row is still `pending`**;
+- for each of those, whether leaving the row in place is the documented intent. Our design note says
+  it is intended only once the snapshot publish has committed, because a recovery process needs the
+  row to finish the work. Before that point it should not exist at all.
+
+Relevant background for judging it: the registry's `TargetTransactionId` column has a uniqueness
+constraint, and this workflow contains no delete for that list — so a row left behind before the
+commit point would stop that transaction being corrected again later.
+
+I also made a trade-off worth a second opinion: a uniqueness clash is now discovered **after** a
+control row has been written to the ledger rather than before, so an unsuccessful run leaves an
+unreferenced control row instead of a blocking registry row. **Is that the better of the two, and is
+the scope-level error handler still positioned correctly given the reordering?**
 
 **QA3 — walk the newly-reachable steps as untested code.** Take one successful correction, and one
 that fails at each gate below the first database write. For each, state exactly what is left behind in
 the journal, the registry, the ledger and the snapshot once the run ends. "It has always worked this
 way" is not evidence here — none of it has ever run.
 
-**QA4 — coverage gaps in the two new validation rules.** `REQUIRED_GATE_TERMS` checks that a gate's
-condition mentions certain names (a substring test over the serialized condition). The second rule
-only flags conditions where every operand is a literal constant. **Both are therefore likely to have
-false negatives: definitions they accept that a careful reviewer would reject.** Please construct one —
-a workflow definition that satisfies both rules while a gate no longer does its job. This is ordinary
-test-case design: I want the coverage gap so I can add it to the rule-coverage suite. If you conclude
-there isn't one, say what reasoning gets you there.
+**QA4 — do two new build-time checks establish what they claim to?** This is a specification-versus-
+implementation comparison. Two checks were added to `audit-artifacts/check-correction-def.js`. Each has
+a stated intent, written below. **Please read each implementation and tell me whether it actually
+establishes its intent, and if it falls short, describe which situations sit outside what it covers.**
+
+| Check | Its stated intent |
+|---|---|
+| `REQUIRED_GATE_TERMS` | Each conditional step listed in the table still refers to the data it is meant to be judging, so that its alternate branch remains reachable and meaningful |
+| the no-constant-conditions walker | No conditional step in the definition has a condition whose value is fixed at build time, which would make one of its two branches unreachable |
+
+Concretely: `REQUIRED_GATE_TERMS` is implemented as a substring search over the serialized condition,
+and the walker only reports comparisons where **every** operand is a literal. Those are both narrower
+than the intents above, so I expect each check verifies less than it claims. **I want to know exactly
+how much less**, expressed as the set of situations the intent covers and the implementation does not.
+
+This is ordinary test-design work: whatever you identify becomes a new case in our rule-coverage suite,
+which is how we confirm each check still reports a problem when one exists. If you conclude a check
+does fully establish its intent, say so and show the reasoning.
 
 ## Items that cannot be settled by reading — for the staging test plan, not this review
 
