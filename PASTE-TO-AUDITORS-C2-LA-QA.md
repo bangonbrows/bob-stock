@@ -1,8 +1,8 @@
 # REVIEW PACK — Contract 2 · ROUND 12 · QA LANGUAGE EDITION
 
 **This is the same review as `PASTE-TO-AUDITORS-C2-LA.md`, reworded.** The original used informal
-engineering shorthand ("attack the rules", "write a corruption") that reads as something it is not.
-This edition asks for exactly the same work in plain QA terms. Nothing technical has changed.
+engineering shorthand that reads as something this is not. This edition asks for exactly the same work
+in plain QA terms. Nothing technical has changed. **Use this edition, not the original.**
 
 **Context.** Routine internal pre-release QA on our own stock-management app (Bang on Brows, Perth).
 Reviewers and engineer all work for the owner; this is our own first-party code, reviewed before we
