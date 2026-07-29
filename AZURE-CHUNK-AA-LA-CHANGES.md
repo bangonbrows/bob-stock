@@ -16,6 +16,59 @@ logic-proven (`azure-functions/src/functions/accessPolicy.js`, 51-probe suite
   `_authRequired`). Pre-activation queued rows: the flip is flag-day on staging with test data; on PROD
   cutover the seeding happens in the same maintenance window as secret rotation (no live devices mid-flip).
 
+---
+
+## ⚠ OWNER DECISIONS 2026-07-30 — these OVERRIDE the per-section text below
+
+**D-AA-A — ONE MASTER ENFORCEMENT SWITCH FOR THE WHOLE CHUNK. (Kunal: "B".)**
+
+Every gated LA reads a single `access_policy_enforce` AppConfig row and stays fully inert while it is
+absent or `0` — **including after a policy blob has been published.** Publishing the policy and
+switching on enforcement are now two deliberate, separate acts.
+
+**This CORRECTS an inconsistency in the sections below.** As specified, §5 (corp-costs) and §6
+(archive-pull) arm the instant the first policy blob is published, while §3/§4 (ingest) arm on a
+staged flag. That means publishing the policy — which the Activation rule above treats as the *safe
+seeding step that happens BEFORE enforcement* — would itself be a flag day for two doors. Harmonise
+all of them onto the single row.
+
+Rationale (Kunal's call, and the reason it is worth the cost): it buys a **rehearsal**. Publish the
+policy, confirm every door reads it correctly, let it settle, then flip one switch. If anything
+misbehaves the undo is flipping that switch back — the published policy survives. Under the
+publish-arms-everything model the only undo is deleting the policy you just wrote.
+
+Cost: one extra small AppConfig read per call on each gated LA. Negligible on corp-costs (a handful
+of calls a day) and archive-pull (on demand). Accepted.
+
+⚠ Items §7 (user-admin), §8 (catalogue-write) and §10 (Chunk-8 archive) currently specify **no
+activation branch at all**. `evaluateAccess` is fail-CLOSED and returns `NO_POLICY` when none exists,
+so applied literally each of those three would break its own working Director door the moment it
+landed, before any policy exists. All three need this guard. This was NOT caught by the AA audits —
+they reviewed the design, not the deployed graphs.
+
+**D-AA-B — COST VISIBILITY AT ACTIVATION: DIRECTORS ONLY. Head Office LATER. (Kunal 2026-07-30.)**
+
+The seeded default policy grants `seeCost` to **director only**. Today an unauthenticated Head Office
+device receives the full cost list; after activation it will not.
+
+**Head Office is to be added later by EDITING THE POLICY — not by redeploying anything.** Treat that
+as an acceptance criterion for the default-policy generator, not an aspiration: if adding `seeCost`
+to head_office later requires a code or LA change, the design has failed its own purpose and that is a
+defect to raise before activation.
+
+⚠ Companion client defect that must be fixed BEFORE activation, or Director devices silently stop
+receiving central cost updates: `_fetchCorporateCosts()` is called from exactly one place —
+`sync.js:815`, inside `_fetchRemoteConfig`, at boot, fire-and-forget, **before anyone has logged in**.
+Nothing re-calls it after login and session proofs are memory-only, so once the person-level check is
+live that boot call carries no proof and is refused every time. The fetch swallows a bad response, so
+the failure is silent and the device keeps showing stale costs. This is a CLIENT change with its own
+sentinel and its own audit — not part of any staging apply.
+
+Full apply plan (nine sessions, ordering, probes, rollbacks):
+`audit-artifacts/AA-STAGING-APPLY-PLAN.md` (gitignored — local only).
+
+---
+
 ## 1. NEW LA: `access-policy-write-staging`
 Trigger `POST {auth:{deviceId,storeId,storeKey,directorKey}, proof, proposed, pinPlain?, pinClear?}`.
 1. `validateKeys` — Director key REQUIRED (store key alone → 401, like catalogue-write).
