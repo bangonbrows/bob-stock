@@ -93,6 +93,59 @@ Trigger `POST {auth:{deviceId,storeId,storeKey,directorKey}, proof, proposed, pi
 - pull-v2: echo `policyVersion` (the blob's `version`) on every page, exactly like the Chunk-10 scope echo —
   the client's bump detector (SR-4 purge lifecycle) keys off it.
 
+## 🛑 STOP — §3 AND §4 CANNOT BE APPLIED AS WRITTEN (verified against the live cloud 2026-07-30)
+
+**§3 + §4 are ONE item (staging-ledger item 5) and they are the only thing in this chunk that sits on
+the `sharepointonline` connection SHARED WITH THE LIVE LOGIC APPS, gating the sync WRITE path.**
+Adversarial review of the apply plan found **three separate breaks of the inertness property** — i.e.
+they misbehave with NO policy published and NO enforcement flag set, on everyday traffic. Confirmed by
+reading the DEPLOYED definitions with `az`, not by reasoning from this document.
+
+**BREAK 1 — A NAME COLLISION THAT SILENTLY DELETES AN EXISTING SAFETY FILTER.**
+The plan adds an action named **`ToInsert2`** to `bob-stock-recordsteps-push-staging`. **That name is
+already taken on the deployed LA** (64 actions). The live one is the Chunk-9/10 context hold-back
+filter:
+`{"from":"@body('ToInsert')","where":"@not(contains(body('Ctx_ids'),item()?['row']?['StepId']))"}`,
+and `Insert_loop.foreach` already reads `@body('ToInsert2')` with
+`Insert_loop.runAfter = [Map_rejected, ToInsert2]`. A Logic App's actions are a JSON object keyed by
+name — **adding a second `ToInsert2` does not sit alongside the first, it OVERWRITES it.**
+Consequence with zero policy and zero flag: a stock-take/transfer step whose ledger row has not landed
+is written to SharePoint anyway; it is still counted in `Ctx_pendings`; the deployed `Invariant`
+(`inputCount == accepted+duplicates+Rejected+Ctx_rejects+failed+Ctx_pendings`) evaluates FALSE; the LA
+returns **HTTP 500 and acks nothing**; and the device **retries forever against a record already
+durably in the list.**
+
+**BREAK 2 — EDIT 13's PREMISE ABOUT THE LIVE GRAPH IS FALSE.** It says to re-parent both `Attest_rows`
+and `Attest_failed_map` from `body('ToInsert')`. On the live push-v2, **exactly one** action references
+`body('ToInsert')` — `Attest_rows`. `Attest_failed_map.inputs.from` is `@body('Attest_rows')`.
+Following EDIT 13 changes that action's item shape so every `ATTEST_UNAVAILABLE` entry returns
+`TransactionId: null` — a behaviour change on any attestation blip, no policy involved.
+
+**BREAK 3 — `concat()` ON ARRAYS.** EDITs 15 and 18 merge the quarantine list and the response's
+`rejected[]` with `concat(<array>,<array>)` on the unconditional path. Logic Apps' `concat()` is for
+strings and integers; the live recordsteps LA already merges arrays with **`union()`** in two places
+(`Response_ok.failed`, `Response_ok.rejected`).
+
+**AND THE PROBE WOULD NOT HAVE CAUGHT ANY OF IT.** The proposed recordsteps fixture is one
+transfer/backfill step plus one stocktake/approve step. The live `Context_steps.where` is
+`@and(RecordType=='transfer', or(StepType=='resolve', StepType=='cancel'))` — neither fixture step
+matches, so `Ctx_ids` stays empty and the overwritten filter is indistinguishable from the original.
+Green probe, live-broken change.
+
+**REQUIRED BEFORE §3/§4 IS TOUCHED:**
+1. **Re-spec both against freshly captured live definitions.** The in-repo captures are stale and
+   unusable as a baseline: `pushv2-def-current.json` is 2026-07-22 (predates the 23 July attestation
+   rewire) and `recordsteps-push-staging-props.json` is 2026-07-02 (predates device auth AND store
+   isolation).
+2. **Build a name-collision gate** — every action name an edit ADDS must be asserted absent from the
+   deployed definition first. This is the check whose absence caused BREAK 1, and it is cheap.
+3. Apply §3/§4 **LAST** in the batch, never first, so the apply/rollback mechanics have been rehearsed
+   on the six low-risk items before anything touches the shared connection.
+
+*(Root cause worth recording: this chunk was triple-audited clean. The audits reviewed the DESIGN. The
+edits were written against a picture of the deployed graphs that was a day out of date. Auditing a
+plan is not the same as checking the plan still matches the machine.)*
+
 ## 3. push-v2 ingest validation (matrix rows 1/5/7/9/15 + D9-8 closure)
 Request gains optional `{proof, pinProof, sudoProofs}` — the client (AA-W5 `Sync._withIngestProofs`) attaches
 the 12h session proof as `proof`, any live pin-grant as `pinProof`, and action-time sudo proofs as a
@@ -140,6 +193,28 @@ Replace the Director/HO-only gate with:
    that store ⇒ serve NOTHING for it (fail closed); else add `Timestamp ge <era.from>` for the requesting
    owner's era window. HO/Director (`['*']`) callers: no era filter (Kunal's lens rule — HO sees all history).
    StoreId values in the clause go through the same 3dbc3c5 charset allowlist.
+
+**⚠ TWO THINGS VERIFIED ABOUT §6 ON 2026-07-30 — read before applying it.**
+
+- **`store_eras` HAS NEVER EXISTED.** Zero hits across every `.js`, `.html` and `.json` in the repo
+  (including gitignored `audit-artifacts/`); it appears only in spec markdown. The deployed
+  `bob-stock-archive-pull-staging` has 8 actions (`Get_creds`, `Call_verify`,
+  `Authorized{Match_cred, Scope_bare, Read_archive, Respond_ok}`, `Respond_401`) and **no era logic at
+  all.** So this section creates a piece of business data that has never been written — the ownership
+  dates must be seeded, and confirmed store-by-store by Kunal, before the item can even be tested.
+  The fail-closed rule above (no era record ⇒ serve NOTHING) is the safety property: the deployed LA
+  treats an empty scope clause as "no filter", so a literal implementation that skipped the floor
+  would hand a new franchisee **the previous owner's entire trading history.** That is the exact
+  disclosure this whole chunk exists to prevent — prove the zero-rows case explicitly, do not infer it.
+- **There is a live client/server contract mismatch on this endpoint, independent of this change.**
+  The deployed LA reads `triggerBody()?['data']?['from']` and `['to']` (12 occurrences each), while
+  `Sync.pullArchive` (`sync.js:1443`) sends `this._withPerson({ from, to })` — i.e. at the TOP level,
+  not nested under `data`. So the requested date range is **silently ignored today.** Fixing it is
+  correct but it IS a behaviour change: it gets its own line in the record and its own re-proof, not a
+  free ride inside this item.
+- Note `Pages._loadArchiveForReports` (`index.html:3283`) splices archive rows into
+  `DB.get().transactions` and calls `Stock._buildCache()`. **This is not a report-only surface** — it
+  feeds the on-screen stock number, which a stock take reads as its system count.
 
 ## 7. user-admin LA
 Add `evaluateAccess {proof, action:'user-admin', capability:'manageUsers'}` after the existing Director-key
