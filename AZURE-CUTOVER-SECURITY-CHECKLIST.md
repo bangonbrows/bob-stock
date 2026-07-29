@@ -107,11 +107,27 @@ debris** and deleting them by name-matching would destroy work that is still nee
   *(Listed as a deletion candidate on the first pass 2026-07-29 and corrected the same day — a
   name-based guess got it wrong within the hour, which is the whole argument for the rule above.)*
 
+- 🛑 **`bobstockfnval2607` IS NOT A FUNCTION APP AND MUST NOT BE DELETED.** Verified 2026-07-30:
+  `az resource list` returns `type: Microsoft.Storage/storageAccounts, kind: StorageV2`, and
+  `bob-stock-money-fn`'s `AzureWebJobsStorage` setting resolves to `AccountName=bobstockfnval2607`.
+  **It is the storage account the Function App runs on** — deleting it destroys the compute layer of
+  the entire server phase (all 10 routes). It was listed as a "genuinely safe-looking candidate" on
+  the first pass of this section (2026-07-29) purely because the name looked temporary. Corrected the
+  next day by the documentation-consolidation sweep, not by anyone re-reading it.
+  **This is the second name-based guess in this section to be wrong within a day** (see `tmp-c9`
+  above). The rule below is not defensive drafting — it is the observed failure rate.
+
 Genuinely safe-looking candidates (still verify individually, do not bulk-delete):
 `bob-stock-push` / `bob-stock-pull` (v1, superseded by v2), `bob-stock-pull-probe-odata`,
 `-pull-probe-idxtest`, `-render-probe-idxtest`, `-render-orderonly`, `-idcursor-probe`,
-`-items-idcursor-probe`, `bob-stock-archtest-reset-staging` (already listed above),
-and the `bobstockfnval2607` Function App.
+`-items-idcursor-probe`, and `bob-stock-archtest-reset-staging` (already listed above).
+
+⚠ **ASSERT THE RESOURCE TYPE BEFORE DELETING ANYTHING.** Every line above is a Logic App
+(`Microsoft.Logic/workflows`) and nothing else. Run
+`az resource list -g bob-stock-sync --query "[].{name:name,type:type}" -o table` and confirm the type
+of each target against that output. Two of the three non-Logic-App resources in this resource group
+(`bobstockfnval2607`, `AustraliaEastPlan`) are load-bearing infrastructure whose names give no hint
+of that.
 
 - [ ] Walk the 36 apps one at a time against what cutover still needs. **No bulk deletion by name pattern.**
 
