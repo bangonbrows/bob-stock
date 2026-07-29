@@ -152,7 +152,77 @@ processes that survive kill/pkill and mutate the live tree. Recover from `.sabot
 | Org-Structure | spec converged + build-ready, **NOT built**. Real deadline: new franchisee ~Sep–Oct 2026 |
 | Org W1–W4.3 | converged |
 | W4.4 **Contract 1** (row EconSig) | **COMPLETE** — staging-applied, archive-carry proven |
-| W4.4 **Contract 2** (correction route) | **← YOU ARE HERE** |
+| W4.4 **Contract 2** (correction route) | 🅿 **PARKED 2026-07-29** — split out of the cutover, see §5a |
+
+**← YOU ARE HERE: the Account Access staging-apply**, then the permissions end-to-end proof. Verify
+that is genuinely the next blocker before committing an evening to it — it comes from a roadmap sweep
+whose own critic found items the sweep had missed.
+
+---
+
+## 5a. CONTRACT 2 IS PARKED — read this before touching it
+
+**Decided by Kunal 2026-07-29.** C2 ships as its **own later, separately-audited deploy**, like the
+franchise wizard. Rationale: it is the least-finished thing in the project (17 confirmed defects +
+7 blocking gaps on its delivery path, never deployed, never run), while everything else is built and
+audited. **Parking is safe**: the coupling inventory came back empty — nothing already applied to
+staging depends on the correction route existing, and there is no correction screen in the client, so
+no user loses a capability they had.
+
+**Kunal's direction for when it IS built: OPTION A — corrections must reach the shop floor.** Not
+books-only. That makes C2 bigger, not smaller, which is a further reason not to build it under time
+pressure.
+
+**THE COST OF PARKING, stated plainly:** it also parks the ability to produce ANY buy-back settlement
+(the export route is unbuilt and depends on C2's control/tombstone assembly contract). Irrelevant for
+alpha. **Relevant for the ~Sep–Oct 2026 franchisee** — C2 + the export route need a slot before then.
+
+### The six carried obligations — parking is only safe if these are honoured
+
+1. **RE-SCOPE THE RETURN RE-AUDIT IN WRITING BEFORE IT STARTS.**
+   `AZURE-CHUNK-ORG-W44-SERVER-CONTRACTS.md:63-69` still lists "Land Contract 2" as step 2. Amend it:
+   the re-audit covers **engine + Contract 1 only**; the control/correction lane is deliberately
+   excluded and audited at a zero-control, empty-manifest baseline. Without this an auditor flags the
+   missing route as a gap and a whole round is burned.
+2. **RE-HOME "ENGINE CONTROL-SEAL ENFORCEMENT" ONTO C2's LIST. ⚠ DO NOT LOSE THIS ONE.**
+   It is currently banked against the return re-audit (`AZURE-CHUNK-ORG-W44-C2-DESIGN.md:554-555`,
+   C2-R1-3, `:1537`). Narrow the re-audit without re-homing it and it falls through the gap between
+   the two. **It is a RUN-demonstrated money hole:** the manifest head binds only
+   `{controlId, revision, bornPublicationVersion}`, so a SharePoint-direct edit of a published control
+   row's qty or stamps passes the head check and enters settlement — reproduced against the real
+   frozen engine, settling **FINAL at owed 3.75 instead of 375**.
+3. **DO NOT SHIP C1's PREDICATE CHANGE ALONE — it is a net safety REGRESSION without a guard.**
+   Applying `AZURE-CHUNK-ORG-W44-C1-DESIGN.md` §4 item 1 verbatim turned a deleted-movement case from
+   PROVISIONAL/held into **FINAL owed 675**, silently billing it. A compensating tombstone guard was
+   built and RUN and works; it must ship in the same batch.
+4. **BUILD THE EconSig PROBE FAMILY BEFORE THE RE-AUDIT.** The engine's 170-probe suite has **ZERO**
+   EconSig coverage — it still runs on the legacy `_attested` marker and `buybackExport.js` contains
+   no reference to EconSig at all. Per P-?: a gate never seen to fail is not a gate. The R5–R7 repros
+   must be made to fail **at verify**, not at the manual-review hold.
+5. **WRITE THE RE-AUDIT VERDICT SO IT CANNOT BE OVER-READ.** The engine is being certified for a
+   **zero-control world**. The verdict must say the control lane was NOT certified, or a later reader
+   takes "engine re-audited, clean" as covering corrections.
+6. **RECONCILE THE MARKER TEXT.** It currently says three different things in three places: §6 below
+   ("required once the server contracts land", no contents), the memory marker (three items), and
+   `AZURE-CHUNK-ORG-W44-C2-DESIGN.md:1537` (five items: predicate + sealed-pre-epoch + engine
+   control-seal + R5–R7 repros + the flagged N9/N10/N11/N14/N15 amendments). Until it is ONE list the
+   next session re-litigates it.
+
+**Also banked onto C2's file (do not fix elsewhere):**
+- **The colon id defect.** `correctionCompute.js:286` mints `'ctl:'+opId`, `:311` mints
+  `'corr:'+opId+':'+rev`; `topology.js:31` `ID_RE` bans colons, so `buybackExport.js` aborts the whole
+  store export with `MALFORMED_CONTROL`. **Fix at C2's end by minting colon-free ids — do NOT widen
+  `reqId`**, which loosens a validator the whole server phase depends on.
+- **The device-tombstone over-bill** (deleted target still billed 375, FINAL, unsurfaced) — ships with
+  C2 §7c adoption and the §6 export route.
+- **Option A delivery** — the seven blocking propagation gaps in
+  `audit-artifacts/C2-PROPAGATION-ANSWER.md`.
+
+Full analysis: `audit-artifacts/C2-PARKING-DECISION.md`, `-PROPAGATION-ANSWER.md`,
+`-CONSOLIDATED-FIX-PLAN.md`, `-GROUNDTRUTH-RESULTS.md`, `-ADOPT-VERIFICATION.md`,
+`-R12-CODEX-VERDICTS-RECOVERED.md` (all gitignored — local only).
+
+---
 
 ### Contract 2, exactly where it is
 

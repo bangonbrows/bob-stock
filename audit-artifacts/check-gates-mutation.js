@@ -82,6 +82,23 @@ function parentOf(node, name) {
   return null;
 }
 
+// A structurally INERT If, used to isolate the tautology walker. Both branches are Compose actions:
+// no Response, no Terminate, nothing the containment or refusal rules care about — so if a problem
+// line appears for this action it came from the walker and nothing else. `expr` is the payload under
+// test (an object, or a string for the string-form condition shape).
+// ⚠ `runAfter` IS NOT COSMETIC HERE. The first version of this helper used `runAfter: {}`, which made
+// the probe a SECOND entry head at root — and the ENTRY HEADS rule then flagged every one of these
+// mutations. All five looked "caught" while the walker had not fired once. That is the precise
+// failure this batch exists to fix, reproduced by accident in its own test scaffolding: a mutation
+// caught by an unrelated rule proves nothing about the rule under test. Chain the probe instead.
+function walkerProbe(expr) {
+  return {
+    type: 'If', expression: expr, runAfter: { Init_snapEtag: ['Succeeded'] },
+    actions: { Probe_then: { type: 'Compose', inputs: 'then', runAfter: {} } },
+    else: { actions: { Probe_else: { type: 'Compose', inputs: 'else', runAfter: {} } } },
+  };
+}
+
 // gate = which checker MUST catch this corruption
 const MUTATIONS = [
   // ── contract gate ────────────────────────────────────────────────────────────────────────────────
@@ -118,6 +135,41 @@ const MUTATIONS = [
     apply: (d) => { delete find(d.actions, 'Publish').inputs.body.headers['IF-MATCH']; } },
   { id: 'S7', gate: 'check-correction-def.js', why: 'IF-MATCH present but empty (fencing on nothing)',
     apply: (d) => { find(d.actions, 'Publish').inputs.body.headers['IF-MATCH'] = ''; } },
+
+  // ── GATE-VALIDATOR BLIND SPOTS (C2 Round 12: Codex QZ4 + AGY Q2, all reproduced) ─────────────────
+  // These do not corrupt the WORKFLOW — they corrupt a GATE CONDITION in ways the two rules that
+  // exist to notice it do not notice. Added BEFORE the fix, deliberately, so each is observed to
+  // SURVIVE first. A rule whose mutation was written after the fix proves only that the author
+  // remembered what they just wrote.
+  //
+  // ISOLATION: S-WALK-1/2/3/3b/4 inject a FRESH gate (`Walker_probe`) that REQUIRED_GATE_TERMS does
+  // not name, with two inert Compose branches. That is on purpose — the walker's stated job is to
+  // cover "gates the table does not name", and routing these through a named gate would let the
+  // terms rule catch them for a reason that has nothing to do with the hole under test.
+  { id: 'S-WALK-1', gate: 'check-correction-def.js', why: 'AGY: condition written as a STRING, not an object — the walker returns at `typeof node !== "object"` and never inspects it',
+    apply: (d) => { d.actions.Walker_probe = walkerProbe("@equals(true, true)"); } },
+  { id: 'S-WALK-2', gate: 'check-correction-def.js', why: 'AGY: single-operand function — the walker skips anything with `operands.length < 2`, so a build-time constant is never inspected',
+    apply: (d) => { d.actions.Walker_probe = walkerProbe({ empty: [''] }); } },
+  { id: 'S-WALK-3', gate: 'check-correction-def.js', why: 'AGY/Codex: operands IDENTICAL but each contains "@", so the bare-@ alternative in the evidence regex classifies both as evidence and the self-comparison is never compared',
+    apply: (d) => { d.actions.Walker_probe = walkerProbe({ equals: ['user@domain.com', 'user@domain.com'] }); } },
+  // ⚠ A/B ANCHOR — S-WALK-3b is the SAME shape with no "@". It is CAUGHT today and must STAY caught.
+  // If a later fix makes 3 pass by deleting "@" from the regex, 3b is unaffected and the pair stops
+  // discriminating. Both must fail for the right reason: identical operands, regardless of evidence.
+  { id: 'S-WALK-3b', gate: 'check-correction-def.js', why: 'ANCHOR (caught today, must stay caught): identical literal operands with no "@" — proves the fix targets self-comparison, not the "@" character',
+    apply: (d) => { d.actions.Walker_probe = walkerProbe({ equals: ['user', 'user'] }); } },
+  { id: 'S-WALK-4', gate: 'check-correction-def.js', why: 'Codex refuter: operands NOT identical — `equals("@true", true)` — one bare "@" satisfies .some() and the constant comparison passes uninspected',
+    apply: (d) => { d.actions.Walker_probe = walkerProbe({ equals: ['@true', true] }); } },
+
+  // REQUIRED_GATE_TERMS is a raw substring test over the whole serialized expression. Both of these
+  // keep every required term present while making the gate permanently true.
+  { id: 'S-TERM-1', gate: 'check-correction-def.js', why: 'AGY: required terms parked in DEAD TEXT — present as a string literal that is never evaluated, so the word-search passes while the gate judges something else entirely',
+    // reads `error` — a property validateKeys REALLY returns, and string-typed. An invented property
+    // is caught by the contract gate, and a boolean one by the type-strict equals rule; either way
+    // the terms rule never gets exercised. The corruption must be legal everywhere except here.
+    apply: (d) => { find(d.actions, 'Compute_gate').expression = { and: [{ equals: ["@coalesce(body('Gate_keys')?['error'],'')", 'Delta_cell Delta Candidate'] }] }; } },
+  { id: 'S-TERM-2', gate: 'check-correction-def.js', why: 'Codex: OR-WRAP — the entire original expression is kept as one disjunct (so every term survives) beside an always-true self-comparison, making the refusal branch dead code',
+    apply: (d) => { const g = find(d.actions, 'Compute_gate');
+      g.expression = { or: [g.expression, { equals: ["@string(body('Candidate'))", "@string(body('Candidate'))"] }] }; } },
 
   // ── expression gate ──────────────────────────────────────────────────────────────────────────────
   { id: 'E1', gate: 'check-expressions.js', why: 'coalesce over two array-valued expressions (never falls through)',
@@ -259,24 +311,73 @@ function addsNewProblem(file, ownerGate) {
   return false;
 }
 
-const caught = [], survived = [];
+// ── PINNED EXPECTED-FAIL BASELINE — CONTRACT 2 IS PARKED (Kunal, 2026-07-29) ──────────────────────
+// These six corruptions SURVIVE today. They are real, reproduced holes in the two gate-condition
+// rules, found in C2 Round 12 (Codex QZ4 + AGY Q2) and each observed to survive in isolation before
+// any fix was attempted. The fix for them was batch 1 of the C2 fix plan — and C2 is now PARKED, so
+// the fix is parked with it.
+//
+// THEY ARE RECORDED, NOT DELETED, AND NOT SILENCED. Deleting a failing mutation to make a suite green
+// is the exact reflex this file exists to prevent. The run still PRINTS them every time, loudly. What
+// it does not do is fail the whole local gate on a defect the owner has consciously deferred — which
+// would train everyone to ignore a red run, and that costs more than it buys.
+//
+// ⚠ TWO WAYS THIS SET MUST CHANGE, BOTH DELIBERATE:
+//  - When C2 resumes, batch 1 fixes the rules and every id below moves OUT of this set. The run tells
+//    you when that has happened — a parked hole that starts being CAUGHT is reported as CLOSED.
+//  - S-WALK-3b is deliberately NOT parked. It is the A/B anchor: the same shape as S-WALK-3 with no
+//    '@' in the literal. It is CAUGHT today and must STAY caught. If a future fix makes S-WALK-3 pass
+//    by deleting '@' from the evidence regex, 3b is unaffected and the pair stops discriminating — so
+//    3b failing is a real regression even while C2 is parked.
+//
+// Full context: HANDOVER.md §5a; audit-artifacts/C2-CONSOLIDATED-FIX-PLAN.md batch 1.
+const PARKED_HOLES = new Map([
+  ['S-WALK-1', 'tautology walker skips string-form conditions'],
+  ['S-WALK-2', 'tautology walker skips single-operand functions'],
+  ['S-WALK-3', 'tautology walker never compares identical operands'],
+  ['S-WALK-4', 'a bare "@" in one operand counts as evidence for both'],
+  ['S-TERM-1', 'REQUIRED_GATE_TERMS matches terms parked in dead text'],
+  ['S-TERM-2', 'REQUIRED_GATE_TERMS survives an or-wrapped always-true disjunct'],
+]);
+
+const caught = [], survived = [], parkedStillOpen = [], parkedNowClosed = [];
 for (const m of MUTATIONS) {
   const d = JSON.parse(JSON.stringify(clean));
-  try { m.apply(d); } catch (e) { survived.push({ ...m, note: 'mutation could not be applied: ' + e.message }); continue; }
+  const isParked = PARKED_HOLES.has(m.id);
+  let bit;
+  try { m.apply(d); } catch (e) {
+    (isParked ? parkedStillOpen : survived).push({ ...m, note: 'mutation could not be applied: ' + e.message });
+    continue;
+  }
   fs.writeFileSync(TMP, JSON.stringify(d, null, 2));
-  // a corruption counts as CAUGHT if ANY gate fails — what matters is that something bites,
-  // not which script happens to own the rule.
-  const gates = ['check-fn-contracts.js', 'check-correction-def.js', 'check-expressions.js'];
-  // CAUGHT = the mutation produced a problem line the clean baseline did not have.
-  (addsNewProblem(TMP, m.gate) ? caught : survived).push(m);
+  // CAUGHT = the mutation produced a problem line the clean baseline did not have. A mutation caught
+  // by a DIFFERENT gate than its owner still counts — it is reported either way, so a mis-assigned
+  // owner cannot hide a hole.
+  bit = addsNewProblem(TMP, m.gate);
+  if (isParked) (bit ? parkedNowClosed : parkedStillOpen).push(m);
+  else (bit ? caught : survived).push(m);
 }
 try { fs.unlinkSync(TMP); } catch (e) {}
 
+const active = MUTATIONS.length - PARKED_HOLES.size;
 console.log('gate mutation suite');
-console.log(`  mutations: ${MUTATIONS.length}   caught: ${caught.length}   SURVIVED: ${survived.length}`);
+console.log(`  active mutations: ${active}   caught: ${caught.length}   SURVIVED: ${survived.length}`);
+console.log(`  parked (C2): ${PARKED_HOLES.size}   still open: ${parkedStillOpen.length}   now closed: ${parkedNowClosed.length}`);
+
+if (parkedStillOpen.length) {
+  console.log('\n---- KNOWN OPEN HOLES — Contract 2 is PARKED, these are deferred ON PURPOSE ----');
+  console.log('     (they are real: each was reproduced in isolation. See HANDOVER.md §5a.)');
+  for (const m of parkedStillOpen) console.log(`  · [${m.id}] ${PARKED_HOLES.get(m.id)}`);
+}
+if (parkedNowClosed.length) {
+  console.log('\n---- A PARKED HOLE IS NOW CLOSED — un-park it ----');
+  console.log('     Something now catches this. Remove it from PARKED_HOLES so it is gated again.');
+  for (const m of parkedNowClosed) console.log(`  · [${m.id}] ${PARKED_HOLES.get(m.id)}`);
+}
 if (survived.length) {
   console.log('\n==== SURVIVED — these are HOLES in the gate, not defects in the workflow ====');
   for (const m of survived) console.log(`  - [${m.id}] ${m.gate}: ${m.why}${m.note ? '  (' + m.note + ')' : ''}`);
   process.exit(1);
 }
-console.log('\n==== ALL MUTATIONS CAUGHT — every gate rule has been observed to fail ====');
+console.log('\n==== ALL ACTIVE MUTATIONS CAUGHT — every unparked gate rule has been observed to fail ====');
+if (parkedStillOpen.length) console.log(`     (${parkedStillOpen.length} parked hole(s) remain open by decision — NOT a clean bill of health for C2)`);
