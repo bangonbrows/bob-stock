@@ -69,7 +69,27 @@ Plaintext keys: `audit-artifacts/.staging-keys-2026-07-22.txt` (gitignored; rota
 Director-sudo-gated routes (AA credentialled E2E + the W4.4 Contract-2 correction route), not for W4.4
 Contract 1 (push-v2 row attestation), which only needs the device keys above.
 
-## BLOCKER for the E2E proof: staging test credentials (historical — device-key half cleared 2026-07-22)
+## ✅ TEST DIRECTOR MINTED 2026-07-23 — THIS BLOCKER IS CLEARED (recorded 2026-07-29)
+
+The section below was written 2026-07-22 and is **stale**. The throwaway staging test director
+**`srvaudit_director` was minted the NEXT DAY** by `audit-artifacts/mint-test-director.js`, which:
+mints server-side via the deployed `mintUserCredential` route (no hash computed outside the Function),
+writes the `UserCredentials_Staging` row (Role director, Active **1** — the numeric column, a boolean
+`true` left the row unusable on the first attempt), and then **proves it against the DEPLOYED
+verifier**: a real login mints an `archive` sudo proof, `verifyProof` accepts it as director, a wrong
+password is rejected, and the proof is rejected for a different purpose. `dedupe-test-director.js`
+(same day) cleaned up a duplicate row. Password is in the gitignored
+`audit-artifacts/.staging-keys-2026-07-22.txt` alongside the six device keys.
+
+**Consequence: Account Access items 5-11 are NOT blocked on credentials.** They are simply not done.
+The next session should plan the applies, not go hunting for a credential.
+
+⚠ Not re-verified since 2026-07-23. Before driving the credentialled E2E, re-run
+`mint-test-director.js` (idempotent — it rotates the password and re-proves the whole chain) rather
+than assuming the account still works. `bob-stock-tmp-c9` and the runner's own temp passthru are the
+seeding paths — **do not delete either during cutover cleanup until this E2E has run.**
+
+## BLOCKER for the E2E proof: staging test credentials (⛔ SUPERSEDED — see above; kept as history)
 The full end-to-end proof (seed a `__director` StoreCredentials row + a test director UserCredentials row →
 publish the default policy via the new write LA → confirm `access_policy`/`access_policy_version` written and
 `access_policy_secure` withheld from config delivery → confirm pull echoes the new version → drive a scoped
