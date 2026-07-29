@@ -220,6 +220,23 @@ ledger grows past 5,000 *after* launch — roughly four months of runway from ~1
 **pull-hardening upgrade** (built June, proven on 20,048 rows, dual-audited, runbook written,
 **never applied**) belongs in the cutover, not ahead of it.
 
+**Banked 2026-07-29 — contract requirements for code that is not written yet:**
+- **The correction screen must mint a FRESH opId per attempt.** The client half of the correction
+  route does not exist (zero references in `index.html`/`sync.js`/`phase2.js`/`db.js`). Once the
+  `rolled_back` work lands, re-sending the same opId returns a permanent settled `{ok:false}` and
+  never re-attempts — so a "try again" button that reuses the id gives the director a dead end with
+  no way forward. Decide it here, before the screen is built.
+- **`sync.js:588` — the pricing route's opId contradicts its own comment.** The comment at `:580-581`
+  says it sends "a stable opId (digest-bound idempotent replay server-side)"; the code mints a NEW
+  id on every call (`'pop_' + Date.now() + random`). **Ground-truthed 2026-07-29: harmless today
+  because the server route does not exist** — `topology.js` exposes only `topologyPlan` and
+  `topologyResolve`, there is no `pricingChange` route, and the client fails closed on a missing
+  endpoint. But when that route IS built, server-side replay protection can never engage. Either
+  make the client id stable across retries of one logical edit, or drop the idempotency claim from
+  the comment and rely on the `expectedVersion` CAS (which is what actually prevents double-apply
+  today). ⚠ Independent confirmation, from a second direction, that the franchise server work is
+  UNBUILT rather than merely un-applied.
+
 **Money-critical / never skip:**
 - **The return-engine re-audit.** The buy-back settlement engine was **frozen, not finished** —
   auditors were still finding real bugs at the freeze and three classes (R5–R7) are only *held* as
