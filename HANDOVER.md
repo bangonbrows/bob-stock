@@ -188,6 +188,38 @@ criticals raised against it before it shipped** —
 
 ## 6. OPEN — DO NOT LOSE THESE
 
+**DECIDED 2026-07-29 — the wizard is NOT in the cutover.** Kunal split the **franchise wizard** out
+of the single end-of-phase cutover. It ships as its **own smaller, separately-audited deploy
+afterwards**. Reasoning: it is a director-only screen no staff member ever touches, and the
+one-cutover rule exists to avoid a string of risky deploys — not to hold the whole launch behind a
+screen nobody using the app will open. **The one-cutover rule still governs everything else.**
+Consequence: the ~Sep–Oct 2026 franchisee no longer gates launch; if the wizard is not ready, the
+documented scripted onboarding runbook (OS-SR-9) covers that franchisee and the wizard serves the
+next one.
+
+**DECIDED 2026-07-29 — `rolled_back` becomes a genuine journal state.** Two consumers already filter
+on it (`gen-correction-def.js:250` duplicate-request classifier, `:261` Reconcile_prepass) and
+nothing has ever written it, so an abandoned correction is indistinguishable from one still in
+flight and the recovery sweep re-picks dead work forever. Kunal's ruling: **abandoned means settled**
+— a fresh attempt takes a new opId. Scoped into the rollback batch. ⚠ The dangerous half: a lane
+where the publish MAY have landed must NOT be marked `rolled_back`, or recovery will never pick it up.
+
+**DIRECTION APPROVED, PENDING VERIFICATION 2026-07-29 — adopt joins the CAS-update lane.** Working
+hypothesis: adopt's target already holds a registry row (written by `Lazy_register` at
+`gen-correction-def.js:425` as committed-UNADOPTED), so adopt should UPDATE it, not create one —
+making MC-4 a fourth instance of MC-1 rather than a separate design question. **Kunal explicitly
+required this be PROVEN by running before anything is built on it.** Do not treat as settled until
+that verification is recorded here.
+
+⚠ **THE APP IS NOT IN USE. Nobody is logging transactions and none will be until launch.** Do not
+apply growth/time-decay reasoning to the live ledger — it is NOT filling up. A 2026-07-29 roadmap
+sweep projected a "late October SharePoint 5,000-row outage" from a 25–30 rows/day growth rate
+measured in June; **that projection is void.** The 5,000-row limit is real but is a **cutover-time**
+concern (set indexes while lists are small; enable the `IdempotencyKey` unique index before the
+ledger grows past 5,000 *after* launch — roughly four months of runway from ~1,788 rows). The
+**pull-hardening upgrade** (built June, proven on 20,048 rows, dual-audited, runbook written,
+**never applied**) belongs in the cutover, not ahead of it.
+
 **Money-critical / never skip:**
 - **The return-engine re-audit.** The buy-back settlement engine was **frozen, not finished** —
   auditors were still finding real bugs at the freeze and three classes (R5–R7) are only *held* as
