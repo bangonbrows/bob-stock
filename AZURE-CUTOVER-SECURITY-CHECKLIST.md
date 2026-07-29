@@ -100,10 +100,17 @@ debris** and deleting them by name-matching would destroy work that is still nee
   SharePoint will not add either to a list past ~5,000 rows — so this is exactly the equipment needed
   when the LIVE lists are created. Keep until that work is done.
 
+- **`bob-stock-tmp-c9` = THE SEEDING PATH, still needed.** Despite the `tmp` in its name. It is the
+  director-gated SharePoint passthru used in Chunk 9 and it is the route by which the pending staging
+  test-director account gets seeded — the single thing currently blocking Account Access items 5-11
+  (`AZURE-CHUNK-AA-STAGING-LEDGER.md`, "BLOCKER for the E2E proof"). Keep until that E2E has run.
+  *(Listed as a deletion candidate on the first pass 2026-07-29 and corrected the same day — a
+  name-based guess got it wrong within the hour, which is the whole argument for the rule above.)*
+
 Genuinely safe-looking candidates (still verify individually, do not bulk-delete):
 `bob-stock-push` / `bob-stock-pull` (v1, superseded by v2), `bob-stock-pull-probe-odata`,
 `-pull-probe-idxtest`, `-render-probe-idxtest`, `-render-orderonly`, `-idcursor-probe`,
-`-items-idcursor-probe`, `bob-stock-tmp-c9`, `bob-stock-archtest-reset-staging` (already listed above),
+`-items-idcursor-probe`, `bob-stock-archtest-reset-staging` (already listed above),
 and the `bobstockfnval2607` Function App.
 
 - [ ] Walk the 36 apps one at a time against what cutover still needs. **No bulk deletion by name pattern.**
