@@ -1,6 +1,8 @@
 # HANDOVER — BOB Stock App
 
-**Written 2026-07-28. Branch `azure-phase-5-8-server`, HEAD `aecde76` (pushed).**
+**Written 2026-07-28, last revised 2026-07-30. Branch `azure-phase-5-8-server`.**
+*(No HEAD hash pinned here on purpose — it went stale on the next commit and misled a session. Run
+`git log --oneline -1` for HEAD and `git rev-list --count main..HEAD` for the distance from `main`.)*
 **Read this file first, then `AZURE-CHUNK-PROCESS.md`.**
 
 Kunal Joshi is the owner. He is **not a developer** — explain findings in plain English before any
@@ -43,7 +45,7 @@ Offline-first PWA → IndexedDB on device → Azure Logic Apps → SharePoint On
 are never stored; they are computed from an append-only movement ledger.
 
 - **Live (old):** `https://gray-island-05e673800.7.azurestaticapps.net/` — deploys from `main`
-- **Working branch:** `azure-phase-5-8-server` — **262 commits ahead of `main`, undeployed**
+- **Working branch:** `azure-phase-5-8-server` — **far ahead of `main` (270+ commits), undeployed**
 - Repo `bangonbrows/bob-stock` (private)
 
 **Nothing in the server phase is live. The app is not in use and will not be until it is all done.**
@@ -290,6 +292,27 @@ ledger grows past 5,000 *after* launch — roughly four months of runway from ~1
 **pull-hardening upgrade** (built June, proven on 20,048 rows, dual-audited, runbook written,
 **never applied**) belongs in the cutover, not ahead of it.
 
+**DECIDED 2026-07-30 — Account Access activation (full text: `AZURE-CHUNK-AA-LA-CHANGES.md` §D-AA-A/B):**
+- **ONE master enforcement switch for the whole chunk.** Every gated LA reads a single
+  `access_policy_enforce` AppConfig row and stays inert while it is absent — **including after a policy
+  is published.** Publishing and enforcing are two separate acts, which buys a rehearsal: publish,
+  confirm every door reads it, then flip. Undo = flip back, the policy survives. This CORRECTS a spec
+  inconsistency (corp-costs and archive-pull previously armed on publish).
+  ⚠ `§7`/`§8`/`§10` (user-admin, catalogue-write, Chunk-8 archive) specify **no activation branch at
+  all**, and `evaluateAccess` is fail-CLOSED (`NO_POLICY`) — applied literally each would break its own
+  working Director door on landing. All three need the guard.
+- **Cost visibility at activation = director ONLY. Head Office added later by EDITING THE POLICY**, not
+  by redeploying — written as an acceptance criterion, so if it needs a code change the design has
+  failed its purpose. ⚠ Companion client defect, must be fixed BEFORE activation:
+  `_fetchCorporateCosts()` runs at boot before login (`sync.js:815`), swallows the refusal silently, so
+  Director devices would sit on stale costs forever once the person check is live.
+
+**Also cleared 2026-07-30:** the staging test director `srvaudit_director` was minted 2026-07-23 — AA
+items 5-11 are **not** blocked on credentials, they are simply not done
+(`AZURE-CHUNK-AA-STAGING-LEDGER.md`). And the Azure identity teardown is deferred to before beta, with
+the live-verified detail (two auditor secrets not one; a tenant-wide grant valid to 2028) in
+`AZURE-CUTOVER-SECURITY-CHECKLIST.md`.
+
 **Banked 2026-07-29 — contract requirements for code that is not written yet:**
 - **The correction screen must mint a FRESH opId per attempt.** The client half of the correction
   route does not exist (zero references in `index.html`/`sync.js`/`phase2.js`/`db.js`). Once the
@@ -350,7 +373,7 @@ missing from the checklist — fold them in.
 - **Stability is his top priority.** Audit churn makes him anxious — reassure proactively and
   distinguish "hardening an isolated new file" from "touching the live app".
 - Append a row to the project log after every shipped change.
-- `index.html` is a ~4,750-line monolith with **duplicate method definitions (last wins)** — after
+- `index.html` is a ~6,600-line monolith with **duplicate method definitions (last wins)** — after
   editing a method, grep for duplicates and fix the live one.
 
 **Permanent rule P-13:** client-side authorization is **not** security enforcement. Never describe a

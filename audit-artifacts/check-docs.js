@@ -93,6 +93,7 @@ const INVARIANTS = [
   },
   {
     name: 'the buy-back engine still has no EconSig coverage (probe obligation unmet)',
+    knownOpen: true,   // a tracked obligation with a heartbeat, NOT a document that lies — see reporting note
     check: () => {
       const be = read('azure-functions/src/functions/buybackExport.js');
       if (be === null) return null;
@@ -118,6 +119,19 @@ const INVARIANTS = [
 
 // ── HELPERS ────────────────────────────────────────────────────────────────────────────────────────
 
+// MOMENT-RECORDS. These document what was true on a given day — an audit report, a pack as handed to
+// a reviewer, a wave review. A commit hash or a file length inside one is a HISTORICAL FACT, and
+// "correcting" it would falsify the record. So the tense-sensitive check (git pins) skips them.
+//
+// Learned the hard way on the first real run: the guard flagged an audit response for recording that
+// Codex reviewed HEAD `d4d1dd4`, and an auditor pack for describing a file as ~450 lines when it was
+// handed over. Both were perfectly accurate. Updating either would have been the actual error.
+//
+// Checks that are NOT tense-sensitive (citations, decision status) still apply here — a dangling
+// pointer in an archive is still a dangling pointer.
+const HISTORICAL_DOC = /(-AUDIT-RESPONSE\.md$|^PASTE-TO-AUDITORS-|^EXTERNAL-AUDIT-|^WAVE-[A-Z0-9]+-|-WAVE-REVIEW\.md$|^BLIND-AUDIT-|-CLIENT-REVIEW\.md$|^AZURE-CHUNK-ORG-W1W2-)/;
+const isHistorical = (p) => HISTORICAL_DOC.test(path.basename(p));
+
 function read(rel) {
   try { return fs.readFileSync(path.join(REPO, rel), 'utf8'); } catch (e) { return null; }
 }
@@ -140,6 +154,7 @@ const problem = (check, file, line, msg) => ({ check, file, line, msg });
 function checkGitPins(corpus, facts) {
   const out = [];
   for (const { path: p, text } of corpus) {
+    if (isHistorical(p)) continue;   // a pin inside a moment-record is a historical fact, not a lie
     for (const m of text.matchAll(/HEAD\s+`([0-9a-f]{7,40})`/g)) {
       if (facts.head && !facts.head.startsWith(m[1]) && !m[1].startsWith(facts.head)) {
         out.push(problem('git-pins', p, lineOf(text, m.index), `claims HEAD is ${m[1]}, actually ${facts.head}`));
@@ -168,8 +183,19 @@ function checkGitPins(corpus, facts) {
 /** C2 — no decision id is OPEN in one place and DECIDED in another.
  *  CAUGHT: AA-20 recorded DECIDED 2026-07-10 in the repo while HANDOVER and the memory index both
  *  still listed it as an open owner question. */
-const OPEN_RE = /\b(still )?(open|pending|awaiting|to decide|TBD|undecided|needs (a )?(kunal|owner) decision)\b/i;
-const DECIDED_RE = /\b(DECIDED|RESOLVED|LOCKED|CONFIRMED|AGREED|SETTLED|ruling)\b|\(Kunal \d{4}-\d{2}-\d{2}\)/;
+// ⚠ THESE PATTERNS ARE NARROW ON PURPOSE, AND THE NARROWNESS WAS PAID FOR.
+// Version 1 matched any of open/pending/awaiting ANYWHERE on the line and produced four findings, all
+// four false. In this repo's prose:
+//   · "CLOSE the HO era; OPEN the franchise era `[now,null]`"  -> "OPEN" is a VERB
+//   · "an EARLIER effective boundary is still pending"          -> a technical state, not a decision
+//   · "...CONFIRMED closed... -> §OS-SR-5/7-amend"              -> the id is merely cross-referenced
+// So a status word must now appear in an actual STATUS CONSTRUCTION, and within PROXIMITY chars of the
+// id itself. Same lesson as the deleted counts check: this corpus is prose, and a check that guesses
+// at meaning cries wolf. A noisy gate gets skimmed, and a skimmed gate protects nothing.
+const OPEN_RE = /\b(?:(?:remains|is|still|currently)\s+open|open\s+(?:owner\s+|kunal\s+)?(?:decision|question|item)|pending\s+(?:a\s+)?(?:decision|kunal|owner)|awaiting\s+(?:a\s+)?(?:decision|kunal|owner)|needs\s+(?:a\s+)?(?:kunal|owner)\s+decision|\bTBD\b|\bundecided\b|to\s+decide)/i;
+const DECIDED_RE = /\b(?:DECIDED|RESOLVED|LOCKED|SETTLED)\b|\(Kunal \d{4}-\d{2}-\d{2}\)/;
+const PROXIMITY = 60;   // the status marker must be near the id, not merely on the same line
+
 function checkDecisionStatus(corpus) {
   const seen = new Map();
   for (const { path: p, text } of corpus) {
@@ -177,8 +203,9 @@ function checkDecisionStatus(corpus) {
     lines.forEach((ln, i) => {
       for (const m of ln.matchAll(/\b((?:AA|D-AA|D-OS|OS-SR|W4-SR|SR|D)-\d+(?:\.\d+)?[a-z]?)\b/g)) {
         const id = m[1];
-        const isOpen = OPEN_RE.test(ln), isDecided = DECIDED_RE.test(ln);
-        if (!isOpen && !isDecided) continue;
+        const near = ln.slice(Math.max(0, m.index - PROXIMITY), m.index + id.length + PROXIMITY);
+        const isOpen = OPEN_RE.test(near), isDecided = DECIDED_RE.test(near);
+        if (isOpen === isDecided) continue;   // neither, or ambiguously both — not a usable signal
         if (!seen.has(id)) seen.set(id, { open: [], decided: [] });
         seen.get(id)[isDecided ? 'decided' : 'open'].push(`${p}:${i + 1}`);
       }
@@ -282,7 +309,7 @@ function checkInvariants() {
   for (const inv of INVARIANTS) {
     let msg = null;
     try { msg = inv.check(); } catch (e) { msg = `invariant could not run: ${e.message}`; }
-    if (msg) out.push(problem('invariants', '(code vs docs)', 0, `${inv.name}: ${msg}`));
+    if (msg) out.push(Object.assign(problem(inv.knownOpen ? 'open-obligations' : 'invariants', '(code vs docs)', 0, `${inv.name}: ${msg}`), { knownOpen: !!inv.knownOpen }));
   }
   return out;
 }
@@ -346,6 +373,28 @@ function selfTest() {
       corpus: [{ path: 'HANDOVER.md', text: 'x' }, { path: 'AZURE-X.md', text: 'y' }] },
   ];
 
+  // The exemption must be proven too, not asserted. An identical stale pin must FIRE in a
+  // current-truth doc and STAY SILENT in a moment-record — otherwise the exemption is either
+  // useless (still noisy) or a hole (silences everything).
+  const exemption = [
+    { id: 'X1', why: 'a stale pin in a CURRENT-truth doc must fire',
+      corpus: [{ path: 'HANDOVER.md', text: 'HEAD `deadbee` today.' }], expectFire: true },
+    { id: 'X2', why: 'the SAME stale pin in a moment-record must NOT fire',
+      corpus: [{ path: 'PASTE-TO-AUDITORS-X.md', text: 'HEAD `deadbee` today.' }], expectFire: false },
+    { id: 'X3', why: 'a dangling citation in a moment-record STILL fires (not tense-sensitive)',
+      corpus: [{ path: 'EXTERNAL-AUDIT-X.md', text: 'see GHOST-DOC.md:12' }], expectFire: true, check: 'citations' },
+    // The four real false positives from the first run, pinned so they can never come back.
+    { id: 'X4', why: '"OPEN" used as a VERB must NOT read as a decision status', check: 'decision-status',
+      corpus: [{ path: 'A.md', text: '| OS-SR-5 | CLOSE HO era `to=now`; OPEN franchise era `[now,null]` |' },
+               { path: 'B.md', text: 'OS-SR-5 DECIDED (Kunal 2026-07-10).' }], expectFire: false },
+    { id: 'X5', why: '"still pending" describing a technical state must NOT read as a status', check: 'decision-status',
+      corpus: [{ path: 'A.md', text: 'W4-SR-80: an EARLIER effective boundary is still pending, so the horizon admits rows.' },
+               { path: 'B.md', text: 'W4-SR-80 SETTLED echo: the version carries settled:true only when...' }], expectFire: false },
+    { id: 'X6', why: 'a status word FAR from the id on a long line must NOT bind to it', check: 'decision-status',
+      corpus: [{ path: 'A.md', text: 'SR-1 was folded in during the spec round, and separately a completely different matter remains open for the owner to decide at some later point.' },
+               { path: 'B.md', text: 'SR-1 LOCKED at spec close.' }], expectFire: false },
+  ];
+
   console.log('doc-guard self-test — every rule must be observed to FAIL\n');
   let bad = 0;
   for (const c of cases) {
@@ -355,6 +404,14 @@ function selfTest() {
     console.log(`  ${ok ? 'CAUGHT ' : 'MISSED '} [${c.id}] ${c.check}: ${c.why}`);
     if (!ok) console.log('           ^^ this rule did not fire — it is not protecting anything');
   }
+  for (const x of exemption) {
+    const got = runAll(x.corpus, facts).filter(p => p.check === (x.check || 'git-pins'));
+    const fired = got.length > 0;
+    const ok = fired === x.expectFire;
+    if (!ok) bad++;
+    console.log(`  ${ok ? 'CORRECT' : 'WRONG  '} [${x.id}] ${x.why}${ok ? '' : `  (fired=${fired}, expected=${x.expectFire})`}`);
+  }
+
   // and the clean corpus must be silent, or the rules are just noise
   const clean = runAll([{ path: 'REAL.md', text: 'A calm document with no claims.' }],
     { ...facts, commitTimes: { 'HANDOVER.md': 999 } })
@@ -367,7 +424,7 @@ function selfTest() {
     console.log('  QUIET   a clean document produces no problems (no false positives)');
   }
   // total behaviours = one per mutation, plus the no-false-positives behaviour.
-  const total = cases.length + 1;
+  const total = cases.length + exemption.length + 1;
   console.log(`\n==== self-test: ${total - bad}/${total} behaviours proven ====`);
   if (bad) console.log('     A rule that cannot be made to fail is not protecting anything. Fix it before trusting a clean run.');
   return bad;
@@ -401,8 +458,16 @@ function main() {
     console.log('');
   }
 
-  if (!problems.length) { console.log('==== DOCS OK — 0 problems ===='); process.exit(0); }
-  console.log(`==== ${problems.length} problem(s) ====`);
+  const real = problems.filter(p => !p.knownOpen);
+  const obligations = problems.filter(p => p.knownOpen);
+  if (obligations.length) {
+    console.log('NOTE: the open-obligations above are REAL WORK not yet done, deliberately given a heartbeat so');
+    console.log('      they cannot be quietly forgotten. They do not fail this gate — a permanently red gate');
+    console.log('      trains everyone to ignore it, which is how the eight original failures went unnoticed.');
+    console.log('');
+  }
+  if (!real.length) { console.log(`==== DOCS OK — 0 problems${obligations.length ? ', ' + obligations.length + ' open obligation(s) tracked' : ''} ====`); process.exit(0); }
+  console.log(`==== ${real.length} problem(s) ====`);
   console.log('Each one is a document that would mislead the next session. Fix the DOCUMENT, not the check.');
   process.exit(1);
 }

@@ -172,13 +172,13 @@ Staff logs movement → writes to IndexedDB instantly → debounced push sends t
 
 ### Files
 
-| File | Size | Responsibility |
+| File | Size (measured 2026-07-30) | Responsibility |
 |------|------|----------------|
-| `index.html` | ~165 KB (~4,754 lines) | Main app: UI, routing, auth, analytics, reports, settings, stock movements |
-| `phase2.js` | ~67 KB (~1,500 lines) | Bulk transfers module: create, submit, receive, flag, resolve, notifications |
-| `db.js` | ~18 KB (~500 lines) | Dexie data layer: schema, migrations, CRUD, atomic commit |
-| `sync.js` | ~35 KB (~960 lines) | Sync engine: push/pull, field mapping, config, retry, mutex |
-| `sw.js` | ~3 KB | Service worker: cache strategy, offline fallback |
+| `index.html` | ~1,050 KB (~6,637 lines) | Main app: UI, routing, auth, analytics, reports, settings, stock movements |
+| `phase2.js` | ~122 KB (~2,170 lines) | Bulk transfers module: create, submit, receive, flag, resolve, notifications |
+| `db.js` | ~73 KB (~1,411 lines) | Dexie data layer: schema, migrations, CRUD, atomic commit |
+| `sync.js` | ~165 KB (~2,707 lines) | Sync engine: push/pull, field mapping, config, retry, mutex |
+| `sw.js` | ~5 KB (~136 lines) | Service worker: cache strategy, offline fallback |
 
 ### Key JavaScript Objects (in index.html)
 

@@ -60,10 +60,39 @@ just needs to WRITE these server-captured values.
 - The four-state coordination record, coverage attestations, drain manifest, badVersionEvidence queue —
   per LA-CHANGES §6 and the engine header (unchanged by R5-R7).
 
-## Re-audit checklist (when we return)
-1. Land Contract 1 → change the engine's `unverifiableQty` predicate to "no valid economic signature".
-2. Land Contract 2 → the correction route writes `targetLine` + `originalEventAt`.
-3. Re-run the FULL parallel audit (Codex + AGY) over engine+server together — the R5/R6/R7 repros should
-   now all fail closed WITHOUT reaching the manual-review hold (they become server-rejected at ingest).
-4. Confirm `meta.unverifiableQty` is EMPTY for a fully-signed real dataset → settlements auto-FINAL.
-5. Then W4.4 is shippable → 6-way milestone blind audit → cutover.
+## Re-audit checklist — ⚠ RE-SCOPED 2026-07-30 (Contract 2 is PARKED)
+
+**This is carried obligation 1 of the C2 parking decision (`HANDOVER.md` §5a). It is now done.**
+The re-audit covers **the engine + Contract 1 ONLY.** The control/correction lane is **deliberately
+excluded** and audited at a **zero-control, empty-manifest baseline**. Say so in the auditor pack, or
+a reviewer flags the absent correction route as a gap and a whole round is burnt.
+
+1. **Land Contract 1** → change the engine's `unverifiableQty` predicate to "no valid economic
+   signature", with `ECON_SIG_INVALID` as a fail-closed hold (never a silent exclusion).
+   ⚠ **DO NOT SHIP THIS ALONE — verbatim it is a net safety REGRESSION.** Applied on its own it turned
+   a deleted-movement case from PROVISIONAL/held into **FINAL owed 675**, silently billing it. The
+   compensating tombstone guard ships in the SAME batch (`HANDOVER.md` §5a obligation 3).
+2. **Land the sealed-row-pre-epoch contradiction rule**, using the already-deployed
+   `coverage.stepsEpochId`. (It does not need C2's `seal_epoch` artifact — verified.)
+3. **BUILD THE `EconSig` PROBE FAMILY FIRST.** The engine's 170-probe suite has **zero** EconSig
+   coverage — it still runs on the legacy `_attested` marker and `buybackExport.js` does not reference
+   `EconSig` at all. The R5/R6/R7 repros must be made to fail **at verify**, not at the manual-review
+   hold. A gate never seen to fail is not a gate (`HANDOVER.md` §5a obligation 4).
+4. Re-run the FULL parallel audit (Codex + AGY) over engine + Contract 1 — **not** engine+C2.
+5. Confirm `meta.unverifiableQty` is EMPTY for a fully-signed real dataset → settlements auto-FINAL.
+6. **Write the verdict so it cannot be over-read:** the engine is being certified for a ZERO-CONTROL
+   world. State that the control lane was NOT certified, or a later reader takes "engine re-audited,
+   clean" as covering corrections (`HANDOVER.md` §5a obligation 5).
+7. W4.4 is shippable **for everything except the correction route**, which ships as its own later
+   separately-audited deploy → 6-way milestone blind audit → cutover.
+
+**MOVED OUT of this checklist and onto Contract 2's own list** (obligation 2), because narrowing the
+re-audit without re-homing it would leave it owned by nobody:
+- **Engine-side control-seal enforcement.** RUN-demonstrated money hole: the manifest head binds only
+  `{controlId, revision, bornPublicationVersion}`, so a SharePoint-direct edit of a published control
+  row's qty or stamps passes the head check and settles **FINAL at owed 3.75 instead of 375**.
+- The **colon-id defect** (mint colon-free ids; do **not** widen `reqId`) and the **device-tombstone
+  over-bill**. Both in `HANDOVER.md` §5a.
+- What Contract 2 was originally listed here to deliver — the correction route writing `targetLine` +
+  `originalEventAt`. The **engine half of that is already built and proven**: it refuses a control
+  with no `targetLine` today. Only the route half is parked.
