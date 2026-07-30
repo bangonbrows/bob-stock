@@ -136,6 +136,40 @@ node audit-artifacts\check-gates-mutation.js      42/42 caught, 0 survived  (~2 
 **Fresh clone needs `npm install` in BOTH `test/` and `azure-functions/`** (both `node_modules` are
 gitignored).
 
+### Gates added 2026-07-29/30 — run these too, they are fast and they have all bitten
+
+Each exists because something real got past careful people. Every one has a `--self-test` that proves
+it FAILS on a deliberately broken input; run that first if you ever doubt a green result.
+
+```
+node audit-artifacts\check-docs.js               ~1s   catches a DOCUMENT that lies
+node audit-artifacts\capture-all-staging-defs.js  ~30s  fresh Logic App captures (needs az login)
+node audit-artifacts\check-name-collisions.js    ~1s   an action name an edit ADDS is already taken
+node audit-artifacts\check-edit-premise.js       ~1s   an edit's picture of the graph is not the real graph
+node audit-artifacts\check-expr-safety.js        ~1s   wrong function for the type; client input into a filter
+```
+
+- **`check-docs.js`** — ~100 markdown files read as current truth but are mostly moment-records. Eight
+  stale-record failures were found over two days, every one BY ACCIDENT. Catches stale git pins, a
+  decision OPEN in one file and DECIDED in another, a citation to a section that does not exist, a
+  standing marker with two copies, and a load-bearing fact living only in gitignored analysis. Reports
+  known-open obligations separately so they never fail the run — a permanently red gate gets ignored.
+- **`capture-all-staging-defs.js`** — ⚠ **run this BEFORE any Logic App edit.** The captures are the
+  entire rollback story. ⚠ The files it writes **embed live function keys**; `audit-artifacts/` is
+  gitignored wholesale and must stay that way.
+- **`check-name-collisions.js`** — Logic App actions are keyed by name, so adding a name that exists
+  OVERWRITES. This is the check whose absence would have jammed the stock sync write path.
+- **`check-edit-premise.js`** — an edit instruction is a CLAIM about the deployed graph. Verifies the
+  reader set, that the key being edited exists on that action type, and that a `runAfter` restatement
+  is complete (a partial one deletes the rest).
+- **`check-expr-safety.js`** — `concat()` on arrays (needs `union()`), and client input reaching an
+  OData `$filter` without the quote-stripper. Three pre-existing archive findings are listed as
+  BASELINE and do not fail the run, so red always means a NEW regression.
+
+⚠ **A tool listing something as "nothing planned yet" or "declared unchecked" means NOT CHECKED, not
+clear.** That distinction is why these exist: the item-5 defect shipped because "nobody looked" was
+indistinguishable from "looked and fine."
+
 **Saboteur sweep — dangerous, read this:** run it in the **FOREGROUND only**. It spawns child Node
 processes that survive kill/pkill and mutate the live tree. Recover from `.sabotage-bak`, never
 `git checkout -- dist/`. Normalise line endings before matching — on Windows CRLF produces false
