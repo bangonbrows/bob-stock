@@ -6,13 +6,25 @@
 //
 // ⚠ THIS ONE WRITES TO THE CLOUD. Everything else in this toolkit is read-only. Kunal runs it.
 //
-// WHY IT PATCHES `properties.definition` AND NOTHING ELSE — this is the correctness point.
+// HOW IT WRITES, AND WHY — this is the correctness point, and it was learned by failing.
+//
 // A Logic App resource holds BOTH the definition AND `properties.parameters`, which is where the
-// `$connections` values live (the binding to the sharepointonline and office365 connections). The
-// captures contain the DEFINITION ONLY. A PUT of the whole resource from a capture would therefore
-// wipe the connection parameters and leave a workflow that cannot talk to SharePoint at all — a
-// "restore" that breaks it worse than the change did. A PATCH merges, so the parameters survive
-// untouched. Do not "simplify" this to a PUT.
+// `$connections` values live (the bindings to the sharepointonline and office365 connections). The
+// captures contain the DEFINITION ONLY. So a naive whole-resource write from a capture would wipe the
+// connection bindings and leave a workflow that cannot reach SharePoint at all — a "restore" that
+// breaks it worse than the change did.
+//
+// The first version therefore PATCHed `properties.definition`, reasoning that a merge leaves the
+// parameters alone. Azure rejects that outright:
+//     PatchWorkflowPropertiesNotSupported — "None of the fields inside the properties object can be
+//     patched."
+// Logic Apps accept a whole-resource PUT only. So the connection bindings are OUR responsibility: they
+// are read from the LIVE resource immediately before writing and sent back verbatim, and the script
+// REFUSES to write at all if it cannot find them.
+//
+// That failure is the entire argument for `--prove-write`. The write path was wrong from the first
+// line, every review of it read fine, and it would have been discovered at the exact moment a rollback
+// was needed — mid-session, on the connection shared with the live apps.
 //
 // USAGE
 //   node audit-artifacts/restore-la.js <logic-app-name>              # newest capture, asks first
@@ -153,7 +165,7 @@ async function confirm(question) {
     try {
       paramsBefore = az(`resource show -g ${RG} -n ${la} --resource-type Microsoft.Logic/workflows --query properties.parameters -o json`);
     } catch (e) { console.log('Could not read properties.parameters — aborting the proof.'); process.exit(1); }
-    console.log('  --prove-write: PATCHing the IDENTICAL definition back. The workflow cannot change.');
+    console.log('  --prove-write: writing back the IDENTICAL definition. The workflow cannot change.');
     console.log(`  connection parameters before: ${crypto.createHash('sha256').update(paramsBefore).digest('hex').slice(0, 12)}`);
     console.log('');
   }
@@ -165,11 +177,11 @@ async function confirm(question) {
     console.log(`  actions that will be PUT BACK (${willAddBack.length}):`);
     willAddBack.forEach(n => console.log(`    + ${n}`));
   }
-  if (!willRemove.length && !willAddBack.length) {
+  if (!willRemove.length && !willAddBack.length && !identical) {
     console.log('  same action NAMES, but the contents differ — an edit changed an existing action.');
   }
   console.log('');
-  console.log('  PATCHing properties.definition only — properties.parameters ($connections) are untouched.');
+  console.log('  PUTting the whole workflow, carrying the LIVE $connections forward explicitly.');
   console.log('');
 
   if (dryRun) { console.log('--dry-run: nothing was changed.'); process.exit(0); }
@@ -179,16 +191,50 @@ async function confirm(question) {
     if (!ok) { console.log('Aborted. Nothing was changed.'); process.exit(1); }
   }
 
+  // ⚠ PUT, NOT PATCH — and this was learned the hard way, not designed.
+  // The first version PATCHed properties.definition, on the reasoning that a merge would leave
+  // $connections alone. Azure rejects that outright:
+  //     PatchWorkflowPropertiesNotSupported — "None of the fields inside the properties object can be
+  //     patched."
+  // Logic Apps only accept a whole-resource PUT. That is precisely the failure mode --prove-write
+  // exists to surface: had nobody exercised the write path, this would have been discovered at the
+  // moment a rollback was actually needed, mid-session, on the shared connection.
+  //
+  // A PUT means the connection bindings are OUR responsibility now, so they are read from the LIVE
+  // resource and sent back explicitly. Only definition/parameters/state are sent: accessEndpoint,
+  // changedTime, createdTime, provisioningState and version are server-managed and must not be echoed.
+  let live = null;
+  try {
+    live = JSON.parse(az(`resource show -g ${RG} -n ${la} --resource-type Microsoft.Logic/workflows -o json`));
+  } catch (e) { console.log('Could not read the full resource before writing. Aborting.'); process.exit(1); }
+
+  if (!live.properties || !live.properties.parameters || !live.properties.parameters.$connections) {
+    console.log('🛑 REFUSING TO WRITE: the live resource has no properties.parameters.$connections to');
+    console.log('   carry forward. Writing without it would leave a workflow that cannot reach SharePoint.');
+    process.exit(1);
+  }
+
+  const body = {
+    location: live.location,
+    tags: live.tags || {},
+    properties: {
+      definition: captured,
+      parameters: live.properties.parameters,   // carried forward VERBATIM — the whole point
+      state: live.properties.state || 'Enabled',
+    },
+  };
+
   const bodyFile = path.join(os.tmpdir(), `restore-${la}-${Date.now()}.json`);
-  fs.writeFileSync(bodyFile, JSON.stringify({ properties: { definition: captured } }));
+  fs.writeFileSync(bodyFile, JSON.stringify(body));
   const url = `https://management.azure.com/subscriptions/${SUB}/resourceGroups/${RG}` +
     `/providers/Microsoft.Logic/workflows/${la}?api-version=${API}`;
   try {
-    az(`rest --method PATCH --url "${url}" --body @"${bodyFile}"`);
+    az(`rest --method PUT --url "${url}" --body @"${bodyFile}"`);
   } catch (e) {
     console.log('RESTORE FAILED:');
-    console.log('  ' + String((e.stderr && e.stderr.toString()) || e.message).slice(0, 500));
+    console.log('  ' + String((e.stderr && e.stderr.toString()) || e.message).slice(0, 600));
     console.log(`  The body is at ${bodyFile} if you need to apply it by hand.`);
+    console.log('  NOTE: a failed PUT leaves the workflow as it was — Azure applies it whole or not at all.');
     process.exit(1);
   } finally {
     try { fs.unlinkSync(bodyFile); } catch (e) {}

@@ -99,11 +99,28 @@ function main() {
     let def = null;
 
     if (checkOnly) {
-      if (!fs.existsSync(out)) { rows.push({ la: t.la, status: 'MISSING', actions: '-', kb: '-', sha: '-' }); bad++; continue; }
-      try { def = JSON.parse(fs.readFileSync(out, 'utf8')); } catch (e) {
+      // ⚠ --check verifies the NEWEST capture, NOT one dated today. The first version looked for
+      // today's filename and reported all nine as MISSING the day after capturing them. That reads as
+      // "you have no rollback" and invites a re-capture — and re-capturing AFTER a change overwrites
+      // the PRE-change baseline with a POST-change one, destroying the rollback while appearing to
+      // refresh it. A false MISSING here is more dangerous than no check at all.
+      const existing = fs.readdirSync(OUT_DIR)
+        .filter(f => f.startsWith(`${t.la}-PRE-`) && f.endsWith('.json')).sort();
+      if (!existing.length) { rows.push({ la: t.la, status: 'MISSING', actions: '-', kb: '-', sha: '-' }); bad++; continue; }
+      const newest = path.join(OUT_DIR, existing[existing.length - 1]);
+      try { def = JSON.parse(fs.readFileSync(newest, 'utf8')); } catch (e) {
         rows.push({ la: t.la, status: 'CORRUPT', actions: '-', kb: '-', sha: '-' }); bad++; continue;
       }
-    } else {
+      const text0 = fs.readFileSync(newest, 'utf8');
+      rows.push({
+        la: t.la, status: existing[existing.length - 1].slice(-15, -5),   // the capture's date
+        actions: String(countActions(def.actions)),
+        kb: String(Math.round(text0.length / 1024)),
+        sha: crypto.createHash('sha256').update(text0).digest('hex').slice(0, 12),
+      });
+      continue;
+    }
+    {
       let raw;
       try {
         raw = az(['resource', 'show', '-g', RG, '-n', t.la, '--resource-type', 'Microsoft.Logic/workflows',
@@ -122,7 +139,7 @@ function main() {
 
     const text = fs.readFileSync(out, 'utf8');
     rows.push({
-      la: t.la, status: checkOnly ? 'present' : 'CAPTURED',
+      la: t.la, status: 'CAPTURED',
       actions: String(countActions(def.actions)),
       kb: String(Math.round(text.length / 1024)),
       sha: crypto.createHash('sha256').update(text).digest('hex').slice(0, 12),
@@ -142,6 +159,12 @@ function main() {
     process.exit(1);
   }
 
+  if (checkOnly) {
+    console.log(`==== ${TARGETS.length}/${TARGETS.length} captures present and readable (nothing written) ====`);
+    console.log('The STATUS column is the date of each capture. If any predates a change you have made,');
+    console.log('it is NOT a valid rollback for that workflow — re-capture BEFORE the next change, never after.');
+    process.exit(0);
+  }
   console.log(`==== ${TARGETS.length}/${TARGETS.length} captured to ${day} ====`);
   console.log('⚠ These files embed live function keys. audit-artifacts/ is gitignored — keep it that way.');
   console.log('  Never commit one, never paste one into a chat or an auditor pack.');
