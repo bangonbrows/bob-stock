@@ -38,7 +38,7 @@ Stage 2 (flipping the switch) is a separate, later act and is **out of scope for
 
 ## What to read
 
-Branch `azure-phase-5-8-server`, commit **`d2a5c5a`**. Work from your own fresh copy.
+Branch `azure-phase-5-8-server`, commit **`3422744`**. Work from your own fresh copy.
 
 | Priority | File |
 |---|---|
