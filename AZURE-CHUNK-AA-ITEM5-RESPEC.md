@@ -1,8 +1,8 @@
 # ITEM 5 — CORRECTED SPECIFICATION (Account Access ingest validation)
 
 **Supersedes §3 and §4 of `AZURE-CHUNK-AA-LA-CHANGES.md`.** Written 2026-07-30 against Logic App
-definitions captured from the live staging cloud the same day, then attacked by three independent
-reviewers, then corrected 2026-07-31. **NOT YET EXTERNALLY AUDITED — this document is the subject
+definitions captured from the live staging cloud the same day, then independently re-derived by three
+reviewers, each trying to find a counter-example, then corrected 2026-07-31. **NOT YET EXTERNALLY AUDITED — this document is the subject
 of that audit.**
 
 Item 5 = the two write doors every stock movement passes through (`push-v2-validate`,
@@ -23,7 +23,8 @@ The spec called `AA_actor` the deployed `Read_actor` "copied verbatim … filter
 The deployed action does **not** use a plain filter — it strips single quotes out of the username
 first. Every credential read in this estate that interpolates a client-supplied name uses that
 guard. The prose dropped it, and the edit immediately before hands over a plain literal query, so
-the natural reading produces an **unguarded OData filter on the connection shared with live**.
+the natural reading produces a query **without that quote-stripping step**, on the connection shared
+with the live application.
 
 **This is the action, extracted mechanically from the deployed
 `bob-stock-catalogue-write-staging > Read_actor`. Copy it exactly. The `replace(...)` around the
@@ -214,7 +215,7 @@ THE FIVE evaluateAccess CALLS, inside AA_gate, UNCONDITIONAL (no inner If), runA
 
 THE CLASSIFIER, inside AA_gate. AA_classify {type:Select, runAfter:{ every AA_eval_* : ["Succeeded","Failed","TimedOut"] }, inputs:{from:"@body('ToInsert')", select:{row:"@item()?['row']", verdict:<nested if>}}} producing verdict '' (allowed) | 'RETRY:<code>' | 'DENY:<reason>'. Rules: if AA_ready is false ⇒ 'RETRY:POLICY_UNAVAILABLE' for every GATED class (covers a failed policy or actor read, an absent or unparseable blob); adjustment_in/adjustment_out ⇒ allowed if ANY of the three purpose-bound checks returned ok; 'deleted' ⇒ AA_eval_delete; 'transfer_in' ⇒ AA_eval_txin with NEED_PIN ⇒ 'RETRY:NEED_PIN'; every other Type ⇒ '' unconditionally, INCLUDING Type 'in' (see must-not-do). Reason mapping: ONLY 'DENIED' is permanent ⇒ 'DENY:DENIED'; NEED_SUDO / BAD_PROOF / NEED_PIN / NO_POLICY / a missing proof field ⇒ 'RETRY:<reason>'. Then AA_q_deny {Query over AA_classify where "@startsWith(item()?['verdict'],'DENY')"} and AA_q_retry {where "@startsWith(item()?['verdict'],'RETRY')"} — complementary prefixes over the same array, so no row can be counted twice. Finally RE-POINT the two Stage-1a SetVariables: AA_set_deny.inputs.value := "@body('AA_q_deny')", AA_set_retry.inputs.value := "@body('AA_q_retry')", with runAfter on the two Queries.
 
-**Why this is inert with no policy and no switch:** Inside the skipped gate; the SetVariables only ever run when the switch is on. The deny/retry sets are computed over body('ToInsert') — the SAME array the edit-7 Queries filter — so they are subsets of it by construction and the arithmetic in edit 11 cannot double-count. Two owner-visible consequences of the reason mapping, both inherited from the deployed Function and both already on record: a forged proof is indistinguishable from an expired one (verifyProofBody returns a bare {ok:false}), so a hostile device retries forever instead of being quarantined; and a permanent DENY is durable on the device — DB.markTransactionsRejected does not un-quarantine when the switch goes back to 0.
+**Why this is inert with no policy and no switch:** Inside the skipped gate; the SetVariables only ever run when the switch is on. The deny/retry sets are computed over body('ToInsert') — the SAME array the edit-7 Queries filter — so they are subsets of it by construction and the arithmetic in edit 11 cannot double-count. Two owner-visible consequences of the reason mapping, both inherited from the deployed Function and both already on record: a forged proof is indistinguishable from an expired one (verifyProofBody returns a bare {ok:false}), so a misbehaving device retries forever instead of being set aside; and a permanent DENY is durable on the device — DB.markTransactionsRejected does not un-quarantine when the switch goes back to 0.
 
 ### Edit 16 — bob-stock-recordsteps-push-staging (5b, Stage 1a)
 
