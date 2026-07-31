@@ -152,6 +152,43 @@ untouched.
 
 ---
 
+## 🛑 THE ACTION SHAPES AND WIRING BELOW ARE NOT AUTHORITATIVE. `item5-edits.json` IS.
+
+**Added 2026-07-31 after a THIRD round found the same class of defect.**
+
+Rounds 1 and 2 both found corrections stated at the top of this document that never reached the edits
+they corrected, plus action shapes that Azure cannot apply, plus a `runAfter` that created a
+dependency cycle. Hand-patching the prose twice **introduced new defects both times**. Every one of
+those is a mechanically checkable property written in English — a medium no machine can check.
+
+So the machine-checkable half now lives in **`audit-artifacts/item5-edits.json`** and is validated by
+**`node audit-artifacts/check-item5-edits.js`**, which checks:
+
+| Rule | Catches |
+|---|---|
+| **shape** | an action missing the keys its `type` requires (the recordsteps `AA_init_deny` defect) |
+| **siblings** | a `runAfter` naming an action outside its own scope (the C1 defect) |
+| **cycles** | a transitive self-dependency (the C1 correction's cycle) |
+| **statuses** | a dependent of a failable action that accepts only `["Succeeded"]`, leaving an unhandled failure that marks the run `Failed` (the C6 defect, stated twice and applied never) |
+| **existing** | an edit naming a key that does not exist on the deployed action |
+
+Seeded with the defects exactly as this document stated them, it caught **all four** round-2 auditor
+findings — plus a fifth nobody had flagged. Fixed in the data, it goes green.
+
+> **WHERE THIS DOCUMENT AND `item5-edits.json` DISAGREE, THE JSON WINS.** Fix defects there, never
+> here. The prose explains *why*; the data defines *what*. Restating the same fact in two places is
+> exactly how three rounds of drift happened.
+>
+> ⚠ The JSON currently covers the 12 contentious new actions and 11 existing-action edits — the ones
+> the audits touched. **Anything not in it has been DECLARED UNCHECKED, not verified.** Extending it
+> to the full edit set is the remaining work, and the honest status until then.
+
+⚠ **`check-name-collisions.js` does NOT cover this.** It checks whether a NAME is free and says
+nothing about shape or wiring. A previous version of the premise manifest claimed otherwise; that
+claim was false and Codex caught it.
+
+---
+
 ## PLAIN ENGLISH
 
 WHAT ITEM 5 IS FOR, IN ONE PARAGRAPH. Today the cloud accepts a stock movement, or a stock-take / transfer / delivery step, because the DEVICE is trusted. It never checks which PERSON did it. So a phone with valid store keys can push "stock take approved" or "discrepancy resolved" even though only a Director is meant to do that. Item 5 teaches the two write doors — the one stock rows go through (push-v2) and the one record-steps go through (recordsteps-push) — to also check the person against the permission list a Director publishes.

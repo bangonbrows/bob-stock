@@ -1,0 +1,292 @@
+{
+  "_comment": [
+    "ITEM 5 EDITS AS DATA, NOT PROSE.",
+    "",
+    "WHY THIS FILE EXISTS. The item-5 spec was 68KB of English describing JSON. Three audit rounds",
+    "found the same class of defect each time: a correction stated at the top of the document that",
+    "never reached the edits it corrected, a new action whose JSON shape was invalid, a runAfter",
+    "naming a non-sibling, and a dependency cycle introduced by a correction. Every one of those is a",
+    "MECHANICALLY CHECKABLE property expressed in a medium no machine can check. Hand-patching the",
+    "prose twice introduced new defects both times.",
+    "",
+    "So: the edits live here as structured data, check-item5-edits.js validates them, and the readable",
+    "spec is GENERATED from this file. A correction then physically cannot fail to propagate, because",
+    "there is one source and the prose is output.",
+    "",
+    "STATE: seeded 2026-07-31 with the CONTENTIOUS edits exactly as the round-2 spec currently states",
+    "them — INCLUDING their known defects — so the validator can be seen catching all four auditor",
+    "findings before anything is corrected. Fix them here, never in the prose."
+  ],
+  "logicApps": {
+    "bob-stock-push-v2-validate-staging": {
+      "capture": "bob-stock-push-v2-validate-staging-REDACTED-2026-07-31.json",
+      "newActions": {
+        "AA_init_deny": {
+          "container": "(root)",
+          "def": {
+            "type": "InitializeVariable",
+            "runAfter": {
+              "Init_failed": [
+                "Succeeded"
+              ]
+            },
+            "inputs": {
+              "variables": [
+                {
+                  "name": "aaDeny",
+                  "type": "array",
+                  "value": []
+                }
+              ]
+            }
+          }
+        },
+        "AA_init_retry": {
+          "container": "(root)",
+          "def": {
+            "type": "InitializeVariable",
+            "runAfter": {
+              "AA_init_deny": [
+                "Succeeded"
+              ]
+            },
+            "inputs": {
+              "variables": [
+                {
+                  "name": "aaRetry",
+                  "type": "array",
+                  "value": []
+                }
+              ]
+            }
+          }
+        },
+        "AA_gate": {
+          "container": "Authorized[then]",
+          "_defect": "FIXED 2026-07-31 (C6). Was [Succeeded] only, which left an AA_enforce failure unhandled and marked the run Failed. Stated as a correction twice and never reached the edit until the edits became data.",
+          "def": {
+            "type": "If",
+            "runAfter": {
+              "AA_enforce": [
+                "Succeeded",
+                "Failed",
+                "TimedOut"
+              ]
+            },
+            "expression": {
+              "and": [
+                {
+                  "equals": [
+                    "@equals(outputs('AA_enforce'),'on')",
+                    true
+                  ]
+                }
+              ]
+            },
+            "actions": {}
+          }
+        },
+        "AA_enforce": {
+          "container": "Authorized[then]",
+          "def": {
+            "type": "Compose",
+            "runAfter": {
+              "AA_flag": [
+                "Succeeded",
+                "Failed",
+                "TimedOut"
+              ]
+            },
+            "inputs": "@if(not(equals(actions('AA_flag')?['status'],'Succeeded')),'off','on')"
+          }
+        },
+        "AA_flag": {
+          "container": "Authorized[then]",
+          "def": {
+            "type": "ApiConnection",
+            "runAfter": {},
+            "inputs": {
+              "host": {},
+              "method": "post",
+              "path": "/x"
+            }
+          }
+        },
+        "AA_ready": {
+          "container": "AA_gate[then]",
+          "def": {
+            "type": "Compose",
+            "runAfter": {
+              "AA_actor": [
+                "Succeeded",
+                "Failed"
+              ]
+            },
+            "inputs": "x"
+          }
+        },
+        "AA_actor": {
+          "container": "AA_gate[then]",
+          "_defect": "FIXED 2026-07-31. C1 suggested runAfter {AA_ready:[Succeeded]} while AA_ready depends on AA_actor — a cycle. Edit 13 was right: AA_actor starts the chain with runAfter {}.",
+          "def": {
+            "type": "ApiConnection",
+            "runAfter": {},
+            "inputs": {
+              "host": {},
+              "method": "post",
+              "path": "/x"
+            }
+          }
+        }
+      },
+      "existingEdits": [
+        {
+          "target": "Attest_rows",
+          "key": "inputs.from"
+        },
+        {
+          "target": "Invariant",
+          "key": "inputs"
+        },
+        {
+          "target": "Response_ok",
+          "key": "inputs.body.failed"
+        },
+        {
+          "target": "Response_ok",
+          "key": "inputs.body.rejected"
+        },
+        {
+          "target": "Get_creds",
+          "key": "runAfter"
+        }
+      ]
+    },
+    "bob-stock-recordsteps-push-staging": {
+      "capture": "bob-stock-recordsteps-push-staging-REDACTED-2026-07-31.json",
+      "newActions": {
+        "AA_init_deny": {
+          "container": "(root)",
+          "_defect": "FIXED 2026-07-31 (Codex F3). Carried the invalid round-1 shape — no type, variables outside inputs — one line from the sibling that was fixed.",
+          "def": {
+            "type": "InitializeVariable",
+            "runAfter": {
+              "Init_ctx": [
+                "Succeeded"
+              ]
+            },
+            "inputs": {
+              "variables": [
+                {
+                  "name": "aaDeny",
+                  "type": "array",
+                  "value": []
+                }
+              ]
+            }
+          }
+        },
+        "AA_init_retry": {
+          "container": "(root)",
+          "def": {
+            "type": "InitializeVariable",
+            "runAfter": {
+              "AA_init_deny": [
+                "Succeeded"
+              ]
+            },
+            "inputs": {
+              "variables": [
+                {
+                  "name": "aaRetry",
+                  "type": "array",
+                  "value": []
+                }
+              ]
+            }
+          }
+        },
+        "AA_gate": {
+          "container": "Authorized[then]",
+          "_defect": "FIXED 2026-07-31 (C6), same as push-v2.",
+          "def": {
+            "type": "If",
+            "runAfter": {
+              "AA_enforce": [
+                "Succeeded",
+                "Failed",
+                "TimedOut"
+              ],
+              "ToInsert2": [
+                "Succeeded"
+              ]
+            },
+            "expression": {
+              "and": [
+                {
+                  "equals": [
+                    "@equals(outputs('AA_enforce'),'on')",
+                    true
+                  ]
+                }
+              ]
+            },
+            "actions": {}
+          }
+        },
+        "AA_enforce": {
+          "container": "Authorized[then]",
+          "def": {
+            "type": "Compose",
+            "runAfter": {
+              "AA_flag": [
+                "Succeeded",
+                "Failed",
+                "TimedOut"
+              ]
+            },
+            "inputs": "@if(not(equals(actions('AA_flag')?['status'],'Succeeded')),'off','on')"
+          }
+        },
+        "AA_flag": {
+          "container": "Authorized[then]",
+          "def": {
+            "type": "ApiConnection",
+            "runAfter": {},
+            "inputs": {
+              "host": {},
+              "method": "post",
+              "path": "/x"
+            }
+          }
+        }
+      },
+      "existingEdits": [
+        {
+          "target": "Insert_loop",
+          "key": "foreach"
+        },
+        {
+          "target": "Insert_loop",
+          "key": "runAfter"
+        },
+        {
+          "target": "Invariant",
+          "key": "inputs"
+        },
+        {
+          "target": "Response_ok",
+          "key": "inputs.body.failed"
+        },
+        {
+          "target": "Response_ok",
+          "key": "inputs.body.rejected"
+        },
+        {
+          "target": "Get_creds",
+          "key": "runAfter"
+        }
+      ]
+    }
+  }
+}

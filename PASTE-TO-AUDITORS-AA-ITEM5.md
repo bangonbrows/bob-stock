@@ -1,34 +1,4 @@
-# REVIEW BRIEF — Stock App · Account Access item 5 · SPECIFICATION REVIEW · **ROUND 2**
-
-> ## ROUND 2 — what changed since your last pass
->
-> Both reviewers returned BLOCK on round 1, and **you found different things**, which is exactly why
-> both were asked. Nine findings: **eight confirmed by running them, one refuted with evidence.**
-> All are folded in. **Please RE-DERIVE rather than confirm** — checking that a stated fix is present
-> is how the round-1 defects survived a triple review in the first place.
->
-> | # | Finding | Outcome |
-> |---|---|---|
-> | Codex 1 | correction C3 never propagated into the body | fixed — root cause: the replace ran over one field and the clause lived in another |
-> | Codex 2 | probe assertion A5 demanded `AA_gate == Skipped`, so a CORRECT deployment failed its own test | fixed — a false `If` completes **Succeeded**; only its children skip |
-> | Codex 3 | initializer edits not deployable (`type` omitted, `variables` outside `inputs`); "13" vs 15 | fixed on both Logic Apps |
-> | Codex 4 | the three gates held only historical claims, so every respec edit sat OUTSIDE them | fixed — populated; on its first run the premise gate independently reproduced AGY Q2-2 |
-> | Codex 5 | package not reproducible: captures gitignored, `git ls-tree` showed zero | fixed — nine `-REDACTED-` captures now COMMITTED (22 function keys stripped) |
-> | AGY Q1a | `first([])` throws, so the switch fails on every run | **REFUTED** — see C7. `first()` is used 58× live; `user-admin` uses this exact shape 17× on a lookup that returns `[]` for unknown users, unguarded |
-> | AGY Q1b | an unhandled failure marks the run `Failed` despite an identical response | **CONFIRMED** — the more important half. Fixed in C6 |
-> | AGY Q2-1 | correction C1's "copy verbatim" produces a cross-scope `runAfter`, which Azure rejects | **CONFIRMED** — my own correction introduced it. Zero cross-scope edges in ~270 deployed actions |
-> | AGY Q2-2 | `Response_ok.body.*` does not exist; it is `inputs.body.*` | **CONFIRMED** — mechanically, by our own gate |
->
-> **The captures are now IN the commit** (`audit-artifacts/*-REDACTED-*.json`), so this round is
-> reproducible without importing anything. Only the function keys are stripped; the graphs are
-> complete — all 64 recordsteps actions including `ToInsert2` and the `Ctx_ids` hold-back filter.
->
-> **Same two questions as round 1.** Q1 especially: AGY's counter-example was a platform-behaviour one
-> that static reading was said not to reach, so please do not treat round 1's Q1 pass as settled.
-
----
-
-# REVIEW BRIEF — Stock App · Account Access item 5 · SPECIFICATION REVIEW (before build)
+# REVIEW BRIEF — Stock App · Account Access item 5 · SPECIFICATION REVIEW · **ROUND 3**
 
 **Context.** Routine internal pre-release quality review of our own stock-management application
 (Bang on Brows, a small retail business in Perth). Reviewer and engineer both work for the owner;
@@ -36,89 +6,101 @@ this is our own first-party code, checked before we build. **Nothing here has be
 is a design document, reviewed before any code exists.** Nothing is deployed and the application is
 not in use.
 
-**You have two questions, Q1 and Q2. Answer them in order, one pass each, and stop at about 90
-minutes with whatever you have.** A partial answer at a checkpoint is worth more than a complete one
-tomorrow.
+**Two questions, in order, one pass each. Stop at about 90 minutes with whatever you have** — a
+partial answer at a checkpoint is worth more than a complete one tomorrow.
 
 ---
 
-## What this is
+## What changed since round 2, and the one thing that changed structurally
 
-The app records stock movements. They reach the cloud through two Azure Logic App workflows — one for
-stock rows, one for "record steps" (stock takes, transfers, deliveries). Today those workflows accept
-a write because the **device** is trusted; they never check **which person** did it. Item 5 teaches
-both to also check the person against a permission list.
+Both reviewers returned BLOCK on round 2 and **found different things**. Every finding was verified by
+running it; **one was refuted with evidence** and the rest are fixed.
 
-**Two facts that shape the whole review:**
+| Finding | Outcome |
+|---|---|
+| corrections stated at the top of the spec that never reached the edits below (rounds 1 **and** 2) | **root cause removed — see below** |
+| `AA_gate` accepting only `["Succeeded"]` from a failable action, so an unhandled failure marks the run `Failed` | fixed |
+| a correction that produced a dependency **cycle** (`AA_actor → AA_ready → AA_actor`) | fixed |
+| an initializer still carrying an invalid shape, one line from the sibling that was fixed | fixed |
+| `Response_ok.body.*` — a path that does not exist on a Response action | fixed to `inputs.body.*` |
+| the three checks contained only historical claims, so the live edits sat outside them | fixed |
+| the package was not reproducible: captures gitignored, `git ls-tree` showed zero | fixed — see below |
+| `first([])` throws, so the switch fails on every run | **REFUTED**: `first()` is used 58× across the nine live workflows, and `user-admin` uses this exact shape 17× on a `$filter` lookup that returns `[]` for unknown users, with no `empty()` guard. It stays on the standing list for a cloud experiment. |
 
-1. **These two workflows carry every stock movement, and they run on the same SharePoint connection
-   as the currently-live application.** They are the highest-consequence change in the project.
-2. **The specification you are reading is a REWRITE.** Its predecessor was reviewed clean three times
-   and was still wrong in three ways, because the reviews checked the *design* while the edits had
-   been written against a day-old picture of the actual deployed workflows. All three mistakes would
-   have changed behaviour on ordinary everyday traffic with no permission list published at all.
+**THE STRUCTURAL CHANGE, and the part most worth your scepticism.** The same class of defect survived
+two rounds of hand-correction, and patching the prose introduced *new* defects both times. So the
+machine-checkable half of the spec is no longer prose:
 
-## The property the whole design rests on
+- **`audit-artifacts/item5-edits.json`** now holds the action definitions as data and is
+  **authoritative**. Where the prose and the JSON disagree, the JSON wins.
+- **`node audit-artifacts/check-item5-edits.js`** validates shape, sibling-only `runAfter`, cycles,
+  unhandled-failure paths, and that edited keys exist on the deployed action. Seeded with the defects
+  exactly as round 2 stated them, it caught **all four** of your findings plus a fifth nobody flagged.
 
-**Stage 1 must be completely inert.** With no permission list published and no enforcement switch
-set, every device — none of which sends any proof today — must behave **exactly** as it does now:
-identical response bodies, identical rows written, identical run outcome.
-
-Stage 2 (flipping the switch) is a separate, later act and is **out of scope for this review.**
+⚠ **It covers the 12 contentious new actions and 11 existing-action edits — the ones your rounds
+touched. Anything outside that is DECLARED UNCHECKED, not verified.** Please treat that boundary as
+part of what you are reviewing.
 
 ## What to read
 
-Branch `azure-phase-5-8-server`, commit **`dc175ab`**. Work from your own fresh copy.
+Branch `azure-phase-5-8-server`, commit **`9b15c44`**. Work from your own fresh copy.
 
 | Priority | File |
 |---|---|
-| **1** | `AZURE-CHUNK-AA-ITEM5-RESPEC.md` — the specification under review. Read the four corrections at the top first. |
-| 2 | `AZURE-CHUNK-AA-LA-CHANGES.md` — §3/§4 are the OLD version this supersedes, plus the owner decisions at §D-AA-A/B |
-| 3 | `audit-artifacts/*-REDACTED-2026-07-31.json` — the deployed definitions, captured from the live cloud and **committed**, so they are present at this commit. **These are ground truth. The specification is not.** Only the function keys are stripped (`code=REDACTED`); every action, `runAfter`, condition and expression is intact. |
+| **1** | `AZURE-CHUNK-AA-ITEM5-RESPEC.md` — the specification. Read the corrections block at the top first. |
+| **2** | `audit-artifacts/item5-edits.json` — the AUTHORITATIVE action definitions |
+| 3 | `audit-artifacts/check-item5-edits.js` — the validator. **Part of what you are reviewing, not evidence.** |
+| 4 | `audit-artifacts/*-REDACTED-2026-07-31.json` — the deployed definitions, captured from the live cloud and **committed**, so they are present at this commit. **These are ground truth. The specification is not.** Only function keys are stripped; every action, `runAfter`, condition and expression is intact. |
+| 5 | `AZURE-CHUNK-AA-LA-CHANGES.md` — §3/§4 are the superseded version, plus the owner decisions at §D-AA-A/B |
 
 **Setup:** `test/node_modules` and `azure-functions/node_modules` are gitignored — copy both in if you
 intend to run anything.
+
+## The property the whole design rests on
+
+**Stage 1 must be completely inert.** With no permission list published and no enforcement switch set,
+every device — none of which sends any proof today — must behave **exactly** as it does now: identical
+response bodies, identical rows written, **and an identical run outcome**. That last clause is not
+decoration: an unhandled action failure marks the whole run `Failed` even when the response is
+byte-identical, and round 2 found exactly that.
+
+Stage 2 (flipping the switch) is a separate, later act and is **out of scope**.
 
 ---
 
 ## Q1 — Is Stage 1 genuinely inert?
 
-Take the specification's Stage-1 edits, apply them **on paper** to the captured definitions, and try
-to find any input where the edited workflow behaves differently from the deployed one, given **no
-permission list and no enforcement switch**.
+Apply the Stage-1 edits **on paper** to the captured definitions and try to find any input where the
+edited workflow behaves differently from the deployed one, given no permission list and no switch.
 
-Please look particularly at:
+Worth particular attention:
 
-- **What happens when the new switch-read fails or times out.** SharePoint throttling is ordinary, not
-  exotic. Our own note says this is the one case our probe does not yet cover.
-- **The counting invariant.** Both workflows assert that inputs equal the sum of several outcome
-  buckets, and return an error if that fails. The spec adds a term to it. Does the arithmetic still
-  hold on every path, including paths where the new actions were skipped?
-- **The response bodies.** The spec claims they stay byte-identical, not merely equivalent. Is that
-  true for the empty-array cases?
-- **Anything the spec asserts about the deployed workflows that the captures do not support.** The
-  previous version's central defect was exactly this, and one instance of it survived into this
-  version and had to be struck (correction C3). We expect there may be others.
+- **The switch read failing or timing out.** SharePoint throttling is ordinary. Round 2's only
+  genuine counter-example lived here.
+- **Whether `if()` evaluates its arguments eagerly.** One reviewer held that it does, which would make
+  the switch expression raise an error whenever the read failed regardless of the guard around it. We
+  could not settle this from the captures and it is on the standing list — but if you can settle it
+  from deployed precedent, that is decisive.
+- **The counting invariant.** Both workflows assert inputs equal the sum of several outcome buckets
+  and error if not. The spec adds a term. Does it hold on every path, including those where the new
+  actions were skipped?
+- **The response bodies** — the spec claims byte-identical, not merely equivalent. True for the
+  empty-array cases?
 
-**One counter-example is a finding.** If Stage 1 is not inert, this cannot be applied at all.
+**One counter-example is a finding.** Round 2's Q1 was passed by one reviewer and broken by the other,
+so please do not treat any previous pass as settled.
 
 ## Q2 — Does the specification describe the real workflows?
 
-This is a document-versus-machine comparison, and it is the failure mode that has bitten us twice.
+A document-versus-machine comparison. For each edit touching an **existing** action, verify against
+the captures that the action exists at the path stated; that the key being modified exists on that
+action **type**; that any restated `runAfter` is **complete** (a partial one silently deletes the rest);
+and that any claim about which actions read another's output is exactly right.
 
-For each edit that touches an **existing** action, verify against the captures that:
-
-- the action named exists, at the path stated;
-- the key being modified exists on that action **type** (a Foreach carries `foreach` and has no
-  `inputs`; a condition carries a top-level `expression`);
-- where the edit restates a `runAfter` map, the restatement is **complete** — a partial one silently
-  deletes the dependencies it omits;
-- where the edit claims some set of actions reads another action's output, that set is exactly right.
-
-We have built three checks for this class
-(`audit-artifacts/check-name-collisions.js`, `check-edit-premise.js`, `check-expr-safety.js`, each
-with a `--self-test`). **Please treat them as part of what you are reviewing, not as evidence.** If
-you find a defect of this class that all three miss, that gap is more valuable to us than the defect.
+**And please audit the checks themselves.** Four now exist — `check-item5-edits.js`,
+`check-name-collisions.js`, `check-edit-premise.js`, `check-expr-safety.js`, each with a
+`--self-test`. Round 2 found that they contained only historical claims and so were reporting clean on
+a spec with three shape errors in it. **A defect all four miss is worth more to us than a defect.**
 
 ---
 
@@ -136,8 +118,8 @@ you find a defect of this class that all three miss, that gap is more valuable t
 ## Verdict format
 
 PASS / PASS-with-notes / BLOCK, with numbered findings and a concrete sequence of steps for each.
-**Findings only — please do not edit anything.** The engineer verifies every finding by running it
-and makes all changes.
+**Findings only — please do not edit anything.** The engineer verifies every finding by running it and
+makes all changes.
 
 ## Session hygiene — read first
 
@@ -147,8 +129,7 @@ and makes all changes.
    disagree, the capture wins and that disagreement is the finding.
 4. **Do not describe a file you have not opened.** If something is missing, say so — that is a
    legitimate finding, not something to infer around.
-5. If a claim depends on platform behaviour, say so and treat it as not verifiable by reading (see
-   the standing items above).
+5. If a claim depends on platform behaviour, say so and treat it as not verifiable by reading.
 6. Do **not** run `audit-artifacts/check-gates-mutation.js` — it starts around 90 Node processes and
    looks like a hang. It is the engineer's local check.
 7. If interrupted, note where you stopped so the next session resumes from there.
