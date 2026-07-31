@@ -74,7 +74,7 @@ Branch `azure-phase-5-8-server`, commit **`dc175ab`**. Work from your own fresh 
 |---|---|
 | **1** | `AZURE-CHUNK-AA-ITEM5-RESPEC.md` — the specification under review. Read the four corrections at the top first. |
 | 2 | `AZURE-CHUNK-AA-LA-CHANGES.md` — §3/§4 are the OLD version this supersedes, plus the owner decisions at §D-AA-A/B |
-| 3 | `audit-artifacts/*-PRE-2026-07-30.json` — the deployed definitions, captured from the live cloud. **These are ground truth. The specification is not.** |
+| 3 | `audit-artifacts/*-REDACTED-2026-07-31.json` — the deployed definitions, captured from the live cloud and **committed**, so they are present at this commit. **These are ground truth. The specification is not.** Only the function keys are stripped (`code=REDACTED`); every action, `runAfter`, condition and expression is intact. |
 
 **Setup:** `test/node_modules` and `azure-functions/node_modules` are gitignored — copy both in if you
 intend to run anything.
