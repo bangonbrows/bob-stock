@@ -346,6 +346,35 @@ ledger grows past 5,000 *after* launch — roughly four months of runway from ~1
 **pull-hardening upgrade** (built June, proven on 20,048 rows, dual-audited, runbook written,
 **never applied**) belongs in the cutover, not ahead of it.
 
+**ITEM 5 ROUND 2 (2026-07-31): BOTH auditors BLOCK AGAIN — same class, third time. Root cause removed.**
+Rounds 1 and 2 both found corrections stated at the top of the spec that never reached the edits
+below, plus action shapes Azure cannot apply. **Hand-patching the prose introduced NEW defects both
+times** — round 2's own C1 correction created a dependency cycle (`AA_actor → AA_ready → AA_actor`),
+and the C6 correction was stated twice and applied never.
+
+**Every one of those is a mechanically checkable property that was written in English.** So the
+machine-checkable half is no longer prose:
+- **`audit-artifacts/item5-edits.json`** holds the action definitions as DATA and is **AUTHORITATIVE**.
+  Where the prose and the JSON disagree, **the JSON wins**. Fix defects there, never in the document.
+- **`node audit-artifacts/check-item5-edits.js`** validates shape, sibling-only `runAfter`, cycles,
+  unhandled-failure paths, and that edited keys exist on the deployed action. Seeded with the defects
+  exactly as round 2 stated them it caught **all four** auditor findings plus a fifth nobody flagged.
+- ⚠ It covers the 12 contentious new actions + 11 existing-action edits. **Anything else is DECLARED
+  UNCHECKED, not verified.** Extending it to the full edit set is outstanding.
+- **`node audit-artifacts/check-auditor-pack.js`** verifies a hand-off before it is sent. One brief
+  went out wrong THREE times (a commit that never existed; a commit whose spec still carried wording
+  an auditor had refused twice; files named as ground truth that were gitignored and absent from the
+  commit). It checks the COMMIT, not the working tree — the tree was right all three times.
+
+🛑 **INCIDENT 2026-07-31 — DETACHED HEAD, and `git push` said "Everything up-to-date".** Three commits
+of real work sat on a detached HEAD while the branch stayed put, so every push was a no-op that
+reported success, and the branch's own newer commits made the brief look like it had "reverted".
+Caught only because `check-auditor-pack.js` verifies the cited commit is **on the remote** and it
+wasn't. Resolved by tagging the floating work as a rescue branch, re-attaching, and merging (both
+sides had unique commits — it was a DIVERGENCE, not a fast-forward).
+**Before any hand-off: `git symbolic-ref -q HEAD` (empty = detached) and compare
+`git ls-remote origin <branch>` with `git rev-parse HEAD`. A quiet push proves nothing.**
+
 **ITEM 5 SPEC AUDIT, ROUND 1 (2026-07-31): BOTH auditors BLOCK — folded, spec corrected.**
 Spec: `AZURE-CHUNK-AA-ITEM5-RESPEC.md` (supersedes `AZURE-CHUNK-AA-LA-CHANGES.md` §3/§4).
 Nine findings, **eight confirmed by running them, one refuted with evidence.**
