@@ -38,26 +38,76 @@ const DIR = __dirname;
 // demonstrably biting on live data, not just on fixtures. Replace them as item 5 is re-specced —
 // an edit whose premises are not listed here has NOT been checked.
 const CLAIMS = [
+  // ── THE THREE HISTORICAL BAD EDITS ────────────────────────────────────────────────────────────────
+  // Kept deliberately. They FAIL, which is how you can see at a glance that this gate is biting on
+  // live data rather than passing because it checked nothing.
   {
-    id: 'EDIT 13 (original, KNOWN BAD — kept as the live proof this gate works)',
-    la: 'bob-stock-push-v2-validate-staging',
-    kind: 'readers',
-    of: 'ToInsert',
-    claimed: ['Attest_rows', 'Attest_failed_map'],
+    id: 'HISTORICAL EDIT 13 (KNOWN BAD — kept as the live proof this gate works)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'readers', of: 'ToInsert',
+    claimed: ['Attest_rows', 'Attest_failed_map'], expectFail: true,
   },
   {
-    id: 'EDIT 15/18 (original, KNOWN BAD — Foreach has no inputs)',
-    la: 'bob-stock-push-v2-validate-staging',
-    kind: 'key',
-    target: 'Quarantine_loop',
-    key: 'inputs.from',
+    id: 'HISTORICAL EDIT 15/18 (KNOWN BAD — Foreach has no inputs)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'key', target: 'Quarantine_loop', key: 'inputs.from',
+    expectFail: true,
   },
   {
-    id: 'Invariant runAfter restatement (original, KNOWN BAD — partial map deletes parents)',
-    la: 'bob-stock-push-v2-validate-staging',
-    kind: 'runAfter',
-    target: 'Invariant',
-    claimed: ['Insert_loop', 'Map_rejected'],
+    id: 'HISTORICAL Invariant runAfter (KNOWN BAD — partial map deletes parents)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'runAfter', target: 'Invariant',
+    claimed: ['Insert_loop', 'Map_rejected'], expectFail: true,
+  },
+
+  // ── THE ACTUAL ITEM-5 RESPEC EDITS ────────────────────────────────────────────────────────────────
+  // Added 2026-07-31 after BOTH auditors returned BLOCK. Codex finding 4 was that this gate contained
+  // only the three superseded claims above, so every edit in the corrected spec sat OUTSIDE all three
+  // checks — the gates reported clean on a document with three shape errors in it. A gate pointed at
+  // nothing is worse than no gate, because it produces a green tick.
+  //
+  // Only edits that touch an EXISTING action can be premise-checked; the new AA_* actions are covered
+  // by check-name-collisions.js instead.
+  {
+    id: 'RESPEC edit 10 — Attest_rows is the ONLY reader of ToInsert (the corrected EDIT 13)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'readers', of: 'ToInsert', claimed: ['Attest_rows'],
+  },
+  {
+    id: 'RESPEC edit 10 — Attest_rows.inputs.from is the key being set',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'key', target: 'Attest_rows', key: 'inputs.from',
+  },
+  {
+    id: 'RESPEC edit 11 — Invariant.runAfter restated IN FULL (four parents, not two)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'runAfter', target: 'Invariant',
+    claimed: ['Insert_loop', 'Map_rejected', 'Quarantine_loop', 'Set_failed_attest'],
+  },
+  {
+    id: 'RESPEC edit 11 — Invariant.inputs is the key being set',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'key', target: 'Invariant', key: 'inputs',
+  },
+  // AGY Q2-2: a Response action has inputs.body, NOT a top-level body. Edits 12 and 23 name a path
+  // that does not exist on the action type. These two claims exist to make that fail mechanically.
+  {
+    id: 'RESPEC edit 12 — Response_ok.body.failed (AGY says this path does NOT exist)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'key', target: 'Response_ok', key: 'body.failed',
+  },
+  {
+    id: 'RESPEC edit 12 — Response_ok.inputs.body.failed (the path AGY says is correct)',
+    la: 'bob-stock-push-v2-validate-staging', kind: 'key', target: 'Response_ok', key: 'inputs.body.failed',
+  },
+  {
+    id: 'RESPEC edit 21 — Insert_loop.foreach is the key being set',
+    la: 'bob-stock-recordsteps-push-staging', kind: 'key', target: 'Insert_loop', key: 'foreach',
+  },
+  {
+    id: 'RESPEC edit 21 — Insert_loop.runAfter restated IN FULL',
+    la: 'bob-stock-recordsteps-push-staging', kind: 'runAfter', target: 'Insert_loop',
+    claimed: ['Map_rejected', 'ToInsert2'],
+  },
+  {
+    id: 'RESPEC edit 23 — Response_ok.body.failed on recordsteps (same AGY finding)',
+    la: 'bob-stock-recordsteps-push-staging', kind: 'key', target: 'Response_ok', key: 'body.failed',
+  },
+  {
+    id: 'RESPEC edit 23 — Response_ok.inputs.body.failed on recordsteps',
+    la: 'bob-stock-recordsteps-push-staging', kind: 'key', target: 'Response_ok', key: 'inputs.body.failed',
   },
 ];
 
@@ -252,6 +302,19 @@ function main() {
     console.log(`  ${la}  (${cap.file})`);
     for (const c of claims) {
       const r = verify(cap.def, c);
+      // A claim marked expectFail is a HISTORICAL bad edit, kept so the gate is visibly biting on live
+      // data. Its failing is the proof, not a finding — mixing the two makes a real finding easy to
+      // skim past. But if one ever STARTS passing, the gate has stopped working and that IS a finding.
+      if (c.expectFail) {
+        if (r.ok) {
+          failures++;
+          console.log(`    ⚠ NOW OK  ${c.id}`);
+          console.log('              this known-bad edit now PASSES — the gate has stopped biting. Investigate.');
+        } else {
+          console.log(`    known-bad ${c.id}  (still caught — the gate is working)`);
+        }
+        continue;
+      }
       if (r.ok) { console.log(`    ok        ${c.id}\n              ${r.detail}`); continue; }
       failures++;
       console.log(`    🛑 WRONG  ${c.id}`);
