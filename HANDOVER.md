@@ -326,6 +326,31 @@ ledger grows past 5,000 *after* launch — roughly four months of runway from ~1
 **pull-hardening upgrade** (built June, proven on 20,048 rows, dual-audited, runbook written,
 **never applied**) belongs in the cutover, not ahead of it.
 
+**ITEM 5 SPEC AUDIT, ROUND 1 (2026-07-31): BOTH auditors BLOCK — folded, spec corrected.**
+Spec: `AZURE-CHUNK-AA-ITEM5-RESPEC.md` (supersedes `AZURE-CHUNK-AA-LA-CHANGES.md` §3/§4).
+Nine findings, **eight confirmed by running them, one refuted with evidence.**
+- **They found DIFFERENT things.** Codex passed Q1 ("no counter-example"); AGY found one. Codex found
+  four document defects and the reproducibility failure; AGY found two platform-shape errors. The
+  both-auditors rule earned itself here — internal adversarial agents had already passed this spec.
+- **Root cause of four Codex findings: a corrections block that never propagated into the body.** The
+  header said "corrected" while the body still said the wrong thing — including probe assertion A5
+  demanding `AA_gate == Skipped`, so a CORRECT deployment could not pass its own mandatory test.
+- **AGY Q2-1 was a defect my own correction introduced.** C1 said "copy verbatim, no edits at all";
+  the copied `runAfter` names an action outside the scope it is being placed into, and Azure forbids
+  that (verified: zero cross-scope edges in ~270 deployed actions). "Verbatim" was right about the
+  query text and wrong about the wiring.
+- **AGY Q1 half-refuted:** `first([])` does NOT throw — `user-admin` uses that exact shape 17× on a
+  lookup that returns `[]` for unknown users, unguarded. But the second half STANDS: an unhandled
+  action failure marks the run `Failed` even with a byte-identical response, which breaks the stated
+  inertness property. Fix = the gate must tolerate `Failed`/`TimedOut` from the switch action.
+- **Codex F4 — the three gates were checking NOTHING on this spec.** They held only historical claims,
+  so all the shape errors sat outside them and they reported clean. Now populated; on the first run
+  the premise gate independently reproduced AGY Q2-2 in one second.
+- **Codex F5 — the audit package was not reproducible:** the brief named the captures as ground truth
+  while `audit-artifacts/` is gitignored, so `git ls-tree` showed zero. Fixed: nine `-REDACTED-`
+  captures are now COMMITTED (22 function keys stripped, output re-scanned, aborts on any residual).
+  The `-PRE-` originals stay ignored and remain the rollback source.
+
 **DECIDED 2026-07-30 — Account Access activation (full text: `AZURE-CHUNK-AA-LA-CHANGES.md` §D-AA-A/B):**
 - **ONE master enforcement switch for the whole chunk.** Every gated LA reads a single
   `access_policy_enforce` AppConfig row and stays inert while it is absent — **including after a policy

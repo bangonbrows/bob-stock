@@ -68,8 +68,25 @@ username IS the guard — do not paraphrase it, do not "tidy" it:**
 ```
 
 Its field list is already exactly what the verifier needs (Username / Role / TokenVersion for
-`verifyProofBody`; Active / LockedUntil / GraceUntil for `rowUsable`), so this is a straight copy
-with no edits at all. ⚠ Note it also carries `secureData` on inputs AND outputs — keep that.
+`verifyProofBody`; Active / LockedUntil / GraceUntil for `rowUsable`). ⚠ Note it also carries
+`secureData` on inputs AND outputs — keep that.
+
+> 🛑 **"COPY IT EXACTLY" APPLIES TO THE QUERY, NOT THE WIRING — corrected 2026-07-31, AGY Q2-1.**
+> As first written this said "a straight copy with no edits at all". That instruction is
+> **unapplyable**, and my own correction introduced the defect. The block above carries
+> `"runAfter": { "Call_verify": [...] }` because in its home workflow it sits at the ROOT. Edits 13
+> and 24 place `AA_actor` **inside** `AA_gate`. **Azure prohibits an action inside a scope from
+> depending on an action outside it** — verified against all nine captures: every `runAfter` parent in
+> ~270 deployed actions is a SIBLING of the action naming it, with **zero** counter-examples. Copied
+> literally, Azure would refuse to save the workflow.
+>
+> **So: copy the `inputs` block byte-for-byte — that is where the quote-stripping guard lives and the
+> whole point of C1. REPLACE the `runAfter` with a sibling inside `AA_gate`** (per edit 13,
+> `{"AA_ready":["Succeeded"]}` or the stated predecessor). Keep `type` and `runtimeConfiguration`.
+>
+> The lesson worth carrying: "verbatim" was correct about the *query text* and wrong about the
+> *wiring*, and the original correction did not distinguish them. When an action is relocated, its
+> content copies and its edges do not.
 
 ### C2 — COUNT. Stage 1a adds **15** new actions per Logic App, not 13.
 
@@ -87,6 +104,52 @@ An Azure `If` whose condition evaluates FALSE completes **Succeeded**; only the 
 are Skipped. The four-status tolerance on `AA_gate` is still required — but for the case where the
 switch READ errors, which is the one case the probe does not yet contain. **Add that case.**
 
+⚠ **This correction was stated here and NOT propagated** (Codex F2, 2026-07-31). Two consequences that
+are now fixed below: the operative explanation of edit 5 still said "the whole gate is Skipped", and
+**probe assertion A5 required `AA_gate == Skipped`** — meaning a *correct* deployment could not pass
+its own mandatory test. Both now read `Succeeded`.
+
+---
+
+## ⚠ THREE FURTHER CORRECTIONS 2026-07-31, from the second auditor
+
+### C5 — `Response_ok.body.*` DOES NOT EXIST. Use `inputs.body.*`. (AGY Q2-2)
+
+Edits 12 and 23 instruct modifying `Response_ok.inputs.body.failed` / `.rejected`. A Response action carries
+`[inputs, runAfter, type]` — there is no top-level `body`. The real path is
+**`Response_ok.inputs.body.failed`**. Confirmed mechanically: `check-edit-premise.js` now holds both
+claims and reports the first as unapplyable and the second as present.
+
+### C6 — THE RUN STATUS. `AA_gate` must tolerate the switch action FAILING. (AGY Q1)
+
+This is the one finding that genuinely dented the inertness claim, and it is the more important half
+of AGY's Q1. **An unhandled action failure marks the entire run `Failed`, even when the response body
+is byte-identical and every row is written correctly.** "Identical run outcome" is part of the
+inertness property, so a `Failed` run breaks it even though no user could tell.
+
+So `AA_gate.runAfter` on `AA_enforce` must be `["Succeeded","Failed","TimedOut"]`, never
+`["Succeeded"]` alone. Handling the failure is what keeps the run `Succeeded`. The same reasoning
+already applies to the switch READ (`AA_flag`) and was already specified; it was simply not carried
+through to `AA_enforce`.
+
+### C7 — `first([])` DOES NOT THROW. (AGY Q1, first half — REFUTED with evidence)
+
+AGY held that `first()` on an empty array raises a runtime error, so the switch action would hard-fail
+on **every** execution before activation. Checked against deployed precedent rather than argued:
+
+- `first(...)` is used **58 times** across the nine live workflows.
+- `user-admin-staging` uses **this exact shape 17 times** —
+  `first(coalesce(body('Read_target')?['value'], json('[]')))?['Role']` — where `Read_target` is a
+  `$filter` lookup by username that returns `[]` for any unknown user.
+- That workflow contains **no** `empty()` guard anywhere, and consumes the result with `?['Role']`
+  wrapped in `coalesce(..., '')` — a design that only makes sense if `first([])` yields null.
+
+If `first([])` threw, that deployed workflow would fail on every unknown-username lookup. **Strong,
+but not conclusive** — it cannot be proven that path has run empty in production. It stays on the
+standing list for the cloud experiment, and C6 is the fix that makes the outcome safe *either way*:
+with the failure handled, even a throwing expression leaves the run `Succeeded` and the response
+untouched.
+
 ---
 
 ## PLAIN ENGLISH
@@ -101,7 +164,7 @@ WHAT CHANGES WHEN YOU FLIP IT (Stage 2, a separate day). Privileged rows and ste
 
 TWO THINGS I MUST FLAG BEFORE YOU AGREE. First, a permanent refusal is DURABLE ON THE DEVICE: flipping the switch back off does not un-quarantine a row that was already refused. So flip in a quiet window, watch the first few pushes, and roll back fast. Second, ordinary stock IN is deliberately NOT gated here, because the app writes the same row type for a Director's warehouse delivery and for a staff member logging stock in at a salon, and the cloud genuinely cannot tell them apart. Gating it as the old spec said would have refused every staff stock-in the moment you flipped. That is a deviation from the agreed §3 and it needs your sign-off.
 
-HONEST SIZE. This is not small. push-v2 goes from 39 actions to 67; recordsteps-push from 64 to 94. Four existing actions are edited on each. I have split Stage 1 into 1a (the inert spine, 13 new actions, where all the safety lives) and 1b (the decision machinery, which only ever runs when the switch is on), so you get a probe run after each half instead of one big leap. Realistically five sittings: 5a-1a, 5a-1b, 5b-1a, 5b-1b, then the flip. Stage 1a also gives you a free rehearsal of the flip itself: with 1a installed you can turn the switch ON and nothing changes at all, because there is no decision machinery behind it yet.
+HONEST SIZE. This is not small. push-v2 goes from 39 actions to 67; recordsteps-push from 64 to 94. Four existing actions are edited on each. I have split Stage 1 into 1a (the inert spine, **15** new actions, where all the safety lives) and 1b (the decision machinery, which only ever runs when the switch is on), so you get a probe run after each half instead of one big leap. Realistically five sittings: 5a-1a, 5a-1b, 5b-1a, 5b-1b, then the flip. Stage 1a also gives you a free rehearsal of the flip itself: with 1a installed you can turn the switch ON and nothing changes at all, because there is no decision machinery behind it yet.
 
 ## STAGE 1 — install everything with enforcement OFF (26 edits)
 
@@ -115,7 +178,7 @@ BEFORE any cloud edit, replace the seeded manifest entry PLANNED_ADDITIONS['bob-
 
 **New action names:** `AA_init_deny`, `AA_init_retry` — collision-checked against the live capture: **YES**
 
-ROOT: add two InitializeVariable actions and re-point ONE existing runAfter. AA_init_deny {type:InitializeVariable, runAfter:{"Init_failed":["Succeeded"]}, inputs:{variables:[{name:'aaDeny',type:'array',value:[]}]}}; AA_init_retry {runAfter:{"AA_init_deny":["Succeeded"]}, variables:[{name:'aaRetry',type:'array',value:[]}]}. Then EXISTING EDIT: Get_creds.runAfter := {"AA_init_retry":["Succeeded"]} (was {"Init_failed":["Succeeded"]}). Chain serially — do NOT hang the Inits off Init_failed in parallel with Get_creds, because a variable read before its InitializeVariable has run is a runtime error and 'it is always fast enough' is not a proof.
+ROOT: add two InitializeVariable actions and re-point ONE existing runAfter. AA_init_deny {type:InitializeVariable, runAfter:{"Init_failed":["Succeeded"]}, inputs:{variables:[{name:'aaDeny',type:'array',value:[]}]}}; AA_init_retry {type:"InitializeVariable", runAfter:{"AA_init_deny":["Succeeded"]}, inputs:{variables:[{name:'aaRetry',type:'array',value:[]}]}}. *(Corrected 2026-07-31, Codex F3: as first written this omitted `type` and put `variables` at the top level rather than inside `inputs`. Every captured InitializeVariable carries `type`, `runAfter` and `inputs.variables`; an implementer following the original text would have had to improvise the shape — exactly what must never happen on this workflow.)* Then EXISTING EDIT: Get_creds.runAfter := {"AA_init_retry":["Succeeded"]} (was {"Init_failed":["Succeeded"]}). Chain serially — do NOT hang the Inits off Init_failed in parallel with Get_creds, because a variable read before its InitializeVariable has run is a runtime error and 'it is always fast enough' is not a proof.
 
 **Why this is inert with no policy and no switch:** Two empty arrays that nothing reads yet, plus one runAfter hop that preserves the existing serial order Init_accepted→Init_duplicates→Init_failed→…→Get_creds. Verified from the capture: Get_creds.runAfter is today {"Init_failed":["Succeeded"]}. InitializeVariable must be at root — the existing three are, and Ctx_ids inside Authorized[then] already reads @variables('ctx') initialized at root, so workflow-scope reads are proven by the deployed graph.
 
@@ -141,7 +204,7 @@ AA_enforce (Compose), runAfter {"AA_flag":["Succeeded","Failed","TimedOut"]}, in
 
 AA_gate (If). NOTE THE JSON SHAPE: an If action carries a TOP-LEVEL "expression" key — there is no inputs.expression. I checked this on the capture (Respond and L_decide both have keys [actions, else, expression, runAfter, type]); the old text's 'Quarantine_loop.inputs.from' was the same class of unapplyable instruction. AA_gate = {type:'If', runAfter:{"AA_enforce":["Succeeded"],"ToInsert":["Succeeded"]}, expression:{and:[{equals:["@equals(outputs('AA_enforce'),'on')",true]}]}, actions:{ AA_set_deny, AA_set_retry }}. In Stage 1a the gate contains ONLY: AA_set_deny {type:SetVariable, runAfter:{}, inputs:{name:'aaDeny', value:"@json('[]')"}} and AA_set_retry {type:SetVariable, runAfter:{"AA_set_deny":["Succeeded"]}, inputs:{name:'aaRetry', value:"@json('[]')"}}.
 
-**Why this is inert with no policy and no switch:** With the row absent the condition is false and the whole gate is Skipped, so both variables stay at []. AND — this is the free rehearsal — with the row set to '1' the gate RUNS and sets both to [] anyway, so Stage 1a is byte-identical with the switch either ON or OFF. That lets Kunal rehearse the exact Stage-2 mechanics (create the row, watch a push, delete the row) at zero risk before any decision machinery exists.
+**Why this is inert with no policy and no switch:** With the row absent the condition is false, so AA_gate itself completes **Succeeded** and only its CHILDREN are Skipped — both variables therefore stay at []. (Corrected 2026-07-31, Codex F2: this previously said the gate is Skipped.) AND — this is the free rehearsal — with the row set to '1' the gate RUNS and sets both to [] anyway, so Stage 1a is byte-identical with the switch either ON or OFF. That lets Kunal rehearse the exact Stage-2 mechanics (create the row, watch a push, delete the row) at zero risk before any decision machinery exists.
 
 ### Edit 6 — bob-stock-push-v2-validate-staging (5a, Stage 1a)
 
@@ -173,7 +236,7 @@ THE SPINE, part 3 — the two report maps, shaped to the contracts sync.js actua
 
 THE DENY QUARANTINE — a SEPARATE Foreach, never an extension of Quarantine_loop. AA_q_loop {type:Foreach, runAfter:{"AA_deny_map":["Succeeded"]}, runtimeConfiguration:{concurrency:{repetitions:1}}, foreach:"@variables('aaDeny')", actions:{AA_q_insert}}. AA_q_insert copies the deployed Quarantine_insert verbatim except that every item() becomes items('AA_q_loop') and the two reason fields are explicit: {DeviceId:"@items('AA_q_loop')?['row']?['DeviceId']", Title:"@items('AA_q_loop')?['row']?['TransactionId']", TransactionId:"@items('AA_q_loop')?['row']?['TransactionId']", rawRowJson:"@string(items('AA_q_loop')?['row'])", reason:"@items('AA_q_loop')?['verdict']", reasonCode:'ACCESS_DENIED', receivedAt:"@utcNow()", workflowRunId:"@workflow()?['run']?['name']"}, same host/method/path to StockTransactions_Quarantine. Do NOT mutate Quarantine_loop.foreach: a Foreach has a `foreach` key and NO `inputs` key (verified on the capture), so the old 'Quarantine_loop.inputs.from' instruction was unapplyable, and merging item shapes would have written reason:null / reasonCode:null quarantine rows because Quarantine_insert reads item()?['reason'] into both fields.
 
-**Why this is inert with no policy and no switch:** Iterates an empty array: zero iterations, zero SharePoint writes, status Succeeded. Its Invariant edge (edit 10) is failure-tolerant, so unlike the pre-existing Quarantine_loop edge a quarantine write failure here cannot leave the run with no Response at all.
+**Why this is inert with no policy and no switch:** Iterates an empty array: zero iterations, zero SharePoint writes, status Succeeded. Its Invariant edge (edit 10) is failure-tolerant, so a quarantine write failure here cannot leave the run with no Response at all. *(Corrected 2026-07-31, Codex F1: this sentence previously claimed the pre-existing `Quarantine_loop` edge was NOT failure-tolerant. It is — the captured `Invariant.runAfter.Quarantine_loop` is `["Succeeded","Failed"]`. That was a recordsteps fact asserted about push-v2: the same class of error this respec exists to fix, surviving into the respec itself.)*
 
 ### Edit 10 — bob-stock-push-v2-validate-staging (5a, Stage 1a)
 
@@ -189,7 +252,7 @@ THE INVARIANT — one new term, and the runAfter map RESTATED IN FULL, never sum
 
 ### Edit 12 — bob-stock-push-v2-validate-staging (5a, Stage 1a)
 
-THE RESPONSE — two keys, guarded for EXACT identity. Response_ok.body.failed := "@if(empty(body('AA_retry_map')),variables('failed'),union(variables('failed'),body('AA_retry_map')))". Response_ok.body.rejected := "@if(empty(body('AA_deny_map')),body('Map_rejected'),union(body('Map_rejected'),body('AA_deny_map')))". union(), NEVER concat() — concat() is for strings and integers, all 8 concat() uses on this LA are string builds, and recordsteps already merges arrays with union() twice. The other six keys (accepted, catalogueCheck, duplicates, inputCount, rejected via Map_rejected, serverTimestamp, status) are untouched, as are Response_invariant_fail {reason:'invariant_failed',status:'error'} 500 and Response_401 {authRequired:true,status:'unauthorized'} 401 with runAfter {"Q_authreject":["Succeeded","Failed","TimedOut"]}.
+THE RESPONSE — two keys, guarded for EXACT identity. Response_ok.inputs.body.failed := "@if(empty(body('AA_retry_map')),variables('failed'),union(variables('failed'),body('AA_retry_map')))". Response_ok.inputs.body.rejected := "@if(empty(body('AA_deny_map')),body('Map_rejected'),union(body('Map_rejected'),body('AA_deny_map')))". union(), NEVER concat() — concat() is for strings and integers, all 8 concat() uses on this LA are string builds, and recordsteps already merges arrays with union() twice. The other six keys (accepted, catalogueCheck, duplicates, inputCount, rejected via Map_rejected, serverTimestamp, status) are untouched, as are Response_invariant_fail {reason:'invariant_failed',status:'error'} 500 and Response_401 {authRequired:true,status:'unauthorized'} 401 with runAfter {"Q_authreject":["Succeeded","Failed","TimedOut"]}.
 
 **Why this is inert with no policy and no switch:** When nothing is denied or deferred the guard returns the ORIGINAL expression, so the response is byte-identical rather than merely equivalent. The guard is not cosmetic: union() de-duplicates, and Map_rejected can legitimately contain two identical entries (two rows sharing a TransactionId, both rejected with the same reason), which a bare union() would silently collapse. I ran that case. Both branches are total, so eager evaluation of if() is harmless.
 
@@ -199,7 +262,7 @@ THE RESPONSE — two keys, guarded for EXACT identity. Response_ok.body.failed :
 
 THE POLICY AND ACTOR READS, all INSIDE AA_gate so they cost nothing while the switch is off. AA_policy = the deployed access-policy-write Read_secure copied VERBATIM (AppConfig_Staging, $filter ConfigType eq 'access_policy_secure', $top=1) with runAfter {}. Use the SECURE blob, not the client copy: evaluateAccess needs pinEpoch and the full sudo map. AA_actor = the deployed archive-staging Read_actor copied verbatim INCLUDING runtimeConfiguration.secureData {properties:['inputs','outputs']}, runAfter {}, reading UserCredentials_Staging filtered on triggerBody()?['actorUsername'] with $select=Id,Username,Role,GraceUntil,Active,LockedUntil,TokenVersion. AA_parse (Compose, runAfter {"AA_policy":["Succeeded","Failed","TimedOut"]}) = "@json(coalesce(first(coalesce(body('AA_policy')?['value'],json('[]')))?['ConfigData'],'null'))" — isolated in its own action because json() THROWS on malformed text. AA_ready (Compose, runAfter {"AA_parse":["Succeeded","Failed","Skipped","TimedOut"],"AA_actor":["Succeeded","Failed","TimedOut"]}) = "@and(equals(actions('AA_parse')?['status'],'Succeeded'),equals(actions('AA_actor')?['status'],'Succeeded'),not(equals(string(coalesce(outputs('AA_parse'),'null')),'null')))". AA_dc (Compose, runAfter {}) = "@if(equals(coalesce(body('Call_verify')?['directorOk'],false),true),'__director',coalesce(triggerBody()?['auth']?['storeId'],''))" — AA-09: derived from the VALIDATED device keys, never from a client field, and it must byte-match the dc the user-verify LA stamps into a session proof or every correct proof fails closed. The client already sends actorUsername and proof at the TOP level of the ingest body (sync.js _withPerson/_withIngestProofs), and the Request trigger schema declares only {data}, so no trigger-schema change is needed or wanted.
 
-**Why this is inert with no policy and no switch:** All five live inside AA_gate, which is Skipped while the switch is off — zero SharePoint reads, zero cost. PREREQUISITE I could not settle from the captures: whether Logic Apps short-circuits if()/and(), and what body()/outputs() return for a Failed, TimedOut or Skipped action. Those semantics decide this half's failure posture, so Stage 1b must be preceded by a four-question semantics experiment on a THROWAWAY new workflow that touches no shared list (see the open items). Stage 1a's inertness deliberately depends on none of that.
+**Why this is inert with no policy and no switch:** All five live inside AA_gate; while the switch is off the gate SUCCEEDS with a false condition and its children are Skipped — zero SharePoint reads, zero cost. PREREQUISITE I could not settle from the captures: whether Logic Apps short-circuits if()/and(), and what body()/outputs() return for a Failed, TimedOut or Skipped action. Those semantics decide this half's failure posture, so Stage 1b must be preceded by a four-question semantics experiment on a THROWAWAY new workflow that touches no shared list (see the open items). Stage 1a's inertness deliberately depends on none of that.
 
 ### Edit 14 — bob-stock-push-v2-validate-staging (5a, Stage 1b)
 
@@ -221,7 +284,7 @@ THE CLASSIFIER, inside AA_gate. AA_classify {type:Select, runAfter:{ every AA_ev
 
 **New action names:** `AA_init_deny`, `AA_init_retry` — collision-checked against the live capture: **YES**
 
-ROOT: AA_init_deny {InitializeVariable, runAfter:{"Init_ctx":["Succeeded"]}, variables:[{name:'aaDeny',type:'array',value:[]}]}; AA_init_retry {runAfter:{"AA_init_deny":["Succeeded"]}, variables:[{name:'aaRetry',type:'array',value:[]}]}. EXISTING EDIT: Get_creds.runAfter := {"AA_init_retry":["Succeeded"]} (was {"Init_ctx":["Succeeded"]}, read from the capture). Same serial-chain rule as 5a.
+ROOT: AA_init_deny {InitializeVariable, runAfter:{"Init_ctx":["Succeeded"]}, variables:[{name:'aaDeny',type:'array',value:[]}]}; AA_init_retry {type:"InitializeVariable", runAfter:{"AA_init_deny":["Succeeded"]}, inputs:{variables:[{name:'aaRetry',type:'array',value:[]}]}}. *(Corrected 2026-07-31, Codex F3: as first written this omitted `type` and put `variables` at the top level rather than inside `inputs`. Every captured InitializeVariable carries `type`, `runAfter` and `inputs.variables`; an implementer following the original text would have had to improvise the shape — exactly what must never happen on this workflow.)* EXISTING EDIT: Get_creds.runAfter := {"AA_init_retry":["Succeeded"]} (was {"Init_ctx":["Succeeded"]}, read from the capture). Same serial-chain rule as 5a.
 
 **Why this is inert with no policy and no switch:** Identical to edit 2. The existing root chain Init_accepted→Init_duplicates→Init_failed→Init_ctx→Get_creds is preserved with two links inserted before Get_creds; the `ctx` variable and its initialization are untouched.
 
@@ -271,7 +334,7 @@ THE INVARIANT — one new term, existing map restated in full. Invariant.inputs 
 
 ### Edit 23 — bob-stock-recordsteps-push-staging (5b, Stage 1a)
 
-THE RESPONSE — two keys, guarded, with the EXISTING two-way unions preserved verbatim in the false branch. Response_ok.body.failed := "@if(empty(body('AA_retry_map')),union(variables('failed'),body('Map_ctx_pending')),union(variables('failed'),body('Map_ctx_pending'),body('AA_retry_map')))". Response_ok.body.rejected := "@if(empty(body('AA_deny_map')),union(body('Map_rejected'),body('Map_ctx_rejected')),union(body('Map_rejected'),body('Map_ctx_rejected'),body('AA_deny_map')))". The other six keys — accepted, authClass, duplicates, inputCount, serverTimestamp, status — are untouched, as are Response_invariant_fail (500) and Response_401 (401).
+THE RESPONSE — two keys, guarded, with the EXISTING two-way unions preserved verbatim in the false branch. Response_ok.inputs.body.failed := "@if(empty(body('AA_retry_map')),union(variables('failed'),body('Map_ctx_pending')),union(variables('failed'),body('Map_ctx_pending'),body('AA_retry_map')))". Response_ok.inputs.body.rejected := "@if(empty(body('AA_deny_map')),union(body('Map_rejected'),body('Map_ctx_rejected')),union(body('Map_rejected'),body('Map_ctx_rejected'),body('AA_deny_map')))". The other six keys — accepted, authClass, duplicates, inputCount, serverTimestamp, status — are untouched, as are Response_invariant_fail (500) and Response_401 (401).
 
 **Why this is inert with no policy and no switch:** With nothing denied or deferred each expression returns the deployed expression character-for-character. union() with a third argument, never concat(): this LA is where the union() precedent lives (these two keys are its only two array merges) and all six concat() uses here are string builds.
 
@@ -329,7 +392,7 @@ THE ONE-WAY DOOR IN THE FLIP, stated plainly because it is the only part that is
 - NEVER append access-retry rows into the existing `failed` variable on push-v2. Set_failed_attest is a whole-variable SetVariable (failed := @body('Attest_failed_map')) with no ordering relationship to a new append, so on any attestation blip the appended rows vanish and the Invariant under-counts. Keep retries in their own variable and merge only into the response body — then Set_failed_attest never has to be touched.
 - NEVER express an edit against a key that does not exist. A Foreach has `foreach` and NO `inputs` key (so 'Quarantine_loop.inputs.from' / 'Insert_loop.inputs.from' are unapplyable). An If carries a TOP-LEVEL `expression` key and no inputs.expression — I hit this today reading L_decide and Respond off the capture. Check the actual key before writing the instruction.
 - NEVER summarise a runAfter map — restate it in full. push-v2's Invariant has four parents ({Insert_loop:[Succeeded,Skipped], Map_rejected:[Succeeded], Quarantine_loop:[Succeeded,Failed], Set_failed_attest:[Succeeded,Skipped]}); recordsteps' has three, all Succeeded-only. The old EDIT 16 named two of push-v2's four.
-- NEVER let a new action be reachable from AA_gate only via ['Succeeded']. With the switch off the gate is Skipped; a spine that does not tolerate Skipped stalls, the Invariant never runs, no Response action runs at all, and every push gets a bare 502. Every spine edge from the gate downward is ['Succeeded','Failed','Skipped','TimedOut'].
+- NEVER let a new action be reachable from AA_gate only via ['Succeeded']. With the switch off the gate SUCCEEDS but its CHILDREN are Skipped; a spine that does not tolerate Skipped stalls, the Invariant never runs, no Response action runs at all, and every push gets a bare 502. Every spine edge from the gate downward is ['Succeeded','Failed','Skipped','TimedOut'].
 - NEVER write an expression that can throw. Index only through coalesce, because I could NOT settle from the captures whether Logic Apps short-circuits if() or what body()/outputs() return for a Failed/TimedOut/Skipped action. A throwing expression on this path means no Response, not a graceful failure.
 - NEVER gate Type 'in' at push-v2. Pages._saveDelivery writes {type:'in', storeId:'head_office'} under Auth.can('recordDelivery') and Pages._submitLog writes type:'in' for an ordinary staff Stock IN with no capability gate, and Sync._toSharePoint sends no trustworthy field distinguishing them. The default seed has roles.staff.recordDelivery=false, so gating all 'in' rows would permanently ACCESS_DENIED every staff stock-in the moment you flip. Enforce recordDelivery at the recordsteps delivery/record + delivery/packaging_edit steps instead (deviation from §3 and matrix row 1 — needs Kunal's sign-off).
 - NEVER flip with only one LA applied. A stock-take approval writes BOTH a stocktake/approve step and adjustment ledger rows; a receive writes a receive step and transfer_in rows. Enforcing on one door lets half of each pair land — exactly the step-vs-ledger divergence the records fold exists to detect.
@@ -360,7 +423,7 @@ ASSERTIONS (all must hold; A5 and A6 are the ones the old probe lacked):
   A2  every fixture id is in exactly the expected bucket, and inputCount is right.
   A3  the response arrays reconcile: accepted+duplicates+|rejected|+|failed| = inputCount (recordsteps: the union'd rejected[] and failed[] carry the ctx entries too).
   A4  READ BACK the target list. RecordSteps_Staging contains ONLY S1 and S5g; StockTransactions_Validate contains only the rows that were accepted, each with a POPULATED EconSig (that proves the Attest_rows re-parent did not break the seal).
-  A5  RUN HISTORY, per action status and output — this is the part that makes the probe able to see the Ctx machinery at all: length(body('Ctx_ids')) > 0 (proof the hold-back actually ran, not that it happened to be a no-op); body('AA_removed') == []; outputs('AA_enforce') == 'off'; AA_gate status == Skipped; and from 1b onward AA_policy, AA_actor and every AA_eval_* status == Skipped. Read with az rest GET .../runs then .../runs/<runId>/actions and assert properties.status.
+  A5  RUN HISTORY, per action status and output — this is the part that makes the probe able to see the Ctx machinery at all: length(body('Ctx_ids')) > 0 (proof the hold-back actually ran, not that it happened to be a no-op); body('AA_removed') == []; outputs('AA_enforce') == 'off'; **AA_gate status == Succeeded** (NOT Skipped — a false condition SUCCEEDS, only its children skip; asserting Skipped here made a CORRECT deployment fail its own mandatory probe, Codex F2); **AA_flag and AA_enforce status == Succeeded** (if either shows Failed the run itself is marked Failed even with an identical response — C6); and from 1b onward AA_policy, AA_actor and every AA_eval_* status == Skipped, since THOSE are children of the gate. Read with az rest GET .../runs then .../runs/<runId>/actions and assert properties.status.
   A6  the AFTER response equals the BASELINE response field-for-field except serverTimestamp and the probe ids. Diff it mechanically; do not eyeball it.
   A7  StockTransactions_Quarantine gained rows for S3, S5, S6 only — nothing for S1, S2, S4 (a deferred step must never be quarantined).
   A8  CLEANUP: delete every probe step, row and quarantine row and re-assert zero residue (house rule — earlier chunk audits left 21 orphans).

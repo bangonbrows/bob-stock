@@ -85,8 +85,11 @@ const CLAIMS = [
   // AGY Q2-2: a Response action has inputs.body, NOT a top-level body. Edits 12 and 23 name a path
   // that does not exist on the action type. These two claims exist to make that fail mechanically.
   {
-    id: 'RESPEC edit 12 — Response_ok.body.failed (AGY says this path does NOT exist)',
+    // AGY Q2-2, PROVEN and now FIXED in the spec (correction C5). Kept as expectFail so the evidence
+    // that this path is unapplyable stays visible — but it is no longer what the spec instructs.
+    id: 'AGY Q2-2 (PROVEN BAD, spec now corrected) — Response_ok.body.failed does not exist',
     la: 'bob-stock-push-v2-validate-staging', kind: 'key', target: 'Response_ok', key: 'body.failed',
+    expectFail: true,
   },
   {
     id: 'RESPEC edit 12 — Response_ok.inputs.body.failed (the path AGY says is correct)',
@@ -102,8 +105,9 @@ const CLAIMS = [
     claimed: ['Map_rejected', 'ToInsert2'],
   },
   {
-    id: 'RESPEC edit 23 — Response_ok.body.failed on recordsteps (same AGY finding)',
+    id: 'AGY Q2-2 on recordsteps (PROVEN BAD, spec now corrected) — Response_ok.body.failed',
     la: 'bob-stock-recordsteps-push-staging', kind: 'key', target: 'Response_ok', key: 'body.failed',
+    expectFail: true,
   },
   {
     id: 'RESPEC edit 23 — Response_ok.inputs.body.failed on recordsteps',
