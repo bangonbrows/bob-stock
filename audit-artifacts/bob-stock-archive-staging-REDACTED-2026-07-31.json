@@ -1,0 +1,871 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Authorized": {
+      "actions": {
+        "Get_state": {
+          "inputs": {
+            "body": {
+              "headers": {
+                "Accept": "application/json;odata=minimalmetadata"
+              },
+              "method": "GET",
+              "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigData&$filter=ConfigType eq 'archive_state'"
+            },
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+          },
+          "runAfter": {},
+          "type": "ApiConnection"
+        },
+        "Lock_check": {
+          "actions": {
+            "Acquire_lock": {
+              "inputs": {
+                "body": {
+                  "body": "@string(setProperty(json('{}'), 'ConfigData', string(setProperty(setProperty(setProperty(json('{}'),'status','running'),'runId',coalesce(triggerBody()?['data']?['runId'],'')),'lockAt',utcNow()))))",
+                  "headers": {
+                    "Accept": "application/json;odata=nometadata",
+                    "Content-Type": "application/json;odata=nometadata",
+                    "IF-MATCH": "@first(body('Get_state')?['value'])?['odata.etag']",
+                    "X-HTTP-Method": "MERGE"
+                  },
+                  "method": "POST",
+                  "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_state')?['value'])?['Id']})"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+              },
+              "runAfter": {},
+              "type": "ApiConnection"
+            },
+            "Read_live": {
+              "inputs": {
+                "body": {
+                  "headers": {
+                    "Accept": "application/json;odata=nometadata"
+                  },
+                  "method": "GET",
+                  "uri": "_api/web/lists/getbytitle('@{coalesce(triggerBody()?['data']?['sourceList'],'StockTransactions_Staging')}')/items?$select=Id,TransactionId,StoreId,ProductId,Type,Qty,Date,Timestamp,StaffName,Reason,DeviceId,TransferId,TargetTransactionId,IdempotencyKey,EconSig,SellAtSupply,DiscAtSupply,PricingVersion,CatalogueVersion,UnitPriceAtTime,StockFromStoreId,StockToStoreId,StockFrom,StockTo&$orderby=Id asc&$top=5000"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+              },
+              "runAfter": {
+                "Acquire_lock": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection"
+            },
+            "Truncation_guard": {
+              "actions": {
+                "Call_compute": {
+                  "inputs": {
+                    "body": {
+                      "cutoffId": "@triggerBody()?['data']?['cutoffId']",
+                      "retainAfterTs": "@triggerBody()?['data']?['retainAfterTs']",
+                      "rows": "@body('Read_live')?['value']",
+                      "runId": "@coalesce(triggerBody()?['data']?['runId'],'')",
+                      "snapshotVersion": "@triggerBody()?['data']?['snapshotVersion']",
+                      "stepCutoffTs": "@triggerBody()?['data']?['stepCutoffTs']"
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "method": "POST",
+                    "uri": "https://bob-stock-money-fn.azurewebsites.net/api/snapshotCompute?code=REDACTED"
+                  },
+                  "runAfter": {},
+                  "type": "Http"
+                },
+                "Compute_ok": {
+                  "actions": {
+                    "Copy_loop": {
+                      "actions": {
+                        "Skip_if_exists": {
+                          "actions": {
+                            "Insert_archive": {
+                              "inputs": {
+                                "body": {
+                                  "body": "@string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'), 'Title', item()?['TransactionId']), 'TransactionId', item()?['TransactionId']), 'StoreId', item()?['StoreId']), 'ProductId', item()?['ProductId']), 'TxnType', item()?['Type']), 'Qty', item()?['Qty']), 'TxnDate', coalesce(item()?['Date'],'')), 'TxnTimestamp', string(coalesce(item()?['Timestamp'],''))), 'StaffName', coalesce(item()?['StaffName'],'')), 'Reason', coalesce(item()?['Reason'],'')), 'DeviceId', coalesce(item()?['DeviceId'],'')), 'TransferId', coalesce(item()?['TransferId'],'')), 'TargetTransactionId', coalesce(item()?['TargetTransactionId'],'')), 'SourceId', item()?['Id']), 'ArchiveRunId', coalesce(triggerBody()?['data']?['runId'],'')), 'SnapshotVersion', coalesce(triggerBody()?['data']?['snapshotVersion'],0)), 'IdempotencyKey', coalesce(item()?['IdempotencyKey'],'')), 'EconSig', coalesce(item()?['EconSig'],'')), 'SellAtSupply', item()?['SellAtSupply']), 'DiscAtSupply', item()?['DiscAtSupply']), 'PricingVersion', item()?['PricingVersion']), 'CatalogueVersion', item()?['CatalogueVersion']), 'UnitPriceAtTime', item()?['UnitPriceAtTime']), 'StockFromStoreId', coalesce(item()?['StockFromStoreId'],'')), 'StockToStoreId', coalesce(item()?['StockToStoreId'],'')), 'StockFrom', coalesce(item()?['StockFrom'],'')), 'StockTo', coalesce(item()?['StockTo'],'')))",
+                                  "headers": {
+                                    "Accept": "application/json;odata=nometadata",
+                                    "Content-Type": "application/json;odata=nometadata"
+                                  },
+                                  "method": "POST",
+                                  "uri": "_api/web/lists/getbytitle('StockTransactions_Archive')/items"
+                                },
+                                "host": {
+                                  "connection": {
+                                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                  }
+                                },
+                                "method": "post",
+                                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                              },
+                              "runAfter": {},
+                              "type": "ApiConnection"
+                            }
+                          },
+                          "expression": {
+                            "and": [
+                              {
+                                "equals": [
+                                  "@contains(body('Map_existing'), item()?['Id'])",
+                                  false
+                                ]
+                              }
+                            ]
+                          },
+                          "runAfter": {},
+                          "type": "If"
+                        }
+                      },
+                      "foreach": "@body('Select_archive')",
+                      "runAfter": {
+                        "Map_existing": [
+                          "Succeeded"
+                        ]
+                      },
+                      "runtimeConfiguration": {
+                        "concurrency": {
+                          "repetitions": 1
+                        }
+                      },
+                      "type": "Foreach"
+                    },
+                    "Map_existing": {
+                      "inputs": {
+                        "from": "@coalesce(body('Read_existing')?['value'],json('[]'))",
+                        "select": "@int(item()?['SourceId'])"
+                      },
+                      "runAfter": {
+                        "Read_existing": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Select"
+                    },
+                    "Map_reread": {
+                      "inputs": {
+                        "from": "@coalesce(body('Reread_archive')?['value'],json('[]'))",
+                        "select": "@int(item()?['SourceId'])"
+                      },
+                      "runAfter": {
+                        "Reread_archive": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Select"
+                    },
+                    "Missing": {
+                      "inputs": {
+                        "from": "@body('Call_compute')?['archiveIds']",
+                        "where": "@equals(contains(body('Map_reread'), item()), false)"
+                      },
+                      "runAfter": {
+                        "Map_reread": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Query"
+                    },
+                    "Read_existing": {
+                      "inputs": {
+                        "body": {
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata"
+                          },
+                          "method": "GET",
+                          "uri": "_api/web/lists/getbytitle('StockTransactions_Archive')/items?$select=SourceId&$filter=ArchiveRunId eq '@{coalesce(triggerBody()?['data']?['runId'],'')}'&$top=5000"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {
+                        "Select_archive": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "ApiConnection"
+                    },
+                    "Reread_archive": {
+                      "inputs": {
+                        "body": {
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata"
+                          },
+                          "method": "GET",
+                          "uri": "_api/web/lists/getbytitle('StockTransactions_Archive')/items?$select=SourceId,TransactionId,StoreId,ProductId,TxnType,Qty,TxnTimestamp,TransferId,TargetTransactionId,IdempotencyKey,EconSig,SellAtSupply,DiscAtSupply,PricingVersion,CatalogueVersion,UnitPriceAtTime,StockFromStoreId,StockToStoreId,StockFrom,StockTo,TxnDate,Reason&$filter=ArchiveRunId eq '@{coalesce(triggerBody()?['data']?['runId'],'')}'&$top=5000"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {
+                        "Copy_loop": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "ApiConnection"
+                    },
+                    "Select_archive": {
+                      "inputs": {
+                        "from": "@body('Read_live')?['value']",
+                        "where": "@contains(body('Call_compute')?['archiveIds'], item()?['Id'])"
+                      },
+                      "runAfter": {},
+                      "type": "Query"
+                    },
+                    "Verify_content_hash": {
+                      "inputs": {
+                        "body": {
+                          "mode": "hash",
+                          "rows": "@coalesce(body('Reread_archive')?['value'],json('[]'))"
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "method": "POST",
+                        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/snapshotCompute?code=REDACTED"
+                      },
+                      "runAfter": {
+                        "Missing": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Http"
+                    },
+                    "Verify_gate": {
+                      "actions": {
+                        "Delete_loop": {
+                          "actions": {
+                            "Delete_live": {
+                              "inputs": {
+                                "body": {
+                                  "headers": {
+                                    "Accept": "application/json;odata=nometadata",
+                                    "IF-MATCH": "*",
+                                    "X-HTTP-Method": "DELETE"
+                                  },
+                                  "method": "POST",
+                                  "uri": "_api/web/lists/getbytitle('@{coalesce(triggerBody()?['data']?['sourceList'],'StockTransactions_Staging')}')/items(@{item()})"
+                                },
+                                "host": {
+                                  "connection": {
+                                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                  }
+                                },
+                                "method": "post",
+                                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                              },
+                              "runAfter": {},
+                              "type": "ApiConnection"
+                            }
+                          },
+                          "foreach": "@body('Call_compute')?['archiveIds']",
+                          "runAfter": {
+                            "Publish": [
+                              "Succeeded"
+                            ]
+                          },
+                          "runtimeConfiguration": {
+                            "concurrency": {
+                              "repetitions": 1
+                            }
+                          },
+                          "type": "Foreach"
+                        },
+                        "Get_snap": {
+                          "inputs": {
+                            "body": {
+                              "headers": {
+                                "Accept": "application/json;odata=nometadata"
+                              },
+                              "method": "GET",
+                              "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id&$filter=ConfigType eq 'stock_snapshot'"
+                            },
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                          },
+                          "runAfter": {},
+                          "type": "ApiConnection"
+                        },
+                        "Publish": {
+                          "inputs": {
+                            "body": {
+                              "body": "@string(setProperty(json('{}'), 'ConfigData', string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'version',coalesce(triggerBody()?['data']?['snapshotVersion'],0)),'cutoffId',body('Call_compute')?['cutoffId']),'cutoffDate',''),'stepCutoffTs',coalesce(body('Call_compute')?['stepCutoffTs'],0)),'runId',coalesce(triggerBody()?['data']?['runId'],'')),'balances',body('Call_compute')?['balances']))))",
+                              "headers": {
+                                "Accept": "application/json;odata=nometadata",
+                                "Content-Type": "application/json;odata=nometadata",
+                                "IF-MATCH": "*",
+                                "X-HTTP-Method": "MERGE"
+                              },
+                              "method": "POST",
+                              "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_snap')?['value'])?['Id']})"
+                            },
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                          },
+                          "runAfter": {
+                            "Get_snap": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "ApiConnection"
+                        },
+                        "Release_ok": {
+                          "inputs": {
+                            "body": {
+                              "body": "@string(setProperty(json('{}'), 'ConfigData', string(setProperty(setProperty(setProperty(json('{}'),'status','idle'),'runId',''),'lockAt',''))))",
+                              "headers": {
+                                "Accept": "application/json;odata=nometadata",
+                                "Content-Type": "application/json;odata=nometadata",
+                                "IF-MATCH": "*",
+                                "X-HTTP-Method": "MERGE"
+                              },
+                              "method": "POST",
+                              "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_state')?['value'])?['Id']})"
+                            },
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                          },
+                          "runAfter": {
+                            "Delete_loop": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "ApiConnection"
+                        },
+                        "Respond_ok": {
+                          "inputs": {
+                            "body": {
+                              "counts": "@body('Call_compute')?['counts']",
+                              "cutoffId": "@body('Call_compute')?['cutoffId']",
+                              "hashes": "@body('Call_compute')?['hashes']",
+                              "snapshotVersion": "@triggerBody()?['data']?['snapshotVersion']",
+                              "status": "ok"
+                            },
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "statusCode": 200
+                          },
+                          "runAfter": {
+                            "Release_ok": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "Response"
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Release_vf": {
+                            "inputs": {
+                              "body": {
+                                "body": "@string(setProperty(json('{}'), 'ConfigData', string(setProperty(setProperty(setProperty(json('{}'),'status','idle'),'runId',''),'lockAt',''))))",
+                                "headers": {
+                                  "Accept": "application/json;odata=nometadata",
+                                  "Content-Type": "application/json;odata=nometadata",
+                                  "IF-MATCH": "*",
+                                  "X-HTTP-Method": "MERGE"
+                                },
+                                "method": "POST",
+                                "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_state')?['value'])?['Id']})"
+                              },
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                            },
+                            "runAfter": {},
+                            "type": "ApiConnection"
+                          },
+                          "Respond_vf": {
+                            "inputs": {
+                              "body": {
+                                "expected": "@length(body('Call_compute')?['archiveIds'])",
+                                "got": "@length(body('Map_reread'))",
+                                "reason": "archive_verify_failed",
+                                "status": "error"
+                              },
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "statusCode": 500
+                            },
+                            "runAfter": {
+                              "Release_vf": [
+                                "Succeeded",
+                                "Failed"
+                              ]
+                            },
+                            "type": "Response"
+                          }
+                        }
+                      },
+                      "expression": {
+                        "and": [
+                          {
+                            "equals": [
+                              "@length(body('Map_reread'))",
+                              "@length(body('Call_compute')?['archiveIds'])"
+                            ]
+                          },
+                          {
+                            "equals": [
+                              "@length(body('Missing'))",
+                              0
+                            ]
+                          },
+                          {
+                            "equals": [
+                              "@coalesce(body('Verify_content_hash')?['hash'],'X')",
+                              "@coalesce(body('Call_compute')?['hashes']?['archive'],'Y')"
+                            ]
+                          }
+                        ]
+                      },
+                      "runAfter": {
+                        "Verify_content_hash": [
+                          "Succeeded",
+                          "Failed"
+                        ]
+                      },
+                      "type": "If"
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Release_nc": {
+                        "inputs": {
+                          "body": {
+                            "body": "@string(setProperty(json('{}'), 'ConfigData', string(setProperty(setProperty(setProperty(json('{}'),'status','idle'),'runId',''),'lockAt',''))))",
+                            "headers": {
+                              "Accept": "application/json;odata=nometadata",
+                              "Content-Type": "application/json;odata=nometadata",
+                              "IF-MATCH": "*",
+                              "X-HTTP-Method": "MERGE"
+                            },
+                            "method": "POST",
+                            "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_state')?['value'])?['Id']})"
+                          },
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                        },
+                        "runAfter": {},
+                        "type": "ApiConnection"
+                      },
+                      "Respond_nc": {
+                        "inputs": {
+                          "body": {
+                            "mismatches": "@body('Call_compute')?['mismatches']",
+                            "reason": "@coalesce(body('Call_compute')?['reason'],'compute_failed')",
+                            "status": "error"
+                          },
+                          "headers": {
+                            "Content-Type": "application/json"
+                          },
+                          "statusCode": 422
+                        },
+                        "runAfter": {
+                          "Release_nc": [
+                            "Succeeded",
+                            "Failed"
+                          ]
+                        },
+                        "type": "Response"
+                      }
+                    }
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@coalesce(body('Call_compute')?['ok'],false)",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Call_compute": [
+                      "Succeeded",
+                      "Failed"
+                    ]
+                  },
+                  "type": "If"
+                }
+              },
+              "else": {
+                "actions": {
+                  "Release_trunc": {
+                    "inputs": {
+                      "body": {
+                        "body": "@string(setProperty(json('{}'), 'ConfigData', string(setProperty(setProperty(setProperty(json('{}'),'status','idle'),'runId',''),'lockAt',''))))",
+                        "headers": {
+                          "Accept": "application/json;odata=nometadata",
+                          "Content-Type": "application/json;odata=nometadata",
+                          "IF-MATCH": "*",
+                          "X-HTTP-Method": "MERGE"
+                        },
+                        "method": "POST",
+                        "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items(@{first(body('Get_state')?['value'])?['Id']})"
+                      },
+                      "host": {
+                        "connection": {
+                          "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                        }
+                      },
+                      "method": "post",
+                      "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                    },
+                    "runAfter": {},
+                    "type": "ApiConnection"
+                  },
+                  "Respond_trunc": {
+                    "inputs": {
+                      "body": {
+                        "note": "lower cutoff/retain so archive+keep <= 5000 per run",
+                        "reason": "too_many_rows",
+                        "status": "error"
+                      },
+                      "headers": {
+                        "Content-Type": "application/json"
+                      },
+                      "statusCode": 413
+                    },
+                    "runAfter": {
+                      "Release_trunc": [
+                        "Succeeded",
+                        "Failed"
+                      ]
+                    },
+                    "type": "Response"
+                  }
+                }
+              },
+              "expression": {
+                "and": [
+                  {
+                    "less": [
+                      "@length(body('Read_live')?['value'])",
+                      5000
+                    ]
+                  }
+                ]
+              },
+              "runAfter": {
+                "Read_live": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If"
+            }
+          },
+          "else": {
+            "actions": {
+              "Respond_locked": {
+                "inputs": {
+                  "body": {
+                    "reason": "locked",
+                    "status": "error"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 409
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            }
+          },
+          "expression": {
+            "and": [
+              {
+                "equals": [
+                  "@toLower(string(json(coalesce(first(body('Get_state')?['value'])?['ConfigData'],'{}'))?['status']))",
+                  "idle"
+                ]
+              }
+            ]
+          },
+          "runAfter": {
+            "Get_state": [
+              "Succeeded"
+            ]
+          },
+          "type": "If"
+        }
+      },
+      "else": {
+        "actions": {
+          "Split_fail": {
+            "actions": {
+              "Respond_403": {
+                "inputs": {
+                  "body": {
+                    "reason": "person_unauthorized",
+                    "status": "error"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 403
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            },
+            "else": {
+              "actions": {
+                "Respond_401": {
+                  "inputs": {
+                    "body": {
+                      "reason": "device_unauthorized",
+                      "status": "error"
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "statusCode": 401
+                  },
+                  "runAfter": {},
+                  "type": "Response"
+                }
+              }
+            },
+            "expression": {
+              "and": [
+                {
+                  "equals": [
+                    "@coalesce(body('Call_verify')?['directorOk'],false)",
+                    true
+                  ]
+                }
+              ]
+            },
+            "runAfter": {},
+            "type": "If"
+          }
+        }
+      },
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@coalesce(body('Call_verify')?['directorOk'],false)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@coalesce(body('Check_proof')?['ok'],false)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@toLower(coalesce(body('Check_proof')?['role'],''))",
+              "director"
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Check_proof": [
+          "Succeeded",
+          "Failed"
+        ]
+      },
+      "type": "If"
+    },
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "Http"
+    },
+    "Check_proof": {
+      "inputs": {
+        "body": {
+          "deviceContext": "@{if(equals(coalesce(body('Call_verify')?['directorOk'],false),true),'__director',coalesce(triggerBody()?['auth']?['storeId'],''))}",
+          "expectedPurposes": [
+            "archive"
+          ],
+          "proof": "@coalesce(triggerBody()?['proof'],'')",
+          "rows": "@coalesce(body('Read_actor')?['value'],json('[]'))"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/verifyProof?code=REDACTED"
+      },
+      "runAfter": {
+        "Read_actor": [
+          "Succeeded",
+          "Failed"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {},
+      "type": "ApiConnection"
+    },
+    "Read_actor": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,Username,Role,GraceUntil,Active,LockedUntil,TokenVersion&$filter=Username eq ''', replace(coalesce(triggerBody()?['actorUsername'],''),'''',''), '''')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

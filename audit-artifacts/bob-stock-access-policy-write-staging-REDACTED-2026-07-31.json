@@ -1,0 +1,561 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": ""
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Device_ok": {
+      "actions": {
+        "Call_evaluate": {
+          "inputs": {
+            "body": {
+              "action": "access-policy",
+              "capability": "@{if(empty(coalesce(body('Read_secure')?['value'],json('[]'))),'','editAccessPolicy')}",
+              "deviceContext": "__director",
+              "policy": "@if(empty(coalesce(body('Read_secure')?['value'],json('[]'))), null, json(coalesce(first(body('Read_secure')?['value'])?['ConfigData'],'null')))",
+              "proof": "@coalesce(triggerBody()?['proof'],'')",
+              "rows": "@coalesce(body('Read_actor')?['value'],json('[]'))"
+            },
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "method": "POST",
+            "uri": "https://bob-stock-money-fn.azurewebsites.net/api/evaluateAccess?code=REDACTED"
+          },
+          "runAfter": {
+            "Read_secure": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "runtimeConfiguration": {
+            "secureData": {
+              "properties": [
+                "inputs",
+                "outputs"
+              ]
+            }
+          },
+          "type": "Http"
+        },
+        "Person_ok": {
+          "actions": {
+            "Call_merge": {
+              "inputs": {
+                "body": {
+                  "baseVersion": "@triggerBody()?['baseVersion']",
+                  "current": "@if(empty(coalesce(body('Read_secure')?['value'],json('[]'))), null, json(coalesce(first(body('Read_secure')?['value'])?['ConfigData'],'null')))",
+                  "pinClear": "@coalesce(triggerBody()?['pinClear'],false)",
+                  "pinPlain": "@coalesce(triggerBody()?['pinPlain'],'')",
+                  "proposed": "@coalesce(triggerBody()?['proposed'],json('null'))"
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "method": "POST",
+                "uri": "https://bob-stock-money-fn.azurewebsites.net/api/policyMerge?code=REDACTED"
+              },
+              "runAfter": {},
+              "runtimeConfiguration": {
+                "secureData": {
+                  "properties": [
+                    "inputs",
+                    "outputs"
+                  ]
+                }
+              },
+              "type": "Http"
+            },
+            "Merge_ok": {
+              "actions": {
+                "Read_client": {
+                  "inputs": {
+                    "body": {
+                      "headers": {
+                        "Accept": "application/json;odata=nometadata"
+                      },
+                      "method": "GET",
+                      "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'access_policy'&$top=1"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                  },
+                  "runAfter": {},
+                  "type": "ApiConnection"
+                },
+                "Read_ver": {
+                  "inputs": {
+                    "body": {
+                      "headers": {
+                        "Accept": "application/json;odata=nometadata"
+                      },
+                      "method": "GET",
+                      "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'access_policy_version'&$top=1"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                  },
+                  "runAfter": {},
+                  "type": "ApiConnection"
+                },
+                "Respond_ok": {
+                  "inputs": {
+                    "body": {
+                      "ok": true,
+                      "version": "@body('Call_merge')?['version']"
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "statusCode": 200
+                  },
+                  "runAfter": {
+                    "Upsert_ver": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Response"
+                },
+                "Upsert_client": {
+                  "actions": {
+                    "Update_client": {
+                      "inputs": {
+                        "body": {
+                          "ConfigData": "@{string(setProperty(body('Call_merge')?['blob'],'pin', if(equals(coalesce(body('Call_merge')?['blob']?['pin'],null),null), null, json(concat('{\"expiresAt\":\"',coalesce(body('Call_merge')?['blob']?['pin']?['expiresAt'],''),'\"}')))))}"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "patch",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig_Staging'))}/items/@{encodeURIComponent(string(first(body('Read_client')?['value'])?['Id']))}"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Create_client": {
+                        "inputs": {
+                          "body": {
+                            "ConfigData": "@{string(setProperty(body('Call_merge')?['blob'],'pin', if(equals(coalesce(body('Call_merge')?['blob']?['pin'],null),null), null, json(concat('{\"expiresAt\":\"',coalesce(body('Call_merge')?['blob']?['pin']?['expiresAt'],''),'\"}')))))}",
+                            "ConfigType": "access_policy",
+                            "Title": "access_policy"
+                          },
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig_Staging'))}/items"
+                        },
+                        "runAfter": {},
+                        "type": "ApiConnection"
+                      }
+                    }
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@empty(coalesce(body('Read_client')?['value'],json('[]')))",
+                          false
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Upsert_secure": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If"
+                },
+                "Upsert_secure": {
+                  "actions": {
+                    "Update_secure": {
+                      "inputs": {
+                        "body": {
+                          "ConfigData": "@{string(body('Call_merge')?['blob'])}"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "patch",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig_Staging'))}/items/@{encodeURIComponent(string(first(body('Read_secure')?['value'])?['Id']))}"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Create_secure": {
+                        "inputs": {
+                          "body": {
+                            "ConfigData": "@{string(body('Call_merge')?['blob'])}",
+                            "ConfigType": "access_policy_secure",
+                            "Title": "access_policy_secure"
+                          },
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig_Staging'))}/items"
+                        },
+                        "runAfter": {},
+                        "type": "ApiConnection"
+                      }
+                    }
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@empty(coalesce(body('Read_secure')?['value'],json('[]')))",
+                          false
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Read_client": [
+                      "Succeeded"
+                    ],
+                    "Read_ver": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If"
+                },
+                "Upsert_ver": {
+                  "actions": {
+                    "Update_ver": {
+                      "inputs": {
+                        "body": {
+                          "ConfigData": "@{string(body('Call_merge')?['version'])}"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "patch",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig_Staging'))}/items/@{encodeURIComponent(string(first(body('Read_ver')?['value'])?['Id']))}"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Create_ver": {
+                        "inputs": {
+                          "body": {
+                            "ConfigData": "@{string(body('Call_merge')?['version'])}",
+                            "ConfigType": "access_policy_version",
+                            "Title": "access_policy_version"
+                          },
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig_Staging'))}/items"
+                        },
+                        "runAfter": {},
+                        "type": "ApiConnection"
+                      }
+                    }
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@empty(coalesce(body('Read_ver')?['value'],json('[]')))",
+                          false
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Upsert_client": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If"
+                }
+              },
+              "else": {
+                "actions": {
+                  "Respond_reject": {
+                    "inputs": {
+                      "body": {
+                        "ok": false,
+                        "reason": "@coalesce(body('Call_merge')?['reason'],'MERGE_FAILED')"
+                      },
+                      "headers": {
+                        "Content-Type": "application/json"
+                      },
+                      "statusCode": 200
+                    },
+                    "runAfter": {},
+                    "type": "Response"
+                  }
+                }
+              },
+              "expression": {
+                "and": [
+                  {
+                    "equals": [
+                      "@coalesce(body('Call_merge')?['ok'],false)",
+                      true
+                    ]
+                  }
+                ]
+              },
+              "runAfter": {
+                "Call_merge": [
+                  "Succeeded",
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "If"
+            }
+          },
+          "else": {
+            "actions": {
+              "Respond_403": {
+                "inputs": {
+                  "body": {
+                    "ok": false,
+                    "reason": "@coalesce(body('Call_evaluate')?['reason'],'FORBIDDEN')",
+                    "status": "forbidden"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 403
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            }
+          },
+          "expression": {
+            "and": [
+              {
+                "equals": [
+                  "@coalesce(body('Call_evaluate')?['ok'],false)",
+                  true
+                ]
+              },
+              {
+                "equals": [
+                  "@coalesce(body('Call_evaluate')?['role'],'')",
+                  "director"
+                ]
+              }
+            ]
+          },
+          "runAfter": {
+            "Call_evaluate": [
+              "Succeeded",
+              "Failed",
+              "TimedOut"
+            ]
+          },
+          "type": "If"
+        },
+        "Read_actor": {
+          "inputs": {
+            "body": {
+              "headers": {
+                "Accept": "application/json;odata=nometadata"
+              },
+              "method": "GET",
+              "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,UserId,Username,Role,Salt,SecretHash,GraceUntil,Active,FailedCount,LockedUntil,TokenVersion&$filter=Username eq ''', replace(coalesce(triggerBody()?['actorUsername'],''),'''',''), '''')}"
+            },
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+          },
+          "runAfter": {},
+          "runtimeConfiguration": {
+            "secureData": {
+              "properties": [
+                "outputs"
+              ]
+            }
+          },
+          "type": "ApiConnection"
+        },
+        "Read_secure": {
+          "inputs": {
+            "body": {
+              "headers": {
+                "Accept": "application/json;odata=nometadata"
+              },
+              "method": "GET",
+              "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigType,ConfigData&$filter=ConfigType eq 'access_policy_secure'&$top=1"
+            },
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+          },
+          "runAfter": {
+            "Read_actor": [
+              "Succeeded"
+            ]
+          },
+          "type": "ApiConnection"
+        }
+      },
+      "else": {
+        "actions": {
+          "Respond_401": {
+            "inputs": {
+              "body": {
+                "authRequired": true,
+                "status": "unauthorized"
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "statusCode": 401
+            },
+            "runAfter": {},
+            "type": "Response"
+          }
+        }
+      },
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@coalesce(body('Call_verify')?['directorOk'],false)",
+              true
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "If"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq ''',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''),''' or StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {},
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "When_an_HTTP_request_is_received": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

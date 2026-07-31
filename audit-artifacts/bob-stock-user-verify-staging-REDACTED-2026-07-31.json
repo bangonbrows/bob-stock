@@ -1,0 +1,637 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Device_ok": {
+      "actions": {
+        "Account_bound": {
+          "actions": {
+            "Call_person": {
+              "inputs": {
+                "body": {
+                  "deviceContext": "@{if(equals(coalesce(body('Call_verify')?['directorOk'],false),true),'__director',coalesce(triggerBody()?['auth']?['storeId'],''))}",
+                  "password": "@coalesce(triggerBody()?['user']?['password'],'')",
+                  "purpose": "@coalesce(triggerBody()?['user']?['purpose'],'session')",
+                  "rows": "@coalesce(body('Read_user')?['value'],json('[]'))",
+                  "username": "@coalesce(triggerBody()?['user']?['username'],'')"
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "method": "POST",
+                "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateUser?code=REDACTED"
+              },
+              "runAfter": {},
+              "runtimeConfiguration": {
+                "secureData": {
+                  "properties": [
+                    "inputs",
+                    "outputs"
+                  ]
+                }
+              },
+              "type": "Http"
+            },
+            "Person_ok": {
+              "actions": {
+                "Reset_check": {
+                  "actions": {
+                    "Reset_counters": {
+                      "inputs": {
+                        "body": {
+                          "body": "@string(setProperty(setProperty(setProperty(json('{}'), 'FailedCount', 0), 'LockedUntil', ''), 'LastFailedAt', ''))",
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata",
+                            "Content-Type": "application/json;odata=nometadata",
+                            "IF-MATCH": "*",
+                            "X-HTTP-Method": "MERGE"
+                          },
+                          "method": "POST",
+                          "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(coalesce(body('Read_user')?['value'],json('[]')))?['Id']})"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "greater": [
+                          "@int(coalesce(first(coalesce(body('Read_user')?['value'],json('[]')))?['FailedCount'],0))",
+                          0
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {},
+                  "type": "If"
+                },
+                "Respond_ok": {
+                  "inputs": {
+                    "body": {
+                      "expiresAt": "@body('Call_person')?['expiresAt']",
+                      "proof": "@body('Call_person')?['proof']",
+                      "role": "@body('Call_person')?['role']",
+                      "status": "ok",
+                      "username": "@body('Call_person')?['username']"
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "statusCode": 200
+                  },
+                  "runAfter": {
+                    "Reset_check": [
+                      "Succeeded",
+                      "Failed"
+                    ]
+                  },
+                  "runtimeConfiguration": {
+                    "secureData": {
+                      "properties": [
+                        "inputs"
+                      ]
+                    }
+                  },
+                  "type": "Response"
+                }
+              },
+              "else": {
+                "actions": {
+                  "Init_done_set": {
+                    "inputs": {
+                      "name": "done",
+                      "value": false
+                    },
+                    "runAfter": {},
+                    "type": "SetVariable"
+                  },
+                  "Respond_person_401": {
+                    "inputs": {
+                      "body": {
+                        "reason": "invalid_credentials",
+                        "status": "error"
+                      },
+                      "headers": {
+                        "Content-Type": "application/json"
+                      },
+                      "statusCode": 401
+                    },
+                    "runAfter": {
+                      "Row_exists": [
+                        "Succeeded",
+                        "Failed"
+                      ]
+                    },
+                    "type": "Response"
+                  },
+                  "Row_exists": {
+                    "actions": {
+                      "Notify_lockout": {
+                        "actions": {
+                          "Send_alert": {
+                            "inputs": {
+                              "body": {
+                                "Body": "<p><strong>Account:</strong> @{replace(coalesce(triggerBody()?['user']?['username'],''),'''','')}<br><strong>Failed attempts:</strong> @{variables('newCount')}<br><strong>Locked until:</strong> @{addMinutes(utcNow(),if(equals(div(variables('newCount'),5),1),15,if(equals(div(variables('newCount'),5),2),30,if(equals(div(variables('newCount'),5),3),60,120))))} (UTC)<br><strong>Attempt came from authenticated device/store:</strong> @{if(equals(coalesce(body('Call_verify')?['directorOk'],false),true),'__director',coalesce(triggerBody()?['auth']?['storeId'],''))}<br><strong>Time:</strong> @{utcNow()} (UTC)</p><p>This does not prove who was holding the device. If this wasn't expected, treat it as a possible break-in attempt: check the store, rotate the device key, and unlock the account via User Management when safe.</p>",
+                                "Importance": "High",
+                                "IsHtml": true,
+                                "MailboxAddress": "management@bangonbrows.com.au",
+                                "Subject": "SECURITY: account '@{replace(coalesce(triggerBody()?['user']?['username'],''),'''','')}' LOCKED after @{variables('newCount')} failed password attempts",
+                                "To": "logistics@bangonbrows.com.au"
+                              },
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['office365']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "path": "/v2/SharedMailbox/Mail"
+                            },
+                            "runAfter": {},
+                            "type": "ApiConnection"
+                          }
+                        },
+                        "else": {
+                          "actions": {}
+                        },
+                        "expression": {
+                          "and": [
+                            {
+                              "equals": [
+                                "@variables('done')",
+                                true
+                              ]
+                            },
+                            {
+                              "equals": [
+                                "@mod(variables('newCount'),5)",
+                                0
+                              ]
+                            }
+                          ]
+                        },
+                        "runAfter": {
+                          "Retry_loop": [
+                            "Succeeded",
+                            "Failed"
+                          ]
+                        },
+                        "type": "If"
+                      },
+                      "Retry_loop": {
+                        "actions": {
+                          "Inc_attempts": {
+                            "inputs": {
+                              "name": "attempts",
+                              "value": 1
+                            },
+                            "runAfter": {},
+                            "type": "IncrementVariable"
+                          },
+                          "Mark_done": {
+                            "actions": {
+                              "Set_done": {
+                                "inputs": {
+                                  "name": "done",
+                                  "value": true
+                                },
+                                "runAfter": {},
+                                "type": "SetVariable"
+                              }
+                            },
+                            "else": {
+                              "actions": {}
+                            },
+                            "expression": {
+                              "and": [
+                                {
+                                  "greaterOrEquals": [
+                                    "@coalesce(outputs('Write_counters')?['statusCode'],500)",
+                                    200
+                                  ]
+                                },
+                                {
+                                  "less": [
+                                    "@coalesce(outputs('Write_counters')?['statusCode'],500)",
+                                    300
+                                  ]
+                                }
+                              ]
+                            },
+                            "runAfter": {
+                              "Write_counters": [
+                                "Succeeded",
+                                "Failed"
+                              ]
+                            },
+                            "type": "If"
+                          },
+                          "Reread": {
+                            "inputs": {
+                              "body": {
+                                "headers": {
+                                  "Accept": "application/json;odata=minimalmetadata"
+                                },
+                                "method": "GET",
+                                "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,FailedCount&$filter=Username eq ''', replace(coalesce(triggerBody()?['user']?['username'],''),'''',''), '''')}"
+                              },
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                            },
+                            "runAfter": {
+                              "Inc_attempts": [
+                                "Succeeded"
+                              ]
+                            },
+                            "type": "ApiConnection"
+                          },
+                          "Set_newCount": {
+                            "inputs": {
+                              "name": "newCount",
+                              "value": "@add(int(coalesce(first(body('Reread')?['value'])?['FailedCount'],0)),1)"
+                            },
+                            "runAfter": {
+                              "Reread": [
+                                "Succeeded"
+                              ]
+                            },
+                            "type": "SetVariable"
+                          },
+                          "Write_counters": {
+                            "inputs": {
+                              "body": {
+                                "body": "@{if(equals(mod(variables('newCount'),5),0),string(setProperty(setProperty(setProperty(setProperty(json('{}'),'FailedCount',variables('newCount')),'LastFailedAt',utcNow()),'LockedUntil',addMinutes(utcNow(),if(equals(div(variables('newCount'),5),1),15,if(equals(div(variables('newCount'),5),2),30,if(equals(div(variables('newCount'),5),3),60,120))))),'LastLockoutNotifiedAt',utcNow())),string(setProperty(setProperty(json('{}'),'FailedCount',variables('newCount')),'LastFailedAt',utcNow())))}",
+                                "headers": {
+                                  "Accept": "application/json;odata=nometadata",
+                                  "Content-Type": "application/json;odata=nometadata",
+                                  "IF-MATCH": "@first(body('Reread')?['value'])?['odata.etag']",
+                                  "X-HTTP-Method": "MERGE"
+                                },
+                                "method": "POST",
+                                "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(body('Reread')?['value'])?['Id']})"
+                              },
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                            },
+                            "runAfter": {
+                              "Set_newCount": [
+                                "Succeeded"
+                              ]
+                            },
+                            "type": "ApiConnection"
+                          }
+                        },
+                        "expression": "@or(variables('done'),greaterOrEquals(variables('attempts'),10))",
+                        "limit": {
+                          "count": 11,
+                          "timeout": "PT5M"
+                        },
+                        "runAfter": {},
+                        "type": "Until"
+                      }
+                    },
+                    "else": {
+                      "actions": {}
+                    },
+                    "expression": {
+                      "and": [
+                        {
+                          "equals": [
+                            "@greater(length(coalesce(body('Read_user')?['value'],json('[]'))),0)",
+                            true
+                          ]
+                        },
+                        {
+                          "equals": [
+                            "@and(not(equals(coalesce(first(body('Read_user')?['value'])?['LockedUntil'],''),'')),greater(coalesce(first(body('Read_user')?['value'])?['LockedUntil'],''),utcNow()))",
+                            false
+                          ]
+                        }
+                      ]
+                    },
+                    "runAfter": {
+                      "Init_done_set": [
+                        "Succeeded"
+                      ]
+                    },
+                    "type": "If"
+                  }
+                }
+              },
+              "expression": {
+                "and": [
+                  {
+                    "equals": [
+                      "@coalesce(body('Call_person')?['userOk'],false)",
+                      true
+                    ]
+                  }
+                ]
+              },
+              "runAfter": {
+                "Call_person": [
+                  "Succeeded",
+                  "Failed"
+                ]
+              },
+              "type": "If"
+            }
+          },
+          "else": {
+            "actions": {
+              "Respond_unbound": {
+                "inputs": {
+                  "body": {
+                    "reason": "invalid_credentials",
+                    "status": "error"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 401
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            }
+          },
+          "expression": {
+            "or": [
+              {
+                "equals": [
+                  "@coalesce(body('Call_verify')?['directorOk'],false)",
+                  true
+                ]
+              },
+              {
+                "and": [
+                  {
+                    "equals": [
+                      "@coalesce(body('Call_verify')?['storeOk'],false)",
+                      true
+                    ]
+                  },
+                  {
+                    "greater": [
+                      "@length(coalesce(body('Read_user')?['value'],json('[]')))",
+                      0
+                    ]
+                  },
+                  {
+                    "not": {
+                      "equals": [
+                        "@toLower(string(coalesce(first(body('Read_user')?['value'])?['Role'],'')))",
+                        "director"
+                      ]
+                    }
+                  },
+                  {
+                    "equals": [
+                      "@contains(json(coalesce(first(body('Read_user')?['value'])?['StoreIds'],'[]')), coalesce(triggerBody()?['auth']?['storeId'],''))",
+                      true
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "runAfter": {
+            "Read_user": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "type": "If"
+        },
+        "Read_user": {
+          "inputs": {
+            "body": {
+              "headers": {
+                "Accept": "application/json;odata=minimalmetadata"
+              },
+              "method": "GET",
+              "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,UserId,Username,FullName,Role,StoreIds,Salt,SecretHash,Version,GraceUntil,Active,FailedCount,LockedUntil,TokenVersion&$filter=Username eq ''', replace(coalesce(triggerBody()?['user']?['username'],''),'''',''), '''')}"
+            },
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+          },
+          "runAfter": {},
+          "runtimeConfiguration": {
+            "secureData": {
+              "properties": [
+                "inputs",
+                "outputs"
+              ]
+            }
+          },
+          "type": "ApiConnection"
+        }
+      },
+      "else": {
+        "actions": {
+          "Respond_device_401": {
+            "inputs": {
+              "body": {
+                "reason": "device_unauthorized",
+                "status": "error"
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "statusCode": 401
+            },
+            "runAfter": {},
+            "type": "Response"
+          }
+        }
+      },
+      "expression": {
+        "or": [
+          {
+            "equals": [
+              "@coalesce(body('Call_verify')?['directorOk'],false)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@coalesce(body('Call_verify')?['storeOk'],false)",
+              true
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "If"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq ''',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''),''' or StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {
+        "Init_newCount": [
+          "Succeeded"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    },
+    "Init_attempts": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "attempts",
+            "type": "integer",
+            "value": 0
+          }
+        ]
+      },
+      "runAfter": {},
+      "type": "InitializeVariable"
+    },
+    "Init_done": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "done",
+            "type": "boolean",
+            "value": false
+          }
+        ]
+      },
+      "runAfter": {
+        "Init_attempts": [
+          "Succeeded"
+        ]
+      },
+      "type": "InitializeVariable"
+    },
+    "Init_newCount": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "newCount",
+            "type": "integer",
+            "value": 0
+          }
+        ]
+      },
+      "runAfter": {
+        "Init_done": [
+          "Succeeded"
+        ]
+      },
+      "type": "InitializeVariable"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

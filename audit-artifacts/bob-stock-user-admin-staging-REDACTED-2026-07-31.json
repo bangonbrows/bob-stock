@@ -1,0 +1,963 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": ""
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Device_ok": {
+      "actions": {
+        "Check_proof": {
+          "inputs": {
+            "body": {
+              "deviceContext": "__director",
+              "expectedPurposes": [
+                "user-admin"
+              ],
+              "proof": "@coalesce(triggerBody()?['proof'],'')",
+              "rows": "@coalesce(body('Read_actor')?['value'],json('[]'))"
+            },
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "method": "POST",
+            "uri": "https://bob-stock-money-fn.azurewebsites.net/api/verifyProof?code=REDACTED"
+          },
+          "runAfter": {
+            "Read_actor": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "runtimeConfiguration": {
+            "secureData": {
+              "properties": [
+                "inputs",
+                "outputs"
+              ]
+            }
+          },
+          "type": "Http"
+        },
+        "Person_ok": {
+          "actions": {
+            "Op_switch": {
+              "cases": {
+                "op_activate": {
+                  "actions": {
+                    "Respond_act": {
+                      "inputs": {
+                        "body": {
+                          "op": "activate",
+                          "status": "ok"
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "statusCode": 200
+                      },
+                      "runAfter": {
+                        "Write_act": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Response"
+                    },
+                    "Write_act": {
+                      "inputs": {
+                        "body": {
+                          "body": "@{string(setProperty(json('{}'),'Active',1))}",
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata",
+                            "Content-Type": "application/json;odata=nometadata",
+                            "IF-MATCH": "@first(coalesce(body('Read_target')?['value'],json('[]')))?['odata.etag']",
+                            "X-HTTP-Method": "MERGE"
+                          },
+                          "method": "POST",
+                          "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(coalesce(body('Read_target')?['value'],json('[]')))?['Id']})"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs",
+                            "outputs"
+                          ]
+                        }
+                      },
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "case": "activate"
+                },
+                "op_create": {
+                  "actions": {
+                    "Mint_new": {
+                      "inputs": {
+                        "body": {
+                          "password": "@coalesce(triggerBody()?['data']?['password'],'')",
+                          "role": "@coalesce(triggerBody()?['data']?['role'],'staff')",
+                          "username": "@coalesce(triggerBody()?['data']?['username'],'')"
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "method": "POST",
+                        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/mintUserCredential?code=REDACTED"
+                      },
+                      "runAfter": {},
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs",
+                            "outputs"
+                          ]
+                        }
+                      },
+                      "type": "Http"
+                    },
+                    "Mint_ok": {
+                      "actions": {
+                        "Create_result": {
+                          "actions": {
+                            "Respond_created": {
+                              "inputs": {
+                                "body": {
+                                  "op": "create",
+                                  "status": "ok",
+                                  "username": "@coalesce(triggerBody()?['data']?['username'],'')"
+                                },
+                                "headers": {
+                                  "Content-Type": "application/json"
+                                },
+                                "statusCode": 200
+                              },
+                              "runAfter": {},
+                              "type": "Response"
+                            }
+                          },
+                          "else": {
+                            "actions": {
+                              "Respond_create_fail": {
+                                "inputs": {
+                                  "body": {
+                                    "reason": "create_failed_or_duplicate",
+                                    "status": "error"
+                                  },
+                                  "headers": {
+                                    "Content-Type": "application/json"
+                                  },
+                                  "statusCode": 409
+                                },
+                                "runAfter": {},
+                                "type": "Response"
+                              }
+                            }
+                          },
+                          "expression": {
+                            "and": [
+                              {
+                                "greaterOrEquals": [
+                                  "@coalesce(outputs('Insert_user')?['statusCode'],500)",
+                                  200
+                                ]
+                              },
+                              {
+                                "less": [
+                                  "@coalesce(outputs('Insert_user')?['statusCode'],500)",
+                                  300
+                                ]
+                              }
+                            ]
+                          },
+                          "runAfter": {
+                            "Insert_user": [
+                              "Succeeded",
+                              "Failed"
+                            ]
+                          },
+                          "type": "If"
+                        },
+                        "Insert_user": {
+                          "inputs": {
+                            "body": {
+                              "body": "@{string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Title',coalesce(triggerBody()?['data']?['username'],'')),'UserId',concat('u_',coalesce(triggerBody()?['data']?['username'],''))),'Username',coalesce(triggerBody()?['data']?['username'],'')),'FullName',coalesce(triggerBody()?['data']?['fullName'],'')),'Role',coalesce(triggerBody()?['data']?['role'],'staff')),'StoreIds',string(coalesce(triggerBody()?['data']?['storeIds'],json('[]')))),'Salt',body('Mint_new')?['salt']),'SecretHash',body('Mint_new')?['hash']),'Version',1),'Active',1),'FailedCount',0),'TokenVersion',1))}",
+                              "headers": {
+                                "Accept": "application/json;odata=nometadata",
+                                "Content-Type": "application/json;odata=nometadata"
+                              },
+                              "method": "POST",
+                              "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items"
+                            },
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                          },
+                          "runAfter": {},
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs",
+                                "outputs"
+                              ]
+                            }
+                          },
+                          "type": "ApiConnection"
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Respond_mint_fail": {
+                            "inputs": {
+                              "body": {
+                                "reason": "@coalesce(body('Mint_new')?['reason'],'mint_failed')",
+                                "status": "error"
+                              },
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "statusCode": 422
+                            },
+                            "runAfter": {},
+                            "type": "Response"
+                          }
+                        }
+                      },
+                      "expression": {
+                        "and": [
+                          {
+                            "equals": [
+                              "@coalesce(body('Mint_new')?['ok'],false)",
+                              true
+                            ]
+                          }
+                        ]
+                      },
+                      "runAfter": {
+                        "Mint_new": [
+                          "Succeeded",
+                          "Failed"
+                        ]
+                      },
+                      "type": "If"
+                    }
+                  },
+                  "case": "create"
+                },
+                "op_deactivate": {
+                  "actions": {
+                    "Count_dirs_d": {
+                      "inputs": {
+                        "body": {
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata"
+                          },
+                          "method": "GET",
+                          "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items?$select=Id&$filter=Role eq 'director' and Active eq 1&$top=50"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    },
+                    "Guard_d": {
+                      "actions": {
+                        "Respond_last_d": {
+                          "inputs": {
+                            "body": {
+                              "reason": "last_director",
+                              "status": "error"
+                            },
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "statusCode": 409
+                          },
+                          "runAfter": {},
+                          "type": "Response"
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Respond_deact": {
+                            "inputs": {
+                              "body": {
+                                "op": "deactivate",
+                                "status": "ok"
+                              },
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "statusCode": 200
+                            },
+                            "runAfter": {
+                              "Write_deact": [
+                                "Succeeded"
+                              ]
+                            },
+                            "type": "Response"
+                          },
+                          "Write_deact": {
+                            "inputs": {
+                              "body": {
+                                "body": "@{string(setProperty(setProperty(json('{}'),'Active',0),'TokenVersion',add(int(coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['TokenVersion'],0)),1)))}",
+                                "headers": {
+                                  "Accept": "application/json;odata=nometadata",
+                                  "Content-Type": "application/json;odata=nometadata",
+                                  "IF-MATCH": "@first(coalesce(body('Read_target')?['value'],json('[]')))?['odata.etag']",
+                                  "X-HTTP-Method": "MERGE"
+                                },
+                                "method": "POST",
+                                "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(coalesce(body('Read_target')?['value'],json('[]')))?['Id']})"
+                              },
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                            },
+                            "runAfter": {},
+                            "runtimeConfiguration": {
+                              "secureData": {
+                                "properties": [
+                                  "inputs",
+                                  "outputs"
+                                ]
+                              }
+                            },
+                            "type": "ApiConnection"
+                          }
+                        }
+                      },
+                      "expression": {
+                        "and": [
+                          {
+                            "equals": [
+                              "@toLower(string(coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['Role'],'')))",
+                              "director"
+                            ]
+                          },
+                          {
+                            "lessOrEquals": [
+                              "@length(coalesce(body('Count_dirs_d')?['value'],json('[]')))",
+                              1
+                            ]
+                          }
+                        ]
+                      },
+                      "runAfter": {
+                        "Count_dirs_d": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "If"
+                    }
+                  },
+                  "case": "deactivate"
+                },
+                "op_list": {
+                  "actions": {
+                    "Read_all": {
+                      "inputs": {
+                        "body": {
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata"
+                          },
+                          "method": "GET",
+                          "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items?$select=Username,FullName,Role,StoreIds,Active,FailedCount,LockedUntil,LastFailedAt&$top=500"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    },
+                    "Respond_list": {
+                      "inputs": {
+                        "body": {
+                          "op": "list",
+                          "status": "ok",
+                          "users": "@coalesce(body('Read_all')?['value'],json('[]'))"
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "statusCode": 200
+                      },
+                      "runAfter": {
+                        "Read_all": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Response"
+                    }
+                  },
+                  "case": "list"
+                },
+                "op_setPassword": {
+                  "actions": {
+                    "Mint_pw": {
+                      "inputs": {
+                        "body": {
+                          "password": "@coalesce(triggerBody()?['data']?['password'],'')",
+                          "role": "@{coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['Role'],'staff')}",
+                          "username": "@coalesce(triggerBody()?['data']?['username'],'')"
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "method": "POST",
+                        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/mintUserCredential?code=REDACTED"
+                      },
+                      "runAfter": {},
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs",
+                            "outputs"
+                          ]
+                        }
+                      },
+                      "type": "Http"
+                    },
+                    "Mint_pw_ok": {
+                      "actions": {
+                        "Respond_pw": {
+                          "inputs": {
+                            "body": {
+                              "op": "setPassword",
+                              "status": "ok"
+                            },
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "statusCode": 200
+                          },
+                          "runAfter": {
+                            "Write_pw": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "Response"
+                        },
+                        "Write_pw": {
+                          "inputs": {
+                            "body": {
+                              "body": "@{string(setProperty(setProperty(setProperty(setProperty(setProperty(setProperty(json('{}'),'Salt',body('Mint_pw')?['salt']),'SecretHash',body('Mint_pw')?['hash']),'TokenVersion',add(int(coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['TokenVersion'],0)),1)),'FailedCount',0),'LockedUntil',''),'LastFailedAt',''))}",
+                              "headers": {
+                                "Accept": "application/json;odata=nometadata",
+                                "Content-Type": "application/json;odata=nometadata",
+                                "IF-MATCH": "@first(coalesce(body('Read_target')?['value'],json('[]')))?['odata.etag']",
+                                "X-HTTP-Method": "MERGE"
+                              },
+                              "method": "POST",
+                              "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(coalesce(body('Read_target')?['value'],json('[]')))?['Id']})"
+                            },
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                          },
+                          "runAfter": {},
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs",
+                                "outputs"
+                              ]
+                            }
+                          },
+                          "type": "ApiConnection"
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Respond_pw_fail": {
+                            "inputs": {
+                              "body": {
+                                "reason": "@coalesce(body('Mint_pw')?['reason'],'mint_failed')",
+                                "status": "error"
+                              },
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "statusCode": 422
+                            },
+                            "runAfter": {},
+                            "type": "Response"
+                          }
+                        }
+                      },
+                      "expression": {
+                        "and": [
+                          {
+                            "equals": [
+                              "@coalesce(body('Mint_pw')?['ok'],false)",
+                              true
+                            ]
+                          }
+                        ]
+                      },
+                      "runAfter": {
+                        "Mint_pw": [
+                          "Succeeded",
+                          "Failed"
+                        ]
+                      },
+                      "type": "If"
+                    }
+                  },
+                  "case": "setPassword"
+                },
+                "op_setRole": {
+                  "actions": {
+                    "Count_dirs_r": {
+                      "inputs": {
+                        "body": {
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata"
+                          },
+                          "method": "GET",
+                          "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items?$select=Id&$filter=Role eq 'director' and Active eq 1&$top=50"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    },
+                    "Guard_r": {
+                      "actions": {
+                        "Respond_last_r": {
+                          "inputs": {
+                            "body": {
+                              "reason": "last_director",
+                              "status": "error"
+                            },
+                            "headers": {
+                              "Content-Type": "application/json"
+                            },
+                            "statusCode": 409
+                          },
+                          "runAfter": {},
+                          "type": "Response"
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "Respond_role": {
+                            "inputs": {
+                              "body": {
+                                "op": "setRole",
+                                "status": "ok"
+                              },
+                              "headers": {
+                                "Content-Type": "application/json"
+                              },
+                              "statusCode": 200
+                            },
+                            "runAfter": {
+                              "Write_role": [
+                                "Succeeded"
+                              ]
+                            },
+                            "type": "Response"
+                          },
+                          "Write_role": {
+                            "inputs": {
+                              "body": {
+                                "body": "@{string(setProperty(setProperty(setProperty(json('{}'),'Role',coalesce(triggerBody()?['data']?['role'],'staff')),'StoreIds',string(coalesce(triggerBody()?['data']?['storeIds'],json(coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['StoreIds'],'[]'))))),'TokenVersion',add(int(coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['TokenVersion'],0)),1)))}",
+                                "headers": {
+                                  "Accept": "application/json;odata=nometadata",
+                                  "Content-Type": "application/json;odata=nometadata",
+                                  "IF-MATCH": "@first(coalesce(body('Read_target')?['value'],json('[]')))?['odata.etag']",
+                                  "X-HTTP-Method": "MERGE"
+                                },
+                                "method": "POST",
+                                "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(coalesce(body('Read_target')?['value'],json('[]')))?['Id']})"
+                              },
+                              "host": {
+                                "connection": {
+                                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                                }
+                              },
+                              "method": "post",
+                              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                            },
+                            "runAfter": {},
+                            "runtimeConfiguration": {
+                              "secureData": {
+                                "properties": [
+                                  "inputs",
+                                  "outputs"
+                                ]
+                              }
+                            },
+                            "type": "ApiConnection"
+                          }
+                        }
+                      },
+                      "expression": {
+                        "and": [
+                          {
+                            "equals": [
+                              "@toLower(string(coalesce(first(coalesce(body('Read_target')?['value'],json('[]')))?['Role'],'')))",
+                              "director"
+                            ]
+                          },
+                          {
+                            "not": {
+                              "equals": [
+                                "@toLower(coalesce(triggerBody()?['data']?['role'],'staff'))",
+                                "director"
+                              ]
+                            }
+                          },
+                          {
+                            "lessOrEquals": [
+                              "@length(coalesce(body('Count_dirs_r')?['value'],json('[]')))",
+                              1
+                            ]
+                          }
+                        ]
+                      },
+                      "runAfter": {
+                        "Count_dirs_r": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "If"
+                    }
+                  },
+                  "case": "setRole"
+                },
+                "op_unlock": {
+                  "actions": {
+                    "Respond_unlock": {
+                      "inputs": {
+                        "body": {
+                          "op": "unlock",
+                          "status": "ok"
+                        },
+                        "headers": {
+                          "Content-Type": "application/json"
+                        },
+                        "statusCode": 200
+                      },
+                      "runAfter": {
+                        "Write_unlock": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Response"
+                    },
+                    "Write_unlock": {
+                      "inputs": {
+                        "body": {
+                          "body": "@{string(setProperty(setProperty(setProperty(json('{}'),'LockedUntil',''),'FailedCount',0),'LastFailedAt',''))}",
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata",
+                            "Content-Type": "application/json;odata=nometadata",
+                            "IF-MATCH": "@first(coalesce(body('Read_target')?['value'],json('[]')))?['odata.etag']",
+                            "X-HTTP-Method": "MERGE"
+                          },
+                          "method": "POST",
+                          "uri": "_api/web/lists/getbytitle('UserCredentials_Staging')/items(@{first(coalesce(body('Read_target')?['value'],json('[]')))?['Id']})"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs",
+                            "outputs"
+                          ]
+                        }
+                      },
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "case": "unlock"
+                }
+              },
+              "default": {
+                "actions": {
+                  "Respond_badop": {
+                    "inputs": {
+                      "body": {
+                        "reason": "unknown_op",
+                        "status": "error"
+                      },
+                      "headers": {
+                        "Content-Type": "application/json"
+                      },
+                      "statusCode": 400
+                    },
+                    "runAfter": {},
+                    "type": "Response"
+                  }
+                }
+              },
+              "expression": "@coalesce(triggerBody()?['op'],'')",
+              "runAfter": {
+                "Read_target": [
+                  "Succeeded",
+                  "Failed"
+                ]
+              },
+              "type": "Switch"
+            },
+            "Read_target": {
+              "inputs": {
+                "body": {
+                  "headers": {
+                    "Accept": "application/json;odata=minimalmetadata"
+                  },
+                  "method": "GET",
+                  "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,Username,Role,StoreIds,Active,FailedCount,LockedUntil,TokenVersion&$filter=Username eq ''', replace(coalesce(triggerBody()?['data']?['username'],''),'''',''), '''')}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+              },
+              "runAfter": {},
+              "type": "ApiConnection"
+            }
+          },
+          "else": {
+            "actions": {
+              "Respond_person_401": {
+                "inputs": {
+                  "body": {
+                    "reason": "person_unauthorized",
+                    "status": "error"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 401
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            }
+          },
+          "expression": {
+            "and": [
+              {
+                "equals": [
+                  "@coalesce(body('Check_proof')?['ok'],false)",
+                  true
+                ]
+              },
+              {
+                "equals": [
+                  "@coalesce(body('Check_proof')?['role'],'')",
+                  "director"
+                ]
+              }
+            ]
+          },
+          "runAfter": {
+            "Check_proof": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "type": "If"
+        },
+        "Read_actor": {
+          "inputs": {
+            "body": {
+              "headers": {
+                "Accept": "application/json;odata=nometadata"
+              },
+              "method": "GET",
+              "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,Username,Role,Salt,SecretHash,GraceUntil,Active,FailedCount,LockedUntil,TokenVersion&$filter=Username eq ''', replace(coalesce(triggerBody()?['actorUsername'],''),'''',''), '''')}"
+            },
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+          },
+          "runAfter": {},
+          "runtimeConfiguration": {
+            "secureData": {
+              "properties": [
+                "inputs",
+                "outputs"
+              ]
+            }
+          },
+          "type": "ApiConnection"
+        }
+      },
+      "else": {
+        "actions": {
+          "Respond_device_401": {
+            "inputs": {
+              "body": {
+                "reason": "device_unauthorized",
+                "status": "error"
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "statusCode": 401
+            },
+            "runAfter": {},
+            "type": "Response"
+          }
+        }
+      },
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@coalesce(body('Call_verify')?['directorOk'],false)",
+              true
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "If"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {},
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

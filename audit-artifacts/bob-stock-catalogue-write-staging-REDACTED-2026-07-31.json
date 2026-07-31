@@ -1,0 +1,508 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Authorized": {
+      "actions": {
+        "Publish_loop": {
+          "actions": {
+            "Call_merge": {
+              "inputs": {
+                "body": {
+                  "changes": "@coalesce(triggerBody()?['data']?['changes'],json('[]'))",
+                  "costChanges": "@coalesce(triggerBody()?['data']?['costChanges'],json('[]'))",
+                  "currentRows": "@coalesce(body('Read_blobs')?['value'],json('[]'))"
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "method": "POST",
+                "uri": "https://bob-stock-money-fn.azurewebsites.net/api/catalogueMerge?code=REDACTED"
+              },
+              "runAfter": {
+                "Read_blobs": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http"
+            },
+            "Inc_attempt": {
+              "inputs": {
+                "name": "attempt",
+                "value": 1
+              },
+              "runAfter": {},
+              "type": "IncrementVariable"
+            },
+            "Mark_fail": {
+              "inputs": {
+                "name": "converged",
+                "value": false
+              },
+              "runAfter": {
+                "Writeback": [
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "SetVariable"
+            },
+            "Mark_ok": {
+              "inputs": {
+                "name": "converged",
+                "value": true
+              },
+              "runAfter": {
+                "Writeback": [
+                  "Succeeded"
+                ]
+              },
+              "type": "SetVariable"
+            },
+            "Read_blobs": {
+              "inputs": {
+                "body": {
+                  "headers": {
+                    "Accept": "application/json;odata=minimalmetadata"
+                  },
+                  "method": "GET",
+                  "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=Id,ConfigType,ConfigData&$top=50"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+              },
+              "runAfter": {
+                "Inc_attempt": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection"
+            },
+            "Writeback": {
+              "actions": {
+                "If_changed": {
+                  "actions": {
+                    "Update_item": {
+                      "inputs": {
+                        "body": {
+                          "body": "@body('Call_merge')?['newBlobsBody']?[items('Writeback')?['ConfigType']]",
+                          "headers": {
+                            "Accept": "application/json;odata=nometadata",
+                            "Content-Type": "application/json;odata=nometadata",
+                            "IF-MATCH": "@{items('Writeback')?['odata.etag']}",
+                            "X-HTTP-Method": "MERGE"
+                          },
+                          "method": "POST",
+                          "uri": "@{concat('_api/web/lists/getbytitle(''AppConfig_Staging'')/items(',items('Writeback')?['Id'],')')}"
+                        },
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+                      },
+                      "runAfter": {},
+                      "type": "ApiConnection"
+                    }
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@coalesce(body('Call_merge')?['changed']?[items('Writeback')?['ConfigType']],false)",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {},
+                  "type": "If"
+                }
+              },
+              "foreach": "@body('Read_blobs')?['value']",
+              "runAfter": {
+                "Call_merge": [
+                  "Succeeded"
+                ]
+              },
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "type": "Foreach"
+            }
+          },
+          "expression": "@or(equals(variables('converged'),true),greaterOrEquals(variables('attempt'),5))",
+          "limit": {
+            "count": 6,
+            "timeout": "PT2M"
+          },
+          "runAfter": {
+            "Reset_converged": [
+              "Succeeded"
+            ]
+          },
+          "type": "Until"
+        },
+        "Reset_attempt": {
+          "inputs": {
+            "name": "attempt",
+            "value": 0
+          },
+          "runAfter": {},
+          "type": "SetVariable"
+        },
+        "Reset_converged": {
+          "inputs": {
+            "name": "converged",
+            "value": false
+          },
+          "runAfter": {
+            "Reset_attempt": [
+              "Succeeded"
+            ]
+          },
+          "type": "SetVariable"
+        },
+        "Respond": {
+          "actions": {
+            "Respond_ok": {
+              "inputs": {
+                "body": {
+                  "accepted": "@if(equals(variables('converged'),true),coalesce(body('Call_merge')?['accepted'],json('[]')),json('[]'))",
+                  "attempts": "@variables('attempt')",
+                  "conflicts": "@coalesce(body('Call_merge')?['conflicts'],json('[]'))",
+                  "costVersion": "@body('Call_merge')?['costVersion']",
+                  "failed": "@coalesce(body('Call_merge')?['failed'],json('[]'))",
+                  "masterVersion": "@body('Call_merge')?['masterVersion']",
+                  "rejected": "@coalesce(body('Call_merge')?['rejected'],json('[]'))",
+                  "status": "ok"
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "statusCode": 200
+              },
+              "runAfter": {},
+              "type": "Response"
+            }
+          },
+          "else": {
+            "actions": {
+              "Respond_writefail": {
+                "inputs": {
+                  "body": {
+                    "accepted": "@if(equals(variables('converged'),true),coalesce(body('Call_merge')?['accepted'],json('[]')),json('[]'))",
+                    "attempts": "@variables('attempt')",
+                    "conflicts": "@coalesce(body('Call_merge')?['conflicts'],json('[]'))",
+                    "costVersion": "@body('Call_merge')?['costVersion']",
+                    "failed": "@coalesce(body('Call_merge')?['failed'],json('[]'))",
+                    "masterVersion": "@body('Call_merge')?['masterVersion']",
+                    "rejected": "@coalesce(body('Call_merge')?['rejected'],json('[]'))",
+                    "status": "write_failed"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 200
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            }
+          },
+          "expression": {
+            "and": [
+              {
+                "equals": [
+                  "@variables('converged')",
+                  true
+                ]
+              }
+            ]
+          },
+          "runAfter": {
+            "Publish_loop": [
+              "Succeeded",
+              "Failed",
+              "TimedOut"
+            ]
+          },
+          "type": "If"
+        }
+      },
+      "else": {
+        "actions": {
+          "Split_fail": {
+            "actions": {
+              "Respond_403": {
+                "inputs": {
+                  "body": {
+                    "reason": "person_unauthorized",
+                    "status": "error"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 403
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            },
+            "else": {
+              "actions": {
+                "Respond_401": {
+                  "inputs": {
+                    "body": {
+                      "reason": "device_unauthorized",
+                      "status": "error"
+                    },
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "statusCode": 401
+                  },
+                  "runAfter": {},
+                  "type": "Response"
+                }
+              }
+            },
+            "expression": {
+              "and": [
+                {
+                  "equals": [
+                    "@coalesce(body('Call_verify')?['directorOk'],false)",
+                    true
+                  ]
+                }
+              ]
+            },
+            "runAfter": {},
+            "type": "If"
+          }
+        }
+      },
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@equals(coalesce(body('Call_verify')?['directorOk'],false),true)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@coalesce(body('Check_proof')?['ok'],false)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@toLower(coalesce(body('Check_proof')?['role'],''))",
+              "director"
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Check_proof": [
+          "Succeeded",
+          "Failed"
+        ]
+      },
+      "type": "If"
+    },
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Check_proof": {
+      "inputs": {
+        "body": {
+          "deviceContext": "@{if(equals(coalesce(body('Call_verify')?['directorOk'],false),true),'__director',coalesce(triggerBody()?['auth']?['storeId'],''))}",
+          "expectedPurposes": [
+            "publish"
+          ],
+          "proof": "@coalesce(triggerBody()?['proof'],'')",
+          "rows": "@coalesce(body('Read_actor')?['value'],json('[]'))"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/verifyProof?code=REDACTED"
+      },
+      "runAfter": {
+        "Read_actor": [
+          "Succeeded",
+          "Failed"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq ''',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''),''' or StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {
+        "Init_converged": [
+          "Succeeded"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    },
+    "Init_attempt": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "attempt",
+            "type": "integer",
+            "value": 0
+          }
+        ]
+      },
+      "runAfter": {},
+      "type": "InitializeVariable"
+    },
+    "Init_converged": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "converged",
+            "type": "boolean",
+            "value": false
+          }
+        ]
+      },
+      "runAfter": {
+        "Init_attempt": [
+          "Succeeded"
+        ]
+      },
+      "type": "InitializeVariable"
+    },
+    "Read_actor": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''UserCredentials_Staging'')/items?$select=Id,Username,Role,GraceUntil,Active,LockedUntil,TokenVersion&$filter=Username eq ''', replace(coalesce(triggerBody()?['actorUsername'],''),'''',''), '''')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs",
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

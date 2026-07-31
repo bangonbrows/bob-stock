@@ -1,0 +1,192 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Authorized": {
+      "actions": {
+        "Match_cred": {
+          "inputs": {
+            "from": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+            "where": "@equals(item()?['StoreId'], replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''))"
+          },
+          "runAfter": {},
+          "type": "Query"
+        },
+        "Read_archive": {
+          "inputs": {
+            "body": {
+              "headers": {
+                "Accept": "application/json;odata=nometadata"
+              },
+              "method": "GET",
+              "uri": "@{concat('_api/web/lists/getbytitle(''StockTransactions_Archive'')/items?$select=TransactionId,StoreId,ProductId,TxnType,Qty,TxnDate,TxnTimestamp,StaffName,Reason,DeviceId,TransferId,TargetTransactionId,SourceId&$orderby=SourceId asc&$top=5000', if(and(empty(outputs('Scope_bare')),empty(concat(if(empty(coalesce(triggerBody()?['data']?['from'],'')),'',concat('TxnDate ge ''',coalesce(triggerBody()?['data']?['from'],''),'''')),if(or(empty(coalesce(triggerBody()?['data']?['from'],'')),empty(coalesce(triggerBody()?['data']?['to'],''))),'',' and '),if(empty(coalesce(triggerBody()?['data']?['to'],'')),'',concat('TxnDate le ''',coalesce(triggerBody()?['data']?['to'],''),''''))))),'',concat('&$filter=', if(empty(outputs('Scope_bare')),concat(if(empty(coalesce(triggerBody()?['data']?['from'],'')),'',concat('TxnDate ge ''',coalesce(triggerBody()?['data']?['from'],''),'''')),if(or(empty(coalesce(triggerBody()?['data']?['from'],'')),empty(coalesce(triggerBody()?['data']?['to'],''))),'',' and '),if(empty(coalesce(triggerBody()?['data']?['to'],'')),'',concat('TxnDate le ''',coalesce(triggerBody()?['data']?['to'],''),''''))),if(empty(concat(if(empty(coalesce(triggerBody()?['data']?['from'],'')),'',concat('TxnDate ge ''',coalesce(triggerBody()?['data']?['from'],''),'''')),if(or(empty(coalesce(triggerBody()?['data']?['from'],'')),empty(coalesce(triggerBody()?['data']?['to'],''))),'',' and '),if(empty(coalesce(triggerBody()?['data']?['to'],'')),'',concat('TxnDate le ''',coalesce(triggerBody()?['data']?['to'],''),'''')))),outputs('Scope_bare'),concat(outputs('Scope_bare'),' and ',concat(if(empty(coalesce(triggerBody()?['data']?['from'],'')),'',concat('TxnDate ge ''',coalesce(triggerBody()?['data']?['from'],''),'''')),if(or(empty(coalesce(triggerBody()?['data']?['from'],'')),empty(coalesce(triggerBody()?['data']?['to'],''))),'',' and '),if(empty(coalesce(triggerBody()?['data']?['to'],'')),'',concat('TxnDate le ''',coalesce(triggerBody()?['data']?['to'],''),'''')))))))))}"
+            },
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+          },
+          "runAfter": {
+            "Scope_bare": [
+              "Succeeded"
+            ]
+          },
+          "type": "ApiConnection"
+        },
+        "Respond_ok": {
+          "inputs": {
+            "body": {
+              "count": "@length(coalesce(body('Read_archive')?['value'],json('[]')))",
+              "items": "@body('Read_archive')?['value']",
+              "status": "ok"
+            },
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "statusCode": 200
+          },
+          "runAfter": {
+            "Read_archive": [
+              "Succeeded"
+            ]
+          },
+          "type": "Response"
+        },
+        "Scope_bare": {
+          "inputs": "@if(or(equals(coalesce(body('Call_verify')?['directorOk'],false),true),contains(json(if(equals(trim(coalesce(first(body('Match_cred'))?['StoreIds'],'[]')),''),'[]',coalesce(first(body('Match_cred'))?['StoreIds'],'[]'))),'*')),'',if(or(not(equals(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(coalesce(first(body('Match_cred'))?['StoreIds'],'[]'),'a',''),'b',''),'c',''),'d',''),'e',''),'f',''),'g',''),'h',''),'i',''),'j',''),'k',''),'l',''),'m',''),'n',''),'o',''),'p',''),'q',''),'r',''),'s',''),'t',''),'u',''),'v',''),'w',''),'x',''),'y',''),'z',''),'A',''),'B',''),'C',''),'D',''),'E',''),'F',''),'G',''),'H',''),'I',''),'J',''),'K',''),'L',''),'M',''),'N',''),'O',''),'P',''),'Q',''),'R',''),'S',''),'T',''),'U',''),'V',''),'W',''),'X',''),'Y',''),'Z',''),'0',''),'1',''),'2',''),'3',''),'4',''),'5',''),'6',''),'7',''),'8',''),'9',''),'_',''),'-',''),'[',''),']',''),',',''),'\"',''),'')),equals(coalesce(first(body('Match_cred'))?['StoreIds'],'[]'),'[]'),equals(trim(coalesce(first(body('Match_cred'))?['StoreIds'],'[]')),'')),'(StoreId eq ''__no_scope__'')',concat('(', replace(replace(replace(replace(coalesce(first(body('Match_cred'))?['StoreIds'],'[]'),' ',''),'\",\"',''' or StoreId eq '''),'[\"','StoreId eq '''),'\"]',''''), ')')))",
+          "runAfter": {
+            "Match_cred": [
+              "Succeeded"
+            ]
+          },
+          "type": "Compose"
+        }
+      },
+      "else": {
+        "actions": {
+          "Respond_401": {
+            "inputs": {
+              "body": {
+                "reason": "not_authorized",
+                "status": "error"
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "statusCode": 401
+            },
+            "runAfter": {},
+            "type": "Response"
+          }
+        }
+      },
+      "expression": {
+        "or": [
+          {
+            "equals": [
+              "@coalesce(body('Call_verify')?['directorOk'],false)",
+              true
+            ]
+          },
+          {
+            "and": [
+              {
+                "equals": [
+                  "@coalesce(body('Call_verify')?['storeOk'],false)",
+                  true
+                ]
+              },
+              {
+                "equals": [
+                  "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+                  "head_office"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "If"
+    },
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "Http"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active,StoreIds&$filter=Active eq 1 and (StoreId eq ''',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''),''' or StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {},
+      "type": "ApiConnection"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

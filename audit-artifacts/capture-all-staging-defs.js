@@ -74,9 +74,63 @@ function countActions(node) {
   return n;
 }
 
+// ── REDACTION ──────────────────────────────────────────────────────────────────────────────────────
+// Produces AUDITOR-SAFE copies that can be COMMITTED, so a review is reproducible from the cited
+// commit. Codex found the packs unreviewable: the brief named these captures as ground truth while
+// audit-artifacts/ is gitignored wholesale, so the files were not in the commit at all and had to be
+// imported from another working copy.
+//
+// Scanned before writing this: the ONLY secret in the captures is the function key in `?code=` URIs
+// (22 across nine workflows). The three `"password":` hits are expression references
+// (`@coalesce(triggerBody()?['data']?['password'],'')`), i.e. field names, not values.
+//
+// A reviewer needs action names, wiring, conditions and expressions. None of that is secret. The key
+// is not part of what is being reviewed, so redacting it costs the review nothing.
+//
+// ⚠ Redaction is verified, not assumed: the output is re-scanned and the run ABORTS rather than
+// writing a file that still contains a secret. Publishing on hope is how a key reaches git history,
+// and git history cannot be revoked later — only the key can, by rotating it.
+const SECRET_PATTERNS = [
+  [/([?&]code=)[A-Za-z0-9_\-=]{20,}/g, '$1REDACTED'],
+  [/([?&]sig=)[A-Za-z0-9%_\-=+/]{20,}/g, '$1REDACTED'],
+];
+const RESIDUAL = [/[?&]code=[A-Za-z0-9_\-=]{20,}/, /[?&]sig=[A-Za-z0-9%_\-=+/]{20,}/, /sharedAccessKey/i];
+
+function redactAll(day) {
+  const out = [];
+  for (const t of TARGETS) {
+    const existing = fs.readdirSync(OUT_DIR).filter(f => f.startsWith(`${t.la}-PRE-`) && f.endsWith('.json')).sort();
+    if (!existing.length) { console.log(`  MISSING capture for ${t.la} — run without --redacted first.`); return 1; }
+    const src = path.join(OUT_DIR, existing[existing.length - 1]);
+    let text = fs.readFileSync(src, 'utf8');
+    let n = (text.match(/[?&]code=[A-Za-z0-9_\-=]{20,}/g) || []).length;
+    for (const [re, rep] of SECRET_PATTERNS) text = text.replace(re, rep);
+
+    for (const bad of RESIDUAL) {
+      if (bad.test(text)) {
+        console.log(`\n🛑 ABORT: ${t.la} still matches ${bad} AFTER redaction. Nothing written.`);
+        console.log('   Do not publish this. Widen SECRET_PATTERNS first.');
+        return 1;
+      }
+    }
+    const dst = path.join(OUT_DIR, `${t.la}-REDACTED-${day}.json`);
+    fs.writeFileSync(dst, text);
+    out.push({ la: t.la, keys: n, file: path.basename(dst) });
+  }
+  console.log('');
+  console.log('LOGIC APP'.padEnd(42) + 'KEYS REDACTED  FILE');
+  console.log('-'.repeat(96));
+  for (const r of out) console.log(r.la.padEnd(42) + String(r.keys).padEnd(15) + r.file);
+  console.log(`\n==== ${out.length}/${TARGETS.length} redacted copies written, ${out.reduce((a, b) => a + b.keys, 0)} keys removed ====`);
+  console.log('Verified: no residual code=/sig=/sharedAccessKey in any output.');
+  console.log('These are SAFE TO COMMIT. The -PRE- originals remain gitignored and are the rollback source.');
+  return 0;
+}
+
 function main() {
   const checkOnly = process.argv.includes('--check');
   const day = stamp();
+  if (process.argv.includes('--redacted')) process.exit(redactAll(day));
 
   // Fail fast and loudly rather than writing nine empty files.
   try {

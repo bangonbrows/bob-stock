@@ -1,0 +1,755 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Authorized": {
+      "actions": {
+        "Attest_failed_map": {
+          "inputs": {
+            "from": "@body('Attest_rows')",
+            "select": {
+              "TransactionId": "@item()?['TransactionId']",
+              "reason": "ATTEST_UNAVAILABLE",
+              "retryable": true
+            }
+          },
+          "runAfter": {
+            "Call_attest": [
+              "Failed",
+              "TimedOut"
+            ]
+          },
+          "type": "Select"
+        },
+        "Attest_rows": {
+          "inputs": {
+            "from": "@body('ToInsert')",
+            "select": "@item()?['row']"
+          },
+          "runAfter": {
+            "ToInsert": [
+              "Succeeded"
+            ]
+          },
+          "type": "Select"
+        },
+        "Call_attest": {
+          "inputs": {
+            "body": {
+              "op": "sign",
+              "rows": "@body('Attest_rows')"
+            },
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "method": "POST",
+            "uri": "https://bob-stock-money-fn.azurewebsites.net/api/attestRows?code=REDACTED"
+          },
+          "runAfter": {
+            "Attest_rows": [
+              "Succeeded"
+            ]
+          },
+          "runtimeConfiguration": {
+            "secureData": {
+              "properties": [
+                "inputs"
+              ]
+            }
+          },
+          "type": "Http"
+        },
+        "Catalogue_ok": {
+          "inputs": "@and(not(empty(body('Get_products')?['value'])),not(empty(body('Get_stores')?['value'])))",
+          "runAfter": {
+            "Get_stores": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "type": "Compose"
+        },
+        "Get_products": {
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "get",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig'))}/items",
+            "queries": {
+              "$filter": "ConfigType eq 'products'",
+              "$top": 1
+            }
+          },
+          "runAfter": {},
+          "type": "ApiConnection"
+        },
+        "Get_stores": {
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+              }
+            },
+            "method": "get",
+            "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('AppConfig'))}/items",
+            "queries": {
+              "$filter": "ConfigType eq 'stores'",
+              "$top": 1
+            }
+          },
+          "runAfter": {
+            "Get_products": [
+              "Succeeded",
+              "Failed"
+            ]
+          },
+          "type": "ApiConnection"
+        },
+        "Insert_loop": {
+          "actions": {
+            "Belt": {
+              "actions": {
+                "Insert": {
+                  "inputs": {
+                    "body": {
+                      "CatalogueVersion": "@item()?['row']?['CatalogueVersion']",
+                      "Date": "@item()?['row']?['Date']",
+                      "DeleteReason": "@item()?['row']?['DeleteReason']",
+                      "DeletedAt": "@item()?['row']?['DeletedAt']",
+                      "DeletedBy": "@item()?['row']?['DeletedBy']",
+                      "DeviceId": "@item()?['row']?['DeviceId']",
+                      "DiscAtSupply": "@item()?['row']?['DiscAtSupply']",
+                      "EconSig": "@item()?['EconSig']",
+                      "IdempotencyKey": "@coalesce(item()?['row']?['IdempotencyKey'],item()?['row']?['TransactionId'])",
+                      "PricingVersion": "@item()?['row']?['PricingVersion']",
+                      "ProductId": "@item()?['row']?['ProductId']",
+                      "Qty": "@item()?['row']?['Qty']",
+                      "Reason": "@item()?['row']?['Reason']",
+                      "SellAtSupply": "@item()?['row']?['SellAtSupply']",
+                      "StaffName": "@item()?['row']?['StaffName']",
+                      "StockFrom": "@item()?['row']?['StockFrom']",
+                      "StockFromStoreId": "@item()?['row']?['StockFromStoreId']",
+                      "StockTo": "@item()?['row']?['StockTo']",
+                      "StockToStoreId": "@item()?['row']?['StockToStoreId']",
+                      "StoreId": "@item()?['row']?['StoreId']",
+                      "SyncTimestamp": "@{div(sub(ticks(utcNow()),621355968000000000),10000)}",
+                      "TargetTransactionId": "@item()?['row']?['TargetTransactionId']",
+                      "Timestamp": "@item()?['row']?['Timestamp']",
+                      "Title": "@item()?['row']?['TransactionId']",
+                      "TransactionId": "@item()?['row']?['TransactionId']",
+                      "TransferId": "@item()?['row']?['TransferId']",
+                      "Type": "@item()?['row']?['Type']",
+                      "UnitPriceAtTime": "@item()?['row']?['UnitPriceAtTime']"
+                    },
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('StockTransactions_Validate'))}/items"
+                  },
+                  "runAfter": {},
+                  "type": "ApiConnection"
+                },
+                "Outcome": {
+                  "actions": {
+                    "Append_accepted": {
+                      "inputs": {
+                        "name": "accepted",
+                        "value": "@item()?['row']?['TransactionId']"
+                      },
+                      "runAfter": {},
+                      "type": "AppendToArrayVariable"
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Dup_or_fail": {
+                        "actions": {
+                          "Append_duplicate": {
+                            "inputs": {
+                              "name": "duplicates",
+                              "value": "@item()?['row']?['TransactionId']"
+                            },
+                            "runAfter": {},
+                            "type": "AppendToArrayVariable"
+                          }
+                        },
+                        "else": {
+                          "actions": {
+                            "Append_failed": {
+                              "inputs": {
+                                "name": "failed",
+                                "value": {
+                                  "TransactionId": "@item()?['row']?['TransactionId']",
+                                  "reason": "@string(coalesce(outputs('Insert')?['statusCode'],'error'))",
+                                  "retryable": true
+                                }
+                              },
+                              "runAfter": {},
+                              "type": "AppendToArrayVariable"
+                            }
+                          }
+                        },
+                        "expression": {
+                          "or": [
+                            {
+                              "equals": [
+                                "@coalesce(outputs('Insert')?['statusCode'],0)",
+                                409
+                              ]
+                            },
+                            {
+                              "contains": [
+                                "@toLower(string(coalesce(outputs('Insert')?['body'],'')))",
+                                "duplicate values were found"
+                              ]
+                            }
+                          ]
+                        },
+                        "runAfter": {},
+                        "type": "If"
+                      }
+                    }
+                  },
+                  "expression": {
+                    "and": [
+                      {
+                        "greaterOrEquals": [
+                          "@coalesce(outputs('Insert')?['statusCode'],0)",
+                          200
+                        ]
+                      },
+                      {
+                        "less": [
+                          "@coalesce(outputs('Insert')?['statusCode'],0)",
+                          300
+                        ]
+                      }
+                    ]
+                  },
+                  "runAfter": {
+                    "Insert": [
+                      "Succeeded",
+                      "Failed"
+                    ]
+                  },
+                  "type": "If"
+                }
+              },
+              "else": {
+                "actions": {
+                  "Append_failed_zip": {
+                    "inputs": {
+                      "name": "failed",
+                      "value": {
+                        "TransactionId": "@item()?['row']?['TransactionId']",
+                        "reason": "SIG_ZIP_MISMATCH",
+                        "retryable": true
+                      }
+                    },
+                    "runAfter": {},
+                    "type": "AppendToArrayVariable"
+                  }
+                }
+              },
+              "expression": {
+                "and": [
+                  {
+                    "equals": [
+                      "@item()?['SigTid']",
+                      "@item()?['row']?['TransactionId']"
+                    ]
+                  }
+                ]
+              },
+              "runAfter": {},
+              "type": "If"
+            }
+          },
+          "foreach": "@body('Zip')",
+          "runAfter": {
+            "Rejected": [
+              "Succeeded"
+            ],
+            "Zip": [
+              "Succeeded"
+            ]
+          },
+          "runtimeConfiguration": {
+            "concurrency": {
+              "repetitions": 1
+            }
+          },
+          "type": "Foreach"
+        },
+        "Invariant": {
+          "inputs": "@equals(length(coalesce(triggerBody()?['data']?['transactions'],json('[]'))),add(add(length(variables('accepted')),length(variables('duplicates'))),add(length(body('Rejected')),length(variables('failed')))))",
+          "runAfter": {
+            "Insert_loop": [
+              "Succeeded",
+              "Skipped"
+            ],
+            "Map_rejected": [
+              "Succeeded"
+            ],
+            "Quarantine_loop": [
+              "Succeeded",
+              "Failed"
+            ],
+            "Set_failed_attest": [
+              "Succeeded",
+              "Skipped"
+            ]
+          },
+          "type": "Compose"
+        },
+        "Map_productIds": {
+          "inputs": {
+            "from": "@if(outputs('Catalogue_ok'),json(coalesce(first(body('Get_products')?['value'])?['ConfigData'],'[]')),json('[]'))",
+            "select": "@item()?['id']"
+          },
+          "runAfter": {
+            "Catalogue_ok": [
+              "Succeeded"
+            ]
+          },
+          "type": "Select"
+        },
+        "Map_rejected": {
+          "inputs": {
+            "from": "@body('Rejected')",
+            "select": {
+              "TransactionId": "@item()?['row']?['TransactionId']",
+              "reason": "@item()?['reason']",
+              "reasonCode": "@item()?['reason']"
+            }
+          },
+          "runAfter": {
+            "Rejected": [
+              "Succeeded"
+            ]
+          },
+          "type": "Select"
+        },
+        "Map_storeIds": {
+          "inputs": {
+            "from": "@if(outputs('Catalogue_ok'),json(coalesce(first(body('Get_stores')?['value'])?['ConfigData'],'[]')),json('[]'))",
+            "select": "@item()?['id']"
+          },
+          "runAfter": {
+            "Map_productIds": [
+              "Succeeded"
+            ]
+          },
+          "type": "Select"
+        },
+        "Match_cred": {
+          "inputs": {
+            "from": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+            "where": "@equals(item()?['StoreId'], replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''))"
+          },
+          "runAfter": {},
+          "type": "Query"
+        },
+        "Quarantine_loop": {
+          "actions": {
+            "Quarantine_insert": {
+              "inputs": {
+                "body": {
+                  "DeviceId": "@item()?['row']?['DeviceId']",
+                  "Title": "@item()?['row']?['TransactionId']",
+                  "TransactionId": "@item()?['row']?['TransactionId']",
+                  "rawRowJson": "@string(item()?['row'])",
+                  "reason": "@item()?['reason']",
+                  "reasonCode": "@item()?['reason']",
+                  "receivedAt": "@utcNow()",
+                  "workflowRunId": "@workflow()?['run']?['name']"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/tables/@{encodeURIComponent(encodeURIComponent('StockTransactions_Quarantine'))}/items"
+              },
+              "runAfter": {},
+              "type": "ApiConnection"
+            }
+          },
+          "foreach": "@body('Rejected')",
+          "runAfter": {
+            "Rejected": [
+              "Succeeded"
+            ]
+          },
+          "runtimeConfiguration": {
+            "concurrency": {
+              "repetitions": 1
+            }
+          },
+          "type": "Foreach"
+        },
+        "Rejected": {
+          "inputs": {
+            "from": "@body('Validate')",
+            "where": "@not(equals(item()?['reason'],''))"
+          },
+          "runAfter": {
+            "Validate": [
+              "Succeeded"
+            ]
+          },
+          "type": "Query"
+        },
+        "Respond": {
+          "actions": {
+            "Response_ok": {
+              "inputs": {
+                "body": {
+                  "accepted": "@variables('accepted')",
+                  "catalogueCheck": "@if(outputs('Catalogue_ok'),'applied','skipped')",
+                  "duplicates": "@variables('duplicates')",
+                  "failed": "@variables('failed')",
+                  "inputCount": "@length(coalesce(triggerBody()?['data']?['transactions'],json('[]')))",
+                  "rejected": "@body('Map_rejected')",
+                  "serverTimestamp": "@{div(sub(ticks(utcNow()),621355968000000000),10000)}",
+                  "status": "ok"
+                },
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "statusCode": 200
+              },
+              "runAfter": {},
+              "type": "Response"
+            }
+          },
+          "else": {
+            "actions": {
+              "Response_invariant_fail": {
+                "inputs": {
+                  "body": {
+                    "reason": "invariant_failed",
+                    "status": "error"
+                  },
+                  "headers": {
+                    "Content-Type": "application/json"
+                  },
+                  "statusCode": 500
+                },
+                "runAfter": {},
+                "type": "Response"
+              }
+            }
+          },
+          "expression": {
+            "and": [
+              {
+                "equals": [
+                  "@outputs('Invariant')",
+                  true
+                ]
+              }
+            ]
+          },
+          "runAfter": {
+            "Invariant": [
+              "Succeeded"
+            ]
+          },
+          "type": "If"
+        },
+        "Scope_arr": {
+          "inputs": "@if(equals(trim(coalesce(first(body('Match_cred'))?['StoreIds'],'[]')),''),json('[]'),json(coalesce(first(body('Match_cred'))?['StoreIds'],'[]')))",
+          "runAfter": {
+            "Match_cred": [
+              "Succeeded"
+            ]
+          },
+          "type": "Compose"
+        },
+        "Set_failed_attest": {
+          "inputs": {
+            "name": "failed",
+            "value": "@body('Attest_failed_map')"
+          },
+          "runAfter": {
+            "Attest_failed_map": [
+              "Succeeded"
+            ]
+          },
+          "type": "SetVariable"
+        },
+        "ToInsert": {
+          "inputs": {
+            "from": "@body('Validate')",
+            "where": "@equals(item()?['reason'],'')"
+          },
+          "runAfter": {
+            "Validate": [
+              "Succeeded"
+            ]
+          },
+          "type": "Query"
+        },
+        "Validate": {
+          "inputs": {
+            "from": "@coalesce(triggerBody()?['data']?['transactions'],json('[]'))",
+            "select": {
+              "reason": "@if(and(not(equals(coalesce(body('Call_verify')?['directorOk'],false),true)),not(contains(outputs('Scope_arr'),'*')),not(contains(outputs('Scope_arr'),item()?['StoreId']))),'OUT_OF_SCOPE_STORE',if(not(and(not(empty(item()?['TransactionId'])),lessOrEquals(length(item()?['TransactionId']),128),equals(length(uriComponent(item()?['TransactionId'])),length(item()?['TransactionId'])),not(contains(item()?['TransactionId'],'.')),not(contains(item()?['TransactionId'],'!')),not(contains(item()?['TransactionId'],'~')),not(contains(item()?['TransactionId'],'*')),not(contains(item()?['TransactionId'],'(')),not(contains(item()?['TransactionId'],')')),not(contains(item()?['TransactionId'],'''')),not(equals(item()?['TransactionId'],'__proto__')),not(equals(item()?['TransactionId'],'constructor')),not(equals(item()?['TransactionId'],'prototype')))),'BAD_TXNID',if(not(contains(createArray('in','return_in','transfer_in','out','move_out','transfer_out','wastage','adjustment_in','adjustment_out','deleted'),item()?['Type'])),'BAD_TYPE',if(equals(item()?['Type'],'deleted'),if(or(not(equals(item()?['Qty'],0)),empty(item()?['TargetTransactionId']),not(and(not(empty(item()?['TargetTransactionId'])),lessOrEquals(length(item()?['TargetTransactionId']),128),equals(length(uriComponent(item()?['TargetTransactionId'])),length(item()?['TargetTransactionId'])),not(contains(item()?['TargetTransactionId'],'.')),not(contains(item()?['TargetTransactionId'],'!')),not(contains(item()?['TargetTransactionId'],'~')),not(contains(item()?['TargetTransactionId'],'*')),not(contains(item()?['TargetTransactionId'],'(')),not(contains(item()?['TargetTransactionId'],')')),not(contains(item()?['TargetTransactionId'],'''')),not(equals(item()?['TargetTransactionId'],'__proto__')),not(equals(item()?['TargetTransactionId'],'constructor')),not(equals(item()?['TargetTransactionId'],'prototype'))))),'BAD_TOMBSTONE',''),if(not(and(greater(length(string(item()?['Qty'])),0),equals(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(string(item()?['Qty']),'0',''),'1',''),'2',''),'3',''),'4',''),'5',''),'6',''),'7',''),'8',''),'9',''),''),lessOrEquals(length(string(item()?['Qty'])),8),or(less(length(string(item()?['Qty'])),8),equals(string(item()?['Qty']),'10000000')))),'BAD_QTY',if(or(empty(item()?['StoreId']),empty(item()?['ProductId'])),'MISSING_STORE_PRODUCT',if(and(outputs('Catalogue_ok'),or(not(contains(body('Map_storeIds'),item()?['StoreId'])),not(contains(body('Map_productIds'),item()?['ProductId'])))),'UNKNOWN_STORE_PRODUCT',if(not(and(equals(length(string(item()?['Date'])),10),equals(substring(concat(string(item()?['Date']),'xxxxxxxxxx'),4,1),'-'),equals(substring(concat(string(item()?['Date']),'xxxxxxxxxx'),7,1),'-'),equals(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(concat(substring(concat(string(item()?['Date']),'xxxxxxxxxx'),0,4),substring(concat(string(item()?['Date']),'xxxxxxxxxx'),5,2),substring(concat(string(item()?['Date']),'xxxxxxxxxx'),8,2)),'0',''),'1',''),'2',''),'3',''),'4',''),'5',''),'6',''),'7',''),'8',''),'9',''),''))),'BAD_DATE',if(or(and(not(empty(item()?['TransferId'])),not(and(not(empty(item()?['TransferId'])),lessOrEquals(length(item()?['TransferId']),128),equals(length(uriComponent(item()?['TransferId'])),length(item()?['TransferId'])),not(contains(item()?['TransferId'],'.')),not(contains(item()?['TransferId'],'!')),not(contains(item()?['TransferId'],'~')),not(contains(item()?['TransferId'],'*')),not(contains(item()?['TransferId'],'(')),not(contains(item()?['TransferId'],')')),not(contains(item()?['TransferId'],'''')),not(equals(item()?['TransferId'],'__proto__')),not(equals(item()?['TransferId'],'constructor')),not(equals(item()?['TransferId'],'prototype'))))),and(not(empty(item()?['TargetTransactionId'])),not(and(not(empty(item()?['TargetTransactionId'])),lessOrEquals(length(item()?['TargetTransactionId']),128),equals(length(uriComponent(item()?['TargetTransactionId'])),length(item()?['TargetTransactionId'])),not(contains(item()?['TargetTransactionId'],'.')),not(contains(item()?['TargetTransactionId'],'!')),not(contains(item()?['TargetTransactionId'],'~')),not(contains(item()?['TargetTransactionId'],'*')),not(contains(item()?['TargetTransactionId'],'(')),not(contains(item()?['TargetTransactionId'],')')),not(contains(item()?['TargetTransactionId'],'''')),not(equals(item()?['TargetTransactionId'],'__proto__')),not(equals(item()?['TargetTransactionId'],'constructor')),not(equals(item()?['TargetTransactionId'],'prototype')))))),'BAD_REF_ID',if(not(or(equals(length(string(item()?['Timestamp'])),0),equals(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(string(item()?['Timestamp']),'0',''),'1',''),'2',''),'3',''),'4',''),'5',''),'6',''),'7',''),'8',''),'9',''),''))),'BAD_TIMESTAMP',if(and(startsWith(coalesce(item()?['Type'],''),'adjustment_'),not(equals(coalesce(body('Call_verify')?['directorOk'],false),true))),'DIRECTOR_REQUIRED',if(and(not(equals(coalesce(body('Call_verify')?['directorOk'],false),true)),and(not(contains(outputs('Scope_arr'),'*')),not(contains(outputs('Scope_arr'),coalesce(item()?['StoreId'],''))))),'STORE_MISMATCH',''))))))))))))",
+              "row": "@item()"
+            }
+          },
+          "runAfter": {
+            "Map_storeIds": [
+              "Succeeded"
+            ],
+            "Scope_arr": [
+              "Succeeded"
+            ]
+          },
+          "type": "Select"
+        },
+        "Zip": {
+          "inputs": {
+            "from": "@range(0, length(body('Attest_rows')))",
+            "select": {
+              "EconSig": "@body('Call_attest')?['sigs']?[item()]?['EconSig']",
+              "SigTid": "@body('Call_attest')?['sigs']?[item()]?['TransactionId']",
+              "reason": "",
+              "row": "@body('Attest_rows')[item()]"
+            }
+          },
+          "runAfter": {
+            "Call_attest": [
+              "Succeeded"
+            ]
+          },
+          "type": "Select"
+        }
+      },
+      "else": {
+        "actions": {
+          "Q_authreject": {
+            "inputs": {
+              "body": {
+                "body": "@{string(json(concat('{\"Title\":\"auth_reject\",\"TransactionId\":\"authrej_',workflow()?['run']?['name'],'\",\"reasonCode\":\"UNAUTHORIZED\",\"reason\":\"storeId=',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'\"',''),' device=',replace(coalesce(triggerBody()?['auth']?['deviceId'],''),'\"',''),'\",\"DeviceId\":\"',replace(coalesce(triggerBody()?['auth']?['deviceId'],''),'\"',''),'\",\"receivedAt\":\"',utcNow(),'\",\"workflowRunId\":\"',workflow()?['run']?['name'],'\",\"rawRowJson\":\"\"}')))}",
+                "headers": {
+                  "Accept": "application/json;odata=nometadata",
+                  "Content-Type": "application/json;odata=nometadata"
+                },
+                "method": "POST",
+                "uri": "_api/web/lists/getbytitle('StockTransactions_Quarantine')/items"
+              },
+              "host": {
+                "connection": {
+                  "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                }
+              },
+              "method": "post",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+            },
+            "runAfter": {},
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": [
+                  "inputs"
+                ]
+              }
+            },
+            "type": "ApiConnection"
+          },
+          "Response_401": {
+            "inputs": {
+              "body": {
+                "authRequired": true,
+                "status": "unauthorized"
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "statusCode": 401
+            },
+            "runAfter": {
+              "Q_authreject": [
+                "Succeeded",
+                "Failed",
+                "TimedOut"
+              ]
+            },
+            "type": "Response"
+          }
+        }
+      },
+      "expression": {
+        "or": [
+          {
+            "equals": [
+              "@equals(coalesce(body('Call_verify')?['storeOk'],false),true)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@equals(coalesce(body('Call_verify')?['directorOk'],false),true)",
+              true
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "If"
+    },
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active,StoreIds&$filter=Active eq 1 and (StoreId eq ''',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''),''' or StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {
+        "Init_failed": [
+          "Succeeded"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    },
+    "Init_accepted": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "accepted",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {},
+      "type": "InitializeVariable"
+    },
+    "Init_duplicates": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "duplicates",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {
+        "Init_accepted": [
+          "Succeeded"
+        ]
+      },
+      "type": "InitializeVariable"
+    },
+    "Init_failed": {
+      "inputs": {
+        "variables": [
+          {
+            "name": "failed",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {
+        "Init_duplicates": [
+          "Succeeded"
+        ]
+      },
+      "type": "InitializeVariable"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "outputs": {},
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "When_an_HTTP_request_is_received": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {
+            "data": {
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}

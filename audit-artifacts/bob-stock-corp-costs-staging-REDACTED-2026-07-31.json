@@ -1,0 +1,212 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "actions": {
+    "Allowed": {
+      "actions": {
+        "Serve": {
+          "inputs": {
+            "body": {
+              "corporate_costs": "@json(coalesce(first(body('Cost_row'))?['ConfigData'],'{}'))",
+              "status": "ok"
+            },
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "statusCode": 200
+          },
+          "runAfter": {},
+          "type": "Response"
+        }
+      },
+      "else": {
+        "actions": {
+          "Deny": {
+            "inputs": {
+              "body": {
+                "reason": "corporate cost not available to this credential",
+                "status": "forbidden"
+              },
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "statusCode": 403
+            },
+            "runAfter": {},
+            "type": "Response"
+          }
+        }
+      },
+      "expression": {
+        "or": [
+          {
+            "equals": [
+              "@equals(coalesce(body('Call_verify')?['directorOk'],false),true)",
+              true
+            ]
+          },
+          {
+            "equals": [
+              "@and(equals(coalesce(body('Call_verify')?['storeOk'],false),true),equals(coalesce(first(body('Store_hit'))?['isFranchise'],true),false))",
+              true
+            ]
+          }
+        ]
+      },
+      "runAfter": {
+        "Cost_row": [
+          "Succeeded"
+        ],
+        "Store_hit": [
+          "Succeeded"
+        ]
+      },
+      "type": "If"
+    },
+    "Call_verify": {
+      "inputs": {
+        "body": {
+          "claimedStoreId": "@coalesce(triggerBody()?['auth']?['storeId'],'')",
+          "directorKey": "@coalesce(triggerBody()?['auth']?['directorKey'],'')",
+          "rows": "@coalesce(body('Get_creds')?['value'],json('[]'))",
+          "storeKey": "@coalesce(triggerBody()?['auth']?['storeKey'],'')"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "method": "POST",
+        "uri": "https://bob-stock-money-fn.azurewebsites.net/api/validateKeys?code=REDACTED"
+      },
+      "runAfter": {
+        "Get_creds": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Http"
+    },
+    "Cost_row": {
+      "inputs": {
+        "from": "@coalesce(body('Read_cfg')?['value'],json('[]'))",
+        "where": "@equals(item()?['ConfigType'],'corporate_costs')"
+      },
+      "runAfter": {
+        "Read_cfg": [
+          "Succeeded"
+        ]
+      },
+      "type": "Query"
+    },
+    "Get_creds": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "@{concat('_api/web/lists/getbytitle(''StoreCredentials_Staging'')/items?$select=StoreId,Salt,SecretHash,Version,GraceUntil,Active&$filter=Active eq 1 and (StoreId eq ''',replace(coalesce(triggerBody()?['auth']?['storeId'],''),'''',''),''' or StoreId eq ''__director'')')}"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {},
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "outputs"
+          ]
+        }
+      },
+      "type": "ApiConnection"
+    },
+    "Read_cfg": {
+      "inputs": {
+        "body": {
+          "headers": {
+            "Accept": "application/json;odata=nometadata"
+          },
+          "method": "GET",
+          "uri": "_api/web/lists/getbytitle('AppConfig_Staging')/items?$select=ConfigType,ConfigData&$filter=ConfigType eq 'stores' or ConfigType eq 'corporate_costs'"
+        },
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent('https://bangonbrows.sharepoint.com'))}/httpRequest"
+      },
+      "runAfter": {
+        "Call_verify": [
+          "Succeeded",
+          "Failed",
+          "TimedOut"
+        ]
+      },
+      "type": "ApiConnection"
+    },
+    "Store_hit": {
+      "inputs": {
+        "from": "@json(coalesce(first(body('Stores_row'))?['ConfigData'],'[]'))",
+        "where": "@equals(item()?['id'],coalesce(triggerBody()?['auth']?['storeId'],''))"
+      },
+      "runAfter": {
+        "Stores_row": [
+          "Succeeded"
+        ]
+      },
+      "type": "Query"
+    },
+    "Stores_row": {
+      "inputs": {
+        "from": "@coalesce(body('Read_cfg')?['value'],json('[]'))",
+        "where": "@equals(item()?['ConfigType'],'stores')"
+      },
+      "runAfter": {
+        "Read_cfg": [
+          "Succeeded"
+        ]
+      },
+      "type": "Query"
+    }
+  },
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "inputs": {
+        "method": "POST",
+        "schema": {
+          "properties": {},
+          "type": "object"
+        }
+      },
+      "kind": "Http",
+      "runtimeConfiguration": {
+        "secureData": {
+          "properties": [
+            "inputs"
+          ]
+        }
+      },
+      "type": "Request"
+    }
+  }
+}
