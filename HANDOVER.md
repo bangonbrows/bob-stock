@@ -95,6 +95,26 @@ It now carries a supersession banner. Do not follow it.
 **Hand-off rule:** the message to an auditor is a **short cover note pointing at a repo pack file**
 (`PASTE-TO-AUDITORS-*.md`). Never dump the pack into chat. This is the default — don't make Kunal ask.
 
+**DECIDED 2026-07-31 — BOTH auditors get the SAME COMPLETE brief. Never split questions between
+them.** Proposed splitting by strength (AGY on platform semantics, Codex on document discipline) to
+cut AGY's turnaround, which runs 3-5× Codex's. **Kunal overruled it, and the same day's evidence
+proves him right.** On the item 5 round, Codex was given Q1, examined it, and reported "no
+capture-grounded Stage-1 counterexample was found". AGY — asked the same question — **found one**, and
+it was the only genuine counter-example to the property the whole design rests on. Under the split,
+Q1 would have belonged to Codex alone and that defect would have shipped.
+
+Redundancy works *because* it is redundant. Splitting optimises turnaround by removing the second pair
+of eyes from precisely the question where the first pair was wrong. **The cost of AGY's slower
+turnaround is convergence latency only** — they already run in parallel — and that is cheap next to a
+missed counter-example. Use the waiting time for work that does not depend on the verdict.
+
+⚠ **Also revise the quality tiering below.** "AGY mid, thin on product reasoning" did not hold this
+round: AGY found the Q1 counter-example AND that a correction would produce a cross-scope `runAfter`
+Azure refuses to save, while Codex found the document defects, the gates checking nothing, and the
+unreproducible package. Not better and worse — **differently shaped**: AGY sharper on what Azure
+actually does, Codex sharper on whether the paperwork holds together. One round, but enough to stop
+treating AGY as the junior.
+
 **Pack anatomy:** context → what changed → what to read (branch + **pushed** commit) → numbered
 bounded questions → standing items that cannot be closed on paper → verdict format → session hygiene.
 
