@@ -1,3 +1,33 @@
+# REVIEW BRIEF — Stock App · Account Access item 5 · SPECIFICATION REVIEW · **ROUND 2**
+
+> ## ROUND 2 — what changed since your last pass
+>
+> Both reviewers returned BLOCK on round 1, and **you found different things**, which is exactly why
+> both were asked. Nine findings: **eight confirmed by running them, one refuted with evidence.**
+> All are folded in. **Please RE-DERIVE rather than confirm** — checking that a stated fix is present
+> is how the round-1 defects survived a triple review in the first place.
+>
+> | # | Finding | Outcome |
+> |---|---|---|
+> | Codex 1 | correction C3 never propagated into the body | fixed — root cause: the replace ran over one field and the clause lived in another |
+> | Codex 2 | probe assertion A5 demanded `AA_gate == Skipped`, so a CORRECT deployment failed its own test | fixed — a false `If` completes **Succeeded**; only its children skip |
+> | Codex 3 | initializer edits not deployable (`type` omitted, `variables` outside `inputs`); "13" vs 15 | fixed on both Logic Apps |
+> | Codex 4 | the three gates held only historical claims, so every respec edit sat OUTSIDE them | fixed — populated; on its first run the premise gate independently reproduced AGY Q2-2 |
+> | Codex 5 | package not reproducible: captures gitignored, `git ls-tree` showed zero | fixed — nine `-REDACTED-` captures now COMMITTED (22 function keys stripped) |
+> | AGY Q1a | `first([])` throws, so the switch fails on every run | **REFUTED** — see C7. `first()` is used 58× live; `user-admin` uses this exact shape 17× on a lookup that returns `[]` for unknown users, unguarded |
+> | AGY Q1b | an unhandled failure marks the run `Failed` despite an identical response | **CONFIRMED** — the more important half. Fixed in C6 |
+> | AGY Q2-1 | correction C1's "copy verbatim" produces a cross-scope `runAfter`, which Azure rejects | **CONFIRMED** — my own correction introduced it. Zero cross-scope edges in ~270 deployed actions |
+> | AGY Q2-2 | `Response_ok.body.*` does not exist; it is `inputs.body.*` | **CONFIRMED** — mechanically, by our own gate |
+>
+> **The captures are now IN the commit** (`audit-artifacts/*-REDACTED-*.json`), so this round is
+> reproducible without importing anything. Only the function keys are stripped; the graphs are
+> complete — all 64 recordsteps actions including `ToInsert2` and the `Ctx_ids` hold-back filter.
+>
+> **Same two questions as round 1.** Q1 especially: AGY's counter-example was a platform-behaviour one
+> that static reading was said not to reach, so please do not treat round 1's Q1 pass as settled.
+
+---
+
 # REVIEW BRIEF — Stock App · Account Access item 5 · SPECIFICATION REVIEW (before build)
 
 **Context.** Routine internal pre-release quality review of our own stock-management application
@@ -38,7 +68,7 @@ Stage 2 (flipping the switch) is a separate, later act and is **out of scope for
 
 ## What to read
 
-Branch `azure-phase-5-8-server`, commit **`b30d380`**. Work from your own fresh copy.
+Branch `azure-phase-5-8-server`, commit **`dc175ab`**. Work from your own fresh copy.
 
 | Priority | File |
 |---|---|
