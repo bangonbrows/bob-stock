@@ -5,6 +5,79 @@
 `git log --oneline -1` for HEAD and `git rev-list --count main..HEAD` for the distance from `main`.)*
 **Read this file first, then `AZURE-CHUNK-PROCESS.md`.**
 
+---
+
+# ⭐ START HERE — SESSION HANDOVER, 2026-08-01
+
+## The single most important change: the backlog is re-sorted by RISK, not by chunk order
+
+Kunal ruled on 2026-08-01 that **staff are not technically inclined and are not a hostile-user
+threat** — six salons, known people, internal use only. Therefore:
+
+| Category | Verdict |
+|---|---|
+| **SECURITY hardening** (moving permission checks from browser to cloud) | **MAY follow release** |
+| **DATA LEAKS** (one store or franchisee seeing another's figures / a prior owner's history) | **MAY NOT be deferred** |
+| **LOGIC & MONEY defects** | **MAY NOT be deferred** |
+| **FEATURE gaps** | **MAY NOT be deferred** |
+
+**This inverts the old priority order.** Account Access items 5–11, the correction route and most of
+the last month are SECURITY work. They have been blocking a queue of money and data-leak defects that
+need none of them. **Do not resume the security work ahead of the list below.**
+
+## THREE DATED RISKS — this is the actual work queue
+
+1. **NOW — Cockburn's money is wrong.** The franchise discount is one current value with a version
+   counter and **no dated history** (verified: zero `effectiveFrom`/`asOf`/rate-history in client or
+   Functions). Change the rate and **every past invoice silently recalculates**. Cockburn is a live
+   franchise store today. **Fix first.**
+2. **BEFORE SEP–OCT — Southlands may convert to a franchise.** Without an ownership-date record the
+   incoming franchisee sees Southlands' **entire pre-ownership trading history**. That is a data leak
+   with a date. No such record exists anywhere.
+3. **AROUND OCTOBER — sync stops for new devices.** The ledger crosses a SharePoint ceiling; any
+   device asking for a full catch-up errors. **The fix was built in June, proven on 20,048 rows,
+   dual-audited, and never installed.** It matters more now: onboarding a franchisee means onboarding
+   devices, the exact case that breaks.
+
+## AND A PREREQUISITE THAT INVALIDATES PRIOR TESTING
+
+**Staging does not match the business.** It holds credentials for `ardross` (CLOSED), `karrinyup`,
+`whitford` — and is missing Booragoon, Claremont, Southlands and **Cockburn**. Every test to date ran
+against a fiction, and the franchise paths have **never** been exercised against a real franchise
+store. **Fix staging before any franchise work is believable.**
+
+## RECOMMENDED ORDER FOR THE NEXT SESSION
+
+1. **Fix staging store credentials** to match the six real stores + Cockburn. Small. Without it
+   nothing else tested means anything.
+2. **Pricing rate history** — an append-only dated record, so reports read the rate as-of each row's
+   date. This is Cockburn, now.
+3. **Ownership-era record + the history cutoff** — before Southlands converts. Fail-CLOSED: no era
+   record for a store ⇒ show NOTHING for it, never everything.
+4. **Install the pull-hardening upgrade** — before October.
+
+## WHAT IS PARKED, AND DO NOT UNPARK IT CASUALLY
+
+- **Item 5** (ingest validation) — 3 audit rounds, 3 BLOCKs. Preconditions recorded in §6. Applied
+  last (sessions 7–9) so nothing depends on it.
+- **Contract 2** (correction route) — parked 2026-07-29, own later deploy. §5a.
+- **The franchise wizard** — split out of the cutover 2026-07-29.
+- **Account Access items 5–11** — security hardening; now explicitly behind the list above.
+
+## TOOLS BUILT 2026-07-29/08-01 — run them, they have all bitten
+
+Every one has `--self-test` that proves it FAILS on a broken input. Run that first if a green result
+ever looks too easy. Full list and purpose in §4.
+
+⚠ **`git push` CAN SILENTLY DO NOTHING.** HEAD detached twice in this repo and commits landed on a
+stale base while `push` reported "Everything up-to-date". **Before any hand-off or claim of "pushed":**
+```
+git symbolic-ref --short HEAD          # empty output = DETACHED, stop and fix
+git ls-remote origin <branch>          # compare with: git rev-parse HEAD
+```
+
+---
+
 Kunal Joshi is the owner. He is **not a developer** — explain findings in plain English before any
 code detail, and never assume he can read a diff. He routes audits, makes the gating decisions and
 personally runs every cloud apply. Claude is the **sole engineer**: nobody else writes code.
@@ -32,6 +105,40 @@ fail is not a gate.
 
 **Also flag when relevant:** the user-level `settings.json` pins `opus[1m]` + `effortLevel: high`, so
 a session restart silently reverts both mid-task.
+
+### HOW AND WHEN TO ASK KUNAL TO CHANGE THE EFFORT LEVEL (he asked for this explicitly)
+
+**DEFAULT IS HIGH. Stay there unless the task genuinely earns otherwise.**
+
+**If HIGH is already set and is correct → say nothing, just work.** Announcing the mode every time is
+noise. Only speak up when it should CHANGE.
+
+**If it should change → SAY IT AS ITS OWN MESSAGE, THEN STOP AND WAIT.**
+Do **not** state the recommendation and start working in the same message. Kunal switches it with
+`/effort`; if the work has already run, the recommendation was decorative. His words:
+*"If you inform me and start working, how am I supposed to change it?"*
+
+The shape:
+> **Effort: this one earns ultracode** — <one line of why>. Switch and say go.
+
+Then end the turn. Offer the easy out: *"or tell me to run as-is and I will — it costs more, it does
+no harm."*
+
+**ASK FOR ULTRACODE ONLY WHEN — and these are the three that have actually paid on this project:**
+
+| Situation | Why it earns it | Real example |
+|---|---|---|
+| A claim needs **several independent attempts to REFUTE it** | Agents with different lenses find what one misses | Refuters found a 2nd hole in the gate validators and 6 entry points where Codex found 2 |
+| **Genuinely independent parts** investigable at once — sweeps, "find every X" | Breadth beats depth; no file collisions | The 100-document consolidation; the 9-workflow roadmap sweep |
+| **Rival designs** to compare before committing | Cheaper to compare than to build the wrong one | — |
+
+**NEVER ask for ultracode for:** writing or fixing one script; editing documents; applying an
+already-decided list of edits; auditor messages; commits; conversation. **If agents would edit the
+same file, parallelism costs more than it returns.**
+
+⚠ **THE OVERRIDE.** On this project the wins came from **mechanical gates** and **external adversarial
+review**, never from more thinking. If you are about to propose a workflow where a CHECK would do the
+job, **build the check instead** — and say so. Ultracode does not buy a gate that bites.
 
 ---
 
@@ -142,6 +249,62 @@ treating AGY as the junior.
 
 **Pack anatomy:** context → what changed → what to read (branch + **pushed** commit) → numbered
 bounded questions → standing items that cannot be closed on paper → verdict format → session hygiene.
+
+### WHEN THE AUDITORS ARE USED — TWICE per piece of work, not once
+
+Kunal asked for this spelled out. Auditors are **not** only a final check.
+
+**PASS 1 — SCOPING / SPEC REVIEW, BEFORE ANY CODE EXISTS.**
+The scope or spec document goes to both auditors as a *design* review. They attack the design; Kunal
+makes any decisions they surface. **This is the cheapest round there is** — a defect found here costs
+a paragraph, the same defect found after building costs a wave. Item 5's whole history is the counter-
+example: three rounds, all on a spec, because the spec review kept finding real defects. That was the
+process working, not failing.
+
+**PASS 2 — BUILD AUDIT, AFTER the wave is built and locally proven.**
+They **run** things, they do not just read: the smoke suite, the *scoped* saboteur mutations for that
+wave only, and real probes against the actual staging cloud. They report observed numbers.
+
+**BETWEEN AND AFTER:** ground-truth EVERY finding by running it — including the ones that look
+obviously right, and including a refutation attempt. Then fix **everything** in one batch (no
+cherry-picking) and go round again. **CONVERGENCE = both auditors PASS the SAME revision.** Not one.
+Not the gate. Both.
+
+⚠ **Never hand an auditor the full saboteur sweep or the gate-mutation suite** — ~90 processes, reads
+as a hang, has burned 12h+ before. Run it locally and give them the result.
+
+### KEEPING AGY EFFICIENT — it explores and burns hours if the brief is loose
+
+AGY runs 3–5× Codex's turnaround, and the cause is a loose brief: it goes looking, opens irrelevant
+folders, and re-derives what a script already settles. **Fix the brief, not the auditor** — its
+findings are excellent (it found the only genuine counter-example in round 2, which Codex missed).
+
+**Every brief MUST contain, explicitly:**
+
+1. **A NUMBERED, PRIORITISED FILE LIST with exact paths.** Not "the spec and the captures" — the
+   actual filenames, in the order to read them. There are ~100 markdown files at the repo root; an
+   unguided reader will wander into all of them.
+2. **AN EXPLICIT DO-NOT-READ LINE.** *"These are the only files in scope. Do not survey the repository,
+   do not open other `AZURE-CHUNK-*` documents, do not read the `audit-artifacts/` folder beyond the
+   files listed."*
+3. **WHERE GROUND TRUTH IS, and that the spec is not it.** Point at the committed
+   `*-REDACTED-*.json` captures. Say plainly: where the document and the capture disagree, **the
+   capture wins and that disagreement IS the finding.**
+4. **AN EXPLICIT DO-NOT-RUN LINE.** Name what not to execute and why (`check-gates-mutation.js`
+   spawns ~90 processes; `test/smoke-test.js` takes minutes). Say that skipping and saying so is the
+   right choice.
+5. **ONE OR TWO QUESTIONS, NUMBERED, IN ORDER, ONE PASS EACH.** Four jobs in one brief once stalled
+   AGY for a whole night.
+6. **A HARD TIME BOX**: *"stop at about 90 minutes and report what you have — a partial answer at a
+   checkpoint is worth more than a complete one tomorrow."*
+7. **NEUTRAL QA LANGUAGE.** No offensive-security wording anywhere in the brief **or in the documents
+   it points at** — AGY refused a pack twice over exactly this, and the trigger words were in the
+   linked spec, not the brief. Scan both.
+
+**BEFORE SENDING, ALWAYS:** `node audit-artifacts/check-auditor-pack.js <brief.md>`
+It verifies the cited commit exists **and is on the remote**, that every file the brief names is
+present **at that commit**, and that the content assertions hold there. One hand-off went out wrong
+three times before this existed; it now catches all three in a second.
 
 **Hygiene rules, and the incident that produced each:**
 
