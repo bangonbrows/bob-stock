@@ -346,6 +346,40 @@ ledger grows past 5,000 *after* launch — roughly four months of runway from ~1
 **pull-hardening upgrade** (built June, proven on 20,048 rows, dual-audited, runbook written,
 **never applied**) belongs in the cutover, not ahead of it.
 
+🅿 **ITEM 5 PARKED 2026-08-01 (Kunal). Sessions 1-6 proceed without it.**
+THREE audit rounds, three BLOCKs, both auditors every time. Item 5 is applied LAST (sessions 7-9) and
+sessions 1-6 do not need it, so it is not worth being the bottleneck. **Do not resume until ALL the
+preconditions below are met** — resuming early is what produced three rounds.
+
+**ROUND 3 FINDINGS — all verified real. Worse than the round-3 brief claimed:**
+- 🛑 **The "authoritative" `item5-edits.json` BREAKS INERTNESS.** `AA_enforce` is
+  `@if(not(equals(actions('AA_flag')?['status'],'Succeeded')),'off','on')` — it tests only whether the
+  read SUCCEEDED. Reading an empty list IS a success, so with **no switch row enforcement turns ON**,
+  the exact inverse of the safety property. **All four checks passed it.**
+- 🛑 **`item5-edits.json` is a FIXTURE, not authoritative.** 12 of 58 actions, placeholders
+  (`host:{}`, `path:"/x"`, `inputs:"x"`), empty gate children, no generator. Applying it literally is
+  impossible. **Declaring it authoritative was the same error as the previous round's false coverage
+  claim about `check-name-collisions.js` — repeated ONE ROUND after being caught doing it.**
+- Validator blind spots, all real: the cycle and status rules **ignore `existingEdits` entirely**; the
+  status rule accepts *either* `Failed` or `TimedOut` while claiming both; `readersOf` misses
+  `actions('X')` — which is how `AA_enforce` reads `AA_flag`; `check-expr-safety` misses `item()`,
+  the deployed loop pattern.
+- `existingEdits` stores only `{target, key}` and **not the replacement value**, so it cannot detect
+  partial-`runAfter` deletion — the central Q2 requirement — and that is the root of both blind spots.
+- The push-v2 gate in the JSON **drops the `ToInsert` dependency** the prose had.
+- Probe assertion A5 still cannot pass the switch-outage case it exists to test.
+
+**PRECONDITIONS BEFORE ITEM 5 RESUMES — all of them, no partial credit:**
+1. `item5-edits.json` complete: **58 of 58** actions with REAL definitions, no placeholders, plus the
+   replacement VALUES for every existing-action edit.
+2. The four validator holes closed, each with a self-test case observed to FIRE.
+3. **State coverage as a measured number, never an adjective.** "Covers 58/58" — not "authoritative".
+4. `AA_enforce` re-derived so an ABSENT switch row means OFF.
+
+⚠ **THE LESSON THAT GENERALISES BEYOND ITEM 5:** the recurring defect was never a missing check — it
+was **claiming something was covered / authoritative / done before it was**. Two consecutive rounds
+were lost to exactly that. Say what is measured; never assert coverage as an adjective.
+
 **ITEM 5 ROUND 2 (2026-07-31): BOTH auditors BLOCK AGAIN — same class, third time. Root cause removed.**
 Rounds 1 and 2 both found corrections stated at the top of the spec that never reached the edits
 below, plus action shapes Azure cannot apply. **Hand-patching the prose introduced NEW defects both
