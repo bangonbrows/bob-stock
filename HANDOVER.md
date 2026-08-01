@@ -37,9 +37,34 @@ a session restart silently reverts both mid-task.
 
 ## 1. WHAT THIS APP IS, AND WHERE IT LIVES
 
-Stock tracking for Bang on Brows, a Perth beauty-salon chain (Karrinyup, Whitford, Ardross + a Head
-Office warehouse). Staff log movements, managers run stock takes and transfers, directors see
-analytics. Devices are **Windows PCs, iPhones, Android — never iPads.**
+Stock tracking for Bang on Brows, a Perth beauty-salon chain.
+
+🛑 **THE STORE LIST IN EVERY OTHER DOC IS WRONG. Corrected by Kunal 2026-08-01:**
+**Booragoon, Claremont, Karrinyup, Whitfords, Southlands** (company-owned) + **Cockburn (ALREADY
+FRANCHISED, running today)** + a Head Office warehouse. **Ardross is CLOSED** and is not a store.
+- The APP is right — index.html knows all six plus Cockburn and head_office.
+- The DOCS and STAGING are wrong. Staging holds credentials for **ardross / karrinyup / whitford**
+  only: one closed store, and MISSING Booragoon, Claremont, Southlands and **Cockburn**. Every test
+  to date has run against a fiction, and the franchise paths have **never** been exercised against a
+  real franchise store.
+- ⚠ **Southlands MAY convert to a franchise around Sep-Oct 2026** — the "convert HO store to
+  franchise" case, and a DATA-LEAK deadline: with no ownership-date record the incoming franchisee
+  sees Southlands' whole trading history from before they owned it. No such record exists anywhere
+  (verified: zero effectiveFrom / asOf / store_eras in code or cloud).
+- Fix the store list at cutover (live credentials) and in staging before any franchise testing.
+
+Staff log movements, managers run stock takes and transfers, directors see analytics. Devices are
+**Windows PCs, iPhones, Android — never iPads.**
+
+Staff are **not technically inclined and are not a hostile-user threat** (Kunal 2026-08-01). That is
+why SECURITY hardening may follow release — but **data leaks, feature gaps and logic/money defects
+may NOT be deferred.** Sort remaining work by that line, not by chunk order.
+
+🛑 **LIVE MONEY DEFECT, affecting Cockburn TODAY.** The franchise discount is a single current value
+with a version counter and **no dated history** (verified: zero `effectiveFrom`/`asOf`/rate-history of
+any kind in the client or the Functions). So changing Cockburn's rate **silently recalculates every
+past invoice** at the new rate. This is not a future risk — it is wrong now, and it is squarely in the
+may-NOT-be-deferred category.
 
 Offline-first PWA → IndexedDB on device → Azure Logic Apps → SharePoint Online lists. Stock levels
 are never stored; they are computed from an append-only movement ledger.
