@@ -290,7 +290,7 @@
       "appliedToCloud": "partial",
       "switchedOn": "no"
      },
-     "notes": "Kunal has an open decision recorded as AA-20 on whether 'Clear PIN' should also instantly revoke already-granted access or leave it time-limited; the built behaviour is instant revocation."
+     "notes": "AA-20 is DECIDED, not open: \"Clear PIN\" instantly revokes already-granted access. RESOLVED: the deployed code implements instant revocation — grants carry a pinEpoch and clearing or changing the PIN bumps it, so every outstanding grant dies immediately (azure-functions/src/functions/accessPolicy.js:103-117; the app drops its local grant at sync.js:441-446). Decided by Kunal 2026-07-10 and recorded in AZURE-CHUNK-AA-LA-CHANGES.md."
     },
     {
      "id": "auth-roles-020",
@@ -1374,7 +1374,7 @@
       "appliedToCloud": "partial",
       "switchedOn": "partial"
      },
-     "notes": "The logout and idle-lock clearing works today. The instant kill-switch on Clear PIN needs the cloud policy, which is off. Worth telling Kunal: this answers the open question recorded in the project notes as 'AA-20' — the code already implements instant revocation, so the note saying it is undecided is out of date."
+     "notes": "The logout and idle-lock clearing works today. The instant kill-switch on Clear PIN needs the cloud policy, which is off. Worth telling Kunal: this answers AA-20, which is DECIDED and built."
     },
     {
      "id": "stock-takes-089",
@@ -1584,7 +1584,7 @@
     "Deleting a product tries to clean it out of past stock takes and silently does nothing. index.html:3520 filters on s.lines, but stock takes store their rows under 'items', not 'lines' — so the condition is always false and every stock take is kept untouched. Keeping the history is arguably the right outcome, but the code does not do what it was written to do, and nobody noticed.",
     "The live site's stock-take IDs are just 'st_' plus the millisecond (main index.html:2081/2145). The random-suffix hardening exists only on the working branch. Low risk while counts never leave the device, but it is a real live-vs-branch difference.",
     "The link between an approved count and the adjustments it created (the stockTakeId field, index.html:2603) is not part of the cloud sync contract (sync.js:1287-1320, 1366-1420). If stock takes ever do sync, the double-apply guard at index.html:2594 will not see adjustments that arrived from another device.",
-    "The project notes list 'AA-20' as an open question — should clearing the PIN instantly revoke access, or let it run out? The code already answers it: clearing the PIN bumps a version stamp and every outstanding unlock dies immediately (azure-functions/src/functions/accessPolicy.js:103-117, sync.js:441-446). The note is stale; the code wins.",
+    "AA-20 IS SETTLED AND THE CODE PROVES IT. Clearing the PIN was built as an instant kill-switch across all devices, not wait-for-expiry. RESOLVED: the deployed code implements instant revocation — grants carry a pinEpoch and clearing or changing the PIN bumps it, so every outstanding grant dies immediately (azure-functions/src/functions/accessPolicy.js:103-117; the app drops its local grant at sync.js:441-446). Decided by Kunal 2026-07-10 and recorded in AZURE-CHUNK-AA-LA-CHANGES.md. Several project documents still list it under decisions awaiting the owner — they are stale.",
     "There is no completeness check on a count at all. Partial counting is the only mode — you type numbers for whatever you want and submit. Nothing warns that 300 products were skipped, and nothing records that the take was partial."
    ],
    "uncertain": [
@@ -6626,7 +6626,7 @@
       "appliedToCloud": "yes",
       "switchedOn": "no"
      },
-     "notes": "This answers the open question AA-20 from the audit — it was built as instant revocation, not wait-for-expiry. A pass also always self-expires within 24 hours regardless. Locking the screen also drops the unlock (S-244)."
+     "notes": "This answers AA-20, which is DECIDED and built. A pass also always self-expires within 24 hours regardless. Locking the screen also drops the unlock (S-244). RESOLVED: the deployed code implements instant revocation — grants carry a pinEpoch and clearing or changing the PIN bumps it, so every outstanding grant dies immediately (azure-functions/src/functions/accessPolicy.js:103-117; the app drops its local grant at sync.js:441-446). Decided by Kunal 2026-07-10 and recorded in AZURE-CHUNK-AA-LA-CHANGES.md."
     },
     {
      "id": "access-policy-421",
@@ -6759,7 +6759,7 @@
     "The 'Ask for my password again when…' list offers 10 toggles but the app only honours 3 of them. Publish, user management, backup and access-policy ALWAYS prompt no matter what the toggle says (index.html:4234 never consults the map); archive, stock adjustments and cancel transfers never prompt at all, because the app never mints those proof types. The cloud WOULD honour all 10 — so client and cloud would disagree about what a Director gets asked.",
     "'See selling prices' is a curtain, not a lock, and the code says so out loud (index.html:3413, 3884). The selling price is still sent to every device in the shared product list; the toggle only hides columns and export columns. Same for 'view profit reports', 'view transfer history' and 'store-comparison charts'. Only 'see cost prices' and 'see older data' are genuinely enforceable — and neither of those cloud doors is applied.",
     "Activating the policy is a real, visible behaviour change for staff on day one: the plain store account can no longer receive a Head Office transfer without entering the 24-hour PIN, and once the policy is on, entering that PIN requires internet at that moment (the on-device PIN check is replaced by a cloud check). The screen banner does warn about this in plain English (index.html:5111).",
-    "'Clear PIN' was built as an INSTANT kill switch across all devices, not wait-for-expiry — which settles the open question AA-20 recorded in project memory as still undecided. Five explicit test cases for it passed when I ran test/access-policy-proof.js today.",
+    "'Clear PIN' was built as an INSTANT kill switch across all devices, not wait-for-expiry — which settles AA-20, which is DECIDED and built. Five explicit test cases for it passed when I ran test/access-policy-proof.js today.",
     "The written enforcement matrix disagrees with the code in two places. It still lists a 'seeCharts' capability (row 19) that was deliberately dropped from the code as unenforceable, and it describes a store_eras archive cutoff (row 18 / §1) that exists in no source file at all. Where they disagree, the code is right and the document is stale.",
     "A comment inside the cloud rule engine still says per-account exceptions are keyed by user id (accessPolicy.js:41, 'override keys = UserId'), but the code on both sides keys them by username — that was audit fix AA-01. Comment drift only, but it is exactly the kind of thing that caused the original bug (exceptions that silently did nothing)."
    ],

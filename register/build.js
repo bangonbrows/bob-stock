@@ -33,6 +33,34 @@ const decisions = readJson('decisions.json');
 if (!features) { console.error('register/features.json missing — nothing to build'); process.exit(1); }
 
 const esc = s => String(s == null ? '' : s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+
+// ── honest citations ──────────────────────────────────────────────────────────────────────
+// Much of this project's analysis lives in audit-artifacts/, which is gitignored wholesale. A
+// citation of the form "SOME-FILE.md:1037" promises a reader they can go and look at line 1037.
+// For a gitignored file they cannot — and an audit package once had to be rebuilt for exactly
+// this reason, having named ground truth that was absent from the commit an auditor was given.
+// So a citation to an untracked file is rendered WITHOUT the false line-anchor and labelled for
+// what it is. The decision itself is recorded here, in tracked data, which is the point: the
+// gitignored file is where it was first written, not where it now lives.
+let trackedMd = null;
+function trackedMarkdown() {
+  if (trackedMd) return trackedMd;
+  trackedMd = new Set();
+  try {
+    require('child_process').execSync("git ls-files *.md", { cwd: REPO, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+      .split('\n').map(s => s.trim()).filter(Boolean)
+      .forEach(f => trackedMd.add(path.basename(f)));
+  } catch (e) { /* not a git checkout — leave every citation untouched */ }
+  return trackedMd;
+}
+function honestCitations(s) {
+  const tracked = trackedMarkdown();
+  if (!tracked.size) return s;
+  return String(s == null ? '' : s).replace(/([A-Za-z0-9][A-Za-z0-9._-]*\.md):(\d+(?:-\d+)?)/g,
+    (whole, file, line) => tracked.has(path.basename(file))
+      ? whole
+      : `${file} (line ${line} — local working analysis, not in git)`);
+}
 const ON = f => f.status.switchedOn === 'yes';
 const PARTIAL = f => f.status.switchedOn === 'partial';
 
@@ -99,14 +127,14 @@ function buildRegister() {
     L.push('| Feature | What it does | Who | Status | Where | Proven by |');
     L.push('|---|---|---|---|---|---|');
     for (const f of a.features) {
-      L.push(`| **${esc(f.name)}** | ${esc(f.plainEnglish)} | ${esc(f.whoUsesIt)} | ${badge(f.status)} | \`${esc(f.where)}\` | ${esc(f.provenBy)} |`);
+      L.push(`| **${esc(f.name)}** | ${esc(honestCitations(f.plainEnglish))} | ${esc(f.whoUsesIt)} | ${badge(f.status)} | \`${esc(honestCitations(f.where))}\` | ${esc(honestCitations(f.provenBy))} |`);
     }
     L.push('');
     const noted = a.features.filter(f => f.notes && f.notes.trim());
     if (noted.length) {
       L.push('<details><summary>Notes and gotchas (' + noted.length + ')</summary>');
       L.push('');
-      noted.forEach(f => L.push(`- **${esc(f.name)}** — ${esc(f.notes)}`));
+      noted.forEach(f => L.push(`- **${esc(f.name)}** — ${esc(honestCitations(f.notes))}`));
       L.push('');
       L.push('</details>');
       L.push('');
@@ -129,7 +157,7 @@ function buildRegister() {
       L.push('| # | Decision | Why | Rules out | Who / when | Source |');
       L.push('|---|---|---|---|---|---|');
       for (const d of ds) {
-        L.push(`| ${esc(d.id || '')} | ${esc(d.what)} | ${esc(d.why)} | ${esc(d.rulesOut)} | ${esc(d.whoDecided)} ${esc(d.when)} | \`${esc(d.source)}\` |`);
+        L.push(`| ${esc(d.id || '')} | ${esc(honestCitations(d.what))} | ${esc(honestCitations(d.why))} | ${esc(honestCitations(d.rulesOut))} | ${esc(honestCitations(d.whoDecided))} ${esc(d.when)} | \`${esc(honestCitations(d.source))}\` |`);
       }
       L.push('');
     }
@@ -142,7 +170,7 @@ function buildRegister() {
   if (oq.length) {
     L.push('| Question | Why it matters | Source |');
     L.push('|---|---|---|');
-    oq.forEach(q => L.push(`| ${esc(q.question)} | ${esc(q.whyItMatters)} | \`${esc(q.source)}\` |`));
+    oq.forEach(q => L.push(`| ${esc(honestCitations(q.question))} | ${esc(honestCitations(q.whyItMatters))} | \`${esc(honestCitations(q.source))}\` |`));
   } else {
     L.push('*(none recorded — or the decisions pass has not run yet)*');
   }
@@ -158,7 +186,7 @@ function buildRegister() {
     if (!a.surprises.length) continue;
     L.push(`### ${a.title}`);
     L.push('');
-    a.surprises.forEach(s => L.push(`- ${s}`));
+    a.surprises.forEach(s => L.push(`- ${honestCitations(s)}`));
     L.push('');
   }
 
@@ -214,7 +242,7 @@ function buildTraining() {
       L.push(`**Who uses it:** ${f.whoUsesIt}`);
       L.push('');
       if (f.notes && f.notes.trim()) {
-        L.push(`> **Worth knowing:** ${f.notes}`);
+        L.push(`> **Worth knowing:** ${honestCitations(f.notes)}`);
         L.push('');
       }
     }

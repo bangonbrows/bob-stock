@@ -675,9 +675,20 @@ the live-verified detail (two auditor secrets not one; a tenant-wide grant valid
   flushing pending offline writes. Ground-truthed real. The blocking server work has landed.
 
 **Owner decisions waiting:**
-- **AA-20** — "Clear PIN": instant revoke, or let grants expire on TTL? ⚠ The repo doc records this as
-  **decided 2026-07-10**; memory still lists it open. Resolve which is right.
-- D-OS-2 territory-manager nuance; ex-franchisee office account.
+- ~~**AA-20** — "Clear PIN": instant revoke, or expire on TTL?~~ **CLOSED 2026-08-02 — instant revoke.**
+  Decided by Kunal 2026-07-10 and already built; the ambiguity was only ever between documents. Settled
+  by reading the deployed code: a PIN grant carries the `pinEpoch` it was minted under, clearing or
+  changing the PIN bumps that epoch, and every outstanding grant with an older epoch is rejected
+  immediately (`azure-functions/src/functions/accessPolicy.js:103-117`); the client drops its local
+  grant on the same signal (`sync.js:441-446`). Proven by `test/access-policy-proof.js` (5 explicit
+  AA-20 cases) and smoke S-249. It is a kill-switch, not wait-for-expiry.
+- ~~**D-OS-2** territory-manager nuance~~ **CLOSED 2026-08-02.** When a store converts to a franchise, a
+  territory manager who also covers OTHER stores keeps their account and those stores, losing only the
+  converted one; they are deactivated only if the converted store was their last. Southlands also gets a
+  franchise office created alongside it. (Kunal.)
+- Ex-franchisee office account — still open.
+- **The full current list of open owner decisions now lives in `REGISTER.md` → "Open questions for
+  Kunal"**, generated from `register/decisions.json`. Do not maintain a second copy here.
 
 **Security, at cutover:** the SWA **deployment token is committed in plaintext** in
 `.github/workflows/deploy-swa.yml`. Private repo, so not leaking — rotate it with the other secrets.

@@ -524,7 +524,7 @@ An unlocked Stock Take does not stay unlocked. Logging out clears it. The 10-min
 
 **Who uses it:** everyone (invisible)
 
-> **Worth knowing:** The logout and idle-lock clearing works today. The instant kill-switch on Clear PIN needs the cloud policy, which is off. Worth telling Kunal: this answers the open question recorded in the project notes as 'AA-20' — the code already implements instant revocation, so the note saying it is undecided is out of date.
+> **Worth knowing:** The logout and idle-lock clearing works today. The instant kill-switch on Clear PIN needs the cloud policy, which is off. Worth telling Kunal: this answers AA-20, which is DECIDED and built.
 
 ### Who is allowed to count and who is allowed to approve
 

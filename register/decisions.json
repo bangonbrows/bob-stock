@@ -4160,7 +4160,7 @@
    "cluster": "reconcile-existing",
    "what": "Stop hand-writing counts, commit references and file sizes into documents. A guard script should generate them, and the guard itself must be mutation-tested — deliberately broken inputs must make it fail before it is trusted.",
    "why": "A number typed into prose is stale the moment the file changes. The same probe count is stated as 51, 54 and 61 across six documents when the file actually holds 67; the smoke count is given as both 239 and 238 inside one document. And a gate nobody has ever seen fail is just another document nobody reads.",
-   "rulesOut": "Rules out 'just correct the numbers this once' — the register's own corrections went stale in two days: it states HEAD 4ab135c and 276 commits ahead; today it is 4529b90 and 305 ahead. Eleven guard scripts now exist under audit-artifacts/ (check-docs.js, check-name-collisions.js, check-edit-premise.js, check-expr-safety.js and others), so this is partly built.",
+   "rulesOut": "Rules out 'just correct the numbers this once' — the register's own corrections went stale in two days: it states HEAD 4ab135c and far ahead of `main` (run `git rev-list --count main..HEAD` for the current number); today it is 4529b90 and 305 ahead. Eleven guard scripts now exist under audit-artifacts/ (check-docs.js, check-name-collisions.js, check-edit-premise.js, check-expr-safety.js and others), so this is partly built.",
    "whoDecided": "Claude, ratified by the sweep",
    "when": "2026-07-30",
    "status": "DECIDED",
@@ -4531,12 +4531,6 @@
   },
   {
    "cluster": "chunks-9-10",
-   "question": "AA-20 ('Clear PIN' = instant kill versus letting existing grants run out) is recorded as decided AND implemented in the repo, but is still listed as an open owner question in the handover and in Claude's memory. Confirm it is closed so it stops being re-asked.",
-   "whyItMatters": "It costs a few minutes of your attention every time a new session re-raises it, and there is a real risk someone 'decides' it a second time in the opposite direction.",
-   "source": "azure-functions/src/functions/accessPolicy.js:171-196 (implemented); HANDOVER.md:678-680 (still open)"
-  },
-  {
-   "cluster": "chunks-9-10",
    "question": "The offline login check was specified to be tuned so it takes about a quarter to half a second on the oldest phone in the stores. No record exists of that ever being measured on a real device — 210,000 rounds was chosen and shipped.",
    "whyItMatters": "Too slow and every offline login on an old store phone feels broken; too fast and the protection on a stolen device is weaker than intended. One five-minute measurement settles it.",
    "source": "AZURE-CHUNK9-SCOPE.md:201-205; AZURE-CHUNK9-WAVE-REVIEW.md:29-30"
@@ -4729,9 +4723,9 @@
   },
   {
    "cluster": "owner-rulings",
-   "question": "THE SETTLEMENT-ENGINE RE-AUDIT: state ONCE, definitively, what the never-skip re-audit must actually cover. It currently says four different things in four places, with three different item counts.",
-   "whyItMatters": "This is Kunal's own firm marker and it is money-critical. The settlement engine was FROZEN mid-audit, not finished — auditors were still finding real bugs at the moment it was frozen, and three whole classes of problem are only being held for manual review rather than fixed. Until the marker is one list in one place, every session works out a different, usually shorter, version of it. That is exactly how a money-critical step gets quietly skipped.",
-   "source": "HANDOVER.md:206-209 and :465-470 (no contents) vs AZURE-CHUNK-ORG-W44-C2-DESIGN.md:1537 (five items, verified) vs the project memory marker (three items) vs audit-artifacts/PENDING-ROADMAP-2026-07-29.md:126,196 (a fourth narrative version)"
+   "question": "THE SETTLEMENT-ENGINE RE-AUDIT: the \"never skip\" marker must be stated ONCE, definitively, in ONE place. Its full contents live in HANDOVER.md §5a (carried obligation 6) and MUST NOT be restated here or anywhere else — it currently says different things in different documents, and duplicating it is how they drifted. This entry is a POINTER only: read HANDOVER.md §5a. What is owed is a single agreed list of what the re-audit covers, written down before it starts.",
+   "whyItMatters": "Money-critical and the owner's own firm marker. The settlement engine was FROZEN mid-audit, not finished — reviewers were still finding real defects at the moment it was frozen. Until the marker is ONE list in ONE place, every session re-litigates what it requires and items quietly drop off.",
+   "source": "HANDOVER.md §5a, carried obligation 6"
   },
   {
    "cluster": "owner-rulings",
