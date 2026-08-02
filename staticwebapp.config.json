@@ -4,6 +4,7 @@
     { "route": "/test/*", "statusCode": 404 },
     { "route": "/audit-artifacts/*", "statusCode": 404 },
     { "route": "/azure-functions/*", "statusCode": 404 },
+    { "route": "/data/*", "statusCode": 404 },
     { "route": "/.github/*", "statusCode": 404 }
   ],
   "navigationFallback": {

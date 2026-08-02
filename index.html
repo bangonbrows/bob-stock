@@ -599,9 +599,7 @@ const SEED = {
     { id:'MKU_20', name:'Pomade (Ebony)', catId:'cat_mku', price:null, costPrice:null }
   ],
   stores: [
-    { id:'ardross',     name:'Ardross',              type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
     { id:'booragoon',   name:'Booragoon',            type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
-    { id:'bunbury',     name:'Bunbury',              type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
     { id:'cockburn',    name:'Cockburn',             type:'franchise', active:true,  isFranchise:true,  franchiseDiscount:25 },
     { id:'cockburn_office', name:'Cockburn Franchise Office', type:'warehouse', active:true, isFranchise:true, isFranchiseOffice:true, franchiseDiscount:25 },
     { id:'claremont',   name:'Claremont',            type:'inline',    active:true,  isFranchise:false, franchiseDiscount:null },
@@ -630,14 +628,14 @@ const SEED = {
     { id:'u_s_s',     username:'southlands',    password:'ce4e87604320cf184a55ff1ce3504b54800887d399b21701c0bff321ca7f3674',   role:'staff',         name:'Southlands Staff',    storeIds:['southlands'], pin:'9c73ed825c15f3587dbaae07e4f01c8fb152cf2d5f0d2c8d6623d7a8f7a0c47b' }
   ],
   thresholds: [
-    ...['ardross','booragoon','bunbury','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'EXT_1',minQty:5,leadDays:3})),
+    ...['booragoon','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'EXT_1',minQty:5,leadDays:3})),
     {storeId:'cockburn_office',productId:'EXT_1',minQty:3,leadDays:5},
-    ...['ardross','booragoon','bunbury','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'EXT_12',minQty:2,leadDays:3})),
-    ...['ardross','booragoon','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'LAL_1',minQty:3,leadDays:5})),
-    ...['ardross','booragoon','bunbury','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'MIC_4',minQty:3,leadDays:2})),
-    ...['ardross','booragoon','bunbury','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'MIC_5',minQty:2,leadDays:2})),
-    ...['ardross','booragoon','cockburn','karrinyup','whitford'].map(s=>({storeId:s,productId:'TNT_1',minQty:2,leadDays:5})),
-    ...['ardross','booragoon','bunbury','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'TNT_10',minQty:3,leadDays:2}))
+    ...['booragoon','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'EXT_12',minQty:2,leadDays:3})),
+    ...['booragoon','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'LAL_1',minQty:3,leadDays:5})),
+    ...['booragoon','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'MIC_4',minQty:3,leadDays:2})),
+    ...['booragoon','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'MIC_5',minQty:2,leadDays:2})),
+    ...['booragoon','cockburn','karrinyup','whitford'].map(s=>({storeId:s,productId:'TNT_1',minQty:2,leadDays:5})),
+    ...['booragoon','cockburn','claremont','karrinyup','whitford','southlands'].map(s=>({storeId:s,productId:'TNT_10',minQty:3,leadDays:2}))
   ],
   // Demo cost history (variable cost pricing per shipment)
   costHistory: [],
@@ -695,39 +693,6 @@ function generateDemoTransactions() {
   tx('2026-03-01','head_office','EXT_1','in',60,'Logistics','Supplier Delivery');
   tx('2026-03-01','head_office','MKU_1','in',20,'Logistics','Supplier Delivery');
   // Ardross
-  tx('2026-01-03','ardross','EXT_1','in',10,'Sarah K','Transfer from HO');
-  tx('2026-01-03','ardross','EXT_12','in',5,'Sarah K','Transfer from HO');
-  tx('2026-01-03','ardross','MIC_4','in',6,'Sarah K','Supplier Delivery');
-  tx('2026-01-03','ardross','MIC_5','in',5,'Sarah K','Supplier Delivery');
-  tx('2026-01-03','ardross','TNT_1','in',6,'Sarah K','Supplier Delivery');
-  tx('2026-01-03','ardross','LAL_1','in',8,'Sarah K','Transfer from HO');
-  tx('2026-01-03','ardross','TNT_10','in',8,'Sarah K','Supplier Delivery');
-  tx('2026-01-08','ardross','EXT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-01-12','ardross','EXT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-01-15','ardross','EXT_12','out',1,'Mia L','Used in Treatment');
-  tx('2026-01-18','ardross','TNT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-01-22','ardross','MIC_4','out',1,'Mia L','Used in Treatment');
-  tx('2026-01-25','ardross','LAL_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-01-28','ardross','TNT_10','out',3,'Mia L','Used in Treatment');
-  tx('2026-02-03','ardross','EXT_1','in',8,'Sarah K','Transfer from HO');
-  tx('2026-02-03','ardross','EXT_12','in',4,'Sarah K','Transfer from HO');
-  tx('2026-02-03','ardross','LAL_1','in',6,'Sarah K','Transfer from HO');
-  tx('2026-02-03','ardross','MIC_5','in',4,'Sarah K','Restock');
-  tx('2026-02-03','ardross','TNT_10','in',5,'Sarah K','Restock');
-  tx('2026-02-06','ardross','EXT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-02-12','ardross','EXT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-02-15','ardross','EXT_12','out',1,'Mia L','Used in Treatment');
-  tx('2026-02-18','ardross','EXT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-02-20','ardross','MIC_5','out',2,'Mia L','Used in Treatment');
-  tx('2026-02-24','ardross','LAL_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-02-26','ardross','EXT_12','out',1,'Mia L','Used in Treatment');
-  tx('2026-02-27','ardross','TNT_10','out',3,'Mia L','Used in Treatment');
-  tx('2026-03-03','ardross','EXT_1','in',4,'Sarah K','Transfer from HO');
-  tx('2026-03-03','ardross','EXT_12','in',3,'Sarah K','Transfer from HO');
-  tx('2026-03-03','ardross','LAL_1','in',5,'Sarah K','Transfer from HO');
-  tx('2026-03-06','ardross','EXT_1','out',2,'Mia L','Used in Treatment');
-  tx('2026-03-07','ardross','MIC_4','out',2,'Mia L','Used in Treatment');
-  tx('2026-03-08','ardross','EXT_12','out',2,'Mia L','Used in Treatment');
   // Booragoon
   tx('2026-01-04','booragoon','EXT_1','in',12,'Emma R','Transfer from HO');
   tx('2026-01-04','booragoon','EXT_12','in',4,'Emma R','Transfer from HO');
@@ -812,7 +777,7 @@ function generateDemoTransactions() {
   tx('2026-02-26','cockburn','MIC_4','out',2,'Priya S','Used in Treatment');
   tx('2026-02-28','cockburn','LAL_1','out',2,'Priya S','Used in Treatment');
   // Other stores (lighter)
-  const others = [{id:'whitford',staff:'Lena C'},{id:'claremont',staff:'Anna B'},{id:'bunbury',staff:'Rachel D'},{id:'southlands',staff:'Nina F'}];
+  const others = [{id:'whitford',staff:'Lena C'},{id:'claremont',staff:'Anna B'},{id:'southlands',staff:'Nina F'}];
   others.forEach(s=>{
     tx('2026-01-04',s.id,'EXT_1','in',10,s.staff,'Transfer from HO');
     tx('2026-01-04',s.id,'MIC_4','in',5,s.staff,'Supplier Delivery');
