@@ -248,7 +248,8 @@ Nothing here is accepted on argument. Before this chunk can close:
 - A sentinel for the §6 two-key case, in both directions.
 - A sentinel proving a **newly added Retail product inherits 50%** without anyone touching it —
   this is the money leak the type tier exists to close.
-- A saboteur mutation for each new sentinel, observed to be caught.
+- A mutation test for each new sentinel — a deliberate small fault introduced to confirm the
+  sentinel actually notices. A check never seen to fail is not a check.
 - The `topology-proof` suite still at 256/256, and the client/server parity sentinel still green,
   after the schema change.
 - A real end-to-end publish against the staging cloud — which requires staging to hold a **real
