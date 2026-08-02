@@ -272,12 +272,17 @@ function buildTraining() {
 
 // ── write or compare ──────────────────────────────────────────────────────────────────────
 const outputs = [['REGISTER.md', buildRegister()], ['TRAINING.md', buildTraining()]];
+// Compare with line endings normalised. Git converts LF to CRLF on checkout on Windows, so a
+// byte-for-byte comparison would fail on every fresh clone and the gate would be permanently red
+// for reasons having nothing to do with the register's accuracy. This project has already lost a
+// full sabotage sweep to exactly this: 24/24 healthy, and only the matcher was broken by CRLF.
+const norm = s => (s == null ? null : String(s).replace(/\r\n/g, '\n'));
 let drift = 0;
 for (const [name, content] of outputs) {
   const p = path.join(REPO, name);
   const existing = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
   if (CHECK) {
-    if (existing !== content) { drift++; console.log(`  [DRIFT] ${name} does not match the register data — run: node register/build.js`); }
+    if (norm(existing) !== norm(content)) { drift++; console.log(`  [DRIFT] ${name} does not match the register data — run: node register/build.js`); }
     else console.log(`  [ok] ${name} matches the data`);
   } else {
     fs.writeFileSync(p, content);
